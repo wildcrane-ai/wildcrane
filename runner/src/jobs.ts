@@ -24,7 +24,7 @@ import { runnerHome } from './home'
 import { followProxy } from './proxy'
 import { detectRuntimes, forks, plan as realPlan, type Plan, type Settings } from './runtimes'
 import { keepSecrets, secretsOf } from './secrets'
-import { cardFile, openAgentFolder, openDiscussionFolder, openTaskFolder, pull, push, undrawnPreviews, type Pushed, type TaskFolder } from './task-folder'
+import { NO_FOLDER, cardFile, openAgentFolder, openDiscussionFolder, openTaskFolder, pull, push, undrawnPreviews, type Pushed, type TaskFolder } from './task-folder'
 
 /** Output goes every 2 seconds or 32 KB while a page watches and not at all while none does:
  *  the job's log object costs nothing until someone opens it (#228). */
@@ -511,9 +511,9 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
   if (job.test) return runTest(job, deps, lease)
   if (job.agent) return runAgentJob(job as Job & { agent: AgentJob }, deps, track, keep, lease, checkpoint, persist)
 
-  // A task without a project folder here runs in its project's own folder; a review in its first task's.
+  // A task, and a review in its first task's, runs only in the project's folder here (#516).
   const task = job.task ?? job.review?.tasks[0] ?? null
-  const folder = task && !job.projectDir ? null : folderFor(job)
+  const folder = task && !job.projectDir ? { refused: NO_FOLDER } : folderFor(job)
   if (folder && 'refused' in folder) {
     return finishClaimed('failed', folder.refused)
   }

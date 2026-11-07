@@ -13,11 +13,7 @@ Find needs the work left behind or revealed, and verify them in the project. Pro
 
 ## Write
 
-- **Reader**: someone who has read neither the original card nor the code can decide in ten seconds whether the work is worth doing.
-- **Order**: first explain what happened and what the user runs into, then say what the work would do.
-- **Plain words**: keep file, function and field names, card ids, agent names and evidence trails out of the title and body.
-
-Write the body to a temporary Markdown file and end with the source card's archive path.
+Write each item's title and body in the **Goal format** of `akb guide discuss-goal`; write the body to a temporary Markdown file and end it with the source card's archive path.
 Write one triage item per proposal. Exploratory ideas are welcome; identify small chores as such.
 Use the source card's `workflow:`, or the id from `akb workflow list` that fits the work when it has none.
 

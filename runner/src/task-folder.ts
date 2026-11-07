@@ -19,7 +19,7 @@ import { renderError } from '../../cli/src/lib/preview-validation'
 import { referenceText } from '../../cli/src/lib/dress-page'
 import * as api from './api'
 import type { Assets, Job } from './api'
-import { busy, cacheDir, markUsed, markUnsent } from './cache'
+import { busy, markUsed, markUnsent } from './cache'
 import { sharedMemory, type Shared } from './memory-files'
 
 export { workflowFolder }
@@ -82,14 +82,15 @@ export type Pushed =
   | { ok: false; conflict: boolean; error: string; offline?: boolean; tasks?: Record<string, { error: string; offline?: boolean }> }
 
 const TASK_ID = /^[\w-]{1,100}$/
+export const NO_FOLDER = 'This project has no folder on this computer. Link one, then try again.'
 const EMPTY: Record_ = { assets: {} }
 
-/** Without a folder the task runs in its project's own, in the cache. */
+/** A task runs only in its project's linked folder (#516). */
 export function openTaskFolder(job: Pick<Job, 'task' | 'project' | 'number' | 'workflow' | 'flow'>, projectDir: string | null): TaskFolder {
   const task = job.task ?? ''
   if (!TASK_ID.test(task)) throw new Error('This job names no task.')
   if (!job.project) throw new Error('This job names no project.')
-  projectDir ??= openCached(job.project)
+  if (!projectDir) throw new Error(NO_FOLDER)
   keepOutOfGit(projectDir)
   markUsed(projectDir)
   const board = path.join(projectDir, '.akb', 'kanban')
@@ -152,12 +153,6 @@ function inFolder<T>(dir: string, work: () => Promise<T>): Promise<T> {
 const safe = (name: string) => name.replace(/[^\w.-]/g, '_') || 'default'
 
 /** Managed workflows execute in an ordinary directory. */
-function openCached(project: string): string {
-  const dir = cacheDir(project)
-  fs.mkdirSync(dir, { recursive: true })
-  return dir
-}
-
 /** The kanban skill the Runner installs in a project for akb's runs. */
 export const SKILL_FOLDERS = ['.claude/skills/kanban', '.agents/skills/kanban']
 
@@ -443,9 +438,10 @@ function assetPath(ws: TaskFolder, name: string, owner: string): string | null {
   const roots = [ws.board, ...(state ? ['assets', 'mockups'].map(folder => path.join(state, folder, ...(ws.number ? [String(ws.number)] : []))) : [])]
   const inside = (file: string, root: string) => file.startsWith(root + path.sep)
   if (!roots.some(root => inside(file, root))) throw new Error(`outside the board: ${name}`)
+  // A file not here yet resolves through its nearest existing folder, so it is judged where it will land.
   let existing = file
   while (!fs.existsSync(existing) && path.dirname(existing) !== existing) existing = path.dirname(existing)
-  const real = fs.realpathSync(existing)
+  const real = path.join(fs.realpathSync(existing), path.relative(existing, file))
   let stateParent = state
   while (stateParent && !fs.existsSync(stateParent) && path.dirname(stateParent) !== stateParent) stateParent = path.dirname(stateParent)
   const realState = state && stateParent ? path.resolve(fs.realpathSync(stateParent), path.relative(stateParent, state)) : null
@@ -614,7 +610,9 @@ async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets): Prom
       if (held?.artifact === ref.artifact) out[name] = held
       continue
     }
-    const target = assetPath(ws, name, file)
+    // One preview that cannot come down keeps its record; the next push names why (#516).
+    let target: string | null
+    try { target = assetPath(ws, name, file) } catch { if (held) out[name] = held; continue }
     if (!target) continue
     let kind = held?.artifact === ref.artifact ? held.kind : undefined
     let version = ref.version
@@ -622,6 +620,7 @@ async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets): Prom
     const current = held?.artifact === ref.artifact && held.version === version && localHash === (held.localHash ?? held.hash)
     if (version === undefined || !kind || (!current && kind !== 'html')) {
       const latest = await api.readArtifact(ref.artifact)
+      if (!latest.ok && latest.code === 'not_found') { if (held) out[name] = held; continue }
       if (!latest.ok) return latest
       version ??= latest.value.latest_version ?? 0
       kind = latest.value.type
@@ -636,6 +635,7 @@ async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets): Prom
       continue
     }
     const bytes = await readAsset(ref.artifact, version)
+    if (!bytes.ok && bytes.code === 'not_found') { if (held) out[name] = held; continue }
     if (!bytes.ok) return bytes
     let local = bytes.value
     const dependencies: string[] = []
@@ -653,7 +653,8 @@ async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets): Prom
       const restored = mapReferences(manifest, data, (src, found) => {
         const name = Object.entries(assets).find(([, r]) => r.artifact === src)?.[0]
         if (!name) return src
-        const child = assetPath(ws, name, file)
+        let child: string | null = null
+        try { child = assetPath(ws, name, file) } catch { /* 留作原引用。 */ }
         if (!child) return src
         dependencies.push(name)
         const back = !found.text && /^\.(assets|mockups)\//.test(name) ? name : path.relative(path.dirname(target), child).split(path.sep).join('/')

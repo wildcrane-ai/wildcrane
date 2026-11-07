@@ -2,6 +2,7 @@ import asset from '../components/Asset.md'
 import compare from '../components/Compare.md'
 import storyboard from '../components/Storyboard.md'
 import workflow from '../components/Workflow.md'
+import shared from '../components/shared.md'
 import { findSpecAgent } from './agents'
 import { BoardError } from './io'
 import { boardText } from './paths'
@@ -42,4 +43,5 @@ export function workflowComponents(id: string): ComponentDoc[] {
   return agentComponents(members)
 }
 
-export const componentDocsText = (docs: ComponentDoc[]): string => docs.map((doc) => doc.text.trim()).join('\n\n')
+export const componentDocsText = (docs: ComponentDoc[]): string =>
+  docs.length ? [shared, ...docs.map((doc) => doc.text)].map((text) => text.trim()).join('\n\n') : ''

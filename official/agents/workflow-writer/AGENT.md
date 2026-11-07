@@ -3,7 +3,7 @@ name: workflow-writer
 description: Writes or changes a workflow, one of its preview agents or a scheduled agent, as a `WORKFLOW.md` and the agents it names.
 akb:
   icon: workflow
-  components: [Workflow, Asset]
+  components: [Workflow, Asset, Compare, Storyboard]
   i18n:
     en:
       title: Workflow
@@ -36,7 +36,7 @@ Run `akb workflow list` and fix every problem it reports for this workflow.
 ## Try it
 
 - **Sample**: use the sample request the card gives; when it gives none, write a typical one and say it is made up.
-- **Run**: once the files pass the check, act as each preview agent in stage order: read its files with `akb raw agent-file`, its memory and its board rule, and write the preview it would write for the sample to `<board-state>/assets/<card id>/trial/<agent>.md`, its other files beside it; skip `land` and `scheduled` agents.
+- **Run**: once the files pass the check, act as each preview agent in stage order: read its files with `akb raw agent-file`, its memory and its board rule, and write the preview it would write for the sample to `<board-state>/assets/<card id>/trial/<agent>.md`, its other files beside it, keeping its preview tags for the card; skip `land` and `scheduled` agents.
 - **Earlier stages**: treat earlier trial results as approved.
 - **Nothing lasting**: write no agent's memory, ask no question and create no card; where the agent would ask, take its recommended option and say so in the result.
 - **Rerun**: after any change, rerun only the agents it touches and the stages after them.
@@ -53,6 +53,6 @@ Sort each remark on a trial preview into form or content, and split a mixed one.
 
 Under your section heading, state the workflow's `when` in one sentence, quote the sample request, marking a made-up one, then add the tag `akb workflow diagram <workflow id> <card id>` prints once the files are final.
 
-- **One subsection per preview agent**: its rules in a few bullets, what it remembers, then its trial result embedded as an `<Asset>`; note which agent a later stage waits for.
+- **One subsection per preview agent**: its rules in a few bullets, what it remembers, then its trial result embedded as an `<Asset>` followed by the preview tags that result kept for the card; note which agent a later stage waits for.
 - **Other agents**: one line each for `land` and `scheduled` agents: what it does, when it runs and what it remembers.
 - **Files**: embed each file you wrote as an `<Asset>`; for a workflow that already existed, embed instead one Markdown file per changed file holding its unified diff.

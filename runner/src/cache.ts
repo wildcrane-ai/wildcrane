@@ -1,5 +1,5 @@
 // What the Runner keeps of a project here is a cache, rebuilt from Cloud by the next job (#2147):
-// a project with no folder here lives in `cache/<project>/`, a linked folder keeps it in `.akb/`.
+// a linked folder keeps it in `.akb/`; `cache/<project>/` is left from before tasks needed one (#516).
 // A project unused for 7 days, or no longer the account's, goes — the whole cache folder, or a
 // linked folder's `.akb/` alone — unless a job runs there, a delivery is paused there (#2128), or
 // its last write to Cloud failed.

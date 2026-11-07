@@ -26,7 +26,8 @@ import { readAkbState } from '../src/akb-version'
 import { AKB_CONTRACT } from '../src/protocol'
 import { agentDue, nextHour } from '../src/agents'
 import { sharedMemory } from '../src/memory-files'
-import { keptBoard, mergeFile, openTaskFolder, pull, pushBoard, readHead } from '../src/task-folder'
+import { projectStateDir } from '../../cli/src/lib/machine/project'
+import { NO_FOLDER, keptBoard, mergeFile, openTaskFolder, pull, pushBoard, readHead } from '../src/task-folder'
 import { watchBoards } from '../src/board-watch'
 import { hold, unsent } from '../src/cache'
 import { FILE_BYTES, diffOf } from '../src/diff'
@@ -44,7 +45,7 @@ let runner: Runner | null = null
 let planned: { runtime: string; prompt: string; cwd: string; resume?: string | null; model?: string | null; settings?: unknown; line?: 'zh' | 'en' | null }[] = []
 let installed: RuntimeReport[] = []
 const FAKE_AKB = path.join(process.env.RUNNER_DIST ?? '', '..', 'test', 'fake-akb.mjs')
-const cached = (project = 'prj_1') => path.join(runnerHome(), 'cache', project)
+const cached = (project = 'prj_1') => path.join(fs.realpathSync(runnerHome()), 'cache', project)
 const fakeAkb = (version = '0.0.0-test') => ({ command: process.execPath, args: [FAKE_AKB], version, shim: path.join(runnerHome(), 'bin', 'akb', version, 'shim') })
 
 function fakeRuntime(script: string) {
@@ -154,6 +155,10 @@ beforeEach(async () => {
   process.env.FAKE_AKB_LOG = path.join(runnerHome(), 'akb.log')
   process.env.FAKE_AKB = '{}'
   cloud = new FakeCloud()
+  // Each project is linked to its folder under the Runner's home (#516).
+  fs.mkdirSync(path.join(runnerHome(), 'cache'), { recursive: true })
+  fs.writeFileSync(path.join(runnerHome(), 'projects.json'), JSON.stringify({ projects: [path.join(runnerHome(), 'cache')] }))
+  cloud.folder = (project) => { fs.mkdirSync(cached(project), { recursive: true }); return cached(project) }
   cloud.others = ['prj_1', 'prj_2'].map((project) => ({ project, name: project, workspace: 'ws_1', workspace_name: 'Mine', personal: true }))
   await cloud.start()
 })
@@ -1233,7 +1238,7 @@ describe('a task’s folder (#2037)', () => {
   }
 
   const prepareBoard = async () => {
-    const result = await pull(openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, null), MACHINE)
+    const result = await pull(openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1')), MACHINE)
     assert.equal(result.ok, true)
   }
 
@@ -1253,11 +1258,12 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(commits().length, 0, 'a job that changed nothing wrote back')
   })
 
-  it('keeps each project with no folder in a folder of its own (#2061)', async () => {
-    await runTask('j1')
-    const other = openTaskFolder({ task: 'task_2', project: 'prj_2' }, null)
-    assert.equal(other.cwd, cached('prj_2'))
-    assert.equal(planned[0]!.cwd, cached())
+  it('refuses a task whose project has no folder here, and runs nothing (#516)', async () => {
+    const job = await runTask('j1', '', { project: 'prj_2', projectDir: null })
+    assert.equal(job.outcome, 'failed')
+    assert.equal(job.reason, NO_FOLDER)
+    assert.equal(planned.length, 0)
+    assert.equal(fs.existsSync(cached('prj_2')), false)
   })
 
   it('hands the agent the akb it carries, on the task’s board (#2020)', async () => {
@@ -1544,7 +1550,7 @@ describe('a task’s folder (#2037)', () => {
     await prepareBoard()
     fs.writeFileSync(path.join(board(), 'memory', 'readme.md'), 'once')
     const ws = keptBoard(cached())!
-    const sent = await Promise.all([pushBoard(ws, MACHINE), pushBoard(ws, MACHINE), pull(openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, null), MACHINE)])
+    const sent = await Promise.all([pushBoard(ws, MACHINE), pushBoard(ws, MACHINE), pull(openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1')), MACHINE)])
     assert.deepEqual(sent.map((s) => s.ok), [true, true, true])
     assert.equal(commits().length, 1)
     assert.equal(cloud.file('memory/readme.md'), 'once')
@@ -1604,7 +1610,7 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(read('todo/hero.png'), 'pending image')
     assert.ok(unsent(cached()), 'another task cleared the pending upload')
 
-    const own = await pull(openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, null), MACHINE)
+    const own = await pull(openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1')), MACHINE)
     assert.equal(own.ok, false)
     if (!own.ok) assert.match(own.error, /hero.png: fetch failed/)
 
@@ -2158,6 +2164,25 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(failed.outcome, 'failed')
     assert.match(failed.reason!, /资源依赖循环/)
     assert.equal(cloud.file(CARD), card)
+  })
+
+  it('首次拉取下载 .assets/ 预览；拉不下来的预览不阻止回复（#516）', async () => {
+    cloud.task.artifacts.set('art_a', [Buffer.from('A')])
+    cloud.put({
+      [CARD]: `${BODY}\n<Compare a=".assets/1/a.png" b=".assets/1/gone.png" />\n`,
+      'assets/task_1.json': JSON.stringify({ '.assets/1/a.png': { artifact: 'art_a', version: 1 }, '.assets/1/gone.png': { artifact: 'art_gone', version: 1 } }),
+    })
+    const first = await runTask('j1')
+    assert.equal(first.outcome, 'done', first.reason)
+    const state = projectStateDir(board())
+    assert.equal(fs.readFileSync(path.join(state, 'assets/1/a.png'), 'utf8'), 'A')
+    fs.rmSync(path.join(state, 'assets/1'), { recursive: true })
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'outside-'))
+    fs.symlinkSync(outside, path.join(state, 'assets/1'))
+    const linked = await runTask('j2')
+    assert.equal(linked.outcome, 'done', linked.reason)
+    assert.equal(fs.existsSync(path.join(outside, 'a.png')), false)
+    assert.match(JSON.parse(cloud.file('assets/task_1.json')!)['.assets/1/a.png'].error, /outside the board/)
   })
 
   it('越界符号链接只标为损坏、不上传（#321, #457）', async () => {

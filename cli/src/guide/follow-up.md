@@ -16,6 +16,4 @@ akb triage add --title "<one line>" --slug <short-english-slug> --source "#<id>"
 
 ## Write the item
 
-- **Reader**: someone who has read neither the original card nor the code can decide in ten seconds whether the work is worth doing.
-- **Order**: first explain what happened and what the user runs into, then say what the work would do.
-- **Plain words**: keep file, function and field names, card ids, agent names and evidence trails out of the title and body.
+Write each item's title and body in the **Goal format** of `akb guide discuss-goal`.

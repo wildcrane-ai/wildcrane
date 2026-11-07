@@ -34,7 +34,7 @@ export interface BoardWatch {
 function keptFolders(): TaskFolder[] {
   let cached: string[] = []
   try {
-    cached = fs.readdirSync(cacheRoot()).map((name) => path.join(cacheRoot(), name))
+    cached = fs.readdirSync(cacheRoot()).map((name) => fs.realpathSync(path.join(cacheRoot(), name)))
   } catch {
     // No cache yet.
   }

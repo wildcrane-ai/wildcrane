@@ -268,8 +268,12 @@ export class FakeCloud {
     return this.file(p, '')
   }
 
+  /** The project's linked folder Cloud names on a task job that names none, as it does. */
+  folder: ((project: string) => string) | null = null
+
   dispatch(job: Partial<FakeJob> & { id: string }): FakeJob {
-    const held: FakeJob = { runtime: 'codex', projectDir: null, prompt: 'go', attachments: [], state: 'waiting', events: [], claims: 0, ...job }
+    const linked = job.projectDir === undefined && (job.task || job.review) && this.folder ? this.folder(job.project ?? 'prj_1') : null
+    const held: FakeJob = { runtime: 'codex', projectDir: linked, prompt: 'go', attachments: [], state: 'waiting', events: [], claims: 0, ...job }
     this.jobs.set(held.id, held)
     return held
   }

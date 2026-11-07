@@ -51,7 +51,8 @@ Do both, in order. A sub-run does neither: see "Sub-runs".
   experience as a user meets it, friction included.
 - **Broken behavior**: when the product fails a step it should pass, leave the case as
   written and send one item naming the case and step with `akb triage add`, its
-  `--workflow` the one you are scheduled under.
+  `--workflow` the one you are scheduled under; write its title and body in the
+  **Goal format** of `akb guide discuss-goal`.
 - **Change nothing else**: no product code and no card.
 
 ## Sub-runs
