@@ -24,7 +24,13 @@ import { versionDir } from './update'
 import * as settings from './settings'
 import { closeSettings, openSettings } from './settings-server'
 
-export type Host = 'claude-code' | 'codex' | 'cursor'
+export type Host = 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'zcode' | 'kimi'
+
+/** ZCode runs the Claude Code plugin and sets both roots; a ZCode root alone was inherited from a ZCode shell. */
+export function hostOf(arg: string | undefined, env: NodeJS.ProcessEnv): Host {
+  if (arg === 'codex' || arg === 'cursor' || arg === 'dsh' || arg === 'kimi') return arg
+  return env.ZCODE_PLUGIN_ROOT && env.ZCODE_PLUGIN_ROOT === env.CLAUDE_PLUGIN_ROOT ? 'zcode' : 'claude-code'
+}
 
 /** The panel's tool takes this file's key, so the model, which never reads it, cannot start a task. */
 export const panelKeyFile = () => path.join(runnerHome(), 'plugin', 'panel.key')
@@ -161,20 +167,25 @@ const folderOf = settings.folderOf
 /** Codex updates from the `codex-plugin` branch (#528); any other install switches to it, which also updates. */
 const CODEX_UPGRADE = 'run `codex plugin marketplace upgrade wildcrane` in a terminal, then restart Codex'
 const CODEX_SWITCH = 'run `codex plugin marketplace add wildcrane-ai/wildcrane --ref codex-plugin` and `codex plugin add wildcrane@wildcrane` in a terminal, then restart Codex'
-const codexSteps = (plugin: PluginInfo) => (plugin.source === 'git' ? CODEX_UPGRADE : CODEX_SWITCH)
+const DSH_UPDATE = 'run `dsh plugin --profile web add wildcrane-dsh@latest` in a terminal, then restart dsh'
+const KIMI_UPDATE = 'run `/plugins` in Kimi Code, update WildCrane, then restart Kimi Code'
+const updateSteps = (as: Host, plugin: PluginInfo) => (as === 'dsh' ? DSH_UPDATE : as === 'kimi' ? KIMI_UPDATE : plugin.source === 'git' ? CODEX_UPGRADE : CODEX_SWITCH)
 
 /** Cloud refused the Runner and it could not update itself; a restart downloads it again. */
 const OUTDATED = {
   'claude-code': "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Claude Code.",
   codex: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Codex.",
   cursor: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Cursor.",
+  zcode: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart ZCode.",
+  dsh: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart dsh.",
+  kimi: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Kimi Code.",
 }
 
 const LOCAL = `This WildCrane plugin was installed from a local folder, so it gets no updates. Tell the user once in this conversation how to switch to the source that updates: ${CODEX_SWITCH}.`
 
-/** Codex has no panel, so a newer release reaches the user through `next`. */
-const NEWER = (plugin: PluginInfo) =>
-  `WildCrane plugin ${plugin.latest} is out; this computer has ${plugin.version}, and tasks still run. Tell the user once in this conversation, with the steps: ${codexSteps(plugin)}.`
+/** Codex, dsh and Kimi Code have no panel, so a newer release reaches the user through `next`. */
+const NEWER = (as: Host, plugin: PluginInfo) =>
+  `WildCrane plugin ${plugin.latest} is out; this computer has ${plugin.version}, and tasks still run. Tell the user once in this conversation, with the steps: ${updateSteps(as, plugin)}.`
 
 type Connection = { label: string; state: 'notInstalled' | 'signedOut' | 'ready'; command: string | null }
 
@@ -190,16 +201,16 @@ const NOT_ADDED = 'This folder is not a WildCrane project yet. Call wildcrane_op
 /** What the signed-in state shows that `next` reads: `refused` is unset when Cloud was not reached. */
 export type Seen = { connections: Connection[]; folder: unknown; refused?: string | null; web: string }
 
-/** One line for the model, the first that holds: an outdated Runner, then for Codex and Cursor no
- *  tool ready, this folder not added, and for Codex alone a local install or a newer release (Cursor's
- *  marketplace updates it). Claude Code's `/wildcrane` gives its update line itself. */
+/** One line for the model, the first that holds: an outdated Runner, then for hosts without a panel no
+ *  tool ready, this folder not added, then a local Codex install, or a newer release for Codex, dsh and Kimi Code
+ *  (Cursor and ZCode update their own). Claude Code's `/wildcrane` gives its update line itself. */
 export function nextOf(as: Host, state: typeof runnerState, plugin: PluginInfo, seen?: Seen): string | null {
   if (state === 'outdated') return OUTDATED[as]
   if (as === 'claude-code') return null
   if (as === 'codex' && plugin.source === 'local') return LOCAL
   if (seen && !seen.connections.some((c) => c.state === 'ready')) return NOT_READY(seen.connections, seen.web)
   if (seen && seen.folder === null && seen.refused === null) return NOT_ADDED
-  return as === 'codex' && plugin.version && plugin.latest ? NEWER(plugin) : null
+  return (as === 'codex' || as === 'dsh' || as === 'kimi') && plugin.version && plugin.latest ? NEWER(as, plugin) : null
 }
 
 async function state(cwd: string) {
@@ -282,7 +293,8 @@ const connections = settings.connections
 
 /** The host session's discussion, opened on Cloud and kept on this computer. */
 async function open(session: string, project: string | null, cwd: string) {
-  const opened = await api.openDiscussion(project, session, host)
+  // Cloud knows no `zcode` host; ZCode runs the Claude Code plugin.
+  const opened = await api.openDiscussion(project, session, host === 'zcode' ? 'claude-code' : host)
   if (!opened.ok) return failure(opened)
   keepChat({ session, discussion: opened.value.id, project: project ?? '', dir: realpath(cwd), at: new Date().toISOString() })
   return opened.value
@@ -370,17 +382,19 @@ const GoalInput = z.object({
 const linked = (d: { id: string }, goals: ReturnType<typeof goalOf>[]) =>
   goals.map((i) => ({ ...i, url: i.task?.url ?? discussionUrl(d.id) }))
 
-/** The Codex thread a call comes from, else this process: one Codex session runs one component. */
+/** The Codex thread a call comes from, else this process: one Codex session runs one component. One dsh
+ *  process serves all its chats and names none, so each read without `discussionId` opens a new one. */
 const PROCESS = `process-${crypto.randomUUID()}`
 type Meta = { threadId?: unknown; 'x-codex-turn-metadata'?: { workspaces?: Record<string, unknown> } } | undefined
-const threadOf = (meta: Meta) => `${host}:${typeof meta?.threadId === 'string' && meta.threadId ? meta.threadId : PROCESS}`
+const threadOf = (meta: Meta) =>
+  `${host}:${typeof meta?.threadId === 'string' && meta.threadId ? meta.threadId : host === 'dsh' ? crypto.randomUUID() : PROCESS}`
 const pathOf = (given: string | undefined, meta: Meta) => given || Object.keys(meta?.['x-codex-turn-metadata']?.workspaces ?? {})[0] || ''
 
 const SIGNED_OUT = { error: 'signed_out', message: 'Not signed in to WildCrane. Call wildcrane_open_settings to open settings and sign in, then try again.' }
 const PANEL_SIGNED_OUT = { error: 'signed_out', message: 'Not signed in to WildCrane. Tell the user to run /wildcrane and sign in, then try again.' }
 
 export function server(): McpServer {
-  const instructions = host !== 'claude-code' && akbFile ? `When \`akb\` is not on PATH, run \`${akbFile}\` in its place.` : undefined
+  const instructions = host !== 'claude-code' && akbFile ? `Run \`${akbFile}\` for every \`akb\` command.` : undefined
   const mcp = new McpServer({ name: 'wildcrane', version: VERSION }, { instructions })
   mcp.registerTool('wildcrane_open_settings', {
     description: '在当前电脑打开 WildCrane 设置，管理登录、项目文件夹和 AI 工具状态。参数仅预填上下文，不授予目录权限。用户要求设置时调用。',
@@ -408,10 +422,12 @@ export function server(): McpServer {
 
   if (host !== 'claude-code') {
     mcp.registerTool('wildcrane_draft_read', {
-      description: "Read this session's WildCrane discussion: its goals, their version, the workflows a goal can use, and its web page. Opens one on first use, in the project of `path`.",
+      description: host === 'dsh'
+        ? "Read a WildCrane discussion: its goals, their version, the workflows a goal can use, and its web page. Without `discussionId` it opens a new one in the project of `path`; pass the returned `discussion` on every later call in this chat."
+        : "Read this session's WildCrane discussion: its goals, their version, the workflows a goal can use, and its web page. Opens one on first use, in the project of `path`.",
       inputSchema: {
         path: z.string().optional().describe('The current working directory. The component runs elsewhere and cannot see it.'),
-        discussionId: z.string().optional().describe("Leave out for this session's discussion."),
+        discussionId: z.string().optional().describe(host === 'dsh' ? 'Leave out only on the first call in this chat.' : "Leave out for this session's discussion."),
       },
     }, async ({ path: given, discussionId }, extra) => {
       if (!readSession()) return { ...text(SIGNED_OUT), isError: true }
@@ -442,6 +458,7 @@ export function server(): McpServer {
         goals: linked({ id }, draft.goals ?? draft.ideas),
         ideas: linked({ id }, draft.goals ?? draft.ideas),
         project,
+        ...(akbFile ? { akb: akbFile } : {}),
         ...(project ? {} : { note: 'This folder is not a WildCrane project: goals go to General. The user can ask to add it.' }),
       })
     })

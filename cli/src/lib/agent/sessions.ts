@@ -42,7 +42,6 @@ import { readRuntimes, runtimeById } from './runtimes'
 import { dropReflected, stampMemoryPrune, stampMemoryReview, stampProjectDescription } from './settings'
 import { scheduledAgent, stampScheduledRun, workflowById } from './workflows'
 import { creationOf, eventsPathOf, logPathOf, noteRefineTried, readRuns, runIsLive, withRuns, withStore } from './store'
-import { insideRun } from './env'
 import { withCreationLock } from './creation-lock'
 import { creationRefusal, openOf } from '../view/rules'
 import { holdsCard, isRetired, refusal, SPECIALIST_ACTIONS } from './types'
@@ -574,13 +573,6 @@ function lockedBy(
     if (live) return { error: SINGLETON_BUSY[action] ?? `a task is already being ${VERB[action]}` }
   }
   return undefined
-}
-
-/** Why a card can't be rejected right now (#1497): the holds a reject run used to pass on its
- *  way in. The run asking, if any, is not in its own way. */
-export function rejectRefusal(cardId: number, discard: boolean): RunRefusal | undefined {
-  const self = insideRun()
-  return lockedBy(readRuns().filter((r) => r.sessionId !== self), 'reject', cardId, discard)
 }
 
 // The text the user typed for a run, pulled from whichever field carries it.

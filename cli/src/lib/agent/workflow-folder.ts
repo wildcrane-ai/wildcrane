@@ -1,5 +1,5 @@
 // A workflow folder on disk as the files Cloud keeps (#523): screenshots as data URLs, the rest
-// as text. Shared by official/pack.ts and `akb workflow publish`.
+// as text. Shared by official/pack.ts and `akb workflow push`.
 
 import fs from 'node:fs'
 import path from 'node:path'

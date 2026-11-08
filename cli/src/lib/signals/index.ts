@@ -1,7 +1,6 @@
 // Triage, as everything outside it asks for it (#453, #499, #559).
 //
-// The local UI draws a rail row and a page from these, and `akb triage fetch` writes
-// through the same modules.
+// The local UI draws a rail row and a page from these.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -26,7 +25,7 @@ import type { Signal, SignalCardRef, SignalInbox } from '../view/types'
 
 export { addToInbox } from './add'
 export { fetchSignals, type FetchReport, type SignalFailure } from './fetch'
-export { ENDPOINT_SETTING, TOKEN_KEY, sayGap, signalConfigGaps } from './config'
+export { ENDPOINT_SETTING, TOKEN_KEY, signalConfigGaps } from './config'
 export { checkSource, triageIndex, type TriageCheck, type TriageStatus } from './check'
 export { archiveInboxItem, dismissInboxItem, readInbox, restoreInboxItem, type ArchiveOutcome } from './inbox'
 export { migrateTriage } from './migrate'

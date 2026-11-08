@@ -12,7 +12,7 @@ This repository holds the parts of WildCrane that run on your computer:
 | --- | --- |
 | `cli/` | `akb`, the command-line tool (npm package `wildcrane`) |
 | `runner/` | The Runner that runs tasks on your computer (npm package `wildcrane-runner`) |
-| `plugins/` | The WildCrane plugin for Claude Code |
+| `plugins/` | The WildCrane plugins for Claude Code, ZCode, Codex, Cursor and Kimi Code |
 | `artifact-sdk/` | The SDK for previews (npm package `wildcrane-artifact-sdk`) |
 | `official/` | Built-in workflows and preview agents |
 
@@ -27,6 +27,15 @@ Claude Code:
 ```sh
 claude plugin marketplace add wildcrane-ai/wildcrane
 claude plugin install wildcrane@wildcrane
+```
+
+ZCode: in **Settings → Plugin Management → Discover**, click **+**, enter `wildcrane-ai/wildcrane`,
+then **Get** the **wildcrane** plugin.
+
+Kimi Code, in a session:
+
+```text
+/plugins install https://github.com/wildcrane-ai/wildcrane/tree/kimi-plugin
 ```
 
 The standalone CLI:

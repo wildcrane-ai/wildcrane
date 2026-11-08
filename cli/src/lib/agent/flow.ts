@@ -74,7 +74,7 @@ function readCard(id: number, home: CardHome = 'board'): CardFacts {
   }
   const { meta, body } = parseFrontmatter(text)
   if (!meta) {
-    die(`${rel(file)} has no frontmatter — run \`akb raw migrate\` before working on it.`, {
+    die(`${rel(file)} has no frontmatter — recreate it with \`akb raw create\` before working on it.`, {
       kind: 'card-unreadable',
       id,
     })

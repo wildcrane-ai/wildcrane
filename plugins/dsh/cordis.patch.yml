@@ -1,0 +1,17 @@
+# WildCrane: one MCP server, the plugin's component, and this package's skills.
+- insert:
+    - id: wildcrane-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: wildcrane
+        transport: stdio
+        command: !!js process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('wildcrane-dsh/server/bin/wildcrane')
+        args: [dsh]
+
+    - id: wildcrane-skills
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        providerName: wildcrane
+        includeDefaultRoots: false
+        customSkillDirs:
+          - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('wildcrane-dsh/package.json'), '..', 'skills')

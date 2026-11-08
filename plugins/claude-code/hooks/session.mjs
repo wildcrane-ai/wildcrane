@@ -1,32 +1,29 @@
-// Tells the model this Claude session's id, which discuss-goal keeps its goals under, and puts
-// the plugin's `akb` first on the PATH of a session started by hand.
+// Tells the model this session's id, which discuss-goal keeps its goals under, and puts the plugin's
+// `akb` first on the PATH of a session started by hand. ZCode runs this plugin too, with no
+// CLAUDE_ENV_FILE: there the model passes the id and finds `akb` itself, as in Cursor.
 
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-function putAkbOnPath() {
-  const file = process.env.CLAUDE_ENV_FILE
-  if (!file) return
-  const dir = path.join(process.env.WILDCRANE_HOME || path.join(os.homedir(), '.wildcrane'), 'bin', 'akb')
-  try {
-    // The name the flows print: the running copy's own path otherwise, and "no `akb` on this machine".
-    fs.appendFileSync(file, `export PATH='${dir.replaceAll("'", `'\\''`)}':"$PATH"\nexport AI4KANBAN_COMMAND=akb\n`)
-  } catch {
-    // The session runs on without it.
-  }
-}
+const quote = (s) => `'${s.replaceAll("'", `'\\''`)}'`
+const akbDir = path.join(process.env.WILDCRANE_HOME || path.join(os.homedir(), '.wildcrane'), 'bin', 'akb')
 
 let input = ''
 process.stdin.on('data', (d) => (input += d))
 process.stdin.on('end', () => {
   if (process.env.WILDCRANE_JOB) return
-  putAkbOnPath()
+  const file = process.env.CLAUDE_ENV_FILE
   const session = JSON.parse(input || '{}').session_id
-  if (!session) return
-  if (process.env.CLAUDE_ENV_FILE) {
-    try { fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export CLAUDE_CODE_SESSION_ID='${session.replaceAll("'", "'\\''")}'\n`) } catch {}
+  if (file) {
+    // The name the flows print: the running copy's own path otherwise, and "no `akb` on this machine".
+    let env = `export PATH=${quote(akbDir)}:"$PATH"\nexport AI4KANBAN_COMMAND=akb\n`
+    if (session) env += `export CLAUDE_CODE_SESSION_ID=${quote(session)}\n`
+    try { fs.appendFileSync(file, env) } catch {}
   }
-  const additionalContext = `WildCrane: this Claude Code session's id is ${session}. Use akb for discuss-goal.`
+  if (!session) return
+  const additionalContext = process.env.ZCODE_PLUGIN_ROOT && !file
+    ? `WildCrane: this ZCode session's id is ${session}. Run every akb command for discuss-goal as \`CLAUDE_CODE_SESSION_ID=${session} akb ...\`. When \`akb\` is not on PATH, run \`${path.join(akbDir, 'akb')}\` in its place.`
+    : `WildCrane: this Claude Code session's id is ${session}. Use akb for discuss-goal.`
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext } }))
 })

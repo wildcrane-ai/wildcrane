@@ -6,7 +6,7 @@
 //
 // These rules are plain functions over the declared data because two sides need the same
 // answers and neither can call the other: a run resolves the pick into an environment
-// (resolve.ts), and a front end draws the fields that pick needs from `akb agent list`.
+// (resolve.ts), and a front end draws the fields that pick needs.
 //
 // Every function takes a `filled` predicate rather than reading anything itself: here
 // "filled" means the value is in ui.config.json or the variable is in docs/kanban/.env, in

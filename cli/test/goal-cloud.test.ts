@@ -33,6 +33,7 @@ beforeEach(() => {
       if (url.searchParams.get('workspace') === 'missing') return new Response(JSON.stringify({ error: { message: 'No workspace has this id.' } }), { status: 404 })
       result = { data: [{ id: 'wf_builtin_coding', name: 'Coding', previews: catalog }], next: null }
     } else if (url.pathname.endsWith('/external')) result = { id: 'dsc_test', workspace: 'ws_test', version, goals, ideas: goals }
+    else if (url.pathname === '/v1/discussions/dsc_dsh') result = { id: 'dsc_dsh', workspace: 'ws_test', version, goals, ideas: goals }
     else if (url.pathname.endsWith('/draft')) {
       if (conflict) return new Response(JSON.stringify({ error: { message: 'The goals have changed.' } }), { status: 409 })
       goals = (body.goals as Record<string, unknown>[]).map((g, i) => ({ ...g, id: String(g.id).startsWith('new_') ? `idea_${i + 1}` : g.id }))
@@ -44,7 +45,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   globalThis.fetch = originalFetch
-  for (const key of ['AI4KANBAN_HOME', 'WILDCRANE_HOME', 'AI4KANBAN_SUPABASE_URL', 'AI4KANBAN_CLOUD_URL', 'CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID']) {
+  for (const key of ['AI4KANBAN_HOME', 'WILDCRANE_HOME', 'AI4KANBAN_SUPABASE_URL', 'AI4KANBAN_CLOUD_URL', 'CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'WILDCRANE_DISCUSSION']) {
     if (originalEnv[key] === undefined) delete process.env[key]
     else process.env[key] = originalEnv[key]
   }
@@ -76,4 +77,10 @@ it('外部查询包含完整触发条件，错误不继续写入，支持 Claude
   await assert.rejects(cloudGoal(['save'], { id: 'idea_1', title: 'Changed' }), /goals have changed/)
   assert.equal(goals[0].title, 'Goal')
   assert.equal(process.env.KANBAN_GOALS, originalEnv.KANBAN_GOALS)
+})
+it('dsh 会话使用模型传入的讨论编号，不再开新讨论 (#531)', async () => {
+  delete process.env.CODEX_THREAD_ID
+  process.env.WILDCRANE_DISCUSSION = 'dsc_dsh'
+  assert.equal((await cloudGoalWorkflows()).discussion, 'dsc_dsh')
+  assert.equal(calls.some((c) => c.url.pathname.endsWith('/external')), false)
 })

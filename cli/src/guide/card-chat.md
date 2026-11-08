@@ -10,6 +10,7 @@ Work on the current card and its assets by default. Project implementation requi
 - **Create or revise a preview**: when the user asks to see or change a preview for the current card, use `akb previews <agent> <id> --print`.
 - **Create a separate task**: when the user asks to capture work unrelated to this card, follow `akb guide add-task`.
 - **Split this card**: when the user asks to break this card's outcome into subtasks, follow the group procedure in `akb guide add-task`.
+- **Change a workflow**: when the user asks to change a workflow or one of its agents, follow `akb guide update-workflow`.
 - **Check card edits**: after writing a card, run `akb raw validate <id>` and fix what it reports.
 - **Look up syntax**: when you need flags or argument details, use the command's `--help` or `akb help`.
 

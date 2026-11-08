@@ -17,22 +17,16 @@ import { agentForRun } from '../src/lib/agent/runner.ts'
 import { takeLocalModels } from '../src/lib/agent/local.ts'
 import {
   addRuntime,
-  deleteRuntime,
   migrateRuntimes,
-  setRuntimeHarness,
-  setRuntimeSecret,
   readAgentRuntime,
   readRuntimes,
-  renameRuntime,
   repairEnvFile,
   secretVar,
   setAgentRuntime,
-  setRuntimeSetting,
 } from '../src/lib/agent/runtimes.ts'
 import { readEnvFile } from '../src/lib/agent/settings.ts'
 import { specAgentEntries } from '../src/lib/agent/settings.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
-import { cmdAgent } from '../src/commands/agent.ts'
 import { uiConfigOf } from './helpers/board.ts'
 
 let root = ''
@@ -218,47 +212,6 @@ describe('writing the list', () => {
   it('refuses a second row on the same name', () => {
     addRuntime('Cheap', 'codex')
     assert.match(addRuntime('cheap', 'codex').error ?? '', /already has a runtime/)
-  })
-
-  it('renames without moving anything, and never renames Global default', () => {
-    const { id } = addRuntime('Cheap', 'codex')
-    setRuntimeSetting(id!, 'model', 'gpt-5.1-mini')
-    setAgentRuntime('builder', id!)
-    assert.equal(renameRuntime(id!, 'Cheaper').ok, true)
-    assert.equal(agentRun('builder').runtime, id)
-    assert.equal(agentRun('builder').runtimeName, 'Cheaper')
-    assert.equal(agentRun('builder').model, 'gpt-5.1-mini')
-    assert.match(renameRuntime('global', 'Something else').error ?? '', /keeps its name/)
-  })
-
-  it('deletes a row and puts the agents on it back on Global default', () => {
-    const { id } = addRuntime('Cheap', 'codex')
-    setAgentRuntime('builder', id!)
-    assert.equal(deleteRuntime(id!).ok, true)
-    assert.equal(agentRun('builder').runtime, 'global')
-    assert.equal(held().agentRuntime, undefined)
-    assert.match(deleteRuntime('global').error ?? '', /can't be deleted/)
-  })
-
-  it('takes the deleted row’s keys off this computer and leaves every other line alone', () => {
-    const mine = addRuntime('Cheap', 'codex')
-    const yours = addRuntime('Spare', 'codex')
-    // A harness the row used to be on can have left a line behind — the id never moved, so
-    // the delete has to look for that one too.
-    setRuntimeSecret(mine.id!, 'apiKey', 'sk-old')
-    setRuntimeHarness(mine.id!, 'claude-code')
-    setRuntimeSecret(mine.id!, 'apiKey', 'sk-new')
-    setRuntimeSecret(yours.id!, 'apiKey', 'sk-theirs')
-    const before = readEnvFile()
-    assert.ok(Object.keys(before).some((line) => line.endsWith('__CHEAP')))
-
-    assert.equal(deleteRuntime(mine.id!).ok, true)
-    const after = readEnvFile()
-    assert.deepEqual(
-      Object.keys(after).filter((line) => line.endsWith('__CHEAP')),
-      [],
-    )
-    assert.equal(after[secretVar('OPENAI_API_KEY', yours.id!)], 'sk-theirs')
   })
 
   it('carries an older board’s agentHarness picks over on the first write', () => {

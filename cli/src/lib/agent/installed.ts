@@ -5,9 +5,8 @@
 // same PATH a run would be spawned on, before the agent is offered.
 //
 // Nothing is started. This reads the folders the PATH names and nothing else — no `which`,
-// no `--version`, no spawn of any kind. Whether the CLI then works (a login, a key, a
-// model it will answer for) is what `akb agent test` is for; this answers the one question
-// a spawn asks first: is the binary there.
+// no `--version`, no spawn of any kind. It answers the one question a spawn asks first: is
+// the binary there.
 //
 // It has to be cheap, because it runs on every page load and every time the picker opens:
 // the PATH is read ONCE and every agent is answered out of that one read, so forty agents

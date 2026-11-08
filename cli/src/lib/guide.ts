@@ -22,6 +22,7 @@ import addTask from '../guide/add-task.md'
 import archive from '../guide/archive.md'
 import board from '../guide/board.md'
 import cardChat from '../guide/card-chat.md'
+import updateWorkflow from '../guide/update-workflow.md'
 import describeProject from '../guide/describe-project.md'
 import discussGoal from '../guide/discuss-goal.md'
 import followUp from '../guide/follow-up.md'
@@ -58,6 +59,7 @@ export const GUIDES: Guide[] = [
   { name: 'discuss-goal', when: 'help decide what is worth building, and shape it into goals to start as tasks', text: discussGoal },
   { name: 'troubleshoot', when: '定位软件故障的根因与修复方向', text: troubleshoot },
   { name: 'card-chat', when: "answer a card's conversation, and act on what each turn settles", text: cardChat },
+  { name: 'update-workflow', when: "change one of this workspace's workflows so new tasks run the new version", text: updateWorkflow },
   { name: 'implement', when: 'build a settled card and stop cleanly on an execution blocker', text: implement },
   { name: 'archive', when: 'finish a task — write its shipped line, then take it off the board', text: archive },
   { name: 'update-questions', when: 'decide what to ask the user, and write the question', text: updateQuestions },

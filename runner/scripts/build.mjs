@@ -25,8 +25,13 @@ const PACKAGE_JSON = {
     build.onLoad({ filter: /[\\/]node_modules[\\/].*\.json$/ }, (args) => ({ contents: fs.readFileSync(args.path, 'utf8'), loader: 'json' }))
   },
 }
-const PLUGIN_DISTS = ['claude-code', 'codex', 'cursor'].map((host) => path.join(PKG_DIR, '..', 'plugins', host, 'server', 'dist'))
+const PLUGINS_DIR = path.join(PKG_DIR, '..', 'plugins')
+const PLUGIN_DISTS = ['claude-code', 'codex', 'cursor', 'dsh', 'kimi-code'].map((host) => path.join(PLUGINS_DIR, host, 'server', 'dist'))
 for (const dir of PLUGIN_DISTS) fs.rmSync(dir, { recursive: true, force: true })
+// One `wildcrane` settings skill for the hosts without a panel.
+for (const host of ['codex', 'cursor', 'dsh', 'kimi-code']) {
+  fs.cpSync(path.join(PLUGINS_DIR, 'shared', 'skills', 'wildcrane'), path.join(PLUGINS_DIR, host, 'skills', 'wildcrane'), { recursive: true })
+}
 
 for (const [entry, outfile] of [
   ['launcher-main.ts', path.join(PKG_DIR, 'dist', 'launcher.mjs')],

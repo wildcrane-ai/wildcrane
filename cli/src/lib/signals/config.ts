@@ -50,11 +50,3 @@ export function signalConfigGaps(): SignalConfigGap[] {
   if (!signalToken()) gaps.push({ what: 'token', file: boardRel(ENV_FILE) })
   return gaps
 }
-
-/** One line naming what a gap is and where it goes — what `akb triage fetch` prints when
- *  it refuses for want of configuration. */
-export function sayGap(gap: SignalConfigGap): string {
-  return gap.what === 'endpoint'
-    ? `no ${ENDPOINT_SETTING} — add \`- **${ENDPOINT_SETTING}** — <url>\` to ${gap.file}`
-    : `no ${TOKEN_KEY} — set \`${TOKEN_KEY}\` in ${gap.file}`
-}

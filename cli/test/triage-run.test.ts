@@ -9,8 +9,8 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { cmdCreate, cmdUpdate } from '../src/commands/card.ts'
-import { cmdTriageAdd, cmdTriageArchive, cmdTriageDismiss } from '../src/commands/triage.ts'
-import { fileName, readAllDismissed, readInbox, writeSignal } from '../src/lib/signals/inbox.ts'
+import { cmdTriageAdd } from '../src/commands/triage.ts'
+import { archiveInboxItem, fileName, readAllDismissed, readInbox, writeSignal } from '../src/lib/signals/inbox.ts'
 import { dismissSignal } from '../src/lib/signals/index.ts'
 import { startCollecting, stopCollecting } from '../src/lib/io.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
@@ -77,43 +77,12 @@ describe('a card written in one call', () => {
   })
 })
 
-describe('landing one judgement', () => {
-  it('archives the item onto the card it became', async () => {
-    const id = await waiting('Conventions keep getting reverted')
-    const { value } = quiet(() => cmdTriageArchive(id, 7))
-    assert.equal(value.where, 'archived')
-    assert.equal(readInbox().length, 0)
-    assert.match(fs.readFileSync(path.join(archived(), fs.readdirSync(archived())[0]!), 'utf8'), /card_id: 7/)
-  })
-
-  it('ignores one in the agent’s name, with the reason', async () => {
-    const id = await waiting('A duplicate')
-    quiet(() => cmdTriageDismiss(id, '  already on #4  '))
-    const record = fs.readFileSync(path.join(dismissed(), fs.readdirSync(dismissed())[0]!), 'utf8')
-    assert.match(record, /dismissed_by: agent/)
-    assert.match(record, /dismissed_reason: already on #4/)
-  })
-
-  it('refuses a dismissal with no reason', async () => {
-    const id = await waiting('A duplicate')
-    assert.throws(() => quiet(() => cmdTriageDismiss(id, '   ')), /say why it is being ignored/)
-    assert.equal(readInbox().length, 1)
-  })
-
-  it('treats an item somebody else landed as gone, not as a failure of this run', async () => {
-    const id = await waiting('Taken already')
-    dismissSignal(id, 'not now')
-    assert.throws(() => quiet(() => cmdTriageDismiss(id, 'too small')), /nothing waiting in triage is/)
-  })
-})
-
 describe('a card that was written and an item that was ignored (#561)', () => {
   it('records the card on the ignore and leaves it ignored', async () => {
     const id = await waiting('Ignored mid-run')
     dismissSignal(id, 'not now')
-    const { value, said } = quiet(() => cmdTriageArchive(id, 11))
-    assert.equal(value.where, 'dismissed')
-    assert.match(said, /it stays ignored/)
+    const done = archiveInboxItem(id, 11)
+    assert.equal(done.ok && done.where, 'dismissed')
     assert.equal(fs.existsSync(archived()), false)
     assert.match(fs.readFileSync(path.join(dismissed(), fs.readdirSync(dismissed())[0]!), 'utf8'), /card_id: 11/)
     assert.equal(readAllDismissed().length, 1)

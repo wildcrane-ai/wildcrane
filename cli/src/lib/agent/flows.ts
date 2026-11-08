@@ -58,6 +58,8 @@ export interface Flow {
   more?: string[]
   /** The options this flow takes, on top of the `--print` and `--follow` every one takes. */
   options?: FlowOption[]
+  /** Started only by another flow (`card approve` starts `archive`), never typed. */
+  internal?: boolean
 }
 
 const NOTE = 'anything the run should know, in your own words'
@@ -167,7 +169,7 @@ export const FLOWS: Flow[] = [
     gloss: 'propose the work that should follow some finished cards',
     options: [{ flags: '--cards <id...>', description: 'the archived cards to reflect on' }],
   },
-  { command: 'archive', group: 'card', action: 'archive', argument: '<id>', gloss: 'finish the card' },
+  { command: 'archive', group: 'card', action: 'archive', argument: '<id>', gloss: 'finish the card', internal: true },
 ]
 
 /** The word typed under the flow's noun. */

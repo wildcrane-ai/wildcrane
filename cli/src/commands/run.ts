@@ -22,7 +22,6 @@ import { taskChatsToReview } from '../lib/agent/memory-review'
 import { readLogTail, splitLog } from '../lib/agent/log'
 import { advancePhase, approvalRequest } from '../lib/agent/approve'
 import { refinementRequest, startRefinement } from '../lib/agent/refine'
-import { rejectCard } from '../lib/agent/reject'
 import {
   askForRefine,
   getRun,
@@ -168,19 +167,6 @@ async function approveInCloud(project: string, id: number): Promise<MoveResult> 
   if (!approved.ok) die(`Cloud did not approve #${id}: ${approved.error}`, { kind: 'refused', ...(approved.code ? { code: approved.code } : {}) })
   say(`approved #${id} in Cloud`)
   return { id, task: approved.value.key, approved: true }
-}
-
-/** `akb card reject` (#1497): the card is filed on the spot, never by a run. A discard needs
- *  no why (#601); a plain rejection does — it is what the rejection review learns from. */
-export async function cmdReject(id: number, why: string, opts: { discard?: boolean }): Promise<MoveResult> {
-  const reason = why.trim()
-  const discard = opts.discard === true
-  if (!discard && !reason) die('say why the card is being dropped, or pass --discard to just drop it')
-  const res = await rejectCard(id, { reason, discard }, true)
-  if (!res.ok) die(res.error, { kind: 'refused' })
-  const { output, ...fields } = res.data
-  if (output) say(output)
-  return fields
 }
 
 // Handing a card to a refinement from inside a run. Nothing spawns here — a run never

@@ -14,20 +14,11 @@ akb:
 
 You write or change a workflow, one of its preview agents, or a scheduled agent.
 
-## How a workflow works
-
-A workflow is steerable: agents do the work, and a person reviews and fine-tunes only the parts where precision matters most, so the result stays reliable.
-
-- **Previews**: give a part its own preview agent only when it needs precision and a mistake there is costly, such as a developer tool's screens, whose experience drives retention. Each shows only what the person decides on, without overlapping another.
-- **Stages**: previews are approved together in one stage by default. Add `after` only when a draft is too costly to make before another is approved, such as a video's storyboard, which waits for its script.
-- **Land**: everything else runs unattended after the last approval and follows the approved drafts, such as building and merging a change; leave `land` empty when the last approved preview is the deliverable.
-- **Scheduled**: repeating work runs as a scheduled agent without previews; a workflow may hold only scheduled agents.
-
 ## What to write
 
+- **Rules**: write it as the "How a workflow works" section of `akb guide update-workflow` says; its pull and push steps are not yours.
 - **The workflow**: it is the folder the card names; change it in place and keep what the request leaves alone. Give a new one a short name with `akb workflow rename`.
-- **`WORKFLOW.md`**: list its agents under `previews`, `land` and `scheduled`; `description` says in one sentence what it does; `when` tells an agent which requests it is for, exceptions included; the body is how a card of this kind is written.
-- **Agents**: write each as `akb guide write-agent` says, with an `akb.icon`, and give `WORKFLOW.md` a top-level `icon` for what the whole workflow ships, both as `icons.md` says.
+- **Icons**: give each agent an `akb.icon` and `WORKFLOW.md` a top-level `icon` for what the whole workflow ships, both as `icons.md` says.
 - **Outside skills**: ship a skill from another repository as `vendor/<repo>.zip.b64` in the agent's
   folder: `git archive --format=zip <commit> <paths…> | base64`, under 2 MB. The agent unpacks it once
   with `akb raw agent-file <agent> vendor/<repo>.zip.b64 | base64 -d` into

@@ -226,53 +226,6 @@ export function addRuntime(name: string, harness: string): Saved & { id?: string
   return res.ok ? { ok: true, id } : res
 }
 
-/** Rename one runtime. Nothing moves: the id keys the key line, the agents' picks and every
- *  run already recorded, so a rename is lossless on every computer. */
-export function renameRuntime(id: string, name: string): Saved {
-  if (id === GLOBAL_ID) {
-    return { ok: false, ...refusal('globalRename', `${GLOBAL_NAME} keeps its name — it is the row every agent falls back to.`) }
-  }
-  const wanted = name.trim()
-  const bad = nameError(wanted, id)
-  if (bad) return { ok: false, ...bad }
-  return change(id, (runtime) => ({ ...runtime, name: wanted }))
-}
-
-/** Drop one runtime, and put the agents that named it back on **Global default** — the delete
- *  is never refused for being in use. Its key goes with it: every `docs/kanban/.env` line named
- *  after this id is cleared, so the key is off this computer whether the delete was typed here
- *  or in a pane. */
-export function deleteRuntime(id: string): Saved {
-  if (id === GLOBAL_ID) {
-    return { ok: false, ...refusal('globalDelete', `${GLOBAL_NAME} can't be deleted — it is what an agent naming no runtime runs.`) }
-  }
-  const list = readRuntimes()
-  if (!list.some((r) => r.id === id)) return { ok: false, ...noRuntime(id) }
-  // The agents that named it fall back with the write: `save` resolves every pick against the
-  // list it is writing, and a pick nothing answers to is **Global default**.
-  const res = save(list.filter((r) => r.id !== id))
-  if (!res.ok) return res
-  return clearKeysOf(id)
-}
-
-// Every key line this row owns, gone. Asked of every harness we ship rather than of the one the
-// row ran: an id never moves, so a harness the row used to be on can have left a line behind,
-// and a line nobody would ever see again is a key still sitting on the disk. A variable this
-// file doesn't hold is skipped, so the delete never rewrites `.env` for nothing.
-function clearKeysOf(id: string): Saved {
-  const env = readEnvFile()
-  for (const harness of HARNESSES) {
-    for (const setting of harness.settings) {
-      if (setting.kind !== 'secret' || !setting.env) continue
-      const line = secretVar(setting.env, id)
-      if (!env[line]) continue
-      const res = setSecret(line, '')
-      if (!res.ok) return res
-    }
-  }
-  return { ok: true }
-}
-
 /** Move one runtime to another harness. Its settings go with it: a key the new harness doesn't
  *  declare is dropped, because a value under a setting nothing reads is a value nobody can see
  *  or clear.
@@ -318,7 +271,7 @@ export function setHarness(name: string): Saved {
 const noRuntime = (id: string): RunRefusal => refusal('runtimeNotFound', `no runtime called "${id}" on this board.`, { id })
 
 const noHarness = (name: string): RunRefusal =>
-  refusal('harnessNotFound', `no harness called "${name}" — \`akb agent list\` says what this version runs.`, { name })
+  refusal('harnessNotFound', `no harness called "${name}" — this version runs: ${HARNESSES.map((h) => h.name).join(', ')}.`, { name })
 
 // Read the list, change one row, write it back. The pre-runtimes keys go with the first write:
 // the list is the whole truth now, and leaving them behind would leave two answers on disk.

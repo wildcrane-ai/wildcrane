@@ -1,11 +1,12 @@
 # Builds the plugins' start script (runner/ writes plugins/<host>/server/dist/start.mjs) and attaches the
-# Claude Code plugin as wildcrane-plugin.zip, and the Codex marketplace with its plugin as
-# wildcrane-codex.zip (#2160), to the release of the tag
-# `plugin-v<version>` (both plugins' plugin.json version). The same Codex marketplace becomes the
+# Codex marketplace with its plugin as wildcrane-codex.zip (#2160) to the release of the tag
+# `plugin-v<version>` (every plugin.json's version). The same Codex marketplace becomes the
 # next commit of the `codex-plugin` branch, the Git source Codex installs and upgrades from (#528);
 # the zip stays for older plugins whose update steps still name it. The Cursor plugin becomes the next
-# commit of the `cursor-plugin` branch, at its root, which the Cursor Marketplace reads (#530). Then put the
-# printed sha256 and the versioned URL in .claude-plugin/marketplace.json.
+# commit of the `cursor-plugin` branch, at its root, which the Cursor Marketplace reads (#530).
+# Claude Code and ZCode install plugins/claude-code from main, which public-sync builds (#532).
+# The dsh plugin goes to npm as wildcrane-dsh, by trusted publishing (#531). The Kimi Code plugin becomes
+# the next commit of the `kimi-plugin` branch, at its root, which `/plugins install` reads (#533).
 name: plugin-release
 
 on:
@@ -14,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   build:
@@ -24,9 +26,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Check the tag matches both plugin.json
+          registry-url: https://registry.npmjs.org
+      - name: Check the tag matches every plugin's version
         run: |
-          for file in plugins/claude-code/.claude-plugin/plugin.json plugins/codex/plugin.json plugins/cursor/.cursor-plugin/plugin.json; do
+          for file in plugins/claude-code/.claude-plugin/plugin.json plugins/codex/plugin.json plugins/cursor/.cursor-plugin/plugin.json plugins/dsh/package.json plugins/kimi-code/kimi.plugin.json; do
             version=$(node -p "require('./$file').version")
             [ "plugin-v$version" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME, $file $version"; exit 1; }
           done
@@ -36,17 +39,12 @@ jobs:
         working-directory: runner
       - run: npm run build
         working-directory: runner
-      - name: Pack the plugin
-        working-directory: plugins/claude-code
-        run: |
-          zip -qr "$GITHUB_WORKSPACE/wildcrane-plugin.zip" . -x 'tests/*' 'node_modules/*'
-          echo "sha256: $(sha256sum "$GITHUB_WORKSPACE/wildcrane-plugin.zip" | cut -d' ' -f1)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Pack the Codex marketplace
         working-directory: plugins
         run: |
           zip -qr "$GITHUB_WORKSPACE/wildcrane-codex.zip" .agents codex -x 'codex/node_modules/*'
           echo "codex sha256: $(sha256sum "$GITHUB_WORKSPACE/wildcrane-codex.zip" | cut -d' ' -f1)" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Publish the Codex marketplace and the Cursor plugin to their branches
+      - name: Publish the Codex marketplace and the Cursor and Kimi Code plugins to their branches
         run: |
           publish() { # <branch> <folder> <name>
             parent=$(git ls-remote origin "refs/heads/$1" | cut -f1)
@@ -65,8 +63,18 @@ jobs:
           mkdir -p "$cursor"
           tar -C plugins/cursor --exclude=./node_modules --exclude=./.gitignore -cf - . | tar -C "$cursor" -xf -
           publish cursor-plugin "$cursor" Cursor
+          kimi="$RUNNER_TEMP/kimi-plugin"
+          mkdir -p "$kimi"
+          tar -C plugins/kimi-code --exclude=./node_modules --exclude=./.gitignore -cf - . | tar -C "$kimi" -xf -
+          publish kimi-plugin "$kimi" "Kimi Code"
+      - name: Publish the dsh plugin to npm
+        working-directory: plugins/dsh
+        run: |
+          npm view "wildcrane-dsh@${GITHUB_REF_NAME#plugin-v}" version | grep -q . && exit 0
+          npm install -g npm@latest
+          npm publish --provenance --access public
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          gh release create "$GITHUB_REF_NAME" wildcrane-plugin.zip wildcrane-codex.zip --title "WildCrane plugins ${GITHUB_REF_NAME#plugin-v}" --notes "Claude Code: \`claude plugin marketplace add wildcrane-ai/wildcrane\`, then \`claude plugin install wildcrane@wildcrane\`. Codex: \`codex plugin marketplace add wildcrane-ai/wildcrane --ref codex-plugin\`, then \`codex plugin add wildcrane@wildcrane\`. Cursor: the \`cursor-plugin\` branch." --latest=false
+          gh release create "$GITHUB_REF_NAME" wildcrane-codex.zip --title "WildCrane plugins ${GITHUB_REF_NAME#plugin-v}" --notes "Claude Code: \`claude plugin marketplace add wildcrane-ai/wildcrane\`, then \`claude plugin install wildcrane@wildcrane\`. ZCode: Settings → Plugin Management → Discover → +, enter \`wildcrane-ai/wildcrane\`, then Get wildcrane. Codex: \`codex plugin marketplace add wildcrane-ai/wildcrane --ref codex-plugin\`, then \`codex plugin add wildcrane@wildcrane\`. Cursor: the \`cursor-plugin\` branch. dsh: \`dsh plugin --profile web add wildcrane-dsh\`. Kimi Code: \`/plugins install https://github.com/wildcrane-ai/wildcrane/tree/kimi-plugin\`." --latest=false

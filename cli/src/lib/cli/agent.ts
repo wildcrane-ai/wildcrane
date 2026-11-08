@@ -1,4 +1,4 @@
-import { queryPreviews, externalGoalSession, cloudGoalWorkflows } from '../../commands/goal-cloud'
+import { queryPreviews, externalGoalSession, cloudGoal, cloudGoalWorkflows } from '../../commands/goal-cloud'
 // The runs, and everything you do to one — declared onto `akb` (./akb.ts).
 //
 // `akb raw <move>` is the board's own bookkeeping (./board.ts). This is the other half:
@@ -31,7 +31,6 @@ import type { DeliveryRecord } from '../agent/types'
 import { HELP_AFTER } from '../agent/manual'
 import { cmdAgent } from '../../commands/agent'
 import { cloudImage, cloudMusic, cloudTts, cmdCloud } from '../../commands/cloud'
-import { cloudImport } from '../../commands/cloud-import'
 import {
   templateDelete,
   templateGet,
@@ -43,8 +42,23 @@ import {
   templateTags,
 } from '../../commands/cloud-template'
 import { cmdComponents } from '../../commands/components'
+import { cmdGoal } from '../../commands/goal'
+import {
+  projectList,
+  runnerList,
+  taskApprove,
+  taskChat,
+  taskComment,
+  taskCreate,
+  taskList,
+  taskRemove,
+  taskResume,
+  taskShow,
+  taskStop,
+  workspaceList,
+} from '../../commands/task'
 import { cmdGuide } from '../../commands/guide'
-import { cmdWorkflowDiagram, cmdWorkflowList, cmdWorkflowPublish, cmdWorkflowRename } from '../../commands/workflow'
+import { cmdWorkflowDiagram, cmdWorkflowList, cmdWorkflowPull, cmdWorkflowPush, cmdWorkflowRename } from '../../commands/workflow'
 import {
   cmdAnswered,
   cmdCancel,
@@ -53,7 +67,6 @@ import {
   cmdLog,
   cmdResume,
   cmdRuns,
-  cmdReject,
   cmdRunScheduled,
   cmdStartRun,
   cmdStop,
@@ -61,14 +74,7 @@ import {
   cmdSubWait,
   cmdWatch,
 } from '../../commands/run'
-import {
-  cmdTriageAdd,
-  cmdTriageArchive,
-  cmdTriageCheck,
-  cmdTriageDismiss,
-  cmdTriageFetch,
-  cmdTriageRestore,
-} from '../../commands/triage'
+import { cmdTriageAdd, cmdTriageCheck } from '../../commands/triage'
 import { cmdGoalWorkflows, cmdGoalPreviews, goalsFile } from '../../commands/goal'
 import { cmdSpec } from '../../commands/spec'
 import { cmdTelemetry } from '../../commands/telemetry'
@@ -166,24 +172,12 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       'what is waiting to be sorted',
       'What is in triage is not a task: it never enters the card list, is never scheduled, ' +
         'and counts towards nothing. Triage is `docs/kanban/triage/`, one file each, with ' +
-        '`archived/` for what became a card and `dismissed/` for what was ignored — what holds ' +
-        'a later pull off. The board UI is where items are read, made into cards, ignored and ' +
+        '`archived/` for what became a card and `dismissed/` for what was ignored. The board UI is where items are read, made into cards, ignored and ' +
         'restored.',
     ),
   }
 
-  for (const flow of FLOWS) declareFlow(flow.group ? groups[flow.group] : program, flow, cli)
-
-  // Rejecting starts no run (#1497): the card is filed on the spot.
-  withShared(groups.card.command('reject'))
-    .argument('<id>', "the card's id", cardId)
-    .argument('[why...]', 'why the card is being dropped — required unless --discard')
-    .summary('drop the card')
-    .option('--discard', 'just drop it: the why may be left off, and nothing learns from it')
-    .action(async function (this: Command, ...vals: unknown[]) {
-      const [id, why] = positional(vals) as [number, string[]]
-      await onBoard(this, cli, () => cmdReject(id, why.join(' '), this.opts()))
-    })
+  for (const flow of FLOWS) if (!flow.internal) declareFlow(flow.group ? groups[flow.group] : program, flow, cli)
 
   declareRunning(groups.run, cli)
   declareDelivery(groups.delivery, cli)
@@ -229,20 +223,6 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
 
   const triage = groups.triage
 
-  withShared(triage.command('fetch'))
-    .summary('pull what the board is pointed at into triage')
-    .description(
-      'Reads the endpoint from `- **Triage endpoint** — <url>` in the board’s `config.md` and its ' +
-        'token from `TRIAGE_ENDPOINT_TOKEN` in `docs/kanban/.env`, and takes everything that comes ' +
-        'back. Only `title` and `summary` are required. Something already waiting, already made into ' +
-        'a card, or already ignored is skipped; one with no words in it is counted and explained. ' +
-        'A request that fails ' +
-        'writes nothing at all.',
-    )
-    .action(async function (this: Command) {
-      await onBoard(this, cli, () => cmdTriageFetch())
-    })
-
   withShared(triage.command('add'))
     .summary('write one item into triage')
     .description(
@@ -275,41 +255,107 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       await onBoard(this, cli, () => cmdTriageCheck(sourceId))
     })
 
-  withShared(triage.command('archive'))
-    .summary('record that a card was made of one item')
-    .description(
-      'The second half of one judgement: write the card first, then name it here. The item moves to ' +
-        '`archived/` carrying `card_id` and `archived_at`. One already ignored keeps its `dismissed/` ' +
-        'record and takes the card id onto it — the card exists either way. One that has left the list ' +
-        'some other way is refused: somebody else judged it first.',
-    )
-    .argument('<source-id>', 'the item the card was made of')
-    .requiredOption('--card <id>', 'the card it became', cardId)
-    .action(async function (this: Command, sourceId: string) {
-      await onBoard(this, cli, () => cmdTriageArchive(sourceId, Number(this.opts().card)))
+  // ---- WildCrane tasks and goals, in Cloud (#550) -----------------------------
+
+  const ON_WEB = 'Reads and writes WildCrane Cloud as the signed-in account; changes show on the web at once.'
+  const task = withShared(program.command('task'))
+    .summary('list, create, approve, change and remove WildCrane tasks')
+    .description(`${ON_WEB} <task> is WC-12, task_…, or just 12 in a linked folder.`)
+    .action(function (this: Command) {
+      this.help()
+    })
+  withShared(task.command('list'))
+    .summary('list tasks')
+    .option('--project <id>', 'the project; default: this folder’s linked one')
+    .option('--workspace <id>', 'every project of a workspace')
+    .option('--status <status>', 'queued, running, waiting_review, done, failed, cancelled or stopped')
+    .action(async function (this: Command) {
+      await boardless(this, cli, () => taskList(this.opts()))
+    })
+  withShared(task.command('show'))
+    .argument('<task>')
+    .summary('a task and its card')
+    .action(async function (this: Command, id: string) {
+      await boardless(this, cli, () => taskShow(id))
+    })
+  withShared(task.command('create'))
+    .argument('<request...>', 'what the task should do')
+    .summary('create a task')
+    .option('--project <id>', 'the project; default: this folder’s linked one')
+    .option('--workflow <id>', 'a name `akb workflow list` shows')
+    .action(async function (this: Command, request: string[]) {
+      await boardless(this, cli, () => taskCreate(request.join(' '), this.opts()))
+    })
+  withShared(task.command('approve'))
+    .argument('<task>')
+    .summary('approve the current review point')
+    .option('--comment <text>', 'a note with the approval')
+    .action(async function (this: Command, id: string) {
+      await boardless(this, cli, () => taskApprove(id, this.opts().comment))
+    })
+  withShared(task.command('chat'))
+    .argument('<task>')
+    .argument('<message...>')
+    .summary('send a message in the task chat, e.g. to change its requirement or draft')
+    .action(async function (this: Command, id: string, message: string[]) {
+      await boardless(this, cli, () => taskChat(id, message.join(' ')))
+    })
+  withShared(task.command('remove'))
+    .argument('<task>')
+    .argument('[reason...]')
+    .summary('remove a task; restore it on the web')
+    .action(async function (this: Command, id: string, reason: string[]) {
+      await boardless(this, cli, () => taskRemove(id, reason.join(' ')))
+    })
+  withShared(task.command('resume'))
+    .argument('<task>')
+    .summary('continue its stopped run')
+    .action(async function (this: Command, id: string) {
+      await boardless(this, cli, () => taskResume(id))
+    })
+  withShared(task.command('stop'))
+    .argument('<task>')
+    .summary('stop its current run')
+    .action(async function (this: Command, id: string) {
+      await boardless(this, cli, () => taskStop(id))
+    })
+  withShared(task.command('comment'))
+    .argument('<task>')
+    .argument('<text...>')
+    .summary('comment on a task')
+    .action(async function (this: Command, id: string, text: string[]) {
+      await boardless(this, cli, () => taskComment(id, text.join(' ')))
     })
 
-  withShared(triage.command('dismiss'))
-    .summary('ignore one item, with the reason')
-    .description(
-      "The agent's own Ignore — the record carries `dismissed_by: agent` and the reason. The file " +
-        'moves to `dismissed/`, so no later pull brings it back; `restore` puts it back in the list.',
-    )
-    .argument('<source-id>', 'the item to ignore')
-    .requiredOption('--reason <why>', 'why it is not worth a card')
-    .action(async function (this: Command, sourceId: string) {
-      await onBoard(this, cli, () => cmdTriageDismiss(sourceId, String(this.opts().reason)))
-    })
+  const goal = withShared(program.command('goal'))
+    .argument('<move>', 'new, save, drop or start')
+    .summary('save, drop and start goals of this conversation')
+    .description('Write a temporary draft, then goal new --title "…" --body-file <file> [--workflow <id>] [--previews <agents>]; update with goal save --id <goal> and any of --title, --body-file, --workflow, --previews. goal drop --id <goal> withdraws one; goal start --id <goal> turns it into a task. A `## Done when` list in the body is what counts as done. Workflows are the ones `akb workflow list` shows.')
+    .option('--id <goal>', 'the goal to save, drop or start')
+    .option('--title <title>', 'what the goal is called')
+    .option('--body-file <path>', 'the outcome, then a `## Done when` list')
+    .option('--workflow <id>', 'the workflow that does the work, from `akb workflow list`')
+    .option('--previews <agents>', 'review points, comma-separated; empty clears the selection')
+  goal.action(async function (this: Command, sub: string) {
+    await boardless(this, cli, () => (externalGoalSession() ? cloudGoal([sub], this.opts()) : cmdGoal([sub], this.opts())))
+  })
 
-  withShared(triage.command('restore'))
-    .summary('put one ignored item back in the list')
-    .description(
-      'Moves the item from `dismissed/` back to `triage/` and clears its dismissal. Refused when a card ' +
-        'was already made of it, or the same id is already waiting. Starts no sort.',
-    )
-    .argument('<source-id>', 'the ignored item')
-    .action(async function (this: Command, sourceId: string) {
-      await onBoard(this, cli, () => cmdTriageRestore(sourceId))
+  withShared(withShared(program.command('workspace')).summary('your WildCrane workspaces').command('list'))
+    .summary('list workspaces')
+    .action(async function (this: Command) {
+      await boardless(this, cli, () => workspaceList())
+    })
+  withShared(withShared(program.command('project')).summary('your WildCrane projects').command('list'))
+    .summary('list projects')
+    .option('--workspace <id>', 'only this workspace’s')
+    .action(async function (this: Command) {
+      await boardless(this, cli, () => projectList(this.opts()))
+    })
+  withShared(withShared(program.command('runner')).summary('the computers that run a workspace’s tasks').command('list'))
+    .summary('list Runners')
+    .option('--workspace <id>', 'default: the linked project’s')
+    .action(async function (this: Command) {
+      await boardless(this, cli, () => runnerList(this.opts()))
     })
 
   // ---- Cloud ----------------------------------------------------------------
@@ -322,7 +368,9 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
         `\`${cli.program}\` on it then acts as that account, because they read the one session the app ` +
         'wrote, outside every repository. Cloud is an invite-only preview.',
     )
+    .allowExcessArguments()
     .action(async function (this: Command) {
+      if (this.args.length) this.error(`unknown command '${this.args[0]}'`, { code: 'commander.unknownCommand' })
       await boardless(this, cli, (p) => cmdCloud([], p))
     })
 
@@ -330,20 +378,6 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .summary('forget it: this machine stops reaching Cloud, and nothing on any board changes')
     .action(async function (this: Command) {
       await boardless(this, cli, (p) => cmdCloud(['sign-out'], p))
-    })
-
-  withShared(cloud.command('import'))
-    .summary('import this board into an empty Cloud project')
-    .description(
-      'Imports the open cards, memory, rules and own workflows of this board into an empty Cloud project, ' +
-        'numbered from 1 in the order of their ids. Checks everything first and writes nothing on a problem; ' +
-        'changes nothing on this computer. Run again to finish an import that stopped.',
-    )
-    .option('--project <id-or-prefix>', 'the Cloud project, by id or by its prefix')
-    .option('--dry-run', 'only check, and list what would be imported and what stays here')
-    .action(async function (this: Command) {
-      const o = this.opts() as { project?: string; dryRun?: boolean }
-      await onBoard(this, cli, (p) => cloudImport({ project: o.project, dryRun: o.dryRun }, p))
     })
 
   // Options are read in the handler, not required by Commander, so a missing one exits 2.
@@ -491,8 +525,9 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .summary('the workflows this board runs, and the agents each one lists')
     .description(
       'Every card runs through one workflow, kept in Cloud: the built-ins and the workflows this ' +
-        'workspace installed or made. A card runs on the version its task started with; a new task takes ' +
-        'the latest. Edit workflows on the web.',
+        'workspace installed or made. To change one of this workspace\'s own: `pull` it into a folder, ' +
+        'edit, `push`. New tasks take the new version; a task already started keeps its own. ' +
+        '`akb guide update-workflow` has the whole flow.',
     )
     .allowExcessArguments()
     .allowUnknownOption()
@@ -525,12 +560,20 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       await onBoard(this, cli, () => cmdWorkflowDiagram(id, card))
     })
 
-  flowWord('publish')
-    .argument('<folder>', 'the workflow folder; its name is the slug')
-    .option('--dry-run', 'check the folder and print what would happen, publishing nothing')
-    .summary('publish a workflow folder to the marketplace as the signed-in account. Prints the version new tasks take, or that nothing changed.')
+  flowWord('pull')
+    .argument('<id>', 'the workflow, from `workflow list`')
+    .argument('[folder]', 'where to write it, empty or new; default ./<id>')
+    .summary('write the workflow\'s current version into a folder to edit')
+    .action(async function (this: Command, id: string, folder?: string) {
+      await onBoard(this, cli, () => cmdWorkflowPull(id, folder))
+    })
+
+  flowWord('push')
+    .argument('<folder>', 'a folder `workflow pull` wrote')
+    .option('--dry-run', 'check the folder and print what would happen, saving nothing')
+    .summary('save the edited folder as the workflow\'s next version, which new tasks take')
     .action(async function (this: Command, folder: string) {
-      await boardless(this, cli, () => cmdWorkflowPublish(folder, this.opts()))
+      await boardless(this, cli, () => cmdWorkflowPush(folder, this.opts()))
     })
 
   // ---- the flows, as text ---------------------------------------------------
@@ -796,20 +839,16 @@ function declareAgent(program: Command, cli: AgentCliOptions): void {
         ".akb/boards/; its key is one line per runtime in docs/kanban/.env. git carries neither. A run never " +
         "reads the terminal's environment for any of it.",
     )
+    .allowExcessArguments()
     .action(async function (this: Command) {
+      if (this.args.length) this.error(`unknown command '${this.args[0]}'`, { code: 'commander.unknownCommand' })
       await onBoard(this, cli, () => cmdAgent(['show']))
     })
 
   const word = (name: string) => withShared(agent.command(name))
 
-  word('list')
-    .summary('the connectors it can run, and what each one takes')
-    .action(async function (this: Command) {
-      await onBoard(this, cli, () => cmdAgent(['list']))
-    })
-
   word('use')
-    .argument('<name>', 'a harness from `agent list`')
+    .argument('<name>', 'a harness, e.g. claude-code')
     .summary('the harness Global default runs')
     .description(
       'Global default is the first runtime, and what an agent naming none runs. Every other runtime is ' +
@@ -817,49 +856,6 @@ function declareAgent(program: Command, cli: AgentCliOptions): void {
     )
     .action(async function (this: Command, name: string) {
       await onBoard(this, cli, () => cmdAgent(['use', name]))
-    })
-
-  const runtime = word('runtime')
-    .summary('add, rename or delete a runtime')
-    .description(
-      'There is no "make default": the default is the FIRST row, Global default, which no board can ' +
-        'rename or delete. A runtime’s id is generated from its name, keys its API key line in ' +
-        'docs/kanban/.env, and never changes — so a rename costs nothing on any computer.',
-    )
-    .action(async function (this: Command) {
-      await onBoard(this, cli, () => cmdAgent(['show']))
-    })
-
-  withShared(runtime.command('add'))
-    .argument('<name>', 'what to call it — free text, unique on the board')
-    .argument('<harness>', 'a harness from `agent list`')
-    .summary('add one runtime')
-    .action(async function (this: Command, name: string, harness: string) {
-      await onBoard(this, cli, () => cmdAgent(['runtime', 'add', name, harness]))
-    })
-
-  withShared(runtime.command('rename'))
-    .argument('<id>', 'the runtime’s id — `agent` lists them')
-    .argument('<name...>', 'what to call it instead')
-    .summary('rename one runtime, losing nothing')
-    .action(async function (this: Command, id: string, name: string[]) {
-      await onBoard(this, cli, () => cmdAgent(['runtime', 'rename', id, ...name]))
-    })
-
-  withShared(runtime.command('delete'))
-    .argument('<id>', 'the runtime’s id — `agent` lists them')
-    .summary('drop one runtime; the agents on it fall back to Global default')
-    .action(async function (this: Command, id: string) {
-      await onBoard(this, cli, () => cmdAgent(['runtime', 'delete', id]))
-    })
-
-  word('bind')
-    .argument('<agent>', 'one of this board’s agents — `agent` lists them')
-    .argument('<runtime>', 'a runtime id from `agent`; "-" puts it back on Global default')
-    .summary('give one agent a runtime of its own')
-    .description('The pick is yours, saved with your other board settings.')
-    .action(async function (this: Command, name: string, id: string) {
-      await onBoard(this, cli, () => cmdAgent(['bind', name, id]))
     })
 
   word('set')
@@ -896,12 +892,5 @@ function declareAgent(program: Command, cli: AgentCliOptions): void {
     .option('--events', 'with --follow: print its structured events, one JSON object per line')
     .action(async function (this: Command, workflow: string, name: string) {
       await onBoard(this, cli, (p) => cmdRunScheduled(workflow, name, this.opts(), p))
-    })
-
-  word('test')
-    .argument('[runtime]', 'which runtime to test; left off, Global default')
-    .summary('one small chat, to see the setup works')
-    .action(async function (this: Command, id: string | undefined) {
-      await onBoard(this, cli, () => cmdAgent(['test', ...(id ? [id] : [])]))
     })
 }

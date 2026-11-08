@@ -1,7 +1,7 @@
 // ---- workflow --------------------------------------------------------------
 //
-// The workflows this board runs, from a terminal (#715). They are Cloud's (#409) and edited on
-// the web; only a Workflow builder task's draft is written here.
+// The workflows this board runs, from a terminal (#715). They are Cloud's (#409); `pull` and
+// `push` edit the workspace's own as a folder (#544).
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -11,7 +11,7 @@ import { locate } from '../lib/cards'
 import { say } from '../lib/io'
 import { ASSETS, die } from '../lib/paths'
 import { workflowDiagram } from '../lib/agent/workflow-diagram'
-import { NEEDS_CLOUD, workflowsOffline, workflowsReachable } from '../lib/agent/cloud-workflows'
+import { NEEDS_CLOUD, cloudFlows, workflowsOffline, workflowsReachable, type WorkflowFiles } from '../lib/agent/cloud-workflows'
 import {
   workflowPurpose,
   workflowWhen,
@@ -28,10 +28,9 @@ import {
 } from '../lib/agent/workflows'
 import type { MoveResult } from '../lib/types'
 import { readWorkflowFolder } from '../lib/agent/workflow-folder'
-import { checkWorkflowFiles } from '../lib/shared/workflow-files'
-import { cloudEndpoints } from '../lib/cloud/config'
-import { accessToken } from '../lib/cloud/session'
-import { SAID } from './cloud'
+import { checkWorkflowFiles, isAboutFile } from '../lib/shared/workflow-files'
+import { workflowName } from '../lib/shared/board-files'
+import { call } from '../lib/cloud/tasks'
 
 const found = (id: string) => {
   const flow = workflowById(id)
@@ -104,39 +103,66 @@ export function cmdWorkflowDiagram(id: string, card: string): MoveResult {
   return { file, tag, diagram }
 }
 
-const PUBLISH_REFUSED: Record<string, string> = {
-  not_creator: 'only accounts WildCrane has made creators can publish to the marketplace',
-  not_yours: 'another creator holds this name, or it is a built-in',
+// What `pull` leaves in the folder for `push`: which workflow, at which version.
+const PULLED = '.akb-workflow.json'
+
+const cloudIdOf = (id: string): string | undefined => cloudFlows().find((f) => workflowName(f.cloudId) === id)?.cloudId
+
+/** `akb workflow pull <id> [folder]` (#544): the workflow's current version as a folder. */
+export async function cmdWorkflowPull(id: string, folder?: string): Promise<MoveResult> {
+  const cloudId = cloudIdOf(id)
+  if (!cloudId) found(id)
+  const dir = path.resolve(folder ?? id)
+  if (fs.existsSync(dir) && fs.readdirSync(dir).length) die(`${folder ?? id} is not empty`, 'bad-args')
+  const read = await call<{ id: string; version: number; files: WorkflowFiles }>('GET', `/v1/workflows/${encodeURIComponent(cloudId!)}`)
+  if (!read.ok) die(read.error, read.code === 'not_found' ? 'no-such-workflow' : 'cloud-refused')
+  const { version, files } = read.value
+  for (const [file, text] of Object.entries(files)) {
+    const full = path.join(dir, ...file.split('/'))
+    fs.mkdirSync(path.dirname(full), { recursive: true })
+    const data = isAboutFile(file) && !file.endsWith('.md') && /^data:[^;]+;base64,/.exec(text)
+    fs.writeFileSync(full, data ? Buffer.from(text.slice(data[0].length), 'base64') : text)
+  }
+  fs.writeFileSync(path.join(dir, PULLED), `${JSON.stringify({ id: cloudId, version })}\n`)
+  const shown = folder ?? `./${id}`
+  say(`Pulled ${id} v${version} into ${shown}.`)
+  return { id, version, folder: dir }
 }
 
-/** `akb workflow publish <folder>` (#523): the folder, named by its slug, to the marketplace as
- *  the signed-in account. */
-export async function cmdWorkflowPublish(folder: string, opts: { dryRun?: boolean }): Promise<MoveResult> {
+/** `akb workflow push <folder>` (#544): a pulled folder as the workflow's next version. */
+export async function cmdWorkflowPush(folder: string, opts: { dryRun?: boolean }): Promise<MoveResult> {
   const dir = path.resolve(folder)
-  if (!fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory()) die(`${folder} is not a folder`, 'bad-args')
-  const slug = path.basename(dir)
-  const files = readWorkflowFolder(dir)
-  const checked = checkWorkflowFiles(files, true)
-  if (!checked.ok) die(`${slug}: ${checked.file} ${checked.reason}`, 'bad-workflow')
-  const token = await accessToken()
-  if (!token.ok) die(SAID[token.reason].en, 'cloud-refused')
-  let res: Response
+  let pulled: { id: string; version: number } | null = null
   try {
-    res = await fetch(`${cloudEndpoints().api}/v1/marketplace/workflows`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${token.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ slug, files, ...(opts.dryRun ? { dry_run: true } : {}) }),
-    })
-  } catch {
-    die(SAID.unreachable.en, 'cloud-refused')
+    pulled = JSON.parse(fs.readFileSync(path.join(dir, PULLED), 'utf8'))
+  } catch {}
+  if (!pulled?.id || !Number.isInteger(pulled.version)) die(`${folder} was not written by \`akb workflow pull\``, 'bad-args')
+  const { id: cloudId, version } = pulled!
+  const id = workflowName(cloudId)
+  const readOnly = () => die(`${id} is not this workspace's own; copy it on the web first.`, 'workflow-read-only')
+  if (cloudId.startsWith('wf_builtin_')) readOnly()
+  const files = readWorkflowFolder(dir)
+  const checked = checkWorkflowFiles(files)
+  if (!checked.ok) die(`${checked.file} ${checked.reason}`, 'bad-workflow')
+  const now = await call<{ version: number; files: WorkflowFiles }>('GET', `/v1/workflows/${encodeURIComponent(cloudId)}`)
+  if (!now.ok) die(now.error, now.code === 'not_found' ? 'no-such-workflow' : 'cloud-refused')
+  if (now.value.version !== version) die(`${id} is at v${now.value.version} now; pull again and redo the change.`, 'workflow-moved')
+  if (JSON.stringify(files) === JSON.stringify(Object.fromEntries(Object.entries(now.value.files).sort()))) {
+    say(`${id} is unchanged (v${version}).`)
+    return { id, version, changed: false, ...(opts.dryRun ? { dryRun: true } : {}) }
   }
-  const body = (await res.json().catch(() => ({}))) as { id: string; version: number; changed: boolean; error?: { code?: string; message?: string } }
+  if (opts.dryRun) {
+    say(`${id} would push v${version + 1}.`)
+    return { id, version: version + 1, changed: true, dryRun: true }
+  }
+  const res = await call<{ version: number }>('PATCH', `/v1/workflows/${encodeURIComponent(cloudId)}`, { files })
   if (!res.ok) {
-    if (res.status === 401) die(SAID.expired.en, 'cloud-refused')
-    const code = body.error?.code ?? 'failed'
-    die(`${slug}: ${PUBLISH_REFUSED[code] ?? body.error?.message ?? `Cloud answered ${res.status}`}`, code)
+    // Installed from the marketplace: another workspace's, so Cloud does not find it to change.
+    if (res.code === 'read_only' || res.code === 'not_found') readOnly()
+    die(res.error, res.code === 'bad_request' || res.code === 'payload_too_large' ? 'bad-workflow' : 'cloud-refused')
   }
-  say(!body.changed ? `${slug} is unchanged (v${body.version}).`
-    : opts.dryRun ? `${slug} would publish v${body.version}.` : `Published ${slug} v${body.version}.`)
-  return { slug, id: body.id, version: body.version, changed: body.changed, ...(opts.dryRun ? { dryRun: true } : {}) }
+  const next = res.value.version
+  fs.writeFileSync(path.join(dir, PULLED), `${JSON.stringify({ id: cloudId, version: next })}\n`)
+  say(`Pushed ${id} v${next}. New tasks take it.`)
+  return { id, version: next, changed: true }
 }

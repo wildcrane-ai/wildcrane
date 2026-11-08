@@ -10,14 +10,12 @@ import { checkReleased, codexSource, forgetReleased, newerOf, pluginInfo, plugin
 
 // The panel's plugin version and the newer release it offers (#119).
 
-const manifest = (url: string) => JSON.stringify({ plugins: [{ name: 'wildcrane', source: { source: 'archive', url } }] })
-const RELEASE = (v: string) => `https://github.com/wildcrane-ai/wildcrane/releases/download/plugin-v${v}/wildcrane-plugin.zip`
+const released = (version: unknown) => JSON.stringify({ name: 'wildcrane', version })
 
 describe('plugin version', () => {
-  it('reads the released version from the archive URL', () => {
-    assert.equal(releasedOf(manifest(RELEASE('0.1.5'))), '0.1.5')
-    assert.equal(releasedOf(manifest('https://example.com/wildcrane-plugin.zip')), null)
-    assert.equal(releasedOf(JSON.stringify({ plugins: [{ name: 'other', source: { url: RELEASE('9.0.0') } }] })), null)
+  it("reads the released plugin.json's version", () => {
+    assert.equal(releasedOf(released('0.1.5')), '0.1.5')
+    assert.equal(releasedOf(released(5)), null)
     assert.equal(releasedOf('<html>rate limited</html>'), null)
   })
 
@@ -36,12 +34,15 @@ describe('plugin version', () => {
     fs.mkdirSync(path.join(root, '.claude-plugin'))
     fs.writeFileSync(path.join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'wildcrane', version: '0.1.2' }))
     assert.equal(pluginVersion('claude-code', root), '0.1.2')
+    assert.equal(pluginVersion('zcode', root), '0.1.2')
     assert.equal(pluginVersion('codex', root), null)
     fs.writeFileSync(path.join(root, 'plugin.json'), JSON.stringify({ name: 'wildcrane', version: '0.1.3' }))
     assert.equal(pluginVersion('codex', root), '0.1.3')
     fs.mkdirSync(path.join(root, '.cursor-plugin'))
     fs.writeFileSync(path.join(root, '.cursor-plugin', 'plugin.json'), JSON.stringify({ name: 'wildcrane', version: '0.1.4' }))
     assert.equal(pluginVersion('cursor', root), '0.1.4')
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'wildcrane-dsh', version: '0.1.5' }))
+    assert.equal(pluginVersion('dsh', root), '0.1.5')
   })
 })
 
@@ -74,7 +75,7 @@ describe('the released version', () => {
   })
 
   it('offers a newer release and keeps it for 6 hours', async () => {
-    answer = { status: 200, body: manifest(RELEASE('0.1.5')) }
+    answer = { status: 200, body: released('0.1.5') }
     await checkReleased(url)
     assert.deepEqual(pluginInfo(), { version: '0.1.4', latest: '0.1.5' })
     await checkReleased(url, Date.now() + 60 * 60_000)

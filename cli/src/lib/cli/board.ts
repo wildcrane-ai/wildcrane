@@ -1,4 +1,3 @@
-import { externalGoalSession, cloudGoal } from '../../commands/goal-cloud'
 // The board's bookkeeping, declared once.
 //
 // Every move below says what it takes and what each option means, and that declaration IS
@@ -39,7 +38,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { creationProject, createProjectTask, linkedProject, createTask, workspaceTask } from '../cloud/tasks'
 import { validateCreate, type CreateOptions } from '../../commands/card'
-import { cmdGoal } from '../../commands/goal'
 
 /** What the door hands in — see `runBoard`. */
 export interface BoardCliOptions {
@@ -291,20 +289,6 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
       await dispatch('update-questions', this, [String(id)], { ops: questionOps }, cli)
     })
 
-  move('goal').alias('idea')
-    .argument('<move>', 'new, save, drop or start')
-    .summary('保存讨论中的目标')
-    .description('Only inside a goal discussion. Write a temporary draft, then goal new --title "…" --body-file <file> [--workflow <id>] [--previews <agents>]; update with goal save --id <goal> and any of --title, --body-file, --workflow, --previews. goal drop --id <goal> withdraws one; goal start --id <goal> turns it into a task when the turn ends. A `## Done when` list in the body is what counts as done. Workflows are the ones `akb workflow list` shows.')
-    .option('--id <goal>', 'the goal to save, drop or start')
-    .option('--title <title>', 'what the goal is called')
-    .option('--body-file <path>', 'the outcome, then a `## Done when` list')
-    .option('--workflow <id>', 'the workflow that does the work, from `akb workflow list`')
-    .option('--previews <agents>', 'review points, comma-separated; empty clears the selection')
-    .action(async function (this: Command, sub: string) {
-      const data = await runAction(ctxOf(this, cli.program), {}, () => externalGoalSession() ? cloudGoal([sub], this.opts()) : cmdGoal([sub], this.opts()))
-      cli.onAnswer?.(data)
-    })
-
   move('validate')
     .argument('[id]', ID, cardId)
     .summary('validate card format and report file, line, and repair instructions')
@@ -418,17 +402,6 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
     )
     .action(async function (this: Command) {
       await dispatch('init', this, [], this.opts(), cli)
-    })
-
-  move('migrate')
-    .summary('convert cards written before frontmatter')
-    .description(
-      'Convert old bold-header cards to frontmatter; missing meta falls back to empty / med. Skips cards ' +
-        'that already have frontmatter.',
-    )
-    .option('--dry-run', 'say what would be migrated and change nothing')
-    .action(async function (this: Command) {
-      await dispatch('migrate', this, [], this.opts(), cli)
     })
 
   // `version` answers without a board, because it is about the command rather than a

@@ -24,7 +24,7 @@ docs/kanban/
 │   │               Cloud's sort or Refine idea on the web's Triage page turns one
 │   │               into a card; `akb triage check <source-id>` finds an existing one
 │   ├── archived/   items a card was made of
-│   ├── dismissed/  items ignored, with the reason — `akb triage restore` puts one back
+│   ├── dismissed/  items ignored, with the reason
 │   └── files/      dropped-in files
 └── modules.md      one line per module — `akb guide module-map` writes it
 ```

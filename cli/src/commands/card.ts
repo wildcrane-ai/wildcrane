@@ -282,7 +282,7 @@ export function cmdUpdate(id: number, flags: UpdateOptions): MoveResult {
   if (!found) die(`no task with id ${id} under ${rel(TODO)}`, { kind: 'card-not-found', id })
   const file = found.kind === 'group' ? path.join(found.target, 'root.md') : found.target
   const { meta, body } = parseFrontmatter(fs.readFileSync(file, 'utf8'))
-  if (!meta) die(`${rel(file)} has no frontmatter — run \`migrate\` first`)
+  if (!meta) die(`${rel(file)} has no frontmatter — recreate it with \`akb raw create\``)
   if (flags.blockedBy !== undefined && flags.addBlockedBy !== undefined) die('--blocked-by replaces the list and --add-blocked-by appends to it — pass one')
   if (flags.related !== undefined && flags.addRelated !== undefined) die('--related replaces the list and --add-related appends to it — pass one')
   if (flags.source !== undefined && flags.addSource !== undefined) die('--source replaces the list and --add-source appends to it — pass one')
@@ -406,7 +406,7 @@ export function cmdUpdateQuestions(id: number, input: QuestionOpsInput): MoveRes
   if (!found) die(`no task with id ${id} under ${rel(TODO)}`, { kind: 'card-not-found', id })
   const file = found.kind === 'group' ? path.join(found.target, 'root.md') : found.target
   const { meta, body } = parseFrontmatter(fs.readFileSync(file, 'utf8'))
-  if (!meta) die(`${rel(file)} has no frontmatter — run \`migrate\` first`)
+  if (!meta) die(`${rel(file)} has no frontmatter — recreate it with \`akb raw create\``)
 
   // Skipping is the user's own call (#831): a run that skipped would be granting itself leave.
   if (insideRun() && ops.some((op) => op.kind === 'skip' || op.kind === 'unskip')) {

@@ -8,16 +8,17 @@ import path from 'node:path'
 import type { Host } from './plugin'
 import { compare } from './update'
 
-/** The manifest `claude plugin update` reads. */
-export const MARKETPLACE = 'https://raw.githubusercontent.com/wildcrane-ai/wildcrane/main/.claude-plugin/marketplace.json'
+/** The released plugin: the marketplace installs the public repo's folder (#532). */
+export const RELEASED = 'https://raw.githubusercontent.com/wildcrane-ai/wildcrane/main/plugins/claude-code/.claude-plugin/plugin.json'
 const TIMEOUT_MS = 5_000
 const KEEP_MS = 6 * 60 * 60_000
 const RETRY_MS = 5 * 60_000
 
-/** The server runs from `<root>/server/dist/index.mjs`. A Codex opened from Claude Code inherits `CLAUDE_PLUGIN_ROOT`. */
-const pluginRoot = (host: Host) => (host === 'claude-code' && process.env.CLAUDE_PLUGIN_ROOT) || path.resolve(path.dirname(process.argv[1] ?? ''), '..', '..')
+/** The server runs from `<root>/server/dist/start.mjs`. A Codex opened from Claude Code inherits `CLAUDE_PLUGIN_ROOT`. */
+const pluginRoot = (host: Host) => ((host === 'claude-code' || host === 'zcode') && process.env.CLAUDE_PLUGIN_ROOT) || path.resolve(path.dirname(process.argv[1] ?? ''), '..', '..')
 
-const MANIFEST: Record<Host, string> = { 'claude-code': path.join('.claude-plugin', 'plugin.json'), codex: 'plugin.json', cursor: path.join('.cursor-plugin', 'plugin.json') }
+const CLAUDE_MANIFEST = path.join('.claude-plugin', 'plugin.json')
+const MANIFEST: Record<Host, string> = { 'claude-code': CLAUDE_MANIFEST, zcode: CLAUDE_MANIFEST, codex: 'plugin.json', dsh: 'package.json', cursor: path.join('.cursor-plugin', 'plugin.json'), kimi: 'kimi.plugin.json' }
 
 export function pluginVersion(host: Host = 'claude-code', root = pluginRoot(host)): string | null {
   const file = MANIFEST[host]
@@ -29,11 +30,11 @@ export function pluginVersion(host: Host = 'claude-code', root = pluginRoot(host
   }
 }
 
-/** The released version: the `plugin-v<version>` in wildcrane's archive URL. */
+/** The released plugin.json's version. */
 export function releasedOf(manifest: string): string | null {
   try {
-    const { plugins } = JSON.parse(manifest) as { plugins?: { name?: string; source?: { url?: string } }[] }
-    return /\/plugin-v(\d+\.\d+\.\d+)\//.exec(plugins?.find((p) => p.name === 'wildcrane')?.source?.url ?? '')?.[1] ?? null
+    const { version } = JSON.parse(manifest) as { version?: unknown }
+    return typeof version === 'string' && /^\d+\.\d+\.\d+$/.test(version) ? version : null
   } catch {
     return null
   }
@@ -46,7 +47,7 @@ let released: { at: number; value: string | null } | null = null
 let fetching: Promise<void> | null = null
 
 /** Fetches in the background; a success is kept 6 hours, a failure retried after 5 minutes. */
-export function checkReleased(url = MARKETPLACE, now = Date.now()): Promise<void> {
+export function checkReleased(url = RELEASED, now = Date.now()): Promise<void> {
   const stale = !released || now - released.at > (released.value ? KEEP_MS : RETRY_MS)
   if (!stale || fetching) return fetching ?? Promise.resolve()
   fetching = get(url)

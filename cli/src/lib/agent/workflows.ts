@@ -7,7 +7,7 @@
 // user's rule for it); no agent leads a workflow.
 //
 // Every workflow is a `WORKFLOW.md` (./workflow-file.ts, #1890) kept in Cloud (#409): the
-// official ones, read-only, and the workspace's own, edited on the web. The run state of each
+// official ones, read-only, and the workspace's own, changed with `akb workflow pull`/`push` (#544). The run state of each
 // scheduled agent stays in `ui.config.json` under `workflows`.
 //
 // The id is what a card carries and what a delivery freezes. It never changes: renaming a
@@ -351,7 +351,7 @@ function landRefused(flow: Workflow, agent: string, found: RefusedAgent): RunRef
 
 // ---- writing: a Workflow builder draft ----------------------------------------
 //
-// Workflows are edited on the web (#409). Inside a Workflow builder task's run, the draft it
+// Outside `pull`/`push` (#544), inside a Workflow builder task's run, the draft it
 // writes on the board takes a name, a copy of another workflow, or a new name; approving the
 // task saves it.
 
@@ -379,7 +379,7 @@ const draftDef = (id: string): WorkflowDef | undefined => boardWorkflowDefs().de
 
 const notFound = (id: string): Write => ({ ok: false, ...refusal('workflowNotFound', `this board has no \`${id}\` workflow`, { id }) })
 
-const readOnly = (): Write => ({ ok: false, ...refusal('workflowReadOnly', 'Workflows are edited on the web.') })
+const readOnly = (): Write => ({ ok: false, ...refusal('workflowReadOnly', 'Only a Workflow builder draft is renamed here; change a workflow with `akb workflow pull` and `push`.') })
 
 const trimmedName = (name: string): string => name.replace(/\s+/g, ' ').trim()
 
@@ -392,7 +392,7 @@ const nameTaken = (name: string, except = ''): boolean =>
 export function renameWorkflow(id: string, name: string): Write {
   const draft = draftId()
   if (!draft) return readOnly()
-  if (id !== draft) return { ok: false, ...refusal('workflowReadOnly', `only the draft, \`${draft}\`, is edited here; workflows are edited on the web`, { id }) }
+  if (id !== draft) return { ok: false, ...refusal('workflowReadOnly', `only the draft, \`${draft}\`, is renamed here`, { id }) }
   const wanted = trimmedName(name)
   if (!wanted) return { ok: false, ...refusal('workflowUnnamed', 'a workflow needs a name') }
   if (nameTaken(wanted, id)) return { ok: false, ...refusal('workflowTaken', `this workspace already has a workflow called "${wanted}"`, { name: wanted }) }

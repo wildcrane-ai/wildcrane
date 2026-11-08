@@ -2,35 +2,26 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { cloudEndpoints } from '../lib/cloud/config'
-import { accessToken } from '../lib/cloud/session'
+import { cloud } from './task'
 import type { MoveResult } from '../lib/types'
 import { die } from '../lib/paths'
 import { say, quietlyAsync } from '../lib/io'
 import { cmdGoal, cmdGoalPreviews, cmdGoalWorkflows, goalsFile, shortWorkflowId, type GoalOptions, type GoalWorkflow, type Goal } from './goal'
 
-/** The host session the goals belong to; Cursor's model passes its conversation id itself. */
-function hostSession(): { id: string; host: 'claude-code' | 'codex' | 'cursor' } | null {
-  const { CLAUDE_CODE_SESSION_ID: claude, CODEX_THREAD_ID: codex, CURSOR_CONVERSATION_ID: cursor } = process.env
+/** The host session the goals belong to; Cursor's and Kimi Code's models pass their session id themselves,
+ *  and dsh's model the discussion `wildcrane_draft_read` opened. */
+function hostSession(): { id: string; host: 'claude-code' | 'codex' | 'cursor' | 'kimi' | 'discussion' } | null {
+  const { CLAUDE_CODE_SESSION_ID: claude, CODEX_THREAD_ID: codex, CURSOR_CONVERSATION_ID: cursor, KIMI_SESSION_ID: kimi, WILDCRANE_DISCUSSION: discussion } = process.env
+  if (discussion) return { id: discussion, host: 'discussion' }
   if (claude) return { id: claude, host: 'claude-code' }
   if (codex) return { id: codex, host: 'codex' }
-  return cursor ? { id: cursor, host: 'cursor' } : null
+  if (cursor) return { id: cursor, host: 'cursor' }
+  return kimi ? { id: kimi, host: 'kimi' } : null
 }
 
 export const externalGoalSession = () => !goalsFile() && !process.env.KANBAN_RUN && !process.env.WILDCRANE_JOB && !process.env.AI4KANBAN_BOARD && Boolean(hostSession())
 
-async function request<T>(method: string, route: string, body?: unknown): Promise<T> {
-  if (externalGoalSession()) process.env.AI4KANBAN_HOME ??= process.env.WILDCRANE_HOME || path.join(os.homedir(), '.wildcrane')
-  const token = await accessToken()
-  if (!token.ok) die('Sign in through the WildCrane plugin, then try again.')
-  const response = await fetch(`${cloudEndpoints().api}${route}`, {
-    method, headers: { authorization: `Bearer ${token.token}`, 'content-type': 'application/json' },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(30_000),
-  })
-  const value = await response.json() as T & { error?: { message?: string } }
-  if (!response.ok) die(value.error?.message ?? `Cloud answered ${response.status}.`)
-  return value
-}
+const request = <T>(method: string, route: string, body?: unknown): Promise<T> => cloud<T>(method, route, body)
 
 async function workflows(workspace: string): Promise<GoalWorkflow[]> {
   const all: GoalWorkflow[] = []
@@ -58,6 +49,7 @@ async function discussion(): Promise<Discussion> {
   if (!session) die('Goals exist only inside a WildCrane goal discussion.')
   const home = process.env.WILDCRANE_HOME || path.join(os.homedir(), '.wildcrane')
   process.env.AI4KANBAN_HOME ??= home
+  if (session.host === 'discussion') return request('GET', `/v1/discussions/${encodeURIComponent(session.id)}`)
   const machineFile = path.join(home, 'machine.json')
   let machine: string
   try { machine = JSON.parse(fs.readFileSync(machineFile, 'utf8')).id } catch {

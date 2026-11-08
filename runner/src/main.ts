@@ -26,7 +26,7 @@ async function main(): Promise<void> {
   const id = machineId()
   const runner = startRunner({
     registration: async () => ({ machineId: id, machineName: machineName(), version: VERSION, runtimes: await detectRuntimes(true) }),
-    kind: (['claude-code', 'codex', 'cursor'] as const).find((k) => k === process.env.WILDCRANE_RUNNER_KIND) ?? 'terminal',
+    kind: (['claude-code', 'codex', 'cursor', 'dsh', 'zcode', 'kimi'] as const).find((k) => k === process.env.WILDCRANE_RUNNER_KIND) ?? 'terminal',
     onConnected: () => tell({ type: 'connected' }),
     onWaiting: () => tell({ type: 'waiting' }),
     // Tests shorten the job poll, which stands in when Realtime is out of reach.

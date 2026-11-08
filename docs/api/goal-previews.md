@@ -3,11 +3,11 @@
 ## CLI
 
 ```sh
-akb raw goal new --workflow coding --previews ui,api --title "Review goal previews" --body-file /tmp/goal.md
-akb raw goal save --id idea_1 --previews ""
+akb goal new --workflow coding --previews ui,api --title "Review goal previews" --body-file /tmp/goal.md
+akb goal save --id idea_1 --previews ""
 ```
 
-`raw goal new/save` 新增可选的 `--previews <agents>`，逗号分隔。`ui` 和 `api` 分别表示 `ui-designer` 和 `api-designer`，其余使用现有规范名称与历史别名。规范化后按工作流顺序去重。
+`goal new/save` 新增可选的 `--previews <agents>`，逗号分隔。`ui` 和 `api` 分别表示 `ui-designer` 和 `api-designer`，其余使用现有规范名称与历史别名。规范化后按工作流顺序去重。
 
 创建时省略为 `[]`。修改时省略保留同一工作流的选择，`--previews ""` 清空。更换工作流时省略则清空，显式传入则按新工作流校验。
 
@@ -94,7 +94,7 @@ curl -X POST "$API/v1/discussions/dsc_1/goals/idea_1/start" \
 ```sh
 akb workflow list
 akb previews --triggers --workflow coding
-akb raw goal new --workflow coding --previews ui,api --title "Review goal previews" --body-file /tmp/goal.md
+akb goal new --workflow coding --previews ui,api --title "Review goal previews" --body-file /tmp/goal.md
 ```
 
 不在网页讨论中时，akb 读取 `CLAUDE_CODE_SESSION_ID` 或 `CODEX_THREAD_ID`，找到本会话的讨论，首次使用时在当前目录所属项目中新建；目录不属于任何项目时目标归入 General。未登录时非零退出并提示登录。成功结果附讨论网页链接。

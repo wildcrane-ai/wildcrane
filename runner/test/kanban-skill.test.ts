@@ -68,7 +68,7 @@ it('写入路径不可用时拒绝启动', () => {
 })
 
 it('各插件发行目录保留 discuss-goal，不带 kanban 技能', () => {
-  for (const host of ['claude-code', 'codex', 'cursor']) {
+  for (const host of ['claude-code', 'codex', 'cursor', 'dsh']) {
     const skills = path.resolve(process.env.RUNNER_DIST!, '../../plugins', host, 'skills')
     assert.match(fs.readFileSync(path.join(skills, 'discuss-goal/SKILL.md'), 'utf8'), /`akb guide discuss-goal`/)
     assert.equal(fs.existsSync(path.join(skills, 'kanban')), false)

@@ -13,10 +13,9 @@ import { after, beforeEach, describe, it } from 'node:test'
 import { cmdRemove } from '../src/commands/remove.ts'
 import { RUN_ENV } from '../src/lib/agent/env.ts'
 import { queueCompleted } from '../src/lib/agent/propose.ts'
-import { rejectCard } from '../src/lib/agent/reject.ts'
 import { reflectQueue } from '../src/lib/agent/settings.ts'
 import { leftBoardOnLanding } from '../src/lib/agent/sessions.ts'
-import { logPathOf, readRuns, withStore } from '../src/lib/agent/store.ts'
+import { logPathOf, withStore } from '../src/lib/agent/store.ts'
 import type { RunRecord } from '../src/lib/agent/types.ts'
 import { walkMd } from '../src/lib/cards.ts'
 import { parseFrontmatter } from '../src/lib/frontmatter.ts'
@@ -265,31 +264,5 @@ describe('who rejected it, and when (#1497)', () => {
     const id = fresh()
     await move(root, ['reject', String(id), '--discard', '--reason', WHY])
     assert.doesNotMatch(fs.readFileSync(fileOf(id), 'utf8'), /rejected_(at|by)/)
-  })
-})
-
-describe('rejecting starts no run (#1497)', () => {
-  it('files the card on the spot', async () => {
-    const id = fresh()
-    const res = await rejectCard(id, { reason: WHY })
-    assert.equal(res.ok, true)
-    assert.equal(archived(id)?.rejected_reason, WHY)
-    assert.equal(readRuns().length, 0)
-  })
-
-  it('is held by a live run on the card, as a reject run was', async () => {
-    const id = fresh()
-    liveRun('refine-run', id, 'clarify')
-    const res = await rejectCard(id, { reason: WHY })
-    assert.equal(res.ok, false)
-    assert.ok(fs.existsSync(path.join(todo(), `${id}-an-idea.md`)))
-  })
-
-  it('is not held by the run asking', async () => {
-    const id = fresh()
-    liveRun('refine-run', id, 'clarify')
-    process.env[RUN_ENV] = 'refine-run'
-    const res = await rejectCard(id, { reason: WHY })
-    assert.equal(res.ok, true)
   })
 })

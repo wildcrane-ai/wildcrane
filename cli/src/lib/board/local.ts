@@ -30,7 +30,6 @@ import {
 } from '../../commands/card'
 import { cmdInit } from '../../commands/init'
 import { cmdList, type ListOptions } from '../../commands/list'
-import { cmdMigrate, type MigrateOptions } from '../../commands/misc'
 import { cmdRemove, type RemoveOptions } from '../../commands/remove'
 import { cmdAgentFile } from '../../commands/agent-file'
 import { cmdMemoryFile } from '../../commands/memory-file'
@@ -81,7 +80,6 @@ const MOVES: Record<string, RunMove> = {
   update: ({ args, opts }) => cmdUpdate(Number(args[0]), as<UpdateOptions>(opts)),
   'update-questions': ({ args, opts }) => cmdUpdateQuestions(Number(args[0]), as<QuestionOpsInput>(opts)),
   list: ({ opts }) => cmdList(as<ListOptions>(opts)),
-  migrate: ({ opts }) => cmdMigrate(as<MigrateOptions>(opts)),
   archive: ({ args }) => cmdRemove(Number(args[0]), 'completed'),
   reject: ({ args, opts }) => cmdRemove(Number(args[0]), 'rejected', as<RemoveOptions>(opts)),
   rule: ({ args, opts }) => cmdRule(args[0] ?? '', as<RuleOptions>(opts)),

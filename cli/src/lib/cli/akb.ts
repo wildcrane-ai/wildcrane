@@ -50,8 +50,7 @@ export function buildAkbProgram(cli: AkbCliOptions): Command {
     .description(
       `Every move: \`${cli.program} raw help\`. These are the agent's commands between runs — a person ` +
         "never has to type one. They own a card’s frontmatter, and " +
-        `they only write what they are told: \`${cli.program} raw archive 12\` files the card, where ` +
-        `\`${cli.program} card archive 12\` puts an agent on it first.`,
+        `they only write what they are told: \`${cli.program} raw archive 12\` files the card.`,
     )
     .action(function () {
       throw new BoardError(`\`${cli.program} raw\` is a tree of its own — this command line never reached it.`, {

@@ -268,13 +268,11 @@ export type RunRefusalKind =
   | 'runtimeNotFound'
   | 'runtimeKey'
   | 'harnessNotFound'
-  | 'globalRename'
-  | 'globalDelete'
   | 'harnessUnused'
   | 'workflowUnnamed'
   | 'workflowTaken'
   | 'workflowNotFound'
-  /** Workflows are edited on the web (#409); only a Workflow builder draft is written here. */
+  /** Only a Workflow builder draft is written on the board; workflows change by `pull`/`push`. */
   | 'workflowReadOnly'
   /** Workflows are Cloud's (#409): not signed in, or the board is linked to no project. */
   | 'needsCloud'
@@ -899,7 +897,7 @@ export interface HarnessOption {
   binary: string
   /** True when that binary is on the PATH a run would be spawned on. Worked out fresh on
    *  every read, never cached, and it starts nothing: it says the CLI is there, not that
-   *  it is logged in or that a run would pass. That is `testConnection`'s answer. */
+   *  it is logged in or that a run would pass. */
   installed: boolean
   /** The version of the copy a run would use; null when it can't be read. */
   version: string | null
@@ -1085,27 +1083,6 @@ export interface AutoSchedule {
   every: string
   reads?: 'archived-cards' | 'chats' | 'dismissals'
 }
-
-/** What one connection test found out. */
-export interface ConnectionTest {
-  /** The agent answered — the setup works. Nothing reads what it answered. */
-  ok: boolean
-  ms: number
-  /** The agent's own output, exactly as it came, for a failure. Never a guess at what
-   *  went wrong: an explanation invented on top of a real error sends people down the
-   *  wrong path. */
-  output?: string
-  /** The agent's CLI isn't on this machine: the command that wasn't found. */
-  missing?: string
-  /** The command that installs it, shown with `missing`. */
-  install?: string
-  /** The test gave up on its own after the time limit. */
-  timedOut?: boolean
-  /** What was actually spawned — never what the screen asked for. A result that doesn't say
-   *  which connector answered can be read as being about the wrong one. */
-  harness?: string
-}
-
 
 /** The three groups a workflow lists its agents in. */
 export const WORKFLOW_GROUPS = ['previews', 'land', 'scheduled'] as const

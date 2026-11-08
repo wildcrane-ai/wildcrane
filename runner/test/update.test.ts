@@ -351,6 +351,14 @@ describe("the plugins' component (#529)", () => {
     assert.equal(await pluginEntry(), path.join(versionDir('1.2.0'), 'dist', 'plugin.mjs'))
   })
 
+  it("skips a Runner older than the host's first and downloads one that knows it (#533)", async () => {
+    fs.mkdirSync(path.join(versionDir('1.1.0'), 'dist'), { recursive: true })
+    fs.writeFileSync(path.join(versionDir('1.1.0'), 'dist', 'plugin.mjs'), '')
+    target = '1.2.0'; published['1.2.0'] = { script: CONNECTS, plugin: true }
+    assert.equal(await pluginEntry('1.2.0'), path.join(versionDir('1.2.0'), 'dist', 'plugin.mjs'))
+    assert.equal(await pluginEntry('1.3.0'), null)
+  })
+
   it('answers none when the named version carries no component or cannot be had', async () => {
     target = '1.1.0'; published['1.1.0'] = { script: CONNECTS }
     assert.equal(await pluginEntry(), null)

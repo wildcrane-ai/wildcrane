@@ -1,6 +1,6 @@
-// The plugins' local component (plugin.ts), as the host starts it: `codex` or `cursor` from those plugins.
+// The plugins' local component (plugin.ts), as the host starts it: `codex`, `cursor`, `dsh` or `kimi` from those plugins,
+// and the Claude Code plugin from Claude Code or ZCode.
 
-import { main } from './plugin'
+import { hostOf, main } from './plugin'
 
-const as = process.argv[2]
-void main(as === 'codex' || as === 'cursor' ? as : 'claude-code')
+void main(hostOf(process.argv[2], process.env))

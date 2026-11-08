@@ -9,7 +9,7 @@ import { describe, it } from 'node:test'
 import { markUnsent } from '../src/cache'
 import { runnerHome, useRunnerHome } from '../src/home'
 import { linesFor } from '../src/i18n'
-import { nextOf, noticeOf, type Seen } from '../src/plugin'
+import { hostOf, nextOf, noticeOf, type Seen } from '../src/plugin'
 import { holdMachine, lockPath } from '../src/lock'
 import { FakeCloud, writeFakeSession } from './fake-cloud'
 
@@ -72,9 +72,9 @@ describe('one Runner per computer', () => {
 })
 
 /** The built component of `host`'s plugin, spoken to over stdio. */
-function component(host: 'claude-code' | 'codex', cloud = 'http://127.0.0.1:9', env: Record<string, string> = {}) {
+function component(host: 'claude-code' | 'codex' | 'dsh', cloud = 'http://127.0.0.1:9', env: Record<string, string> = {}) {
   const server = path.join(process.env.RUNNER_DIST!, '..', '..', 'plugins', host, 'server', 'dist', 'start.mjs')
-  const child = spawn(process.execPath, [server, ...(host === 'codex' ? ['codex'] : [])], {
+  const child = spawn(process.execPath, [server, ...(host === 'claude-code' ? [] : [host])], {
     stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CLAUDE_PLUGIN_ROOT: path.resolve(path.dirname(server), '..', '..'), WILDCRANE_RUNNER_DIR: path.resolve(process.env.RUNNER_DIST!, '..'), AI4KANBAN_CLOUD_URL: cloud, HTTPS_PROXY: 'http://127.0.0.1:9', CODEX_HOME: path.join(os.tmpdir(), 'wildcrane-no-codex-home'), ...env },
   })
   const answers = new Map<number, Record<string, unknown>>()
@@ -94,6 +94,15 @@ function component(host: 'claude-code' | 'codex', cloud = 'http://127.0.0.1:9', 
   })()
   return { child, answers, send, ready }
 }
+
+describe('the host the Claude Code plugin runs in (#532)', () => {
+  it('is ZCode only when ZCode set both plugin roots', () => {
+    assert.equal(hostOf(undefined, { CLAUDE_PLUGIN_ROOT: '/z', ZCODE_PLUGIN_ROOT: '/z' }), 'zcode')
+    assert.equal(hostOf(undefined, { CLAUDE_PLUGIN_ROOT: '/c', ZCODE_PLUGIN_ROOT: '/z' }), 'claude-code')
+    assert.equal(hostOf(undefined, { CLAUDE_PLUGIN_ROOT: '/c' }), 'claude-code')
+    assert.equal(hostOf('codex', { CLAUDE_PLUGIN_ROOT: '/z', ZCODE_PLUGIN_ROOT: '/z' }), 'codex')
+  })
+})
 
 describe("the Codex status's next line", () => {
   const newer = { version: '0.1.4', latest: '0.1.5', source: 'git' as const }
@@ -116,6 +125,16 @@ describe("the Codex status's next line", () => {
     assert.equal(nextOf('cursor', 'running', newer, seen()), null)
     assert.match(String(nextOf('cursor', 'running', newer, seen({ folder: null }))), /^This folder is not a WildCrane project/)
     assert.match(String(nextOf('cursor', 'outdated', newer)), /restart Cursor/)
+  })
+
+  it('tells dsh its own update steps (#531)', () => {
+    assert.match(String(nextOf('dsh', 'running', newer, seen())), /`dsh plugin --profile web add wildcrane-dsh@latest`.*restart dsh/)
+    assert.match(String(nextOf('dsh', 'outdated', newer)), /restart dsh/)
+  })
+
+  it('tells Kimi Code of a newer plugin with its /plugins steps (#533)', () => {
+    assert.match(String(nextOf('kimi', 'running', newer, seen())), /`\/plugins` in Kimi Code/)
+    assert.match(String(nextOf('kimi', 'outdated', newer)), /restart Kimi Code/)
   })
 
   it("gives Claude Code's /wildcrane its update line, the outdated Runner first", () => {
@@ -171,7 +190,7 @@ describe('the plugin akb in a session started by hand (#187)', () => {
     await stop(claude.child)
     const codex = component('codex')
     await codex.ready
-    assert.equal(instructionsOf(codex.answers), `When \`akb\` is not on PATH, run \`${shim}\` in its place.`)
+    assert.equal(instructionsOf(codex.answers), `Run \`${shim}\` for every \`akb\` command.`)
     await stop(codex.child)
   })
 
@@ -496,6 +515,35 @@ describe('the plugin component', () => {
         child.stdin.end()
         await exited
       }
+      await cloud.stop()
+    }
+  })
+
+  it('opens a new discussion for each dsh chat and keeps it by id (#531)', async () => {
+    useRunnerHome()
+    fs.rmSync(runnerHome(), { recursive: true, force: true })
+    writeFakeSession(runnerHome())
+    const cloud = new FakeCloud()
+    await cloud.start()
+    const { child, answers, send, ready } = component('dsh', `http://127.0.0.1:${cloud.port}`)
+    let id = 10
+    const read = async (args: Record<string, unknown>) => {
+      const n = id++
+      send(n, 'tools/call', { name: 'wildcrane_draft_read', arguments: args })
+      await until(() => answers.has(n), 10_000)
+      return JSON.parse((answers.get(n)!.result as { content: { text: string }[] }).content[0]!.text) as Record<string, unknown>
+    }
+    try {
+      await ready
+      const first = await read({ path: os.homedir() })
+      assert.equal((await read({ path: os.homedir(), discussionId: first.discussion })).discussion, first.discussion)
+      assert.notEqual((await read({ path: os.homedir() })).discussion, first.discussion)
+      assert.equal(cloud.discussions.length, 2)
+      assert.equal(first.akb, path.join(runnerHome(), 'bin', 'akb', 'akb'))
+    } finally {
+      const exited = new Promise((r) => child.on('exit', r))
+      child.stdin.end()
+      await exited
       await cloud.stop()
     }
   })
