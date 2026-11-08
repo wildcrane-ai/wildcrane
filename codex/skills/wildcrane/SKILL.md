@@ -1,6 +1,7 @@
 ---
 name: wildcrane
-description: Open WildCrane settings on this computer (sign-in, project folders, AI tools).
+description: Open WildCrane settings on this computer — sign in, project folders and AI tools.
+disable-model-invocation: true
 ---
 
-Call `wildcrane_open_settings` with the current working directory as `path`. Reply with one line: settings opened, with the `url`; if `opened` is false, ask the user to visit the `url`. On an error, relay the tool's message.
+Call `wildcrane_open_settings` with `path` set to the current working directory. Reply in one line that WildCrane settings are open in the browser, with its address. When the tool fails, relay its message.

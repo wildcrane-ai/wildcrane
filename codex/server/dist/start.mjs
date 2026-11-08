@@ -1,4 +1,4 @@
-// wildcrane-runner 0.6.33 — built by runner/scripts/build.mjs. Do not edit.
+// wildcrane-runner 0.6.35 — built by runner/scripts/build.mjs. Do not edit.
 import { createRequire as __ai4kanbanRequire } from 'node:module'
 const require = __ai4kanbanRequire(import.meta.url)
 var __create = Object.create;
@@ -26804,8 +26804,8 @@ function cloudEndpoints() {
 }
 
 // src/i18n.ts
-var ZH_HOLDER = { "claude-code": "Claude Code", codex: "Codex", cursor: "Cursor", terminal: "\u672C\u673A\u7EC8\u7AEF" };
-var EN_HOLDER = { "claude-code": "Claude Code", codex: "Codex", cursor: "Cursor", terminal: "the terminal" };
+var ZH_HOLDER = { "claude-code": "Claude Code", codex: "Codex", cursor: "Cursor", dsh: "dsh", zcode: "ZCode", kimi: "Kimi Code", terminal: "\u672C\u673A\u7EC8\u7AEF" };
+var EN_HOLDER = { "claude-code": "Claude Code", codex: "Codex", cursor: "Cursor", dsh: "dsh", zcode: "ZCode", kimi: "Kimi Code", terminal: "the terminal" };
 var ZH = {
   signIn: (url) => `\u8BF7\u5728\u6D4F\u89C8\u5668\u4E2D\u767B\u5F55 WildCrane\uFF1A
 ${url}`,
@@ -27040,7 +27040,7 @@ function remember(target) {
   writeState(state);
 }
 var pluginOf = (dir) => path4.join(dir, "dist", "plugin.mjs");
-async function pluginEntry() {
+async function pluginEntry(min) {
   if (process.env.WILDCRANE_RUNNER_DIR) return pluginOf(process.env.WILDCRANE_RUNNER_DIR);
   const { bad } = readState();
   let names = [];
@@ -27049,9 +27049,9 @@ async function pluginEntry() {
   } catch {
   }
   const newest = names.filter((v) => !bad.includes(v) && fs4.existsSync(pluginOf(versionDir(v)))).sort(compare).at(-1);
-  if (newest) return pluginOf(versionDir(newest));
+  if (newest && (!min || compare(newest, min) >= 0)) return pluginOf(versionDir(newest));
   const target = await askTarget(machineId());
-  if (!target) return null;
+  if (!target || min && compare(target.version, min) < 0) return null;
   const got = await install2(target.version);
   if (!got.ok || !fs4.existsSync(pluginOf(got.dir))) return null;
   remember(target);
@@ -27059,8 +27059,9 @@ async function pluginEntry() {
 }
 
 // src/plugin-start.ts
+var FIRST = { kimi: "0.6.35" };
 useRunnerHome();
-var entry = await pluginEntry();
+var entry = await pluginEntry(FIRST[process.argv[2] ?? ""]);
 if (entry) await import(pathToFileURL(entry).href);
 else {
   process.stderr.write("WildCrane could not download its Runner. Check the network, then restart.\n");
