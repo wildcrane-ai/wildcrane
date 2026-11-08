@@ -12,8 +12,8 @@
       "description": "在 Claude 中整理目标，从网页开始任务。",
       "source": {
         "source": "archive",
-        "url": "https://github.com/wildcrane-ai/wildcrane/releases/download/plugin-v0.1.17/wildcrane-plugin.zip",
-        "sha256": "8a7fab14ad0077bb001d3fe51bc3500c50374357103deb510b25d492bc8eaa4f"
+        "url": "https://github.com/wildcrane-ai/wildcrane/releases/download/plugin-v0.1.16/wildcrane-plugin.zip",
+        "sha256": "c9e01cb1992bb29eb150cc309ea0fffde02ba8bf32cb5229ecd9675a27f8bb99"
       }
     }
   ]
