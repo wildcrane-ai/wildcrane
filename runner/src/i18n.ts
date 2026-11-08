@@ -2,8 +2,8 @@
 
 import type { Holder } from './lock'
 
-const ZH_HOLDER: Record<Holder, string> = { 'claude-code': 'Claude Code', codex: 'Codex', terminal: '本机终端' }
-const EN_HOLDER: Record<Holder, string> = { 'claude-code': 'Claude Code', codex: 'Codex', terminal: 'the terminal' }
+const ZH_HOLDER: Record<Holder, string> = { 'claude-code': 'Claude Code', codex: 'Codex', cursor: 'Cursor', terminal: '本机终端' }
+const EN_HOLDER: Record<Holder, string> = { 'claude-code': 'Claude Code', codex: 'Codex', cursor: 'Cursor', terminal: 'the terminal' }
 
 const ZH = {
   signIn: (url: string) => `请在浏览器中登录 WildCrane：\n${url}`,

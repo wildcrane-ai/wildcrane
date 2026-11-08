@@ -3,7 +3,7 @@
 # Node on its PATH, so the usual install places are tried too.
 set -u
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-entry="$here/../dist/index.mjs"
+entry="$here/../dist/start.mjs"
 
 # Node's fetch ignores https_proxy without this.
 export NODE_USE_ENV_PROXY=1

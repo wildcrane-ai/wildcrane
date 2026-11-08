@@ -26,14 +26,18 @@ export interface Akb {
 export const akbHome = () => path.join(runnerHome(), 'bin', 'akb')
 export const BUNDLED_SHIM = `bundled-${AKB_VERSION}`
 
-const PRELOAD = path.join(path.dirname(fileURLToPath(import.meta.url)), 'akb-proxy.mjs')
+const HERE = path.dirname(fileURLToPath(import.meta.url))
 
 /** Node arguments that run `entry` on the Runner's proxy route (akb-proxy.ts), the entry last. */
-export const akbArgs = (entry: string) => (fs.existsSync(PRELOAD) ? ['--import', pathToFileURL(PRELOAD).href, entry] : [entry])
+export function akbArgs(entry: string, dist = HERE): string[] {
+  const preload = path.join(dist, 'akb-proxy.mjs')
+  return fs.existsSync(preload) ? ['--import', pathToFileURL(preload).href, entry] : [entry]
+}
 
-export const bundledAkb = (): Akb => ({
+/** The akb a Runner's `dist` carries: this one's unless named. */
+export const bundledAkb = (dist = HERE): Akb => ({
   command: process.execPath,
-  args: akbArgs(path.join(path.dirname(fileURLToPath(import.meta.url)), 'akb', 'bin', 'ai4kanban.mjs')),
+  args: akbArgs(path.join(dist, 'akb', 'bin', 'ai4kanban.mjs'), dist),
   version: AKB_VERSION,
   shim: path.join(akbHome(), BUNDLED_SHIM),
 })

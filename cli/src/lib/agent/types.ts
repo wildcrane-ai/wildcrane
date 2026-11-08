@@ -424,7 +424,7 @@ export interface RunRecord {
   /** The session this planning run carried on (#1304): the one it resumed, or with `fork`
    *  the one it started as a copy of. */
   continues?: { resumeId: string; fork?: boolean }
-  formatRepair?: { attempt: number; errors: string; cardIds: number[]; changedIds: number[]; existingIds: number[] }
+  formatRepair?: { attempt: number; errors: string; cardIds: number[]; changedIds: number[]; existingIds: number[]; broken?: string[] }
   /** The automatic retry this run is part of (#525), on the run WAITING for the next
    *  attempt and on every attempt after the first. Absent on a run that has never hit a
    *  provider failure, which is nearly all of them. */

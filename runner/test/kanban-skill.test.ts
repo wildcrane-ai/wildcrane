@@ -67,11 +67,10 @@ it('写入路径不可用时拒绝启动', () => {
   assert.throws(() => prepareKanbanSkill(root), /无法准备/)
 })
 
-it('两种插件发行目录保留 discuss-goal 并携带同源 kanban 技能', () => {
-  for (const host of ['claude-code', 'codex']) {
+it('各插件发行目录保留 discuss-goal，不带 kanban 技能', () => {
+  for (const host of ['claude-code', 'codex', 'cursor']) {
     const skills = path.resolve(process.env.RUNNER_DIST!, '../../plugins', host, 'skills')
-    assert.equal(fs.readFileSync(path.join(skills, 'kanban/SKILL.md'), 'utf8'), note)
-    assert.equal(fs.readFileSync(path.join(skills, 'discuss-goal/SKILL.md'), 'utf8').split('---\n').slice(2).join('---\n').trim(), fs.readFileSync(path.resolve(process.env.RUNNER_DIST!, '../../cli/src/guide/discuss-goal.md'), 'utf8').trim())
-    assert.deepEqual(fs.readdirSync(path.join(skills, 'kanban')), ['SKILL.md'])
+    assert.match(fs.readFileSync(path.join(skills, 'discuss-goal/SKILL.md'), 'utf8'), /`akb guide discuss-goal`/)
+    assert.equal(fs.existsSync(path.join(skills, 'kanban')), false)
   }
 })

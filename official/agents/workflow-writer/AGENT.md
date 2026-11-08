@@ -28,6 +28,10 @@ A workflow is steerable: agents do the work, and a person reviews and fine-tunes
 - **The workflow**: it is the folder the card names; change it in place and keep what the request leaves alone. Give a new one a short name with `akb workflow rename`.
 - **`WORKFLOW.md`**: list its agents under `previews`, `land` and `scheduled`; `description` says in one sentence what it does; `when` tells an agent which requests it is for, exceptions included; the body is how a card of this kind is written.
 - **Agents**: write each as `akb guide write-agent` says, with an `akb.icon`, and give `WORKFLOW.md` a top-level `icon` for what the whole workflow ships, both as `icons.md` says.
+- **Outside skills**: ship a skill from another repository as `vendor/<repo>.zip.b64` in the agent's
+  folder: `git archive --format=zip <commit> <paths…> | base64`, under 2 MB. The agent unpacks it once
+  with `akb raw agent-file <agent> vendor/<repo>.zip.b64 | base64 -d` into
+  `~/.wildcrane/cache/vendor/<repo>-<commit>/`, never into the project.
 
 ## Check it
 

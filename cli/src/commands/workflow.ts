@@ -27,6 +27,11 @@ import {
   type WorkflowHelper,
 } from '../lib/agent/workflows'
 import type { MoveResult } from '../lib/types'
+import { readWorkflowFolder } from '../lib/agent/workflow-folder'
+import { checkWorkflowFiles } from '../lib/shared/workflow-files'
+import { cloudEndpoints } from '../lib/cloud/config'
+import { accessToken } from '../lib/cloud/session'
+import { SAID } from './cloud'
 
 const found = (id: string) => {
   const flow = workflowById(id)
@@ -97,4 +102,41 @@ export function cmdWorkflowDiagram(id: string, card: string): MoveResult {
   const tag = `<Workflow src=".assets/${cardId}/workflow.json" label="${flow.name.replace(/"/g, '')}" />`
   say(tag)
   return { file, tag, diagram }
+}
+
+const PUBLISH_REFUSED: Record<string, string> = {
+  not_creator: 'only accounts WildCrane has made creators can publish to the marketplace',
+  not_yours: 'another creator holds this name, or it is a built-in',
+}
+
+/** `akb workflow publish <folder>` (#523): the folder, named by its slug, to the marketplace as
+ *  the signed-in account. */
+export async function cmdWorkflowPublish(folder: string, opts: { dryRun?: boolean }): Promise<MoveResult> {
+  const dir = path.resolve(folder)
+  if (!fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory()) die(`${folder} is not a folder`, 'bad-args')
+  const slug = path.basename(dir)
+  const files = readWorkflowFolder(dir)
+  const checked = checkWorkflowFiles(files, true)
+  if (!checked.ok) die(`${slug}: ${checked.file} ${checked.reason}`, 'bad-workflow')
+  const token = await accessToken()
+  if (!token.ok) die(SAID[token.reason].en, 'cloud-refused')
+  let res: Response
+  try {
+    res = await fetch(`${cloudEndpoints().api}/v1/marketplace/workflows`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ slug, files, ...(opts.dryRun ? { dry_run: true } : {}) }),
+    })
+  } catch {
+    die(SAID.unreachable.en, 'cloud-refused')
+  }
+  const body = (await res.json().catch(() => ({}))) as { id: string; version: number; changed: boolean; error?: { code?: string; message?: string } }
+  if (!res.ok) {
+    if (res.status === 401) die(SAID.expired.en, 'cloud-refused')
+    const code = body.error?.code ?? 'failed'
+    die(`${slug}: ${PUBLISH_REFUSED[code] ?? body.error?.message ?? `Cloud answered ${res.status}`}`, code)
+  }
+  say(!body.changed ? `${slug} is unchanged (v${body.version}).`
+    : opts.dryRun ? `${slug} would publish v${body.version}.` : `Published ${slug} v${body.version}.`)
+  return { slug, id: body.id, version: body.version, changed: body.changed, ...(opts.dryRun ? { dryRun: true } : {}) }
 }

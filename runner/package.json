@@ -1,8 +1,8 @@
 {
   "name": "wildcrane-runner",
-  "version": "0.6.32",
+  "version": "0.6.33",
   "description": "WildCrane's Local Runner — connects this computer to WildCrane and runs its jobs on your local Claude Code, Codex, OpenCode or Cursor.",
-  "license": "FSL-1.1-ALv2",
+  "license": "Apache-2.0",
   "homepage": "https://wildcrane.ai/",
   "repository": {
     "type": "git",

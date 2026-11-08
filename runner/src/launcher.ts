@@ -125,6 +125,25 @@ export async function candidates(own: Candidate): Promise<Candidate[]> {
   return [current]
 }
 
+export const pluginOf = (dir: string) => path.join(dir, 'dist', 'plugin.mjs')
+
+/** The plugins' component (#529): the newest installed Runner that carries one, else the version
+ *  Cloud names, downloaded. `WILDCRANE_RUNNER_DIR` points a plugin at a checkout's runner/. */
+export async function pluginEntry(): Promise<string | null> {
+  if (process.env.WILDCRANE_RUNNER_DIR) return pluginOf(process.env.WILDCRANE_RUNNER_DIR)
+  const { bad } = readState()
+  let names: string[] = []
+  try { names = fs.readdirSync(versionsDir()) } catch { /* nothing installed */ }
+  const newest = names.filter((v) => !bad.includes(v) && fs.existsSync(pluginOf(versionDir(v)))).sort(compare).at(-1)
+  if (newest) return pluginOf(versionDir(newest))
+  const target = await askTarget(machineId())
+  if (!target) return null
+  const got = await install(target.version)
+  if (!got.ok || !fs.existsSync(pluginOf(got.dir))) return null
+  remember(target)
+  return pluginOf(got.dir)
+}
+
 type Outcome = { exit: number } | { failed: 'crashed' | 'timeout' } | { update: Candidate }
 
 export interface LaunchOptions {
@@ -198,10 +217,10 @@ function runOnce(candidate: Candidate, options: LaunchOptions): Promise<Outcome>
         connected = true
         if (timer) clearTimeout(timer)
         if (candidate.entry.startsWith(versionsDir() + path.sep)) fs.rmSync(legacyVersionsDir(), { recursive: true, force: true })
-        if (candidate.fresh) {
-          markGood(candidate.version)
-          status(t.updated(candidate.version))
-        }
+        // A plugin runs its component from an installed version: keep that one too.
+        const installed = candidate.entry.startsWith(versionsDir() + path.sep)
+        if (candidate.fresh || (installed && !readState().good.includes(candidate.version))) markGood(candidate.version)
+        if (candidate.fresh) status(t.updated(candidate.version))
       }
     })
     child.on('exit', (code, signal) => {

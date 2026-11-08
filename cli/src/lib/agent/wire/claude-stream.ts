@@ -52,6 +52,18 @@ function eventModel(ev: Record<string, unknown>): string | undefined {
 // names, and one of them is always there. Never empty: an error line saying nothing is
 // worse than a made-up one.
 function whyItFailed(ev: Record<string, unknown>): string {
+  const why = failedWith(ev)
+  const fix = USER_FIXES.find(([pattern]) => pattern.test(why))?.[1]
+  return fix ? `${why}\n${fix}` : why
+}
+
+// Failures only the user can clear, and what they do about it.
+const USER_FIXES: [RegExp, string][] = [
+  [/failed to authenticate|invalid api key|oauth token|please run \/login|not logged in/i, 'Sign in to Claude Code again: run `claude` and enter /login.'],
+  [/usage limit|credit balance is too low|quota/i, 'Wait for the usage limit to reset, or add credit, then press Resume.'],
+]
+
+function failedWith(ev: Record<string, unknown>): string {
   const errors = Array.isArray(ev.errors) ? ev.errors.map(str).filter(Boolean) : []
   if (errors.length) return errors.join('; ')
   const named = str(ev.subtype) || str(ev.terminal_reason)

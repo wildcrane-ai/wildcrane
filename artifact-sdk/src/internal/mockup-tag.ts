@@ -48,12 +48,15 @@ export type Drawn = {
   error?: string;
 };
 
-/** Two sides and how the play bar is cut, all of the same review (#1740, #1803). */
+/** Two sides sharing one player and how its play bar is cut (#1740, #1803). */
+export type CompareSides = { a: Drawn; b: Drawn | StoryboardView; shots?: Shot[]; breakdown?: StoryboardView };
+
+/** A compare's sides: one shared player, or two Assets each drawn on its own (#526). */
 export type CompareSpec = {
   label: string;
   aLabel: string;
   bLabel: string;
-  load: () => Promise<{ a: Drawn; b: Drawn | StoryboardView; shots?: Shot[]; breakdown?: StoryboardView }>;
+  load: () => Promise<CompareSides | { sides: [MockupView, MockupView] }>;
 };
 
 /** A developer's component (#2006), framed on its own origin. `load` fails for any reason the
@@ -92,6 +95,8 @@ export type MockupView = Drawn & {
   sprite?: SpriteSpec;
   /** Its artifact is still being read. */
   loading?: true;
+  /** The original file, to download. */
+  download?: { name: string; load: () => Promise<string> };
 };
 
 // A self-closing tag with no `<` or `>` inside it.

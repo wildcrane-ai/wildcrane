@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { after, before, beforeEach, describe, it } from 'node:test'
 
-import { checkReleased, forgetReleased, newerOf, pluginInfo, pluginVersion, releasedOf } from '../src/plugin-version'
+import { checkReleased, codexSource, forgetReleased, newerOf, pluginInfo, pluginVersion, releasedOf } from '../src/plugin-version'
 
 // The panel's plugin version and the newer release it offers (#119).
 
@@ -39,6 +39,9 @@ describe('plugin version', () => {
     assert.equal(pluginVersion('codex', root), null)
     fs.writeFileSync(path.join(root, 'plugin.json'), JSON.stringify({ name: 'wildcrane', version: '0.1.3' }))
     assert.equal(pluginVersion('codex', root), '0.1.3')
+    fs.mkdirSync(path.join(root, '.cursor-plugin'))
+    fs.writeFileSync(path.join(root, '.cursor-plugin', 'plugin.json'), JSON.stringify({ name: 'wildcrane', version: '0.1.4' }))
+    assert.equal(pluginVersion('cursor', root), '0.1.4')
   })
 })
 
@@ -91,5 +94,21 @@ describe('the released version', () => {
     forgetReleased()
     await checkReleased('http://127.0.0.1:9/marketplace.json')
     assert.deepEqual(pluginInfo(), { version: '0.1.4', latest: null })
+  })
+})
+
+describe("Codex's source for the plugin (#528)", () => {
+  const home = (config?: string) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'))
+    if (config !== undefined) fs.writeFileSync(path.join(dir, 'config.toml'), config)
+    return dir
+  }
+
+  it("reads the wildcrane marketplace's source_type, not another one's", () => {
+    const kami = '[marketplaces.kami]\nsource_type = "git"\nsource = "https://github.com/tw93/kami.git"\n\n'
+    assert.equal(codexSource(home(`${kami}[marketplaces.wildcrane]\nsource_type = "local"\nsource = "/x"\n\n[plugins."wildcrane@wildcrane"]\nenabled = true\n`)), 'local')
+    assert.equal(codexSource(home(`[marketplaces.wildcrane]\nsource_type = "git"\nref = "codex-plugin"\n`)), 'git')
+    assert.equal(codexSource(home(kami)), null)
+    assert.equal(codexSource(home()), null)
   })
 })

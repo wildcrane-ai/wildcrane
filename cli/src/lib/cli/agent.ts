@@ -44,7 +44,7 @@ import {
 } from '../../commands/cloud-template'
 import { cmdComponents } from '../../commands/components'
 import { cmdGuide } from '../../commands/guide'
-import { cmdWorkflowDiagram, cmdWorkflowList, cmdWorkflowRename } from '../../commands/workflow'
+import { cmdWorkflowDiagram, cmdWorkflowList, cmdWorkflowPublish, cmdWorkflowRename } from '../../commands/workflow'
 import {
   cmdAnswered,
   cmdCancel,
@@ -523,6 +523,14 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .summary('write the workflow\'s diagram to .assets/<card>/workflow.json and print the <Workflow> tag that shows it')
     .action(async function (this: Command, id: string, card: string) {
       await onBoard(this, cli, () => cmdWorkflowDiagram(id, card))
+    })
+
+  flowWord('publish')
+    .argument('<folder>', 'the workflow folder; its name is the slug')
+    .option('--dry-run', 'check the folder and print what would happen, publishing nothing')
+    .summary('publish a workflow folder to the marketplace as the signed-in account. Prints the version new tasks take, or that nothing changed.')
+    .action(async function (this: Command, folder: string) {
+      await boardless(this, cli, () => cmdWorkflowPublish(folder, this.opts()))
     })
 
   // ---- the flows, as text ---------------------------------------------------

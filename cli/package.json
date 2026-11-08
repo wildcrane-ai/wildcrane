@@ -1,6 +1,6 @@
 {
   "name": "wildcrane",
-  "version": "0.11.29",
+  "version": "0.11.30",
   "akbContract": 7,
   "description": "WildCrane's `akb` command — scaffold the Markdown board under docs/kanban/, put an agent on a card, and carry the flows the agent works by.",
   "keywords": [
@@ -13,7 +13,7 @@
     "markdown",
     "board"
   ],
-  "license": "FSL-1.1-ALv2",
+  "license": "Apache-2.0",
   "homepage": "https://wildcrane.ai/",
   "repository": {
     "type": "git",

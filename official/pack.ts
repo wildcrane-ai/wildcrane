@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url'
 
 import { parseSpecAgent } from '../cli/src/lib/agents/parse.ts'
 import { parseWorkflowFile } from '../cli/src/lib/agent/workflow-def.ts'
-import { checkWorkflowFiles, isAboutFile, landsOf, MCP_FILE, WORKFLOW_FILE, type WorkflowFiles } from '../cli/src/lib/shared/workflow-files.ts'
+import { filesOf, readWorkflowFile, readWorkflowFolder } from '../cli/src/lib/agent/workflow-folder.ts'
+import { checkWorkflowFiles, hashInput, isAboutFile, landsOf, MCP_FILE, officialId, WORKFLOW_FILE, type WorkflowFiles } from '../cli/src/lib/shared/workflow-files.ts'
 
 export const OFFICIAL = path.dirname(fileURLToPath(import.meta.url))
 
@@ -25,21 +26,11 @@ export interface OfficialWorkflow {
   files: WorkflowFiles
 }
 
-const MIME: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' }
-
 const dirs = (dir: string) => fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort()
 
-function filesOf(dir: string, base = dir): string[] {
-  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-    const full = path.join(dir, e.name)
-    return e.isDirectory() ? filesOf(full, base) : [path.relative(base, full).split(path.sep).join('/')]
-  })
-}
+export { officialId }
 
-export const officialId = (folder: string) => `wf_builtin_${folder.replace(/-/g, '_')}`
-
-export const hashOf = (files: WorkflowFiles) =>
-  crypto.createHash('sha256').update(JSON.stringify(Object.entries(files).sort(([a], [b]) => (a < b ? -1 : 1)))).digest('hex')
+export const hashOf = (files: WorkflowFiles) => crypto.createHash('sha256').update(hashInput(files)).digest('hex')
 
 /** Every official workflow under `root`. A broken one throws; `loose`, it is packed as it is,
  *  what akb's tests read. */
@@ -47,7 +38,7 @@ export function packOfficial(root = OFFICIAL, loose = false): OfficialWorkflow[]
   const agentsDir = path.join(root, 'agents')
   const agentFiles = Object.fromEntries(dirs(agentsDir).map((name) => {
     const dir = path.join(agentsDir, name)
-    return [name, Object.fromEntries(filesOf(dir).sort().map((f) => [f, fs.readFileSync(path.join(dir, f), 'utf8')]))]
+    return [name, readWorkflowFolder(dir)]
   })) as Record<string, WorkflowFiles>
   for (const [name, own] of Object.entries(loose ? {} : agentFiles)) {
     const read = parseSpecAgent(own['AGENT.md'] ?? '', `official/agents/${name}/AGENT.md`, (p) => own[p] ?? null, true)
@@ -58,8 +49,7 @@ export function packOfficial(root = OFFICIAL, loose = false): OfficialWorkflow[]
     const dir = path.join(workflowsDir, folder)
     const files: WorkflowFiles = {}
     for (const f of filesOf(dir).sort()) {
-      if (f === WORKFLOW_FILE || f === MCP_FILE || f.startsWith('skills/') || /^ABOUT(\.[a-z]{2})?\.md$/.test(f)) files[f] = fs.readFileSync(path.join(dir, f), 'utf8')
-      else if (isAboutFile(f)) files[f] = `data:${MIME[path.extname(f)]};base64,${fs.readFileSync(path.join(dir, f)).toString('base64')}`
+      if (f === WORKFLOW_FILE || f === MCP_FILE || f.startsWith('skills/') || isAboutFile(f)) files[f] = readWorkflowFile(dir, f)
     }
     const read = checkWorkflowFiles({ [WORKFLOW_FILE]: files[WORKFLOW_FILE], ...Object.fromEntries(
       Object.entries(agentFiles).flatMap(([name, own]) => Object.entries(own).map(([f, t]) => [`agents/${name}/${f}`, t]))) })

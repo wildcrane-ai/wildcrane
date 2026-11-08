@@ -13,17 +13,18 @@ import { readSession } from '../../cli/src/lib/cloud/session'
 import { akbHome, bundledAkb, shimDir } from './akb'
 import * as api from './api'
 import { kept } from './cache'
-import { launch } from './launcher'
+import { launch, provenNewer } from './launcher'
 import { WEB_URL, taskUrl } from './urls'
 import { refusal } from './folders'
 import { machineId, runnerHome, useRunnerHome } from './home'
-import { checkReleased, pluginInfo } from './plugin-version'
+import { checkReleased, pluginInfo, type PluginInfo } from './plugin-version'
 import { EXIT_OUTDATED, VERSION } from './protocol'
 import { LABELS } from './runtimes'
+import { versionDir } from './update'
 import * as settings from './settings'
 import { closeSettings, openSettings } from './settings-server'
 
-export type Host = 'claude-code' | 'codex'
+export type Host = 'claude-code' | 'codex' | 'cursor'
 
 /** The panel's tool takes this file's key, so the model, which never reads it, cannot start a task. */
 export const panelKeyFile = () => path.join(runnerHome(), 'plugin', 'panel.key')
@@ -111,18 +112,20 @@ async function draftOf(id: string) {
 
 /** The Runner: started once signed in, closed with the host. */
 let runner: { close(): Promise<void>; renew(): void } | null = null
-/** `outdated`: Cloud refused this plugin's Runner; it stays off until the plugin is updated. */
+/** `outdated`: Cloud refused this Runner and it could not update; it stays off until the host restarts. */
 let runnerState: 'off' | 'waiting' | 'running' | 'outdated' = 'off'
 let host: Host = 'claude-code'
 /** This plugin's `akb` for a session the Runner did not start. */
 let akbFile: string | null = null
 
 /** A session started by hand has no Runner to put `akb` on its PATH (#187): the fixed folder
- *  hooks/session.mjs names, not a version's. Windows stays out. */
+ *  hooks/session.mjs names, not a version's, on the newest Runner that ran here. Windows stays out. */
 function writeShim(): void {
   if (process.env.WILDCRANE_JOB) return
   try {
-    akbFile = path.join(shimDir({ ...bundledAkb(), shim: akbHome() }), process.platform === 'win32' ? 'akb.cmd' : 'akb')
+    const proven = provenNewer(VERSION)
+    const akb = proven ? bundledAkb(path.join(versionDir(proven), 'dist')) : bundledAkb()
+    akbFile = path.join(shimDir({ ...akb, shim: akbHome() }), process.platform === 'win32' ? 'akb.cmd' : 'akb')
   } catch (e) {
     process.stderr.write(`wildcrane: could not write the akb shim: ${e instanceof Error ? e.message : String(e)}\n`)
   }
@@ -139,7 +142,7 @@ function run(): void {
     onSpawn: (send) => { renew = () => send('renew') },
     onMessage: (message) => {
       if (message.type === 'waiting') runnerState = 'waiting'
-      if (message.type === 'connected') runnerState = 'running'
+      if (message.type === 'connected') { runnerState = 'running'; writeShim() }
     },
   })
   const stopped = done.then((code) => code === EXIT_OUTDATED ? { reason: 'outdated' as const } : { reason: 'refused' as const, message: 'Runner 已停止' })
@@ -155,15 +158,23 @@ const startSignIn = settings.startSignIn
 /** This folder's project, when it was added. */
 const folderOf = settings.folderOf
 
-/** How to update the plugin, which carries its own Runner. */
-const UPDATE = {
-  'claude-code': 'The WildCrane plugin is out of date, so tasks no longer run on this computer. Tell the user to run `claude plugin marketplace update wildcrane` and `claude plugin update wildcrane@wildcrane` in a terminal, then `/reload-plugins`.',
-  codex: 'The WildCrane plugin is out of date, so tasks no longer run on this computer. Tell the user to download `wildcrane-codex.zip` from the latest `plugin-v*` release at https://github.com/wildcrane-ai/wildcrane/releases, unzip it over the old copy, then run `codex plugin remove wildcrane@wildcrane` and `codex plugin add wildcrane@wildcrane`.',
+/** Codex updates from the `codex-plugin` branch (#528); any other install switches to it, which also updates. */
+const CODEX_UPGRADE = 'run `codex plugin marketplace upgrade wildcrane` in a terminal, then restart Codex'
+const CODEX_SWITCH = 'run `codex plugin marketplace add wildcrane-ai/wildcrane --ref codex-plugin` and `codex plugin add wildcrane@wildcrane` in a terminal, then restart Codex'
+const codexSteps = (plugin: PluginInfo) => (plugin.source === 'git' ? CODEX_UPGRADE : CODEX_SWITCH)
+
+/** Cloud refused the Runner and it could not update itself; a restart downloads it again. */
+const OUTDATED = {
+  'claude-code': "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Claude Code.",
+  codex: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Codex.",
+  cursor: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Cursor.",
 }
 
+const LOCAL = `This WildCrane plugin was installed from a local folder, so it gets no updates. Tell the user once in this conversation how to switch to the source that updates: ${CODEX_SWITCH}.`
+
 /** Codex has no panel, so a newer release reaches the user through `next`. */
-const NEWER = (version: string, latest: string) =>
-  `WildCrane plugin ${latest} is out; this computer has ${version}, and tasks still run. Tell the user once in this conversation, with the steps: download \`wildcrane-codex.zip\` from https://github.com/wildcrane-ai/wildcrane/releases/tag/plugin-v${latest}, unzip it over the old copy, then run \`codex plugin remove wildcrane@wildcrane\` and \`codex plugin add wildcrane@wildcrane\`.`
+const NEWER = (plugin: PluginInfo) =>
+  `WildCrane plugin ${plugin.latest} is out; this computer has ${plugin.version}, and tasks still run. Tell the user once in this conversation, with the steps: ${codexSteps(plugin)}.`
 
 type Connection = { label: string; state: 'notInstalled' | 'signedOut' | 'ready'; command: string | null }
 
@@ -179,14 +190,16 @@ const NOT_ADDED = 'This folder is not a WildCrane project yet. Call wildcrane_op
 /** What the signed-in state shows that `next` reads: `refused` is unset when Cloud was not reached. */
 export type Seen = { connections: Connection[]; folder: unknown; refused?: string | null; web: string }
 
-/** One line for the model, the first that holds: an outdated Runner, then for Codex alone no tool
- *  ready, this folder not added, a newer release. Claude Code's panel shows the rest itself. */
-export function nextOf(as: Host, state: typeof runnerState, plugin: { version: string | null; latest: string | null }, seen?: Seen): string | null {
-  if (state === 'outdated') return UPDATE[as]
-  if (as !== 'codex') return null
+/** One line for the model, the first that holds: an outdated Runner, then for Codex and Cursor no
+ *  tool ready, this folder not added, and for Codex alone a local install or a newer release (Cursor's
+ *  marketplace updates it). Claude Code's `/wildcrane` gives its update line itself. */
+export function nextOf(as: Host, state: typeof runnerState, plugin: PluginInfo, seen?: Seen): string | null {
+  if (state === 'outdated') return OUTDATED[as]
+  if (as === 'claude-code') return null
+  if (as === 'codex' && plugin.source === 'local') return LOCAL
   if (seen && !seen.connections.some((c) => c.state === 'ready')) return NOT_READY(seen.connections, seen.web)
   if (seen && seen.folder === null && seen.refused === null) return NOT_ADDED
-  return plugin.version && plugin.latest ? NEWER(plugin.version, plugin.latest) : null
+  return as === 'codex' && plugin.version && plugin.latest ? NEWER(plugin) : null
 }
 
 async function state(cwd: string) {
@@ -294,6 +307,21 @@ const PanelArgs = {
   path: z.string().optional(),
   task: z.string().optional(),
   stop: z.enum(['task', 'chat']).optional(),
+  lang: z.enum(['zh', 'en']).optional(),
+}
+
+const UPDATE_COMMANDS = 'claude plugin marketplace update wildcrane && claude plugin update wildcrane@wildcrane'
+
+/** `/wildcrane`'s update line: an outdated Runner first, then a newer plugin. */
+export function noticeOf(lang: 'zh' | 'en', state: typeof runnerState, plugin: PluginInfo): string | null {
+  const zh = lang === 'zh'
+  if (state === 'outdated') return zh
+    ? 'Runner 版本过旧且未能自动更新，任务已暂停。检查网络后重启 Claude Code。'
+    : 'The Runner is out of date and could not update, so tasks are paused. Check the network, then restart Claude Code.'
+  if (!plugin.latest) return null
+  return zh
+    ? `插件有新版本 ${plugin.latest}。在终端执行 \`${UPDATE_COMMANDS}\`，再运行 /reload-plugins。`
+    : `Version ${plugin.latest} is available. Run \`${UPDATE_COMMANDS}\` in a terminal, then /reload-plugins.`
 }
 
 type Panel = { [K in keyof typeof PanelArgs]: z.infer<(typeof PanelArgs)[K]> }
@@ -303,8 +331,11 @@ export async function panel(args: Panel): Promise<unknown> {
   switch (args.action) {
     case 'state':
       return state(cwd)
-    case 'openSettings':
-      return openSettings(settings.settingsAction, { path: cwd, project: args.project })
+    case 'openSettings': {
+      const opened = await openSettings(settings.settingsAction, { path: cwd, project: args.project })
+      const notice = noticeOf(args.lang ?? 'en', runnerState, pluginInfo(host))
+      return notice ? { ...opened, notice } : opened
+    }
     case 'signIn':
       startSignIn()
       return { signing: settings.signingState() }
@@ -342,14 +373,14 @@ const linked = (d: { id: string }, goals: ReturnType<typeof goalOf>[]) =>
 /** The Codex thread a call comes from, else this process: one Codex session runs one component. */
 const PROCESS = `process-${crypto.randomUUID()}`
 type Meta = { threadId?: unknown; 'x-codex-turn-metadata'?: { workspaces?: Record<string, unknown> } } | undefined
-const threadOf = (meta: Meta) => `codex:${typeof meta?.threadId === 'string' && meta.threadId ? meta.threadId : PROCESS}`
+const threadOf = (meta: Meta) => `${host}:${typeof meta?.threadId === 'string' && meta.threadId ? meta.threadId : PROCESS}`
 const pathOf = (given: string | undefined, meta: Meta) => given || Object.keys(meta?.['x-codex-turn-metadata']?.workspaces ?? {})[0] || ''
 
 const SIGNED_OUT = { error: 'signed_out', message: 'Not signed in to WildCrane. Call wildcrane_open_settings to open settings and sign in, then try again.' }
 const PANEL_SIGNED_OUT = { error: 'signed_out', message: 'Not signed in to WildCrane. Tell the user to run /wildcrane and sign in, then try again.' }
 
 export function server(): McpServer {
-  const instructions = host === 'codex' && akbFile ? `When \`akb\` is not on PATH, run \`${akbFile}\` in its place.` : undefined
+  const instructions = host !== 'claude-code' && akbFile ? `When \`akb\` is not on PATH, run \`${akbFile}\` in its place.` : undefined
   const mcp = new McpServer({ name: 'wildcrane', version: VERSION }, { instructions })
   mcp.registerTool('wildcrane_open_settings', {
     description: '在当前电脑打开 WildCrane 设置，管理登录、项目文件夹和 AI 工具状态。参数仅预填上下文，不授予目录权限。用户要求设置时调用。',
@@ -360,7 +391,7 @@ export function server(): McpServer {
   })
   const saveSchema = { discussionId: z.string(), expectedVersion: z.number().int(), goals: z.array(GoalInput).max(10).optional(), ideas: z.array(GoalInput).max(10).optional() }
   const save: ToolCallback<typeof saveSchema> = async ({ discussionId, expectedVersion, goals, ideas }) => {
-    if (!readSession()) return { ...text(host === 'codex' ? SIGNED_OUT : PANEL_SIGNED_OUT), isError: true }
+    if (!readSession()) return { ...text(host === 'claude-code' ? PANEL_SIGNED_OUT : SIGNED_OUT), isError: true }
     if ((goals === undefined) === (ideas === undefined)) return { ...text({ error: 'bad_request', message: 'Provide exactly one of goals or ideas.' }), isError: true }
     const saved = await api.saveDraft(discussionId, expectedVersion, goals ?? ideas!)
     if (saved.ok) {
@@ -375,9 +406,9 @@ export function server(): McpServer {
   }
   const saveWhat = '保存讨论中全部开放目标，必须使用最近读取的版本；遗漏的开放目标会被丢弃。保存不会开始任务，用户从网页开始。'
 
-  if (host === 'codex') {
+  if (host !== 'claude-code') {
     mcp.registerTool('wildcrane_draft_read', {
-      description: "Read this Codex session's WildCrane discussion: its goals, their version, the workflows a goal can use, and its web page. Opens one on first use, in the project of `path`.",
+      description: "Read this session's WildCrane discussion: its goals, their version, the workflows a goal can use, and its web page. Opens one on first use, in the project of `path`.",
       inputSchema: {
         path: z.string().optional().describe('The current working directory. The component runs elsewhere and cannot see it.'),
         discussionId: z.string().optional().describe("Leave out for this session's discussion."),

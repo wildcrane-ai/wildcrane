@@ -15,8 +15,8 @@ const RETRY_MS = 5_000
 const KIND_MS = 1_000
 
 /** 启动 Runner 的插件宿主或终端。 */
-export type Holder = 'claude-code' | 'codex' | 'terminal'
-const HOLDERS: readonly string[] = ['claude-code', 'codex', 'terminal']
+export type Holder = 'claude-code' | 'codex' | 'cursor' | 'terminal'
+const HOLDERS: readonly string[] = ['claude-code', 'codex', 'cursor', 'terminal']
 
 export function lockPath(): string {
   const home = runnerHome()

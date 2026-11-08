@@ -2,6 +2,7 @@
 // offline, a blocked GitHub or a manifest it cannot read all answer null.
 
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 import type { Host } from './plugin'
@@ -16,9 +17,10 @@ const RETRY_MS = 5 * 60_000
 /** The server runs from `<root>/server/dist/index.mjs`. A Codex opened from Claude Code inherits `CLAUDE_PLUGIN_ROOT`. */
 const pluginRoot = (host: Host) => (host === 'claude-code' && process.env.CLAUDE_PLUGIN_ROOT) || path.resolve(path.dirname(process.argv[1] ?? ''), '..', '..')
 
-/** Codex's `plugin.json` sits at the plugin root. */
+const MANIFEST: Record<Host, string> = { 'claude-code': path.join('.claude-plugin', 'plugin.json'), codex: 'plugin.json', cursor: path.join('.cursor-plugin', 'plugin.json') }
+
 export function pluginVersion(host: Host = 'claude-code', root = pluginRoot(host)): string | null {
-  const file = host === 'codex' ? 'plugin.json' : path.join('.claude-plugin', 'plugin.json')
+  const file = MANIFEST[host]
   try {
     const version = (JSON.parse(fs.readFileSync(path.join(root, file), 'utf8')) as { version?: unknown }).version
     return typeof version === 'string' ? version : null
@@ -54,10 +56,25 @@ export function checkReleased(url = MARKETPLACE, now = Date.now()): Promise<void
   return fetching
 }
 
-export function pluginInfo(host: Host = 'claude-code'): { version: string | null; latest: string | null } {
+/** Where Codex installs this plugin from: the `codex-plugin` Git branch (#528), a local folder such as an
+ *  unzipped release, or null when Codex's config does not say. */
+export function codexSource(home = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')): 'git' | 'local' | null {
+  try {
+    const config = fs.readFileSync(path.join(home, 'config.toml'), 'utf8')
+    const section = /^\[marketplaces\.wildcrane\][^\n]*\n((?:(?!\[)[^\n]*\n?)*)/m.exec(config)?.[1] ?? ''
+    const type = /^source_type\s*=\s*"(\w+)"/m.exec(section)?.[1]
+    return type === 'git' || type === 'local' ? type : null
+  } catch {
+    return null
+  }
+}
+
+export type PluginInfo = { version: string | null; latest: string | null; source?: 'git' | 'local' | null }
+
+export function pluginInfo(host: Host = 'claude-code'): PluginInfo {
   void checkReleased()
   const version = pluginVersion(host)
-  return { version, latest: newerOf(version, released?.value ?? null) }
+  return { version, latest: newerOf(version, released?.value ?? null), ...(host === 'codex' ? { source: codexSource() } : {}) }
 }
 
 export function forgetReleased(): void {

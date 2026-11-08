@@ -3,7 +3,7 @@ import { manifestOf, mapReferences, referencesOf, type Manifest } from './manife
 import { hyperframeDocument } from './hyperframe-document';
 import { schemaProblem } from './schema';
 import { parseShots, shotsProblem, storyboardShots, type Shot } from './format/compare';
-import type { CompareSpec, ComponentSpec, Drawn, MockupView, SpriteFiles, TiledMapFiles } from './mockup-tag';
+import type { CompareSides, CompareSpec, ComponentSpec, Drawn, MockupView, SpriteFiles, TiledMapFiles } from './mockup-tag';
 import { parseSpriteSheet } from './format/spritesheet';
 import { imageSize, parseStoryboard, type StoryboardFrame, type StoryboardFrameView, type StoryboardView } from './storyboard';
 
@@ -16,7 +16,7 @@ export type Services = {
   saveVersion: (id: string, content: unknown) => Promise<{ version: number }>;
   errorCode: (error: unknown) => string;
   locale: Context['locale'];
-  copy: { card: { mockup: { missing: (name: string) => string; undrawn: (name: string, why: string) => string; previewFailed: string }; compare: { mismatch: string }; save: Record<'invalid' | 'tooLarge' | 'closed' | 'refused' | 'offline' | 'failed', string> } };
+  copy: { card: { mockup: { missing: (name: string) => string; undrawn: (name: string, why: string) => string; previewFailed: string }; compare: { nested: string }; save: Record<'invalid' | 'tooLarge' | 'closed' | 'refused' | 'offline' | 'failed', string> } };
 };
 
 type Ref = { art: Artifact; version: ArtifactVersion };
@@ -182,7 +182,12 @@ export class Previews {
     });
   }
 
-  private viewOf({ art, version: v }: Ref, src: string): MockupView {
+  private viewOf(ref: Ref, src: string): MockupView {
+    const view = this.drawOf(ref, src);
+    return view.component || view.error !== undefined ? view : { ...view, download: this.fileOf(ref.art, ref.version) };
+  }
+
+  private drawOf({ art, version: v }: Ref, src: string): MockupView {
     const failed = (): Drawn => ({ src, error: this.services.copy.card.mockup.previewFailed });
     const guard = (load: () => Promise<Drawn>) => () => load().catch(failed);
     if (art.type.startsWith("@")) return { src, component: this.componentOf(art, v) };
@@ -297,7 +302,7 @@ export class Previews {
     };
   }
 
-  /** A loaded side of a compare: an image or a video, a storyboard, or the note. */
+  /** A loaded side of the synced player: an image or a video, a storyboard, or the note. */
   private async side(id: string): Promise<Drawn | StoryboardView> {
     const ref = this.ref(id);
     if (!ref) return { src: id, error: this.services.copy.card.mockup.missing(id) };
@@ -305,6 +310,12 @@ export class Previews {
     if (view.storyboard) return view.storyboard();
     if (view.deferred) return view.deferred.load();
     return view;
+  }
+
+  /** What an arrangement holds at `src`: the view an Asset would draw, or the note refusing nesting. */
+  private arranged(src: string, nest: string[]): MockupView {
+    const type = this.refOfSrc(src)?.art.type;
+    return type && nest.includes(type) ? { src, error: this.services.copy.card.compare.nested } : this.viewOfSrc(src);
   }
 
   private compareOf(c: Record<string, unknown>, src: string): CompareSpec {
@@ -326,8 +337,13 @@ export class Previews {
       aLabel: t.aLabel,
       bLabel: t.bLabel,
       load: async () => {
+        const [ta, tb] = [t.a, t.b].map((x) => this.refOfSrc(idOf(x))?.art.type);
+        // Two images, two videos or a video and its storyboard share one player; anything else is two Assets.
+        const sides = (): { sides: [MockupView, MockupView] } => ({ sides: [this.arranged(idOf(t.a), ["compare"]), this.arranged(idOf(t.b), ["compare"])] });
+        if (!(ta && tb && (ta === tb ? ta === "image" || ta === "video" : ta === "video" && tb === "storyboard"))) return sides();
         const [a, b] = await Promise.all([this.side(idOf(t.a)), this.side(idOf(t.b))]);
-        const out: Awaited<ReturnType<CompareSpec["load"]>> = { a: "storyboard" in a ? { src: t.a, error: this.services.copy.card.compare.mismatch } : a, b };
+        if ("storyboard" in b && b.slides) return sides();
+        const out: CompareSides = { a: "storyboard" in a ? { src: t.a, error: this.services.copy.card.mockup.previewFailed } : a, b };
         if (Array.isArray(t.shots)) {
           if (!shotsProblem(t.shots)) out.shots = t.shots as Shot[];
         } else if (typeof t.shots === "string" && t.shots) {
@@ -417,15 +433,17 @@ export class Previews {
       const ref = this.ref(this.relative(f.src, src));
       const none: StoryboardFrameView = { src: f.src, alt: f.alt, href: null, ratio: null };
       if (!ref) return none;
+      const file = this.fileOf(ref.art, ref.version);
+      if (ref.art.type !== "image" && !(slide && ref.art.type === "html")) return { ...none, view: this.arranged(this.relative(f.src, src), ["compare", "storyboard"]) };
       try {
         if (slide && ref.art.type === "html") {
           const text = await this.textOf(ref.version, "html");
-          return text === null ? none : { src: f.src, alt: f.alt, href: ref.art.id, ratio: parsed!.size.width / parsed!.size.height, page: true, doc: await this.withFiles(text, ref.art) };
+          return text === null ? none : { src: f.src, alt: f.alt, href: ref.art.id, ratio: parsed!.size.width / parsed!.size.height, page: true, doc: await this.withFiles(text, ref.art), file };
         }
-        if (ref.art.type !== "image" || !ref.version.file) return none;
+        if (!ref.version.file) return none;
         const blob = await this.resource(ref.art, ref.version).blob();
         const size = imageSize(new Uint8Array(await blob.slice(0, 64 * 1024).arrayBuffer()));
-        return { src: f.src, alt: f.alt, href: urlOf(blob), ratio: size && size.height > 0 ? size.width / size.height : null };
+        return { src: f.src, alt: f.alt, href: urlOf(blob), ratio: size && size.height > 0 ? size.width / size.height : null, file };
       } catch {
         return none;
       }

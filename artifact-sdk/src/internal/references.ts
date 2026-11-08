@@ -3,7 +3,8 @@
 export type Source = { src: string; types: string[] };
 const STORYBOARD = ['storyboard'];
 const WORKFLOW = ['workflow'];
-const COMPARE = ['storyboard', 'compare'];
+// 排列里的 JSON：Asset 能画的类型，或需要拒绝嵌套的分镜与对比。
+const ARRANGED = ['storyboard', 'compare', 'spritesheet', 'workflow'];
 // Any other JSON stays a plain file.
 const ASSET = ['spritesheet', 'asset'];
 export const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -36,7 +37,7 @@ export function bodyReferences(body: string): Source[] {
       for (const p of m[2]!.matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) a[p[1]!] = (p[2] ?? p[3])!;
       if (m[1] === 'Compare') {
         if (!a.a || !a.b) continue;
-        for (const k of ['a', 'b', 'shots']) if (a[k]) out.push({ src: a[k]!, types: COMPARE });
+        for (const k of ['a', 'b', 'shots']) if (a[k]) out.push({ src: a[k]!, types: ARRANGED });
       } else if (a.src) {
         out.push({ src: a.src, types: m[1] === 'Storyboard' ? STORYBOARD : m[1] === 'Workflow' ? WORKFLOW : m[1] === 'Asset' ? ASSET : [] });
         if (a.variants) {

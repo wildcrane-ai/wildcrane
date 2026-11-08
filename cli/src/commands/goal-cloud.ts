@@ -9,7 +9,15 @@ import { die } from '../lib/paths'
 import { say, quietlyAsync } from '../lib/io'
 import { cmdGoal, cmdGoalPreviews, cmdGoalWorkflows, goalsFile, shortWorkflowId, type GoalOptions, type GoalWorkflow, type Goal } from './goal'
 
-export const externalGoalSession = () => !goalsFile() && !process.env.KANBAN_RUN && !process.env.WILDCRANE_JOB && !process.env.AI4KANBAN_BOARD && Boolean(process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_THREAD_ID)
+/** The host session the goals belong to; Cursor's model passes its conversation id itself. */
+function hostSession(): { id: string; host: 'claude-code' | 'codex' | 'cursor' } | null {
+  const { CLAUDE_CODE_SESSION_ID: claude, CODEX_THREAD_ID: codex, CURSOR_CONVERSATION_ID: cursor } = process.env
+  if (claude) return { id: claude, host: 'claude-code' }
+  if (codex) return { id: codex, host: 'codex' }
+  return cursor ? { id: cursor, host: 'cursor' } : null
+}
+
+export const externalGoalSession = () => !goalsFile() && !process.env.KANBAN_RUN && !process.env.WILDCRANE_JOB && !process.env.AI4KANBAN_BOARD && Boolean(hostSession())
 
 async function request<T>(method: string, route: string, body?: unknown): Promise<T> {
   if (externalGoalSession()) process.env.AI4KANBAN_HOME ??= process.env.WILDCRANE_HOME || path.join(os.homedir(), '.wildcrane')
@@ -46,7 +54,7 @@ function goalsOf(d: Discussion): CloudGoal[] {
 }
 
 async function discussion(): Promise<Discussion> {
-  const session = process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_THREAD_ID
+  const session = hostSession()
   if (!session) die('Goals exist only inside a WildCrane goal discussion.')
   const home = process.env.WILDCRANE_HOME || path.join(os.homedir(), '.wildcrane')
   process.env.AI4KANBAN_HOME ??= home
@@ -60,7 +68,7 @@ async function discussion(): Promise<Discussion> {
   const held = await request<{ folders: { path: string; project: string }[] }>('GET', `/v1/runner/folders?machine=${encodeURIComponent(machine)}`)
   const cwd = fs.realpathSync(process.cwd())
   const folder = held.folders.filter((f) => { try { const dir = fs.realpathSync(f.path); return cwd === dir || cwd.startsWith(dir + path.sep) } catch { return false } }).sort((a, b) => b.path.length - a.path.length)[0]
-  return request('POST', '/v1/discussions/external', { requestId: session, host: process.env.CLAUDE_CODE_SESSION_ID ? 'claude-code' : 'codex', ...(folder ? { project: folder.project } : {}) })
+  return request('POST', '/v1/discussions/external', { requestId: session.id, host: session.host, ...(folder ? { project: folder.project } : {}) })
 }
 
 export async function withGoalDiscussion(action: () => unknown, save = false): Promise<MoveResult & { discussion: string; url: string }> {

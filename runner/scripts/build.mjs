@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Build the launcher and the Runner into dist/, one dependency-free file each. The Runner
 // pulls in the CLI's harness, session and Realtime code from ../cli/src, and carries the CLI
-// itself as dist/akb/ — the loader, its rules and the package.json it reads (#2020). The Claude
-// Code and Codex plugins' component is the same Runner behind an MCP server, built with its own
-// akb into each plugin's server/dist/ (#2161, #2160).
+// itself as dist/akb/ — the loader, its rules and the package.json it reads (#2020). The plugins'
+// component (dist/plugin.mjs) ships in this package too; each plugin carries only start.mjs,
+// which runs it from the newest Runner on the computer (#529).
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -25,22 +25,16 @@ const PACKAGE_JSON = {
     build.onLoad({ filter: /[\\/]node_modules[\\/].*\.json$/ }, (args) => ({ contents: fs.readFileSync(args.path, 'utf8'), loader: 'json' }))
   },
 }
-const PLUGIN_DISTS = ['claude-code', 'codex'].map((host) => path.join(PKG_DIR, '..', 'plugins', host, 'server', 'dist'))
-
-// 插件与 Runner 共用薄技能；指南仍从当次选定的 akb 读取。
-for (const host of ['claude-code', 'codex']) {
-  const dir = path.join(PKG_DIR, '..', 'plugins', host, 'skills', 'kanban')
-  fs.mkdirSync(dir, { recursive: true })
-  fs.copyFileSync(path.join(PKG_DIR, '..', 'skill', 'SKILL.md'), path.join(dir, 'SKILL.md'))
-}
+const PLUGIN_DISTS = ['claude-code', 'codex', 'cursor'].map((host) => path.join(PKG_DIR, '..', 'plugins', host, 'server', 'dist'))
+for (const dir of PLUGIN_DISTS) fs.rmSync(dir, { recursive: true, force: true })
 
 for (const [entry, outfile] of [
   ['launcher-main.ts', path.join(PKG_DIR, 'dist', 'launcher.mjs')],
   ['main.ts', path.join(PKG_DIR, 'dist', 'runner.mjs')],
   ['settings-main.ts', path.join(PKG_DIR, 'dist', 'settings.mjs')],
-  ...PLUGIN_DISTS.map((dir) => ['main.ts', path.join(dir, 'runner.mjs')]),
-  ...PLUGIN_DISTS.map((dir) => ['plugin-main.ts', path.join(dir, 'index.mjs')]),
-  ...[path.join(PKG_DIR, 'dist'), ...PLUGIN_DISTS].map((dir) => ['akb-proxy.ts', path.join(dir, 'akb-proxy.mjs')]),
+  ['plugin-main.ts', path.join(PKG_DIR, 'dist', 'plugin.mjs')],
+  ['akb-proxy.ts', path.join(PKG_DIR, 'dist', 'akb-proxy.mjs')],
+  ...PLUGIN_DISTS.map((dir) => ['plugin-start.ts', path.join(dir, 'start.mjs')]),
 ]) {
   await esbuild.build({
     entryPoints: [path.join(PKG_DIR, 'src', entry)],
@@ -58,7 +52,7 @@ for (const [entry, outfile] of [
   process.stdout.write(`build: wrote ${path.relative(PKG_DIR, outfile)} — ${(fs.statSync(outfile).size / 1024).toFixed(1)} kB\n`)
 }
 
-for (const dir of [path.join(PKG_DIR, 'dist'), ...PLUGIN_DISTS]) await buildAkb(path.join(dir, 'akb'))
+await buildAkb(path.join(PKG_DIR, 'dist', 'akb'))
 
 async function buildAkb(dir) {
   fs.rmSync(dir, { recursive: true, force: true })

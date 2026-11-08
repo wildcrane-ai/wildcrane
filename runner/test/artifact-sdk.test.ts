@@ -7,7 +7,7 @@ import { groupFrames } from '../../artifact-sdk/src/internal/format/spritesheet'
 import { Previews, type Artifact, type ArtifactVersion, type Services } from '../../artifact-sdk/src/internal/previews'
 import { connect, type Context } from '../../artifact-sdk/src/index'
 
-const copy: Services['copy'] = { card: { mockup: { missing: x => `缺失:${x}`, undrawn: (x, why) => `画不出:${x}:${why}`, previewFailed: '读取失败' }, compare: { mismatch: '类型不匹配' }, save: { invalid: '无效', tooLarge: '过大', closed: '已关闭', refused: '无权限', offline: '离线', failed: '失败' } } }
+const copy: Services['copy'] = { card: { mockup: { missing: x => `缺失:${x}`, undrawn: (x, why) => `画不出:${x}:${why}`, previewFailed: '读取失败' }, compare: { nested: '不能嵌套' }, save: { invalid: '无效', tooLarge: '过大', closed: '已关闭', refused: '无权限', offline: '离线', failed: '失败' } } }
 const version = (n: number, content: unknown = null, type?: string): ArtifactVersion => ({ version: n, content, file: type ? { url: `file-${n}-${type}`, content_type: type } : null })
 const art = (id: string, type: string, versions: ArtifactVersion[], name = id): Artifact => ({ id, name, type, latest_version: versions.at(-1)!.version, versions })
 
@@ -136,7 +136,8 @@ describe('SDK 内置预览运行时', () => {
       art('img', 'image', [version(1, null, 'image/png'), version(2, null, 'image/png')]),
       art('page', 'html', [version(1, '<main>旧页面</main>'), version(2, '新页面')]),
       art('board', 'storyboard', [version(1, null, 'application/json')], '.assets/1/board.json'),
-      art('compare', 'compare', [version(1, { a: 'img', b: 'board', shots: 'board' })]),
+      art('clip', 'video', [version(1, null, 'video/mp4')]),
+      art('compare', 'compare', [version(1, { a: 'clip', b: 'board', shots: 'board' })]),
     ]
     const assets = { '.assets/1/image.png': { artifact: 'img', version: 1 }, '.assets/1/page.html': { artifact: 'page', version: 1 }, '.assets/1/board.json': { artifact: 'board', version: 1 } }
     const p = preview(artifacts, assets, { readFile: async url => {
@@ -144,7 +145,7 @@ describe('SDK 内置预览运行时', () => {
       return new Blob([url.includes('json') ? JSON.stringify({ slides: [{ id: 's1', title: '标题', copy: [], layout: 'full', assets: ['img'], preview: { src: 'page.html', alt: '' } }], shots: [{ id: 'S1', start: 0, end: 1, voiceover: { mode: 'none' }, action: '', captions: [], frames: [{ src: 'img', alt: '' }] }] }) : '图像'])
     } })
     const result = await p.viewOfArtifact('compare').compare!.load()
-    assert.ok(result.a.image)
+    assert.ok(!('sides' in result) && result.a.media)
     assert.ok('storyboard' in result.b)
     assert.ok(result.breakdown!.shots![0]!.frames[0]!.href)
     const slides = preview([art('slides', 'storyboard', [version(1, { slides: [{ preview: { src: 'page', alt: '' } }] })]), ...artifacts], assets)
@@ -186,6 +187,24 @@ describe('SDK 内置预览运行时', () => {
     const { context } = await p.viewOfArtifact('custom').component!.load()
     assert.equal(context.files!.clip!.contentType, 'video/mp4')
     assert.equal(new TextDecoder().decode(context.files!.clip!.data), '视频')
+  })
+
+  it('对比两侧和分镜画面可以是任何素材，嵌套的对比和分镜被拒（#526）', async () => {
+    const shot = { id: 'S1', start: 0, end: 1, voiceover: { mode: 'none' }, action: '', captions: [], frames: [{ src: 'clip', alt: '' }, { src: 'cmp', alt: '' }, { src: 'page', alt: '' }] }
+    const p = preview([
+      art('img', 'image', [version(1, null, 'image/png')]),
+      art('page', 'html', [version(1, '<main>页面</main>')]),
+      art('clip', 'video', [version(1, null, 'video/mp4')]),
+      art('cmp', 'compare', [version(1, { a: 'img', b: 'page' })]),
+      art('board', 'storyboard', [version(1, { shots: [shot] })]),
+      art('outer', 'compare', [version(1, { a: 'cmp', b: 'board' })]),
+    ])
+    const mixed = await p.viewOfArtifact('cmp').compare!.load()
+    assert.ok('sides' in mixed && mixed.sides[0].deferred && mixed.sides[1].deferred!.screen)
+    const outer = await p.viewOfArtifact('outer').compare!.load()
+    assert.ok('sides' in outer && outer.sides[0].error === '不能嵌套' && outer.sides[1].storyboard)
+    const frames = (await p.viewOfArtifact('board').storyboard!()).shots![0]!.frames
+    assert.deepEqual(frames.map(f => [!!f.view?.deferred, f.view?.error, !!f.view?.download]), [[true, undefined, true], [false, '不能嵌套', false], [true, undefined, true]])
   })
 
   it('同一 artifact 的两个路径各自使用固定版本', async () => {

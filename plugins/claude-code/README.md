@@ -1,16 +1,16 @@
 # WildCrane for Claude Code
 
 Shape goals with Claude in your own session and start them as WildCrane tasks, run on this
-computer. No separate Runner to install: the plugin's local component runs the jobs while Claude
-Code is open.
+computer. No separate Runner to install: the plugin starts this computer's Runner, downloading it
+on first start, and the Runner updates itself.
 
-- **看板与技能**：通过插件连接云端项目；插件自带 kanban 技能，无需手动安装。Runner 为其他 Agent 准备项目技能并维护提交保护，保留用户文件和已有钩子。
+- **看板与技能**：通过插件连接云端项目；Runner 在绑定目录和运行任务时把 kanban 技能写入项目，无需手动安装，并维护提交保护，保留用户文件和已有钩子。
 
 - **Needs**: Claude Code 2.1.287 or later with plugin mods on, and Node 22 or later on the PATH.
-- **Panel**: `/wildcrane` — Projects, Tasks and Agents, with your account and Sign out on
-  top. Cards, boards and tasks open on the web.
+- **Settings**: `/wildcrane` opens this computer's settings in the browser — sign-in, project
+  folders and AI tools. Projects and tasks are on the web.
 - **Clarifying**: tell Claude what needs doing in the conversation; it shapes the goals and returns their web links. Review and start goals on the web.
-- **`akb`**: sessions you start yourself run the plugin's own `akb` ahead of any installed one, and
+- **`akb`**: sessions you start yourself run the Runner's `akb` ahead of any installed one, and
   find the board of a folder added to a project. Not on Windows.
 
 ## Install
@@ -22,8 +22,8 @@ claude plugin install wildcrane@wildcrane
 
 ## Update
 
-The panel shows the installed version and offers these commands when a newer one is released. The
-plugin carries its own Runner, so an outdated plugin stops running tasks until it is updated:
+`/wildcrane` replies with these commands when a newer version is released. The
+Runner, its tools and `akb` update on their own; the plugin rarely needs to:
 
 ```sh
 claude plugin marketplace update wildcrane
@@ -36,22 +36,18 @@ wildcrane under `/plugin` → Marketplaces.
 ## Develop
 
 ```sh
-cd runner && npm install && npm run build      # writes plugins/claude-code/server/dist/
-claude --plugin-dir plugins/claude-code
+cd runner && npm install && npm run build      # writes runner/dist/ and plugins/*/server/dist/start.mjs
+WILDCRANE_RUNNER_DIR=$PWD claude --plugin-dir ../plugins/claude-code   # run this checkout's Runner
 ```
 
-Releasing: raise `version` in `.claude-plugin/plugin.json` (and `plugins/codex/plugin.json`), push
+Releasing: raise `version` in `.claude-plugin/plugin.json` (and `plugins/codex/plugin.json`, `plugins/cursor/.cursor-plugin/plugin.json`), push
 the tag `plugin-v<version>`
-(`.github/workflows/plugin-release.yml`), then point `/.claude-plugin/marketplace.json` at that
-release's `wildcrane-plugin.zip` with the `sha256` the workflow prints. The zip carries its own
-Runner: release the plugin before raising Cloud's `RUNNER_MIN_PROTOCOL`.
+(`.github/workflows/plugin-release.yml`, which also updates Codex's `codex-plugin` branch), then point `/.claude-plugin/marketplace.json` at that
+release's `wildcrane-plugin.zip` with the `sha256` the workflow prints. The zip carries no Runner:
+it runs a Runner that ships `dist/plugin.mjs`, so publish one before the first such plugin.
 
 ## Check it
 
 ```sh
 cd plugins/claude-code && claude plugin validate . && claude plugin test .
 ```
-
-## 运行电脑设置
-
-在 `/wildcrane` 面板点击“运行电脑设置”，打开与 Codex、终端共用的本机页面。登录、目录和工具检测集中在这里，项目网页入口与任务操作仍保留在面板。设置页随 Runner 更新，无需另装后台程序。

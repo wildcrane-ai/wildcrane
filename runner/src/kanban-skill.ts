@@ -1,8 +1,11 @@
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
 import note from '../../skill/SKILL.md'
-import { SKILL_FOLDERS } from './task-folder'
+
+/** The kanban skill the Runner installs in a project for akb's runs and the person's sessions. */
+export const SKILL_FOLDERS = ['.claude/skills/kanban', '.agents/skills/kanban']
 
 const CONTENT = `${note.trimEnd()}\n\n<!-- ai4kanban managed -->\n`
 const MANAGED = /^<!-- ai4kanban \S+ -->$/m
@@ -32,5 +35,28 @@ export function prepareKanbanSkill(root: string): void {
     } catch (e) {
       throw new Error(`无法准备 ${folder}：${e instanceof Error ? e.message : String(e)}`)
     }
+  }
+}
+
+/** `.akb/` never reaches the project's history: excluded locally unless already ignored. */
+export function keepOutOfGit(dir: string, folders: string[] = SKILL_FOLDERS): void {
+  const git = (...args: string[]) => spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' })
+  const inside = git('rev-parse', '--git-path', 'info/exclude')
+  if (inside.status !== 0) return
+  const missing = ['.akb/', ...folders.map((f) => `${f}/`)].filter((p) => git('check-ignore', '-q', p).status !== 0)
+  if (!missing.length) return
+  const exclude = path.resolve(dir, inside.stdout.trim())
+  fs.mkdirSync(path.dirname(exclude), { recursive: true })
+  const held = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : ''
+  fs.writeFileSync(exclude, `${held}${held && !held.endsWith('\n') ? '\n' : ''}${missing.join('\n')}\n`)
+}
+
+/** A folder just bound: its sessions get the skill at once; a failure leaves the binding alone. */
+export function installKanbanSkill(dir: string): void {
+  try {
+    keepOutOfGit(dir)
+    prepareKanbanSkill(dir)
+  } catch (e) {
+    process.stderr.write(`wildcrane: ${e instanceof Error ? e.message : String(e)}\n`)
   }
 }

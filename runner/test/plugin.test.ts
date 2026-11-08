@@ -9,7 +9,7 @@ import { describe, it } from 'node:test'
 import { markUnsent } from '../src/cache'
 import { runnerHome, useRunnerHome } from '../src/home'
 import { linesFor } from '../src/i18n'
-import { nextOf, type Seen } from '../src/plugin'
+import { nextOf, noticeOf, type Seen } from '../src/plugin'
 import { holdMachine, lockPath } from '../src/lock'
 import { FakeCloud, writeFakeSession } from './fake-cloud'
 
@@ -73,9 +73,9 @@ describe('one Runner per computer', () => {
 
 /** The built component of `host`'s plugin, spoken to over stdio. */
 function component(host: 'claude-code' | 'codex', cloud = 'http://127.0.0.1:9', env: Record<string, string> = {}) {
-  const server = path.join(process.env.RUNNER_DIST!, '..', '..', 'plugins', host, 'server', 'dist', 'index.mjs')
+  const server = path.join(process.env.RUNNER_DIST!, '..', '..', 'plugins', host, 'server', 'dist', 'start.mjs')
   const child = spawn(process.execPath, [server, ...(host === 'codex' ? ['codex'] : [])], {
-    stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CLAUDE_PLUGIN_ROOT: path.resolve(path.dirname(server), '..', '..'), AI4KANBAN_CLOUD_URL: cloud, HTTPS_PROXY: 'http://127.0.0.1:9', ...env },
+    stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CLAUDE_PLUGIN_ROOT: path.resolve(path.dirname(server), '..', '..'), WILDCRANE_RUNNER_DIR: path.resolve(process.env.RUNNER_DIST!, '..'), AI4KANBAN_CLOUD_URL: cloud, HTTPS_PROXY: 'http://127.0.0.1:9', CODEX_HOME: path.join(os.tmpdir(), 'wildcrane-no-codex-home'), ...env },
   })
   const answers = new Map<number, Record<string, unknown>>()
   let buffer = ''
@@ -96,8 +96,8 @@ function component(host: 'claude-code' | 'codex', cloud = 'http://127.0.0.1:9', 
 }
 
 describe("the Codex status's next line", () => {
-  const newer = { version: '0.1.4', latest: '0.1.5' }
-  const current = { version: '0.1.5', latest: null }
+  const newer = { version: '0.1.4', latest: '0.1.5', source: 'git' as const }
+  const current = { version: '0.1.5', latest: null, source: 'git' as const }
   const ready = { label: 'Codex', state: 'ready' as const, command: null }
   const out = { label: 'Codex', state: 'signedOut' as const, command: 'codex login' }
   const missing = { label: 'Claude Code', state: 'notInstalled' as const, command: 'npm install -g @anthropic-ai/claude-code' }
@@ -106,10 +106,29 @@ describe("the Codex status's next line", () => {
   it('tells Codex about a newer release, the outdated Runner first, and leaves Claude Code to its panel', () => {
     const next = nextOf('codex', 'running', newer)
     assert.match(String(next), /0\.1\.5 is out; this computer has 0\.1\.4, and tasks still run/)
-    assert.match(String(next), /releases\/tag\/plugin-v0\.1\.5/)
+    assert.match(String(next), /`codex plugin marketplace upgrade wildcrane`/)
     assert.equal(nextOf('codex', 'running', { version: '0.1.4', latest: null }), null)
     assert.match(String(nextOf('codex', 'outdated', newer)), /tasks no longer run/)
     assert.equal(nextOf('claude-code', 'running', newer), null)
+  })
+
+  it('leaves Cursor updates to its marketplace but says what else is unfinished (#530)', () => {
+    assert.equal(nextOf('cursor', 'running', newer, seen()), null)
+    assert.match(String(nextOf('cursor', 'running', newer, seen({ folder: null }))), /^This folder is not a WildCrane project/)
+    assert.match(String(nextOf('cursor', 'outdated', newer)), /restart Cursor/)
+  })
+
+  it("gives Claude Code's /wildcrane its update line, the outdated Runner first", () => {
+    assert.match(String(noticeOf('zh', 'running', newer)), /新版本 0\.1\.5.*claude plugin update wildcrane@wildcrane/)
+    assert.match(String(noticeOf('en', 'outdated', newer)), /out of date.*restart Claude Code/)
+    assert.equal(noticeOf('en', 'running', current), null)
+  })
+
+  it('tells a local-folder install how to switch to the source that updates, first after outdated (#528)', () => {
+    const local = { ...current, source: 'local' as const }
+    const next = String(nextOf('codex', 'running', local, seen({ connections: [out], folder: null })))
+    assert.match(next, /installed from a local folder.*`codex plugin marketplace add wildcrane-ai\/wildcrane --ref codex-plugin`/)
+    assert.match(String(nextOf('codex', 'outdated', local)), /tasks no longer run.*restart Codex/)
   })
 
   it('names every tool not ready with its command, and the web, when none is', () => {
@@ -283,6 +302,9 @@ describe('the plugin component', () => {
 
       const bound = await panel({ action: 'addFolder', cwd: docs, project: 'prj_docs' })
       assert.equal(bound.project, 'prj_docs')
+      for (const dir of [site, docs]) for (const folder of ['.claude', '.agents']) {
+        assert.match(fs.readFileSync(path.join(dir, folder, 'skills/kanban/SKILL.md'), 'utf8'), /name: kanban/)
+      }
       const after = await panel({ action: 'state', cwd: docs })
       assert.equal((after.folder as { project: string }).project, 'prj_docs')
       assert.deepEqual(after.elsewhere, [])
@@ -432,7 +454,7 @@ describe('the plugin component', () => {
     }
   })
 
-  it('tells both hosts to update the plugin once Cloud refuses its Runner as outdated', async () => {
+  it('tells both hosts to restart once Cloud refuses their Runner as outdated', async () => {
     useRunnerHome()
     fs.rmSync(runnerHome(), { recursive: true, force: true })
     writeFakeSession(runnerHome())
@@ -458,15 +480,15 @@ describe('the plugin component', () => {
     }
     try {
       const panel = await status('claude-code')
-      assert.match(String(panel.next), /claude plugin update wildcrane@wildcrane/)
+      assert.match(String(panel.next), /restart Claude Code/)
       const own = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_DIST!, '..', '..', 'plugins', 'claude-code', '.claude-plugin', 'plugin.json'), 'utf8')) as { version: string }
       assert.deepEqual(panel.plugin, { version: own.version, latest: null })
       children[0]!.stdin.end()
       await new Promise((r) => children[0]!.on('exit', r))
       const codex = await status('codex')
-      assert.match(String(codex.next), /codex plugin add wildcrane@wildcrane/)
+      assert.match(String(codex.next), /restart Codex/)
       const ownCodex = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_DIST!, '..', '..', 'plugins', 'codex', 'plugin.json'), 'utf8')) as { version: string }
-      assert.deepEqual(codex.plugin, { version: ownCodex.version, latest: null })
+      assert.deepEqual(codex.plugin, { version: ownCodex.version, latest: null, source: null })
     } finally {
       for (const child of children) {
         if (child.exitCode !== null) continue

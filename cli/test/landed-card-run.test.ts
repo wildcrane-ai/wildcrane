@@ -296,7 +296,7 @@ describe('a card a run simply deleted', () => {
     const id = fakeRun(deletes())
     await watchRun(id, async () => ({ error: 'no resume' }))
     assert.equal(peekRun(id)?.status, 'error')
-    assert.match(peekRun(id)?.error ?? '', /\[missing-card\] Task #1 disappeared/)
+    assert.match(peekRun(id)?.error ?? '', /- Task #1 disappeared/)
     assert.equal(leftBoardRejected(1), false)
   })
 })

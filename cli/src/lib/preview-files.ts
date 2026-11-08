@@ -37,9 +37,18 @@ export function validatePreviewFiles(card: string, id: number, text: string): Co
     read: referenceText,
     retained: () => [],
   })
+  const kinds = new Map(graph.map((n) => [n.key, n.kind]))
   for (const node of graph) {
     for (const p of node.problems) {
       errors.push({ file: rel(node.file ?? card), line: p.line ?? 1, rule: 'preview-file', message: `${p.at ? `${p.at}: ` : ''}${p.src}: ${p.message}. Fix the reference or add the file.` })
+    }
+    // A storyboard or compare holds files, never another compare, nor a storyboard in a storyboard (#526).
+    if (node.kind !== 'storyboard' && node.kind !== 'compare') continue
+    for (const [src, key] of node.dependencies) {
+      const kind = kinds.get(key)
+      if (kind === 'compare' || (node.kind === 'storyboard' && kind === 'storyboard')) {
+        errors.push({ file: rel(node.file ?? card), line: 1, rule: 'preview-nesting', message: `${src} is a ${kind}, which cannot go inside a ${node.kind}. Name its files directly.` })
+      }
     }
   }
   return errors

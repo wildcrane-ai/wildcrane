@@ -4,7 +4,6 @@ import { collect } from '../../artifact-sdk/src/internal/collect'
 import { kindOf, TYPES, type Kind } from '../../artifact-sdk/src/internal/references'
 import { manifestOf, mapReferences } from '../../artifact-sdk/src/internal/manifest'
 
-import { spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -20,6 +19,7 @@ import { referenceText } from '../../cli/src/lib/dress-page'
 import * as api from './api'
 import type { Assets, Job } from './api'
 import { busy, markUsed, markUnsent } from './cache'
+import { keepOutOfGit } from './kanban-skill'
 import { sharedMemory, type Shared } from './memory-files'
 
 export { workflowFolder }
@@ -153,24 +153,8 @@ function inFolder<T>(dir: string, work: () => Promise<T>): Promise<T> {
 const safe = (name: string) => name.replace(/[^\w.-]/g, '_') || 'default'
 
 /** Managed workflows execute in an ordinary directory. */
-/** The kanban skill the Runner installs in a project for akb's runs. */
-export const SKILL_FOLDERS = ['.claude/skills/kanban', '.agents/skills/kanban']
-
 /** Where a workflow's skills go in the project, beside the kanban skill. */
 const SKILL_ROOTS = ['.claude/skills', '.agents/skills']
-
-/** `.akb/` never reaches the project's history: excluded locally unless already ignored. */
-function keepOutOfGit(dir: string, folders: string[] = SKILL_FOLDERS): void {
-  const git = (...args: string[]) => spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' })
-  const inside = git('rev-parse', '--git-path', 'info/exclude')
-  if (inside.status !== 0) return
-  const missing = ['.akb/', ...folders.map((f) => `${f}/`)].filter((p) => git('check-ignore', '-q', p).status !== 0)
-  if (!missing.length) return
-  const exclude = path.resolve(dir, inside.stdout.trim())
-  fs.mkdirSync(path.dirname(exclude), { recursive: true })
-  const held = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : ''
-  fs.writeFileSync(exclude, `${held}${held && !held.endsWith('\n') ? '\n' : ''}${missing.join('\n')}\n`)
-}
 
 /** The card's file: akb's `todo/<number>-<slug>.md`, a group's `root.md`, or wherever akb moved it since. */
 export const cardFile = (ws: TaskFolder): string =>

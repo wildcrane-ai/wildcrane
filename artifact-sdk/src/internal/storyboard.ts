@@ -1,5 +1,7 @@
 // 分镜结构和图片尺寸读取；帧引用由 SDK 按卡片清单解析。
 
+import type { MockupView } from "./mockup-tag";
+
 export type Voiceover = { mode: "none" } | { mode: "spoken"; text: string; source: string };
 export interface StoryboardFrame {
   src: string;
@@ -31,7 +33,18 @@ export const DEFAULT_SIZE = { width: 1920, height: 1080 };
 
 /** `ratio` is the picture's width ÷ height, `null` when it could not be read. `page` marks an
  *  HTML page, drawn from `doc`. */
-export type StoryboardFrameView = { src: string; alt: string; href: string | null; ratio: number | null; page?: true; doc?: string };
+export type StoryboardFrameView = {
+  src: string;
+  alt: string;
+  href: string | null;
+  ratio: number | null;
+  page?: true;
+  doc?: string;
+  /** The picture's or page's original file, to download. */
+  file?: { name: string; load: () => Promise<string> };
+  /** Anything but a picture or a slide's page: drawn as its Asset (#526). */
+  view?: MockupView;
+};
 export type StoryboardShotView = Omit<StoryboardShot, "frames"> & { frames: StoryboardFrameView[] };
 export type StoryboardSlideView = Omit<StoryboardSlide, "preview"> & { preview: StoryboardFrameView };
 

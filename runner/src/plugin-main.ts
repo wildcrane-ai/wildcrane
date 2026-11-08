@@ -1,5 +1,6 @@
-// The plugins' local component (plugin.ts), as the host starts it: `codex` from the Codex plugin.
+// The plugins' local component (plugin.ts), as the host starts it: `codex` or `cursor` from those plugins.
 
 import { main } from './plugin'
 
-void main(process.argv[2] === 'codex' ? 'codex' : 'claude-code')
+const as = process.argv[2]
+void main(as === 'codex' || as === 'cursor' ? as : 'claude-code')

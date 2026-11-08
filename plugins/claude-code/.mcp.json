@@ -2,7 +2,7 @@
   "mcpServers": {
     "wildcrane": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/server/dist/index.mjs"],
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/dist/start.mjs"],
       "env": { "NODE_USE_ENV_PROXY": "1" }
     }
   }

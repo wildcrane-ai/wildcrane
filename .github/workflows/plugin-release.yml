@@ -1,7 +1,10 @@
-# Builds the plugins' local component (runner/ writes plugins/<host>/server/dist/) and attaches the
+# Builds the plugins' start script (runner/ writes plugins/<host>/server/dist/start.mjs) and attaches the
 # Claude Code plugin as wildcrane-plugin.zip, and the Codex marketplace with its plugin as
 # wildcrane-codex.zip (#2160), to the release of the tag
-# `plugin-v<version>` (both plugins' plugin.json version). Then put the
+# `plugin-v<version>` (both plugins' plugin.json version). The same Codex marketplace becomes the
+# next commit of the `codex-plugin` branch, the Git source Codex installs and upgrades from (#528);
+# the zip stays for older plugins whose update steps still name it. The Cursor plugin becomes the next
+# commit of the `cursor-plugin` branch, at its root, which the Cursor Marketplace reads (#530). Then put the
 # printed sha256 and the versioned URL in .claude-plugin/marketplace.json.
 name: plugin-release
 
@@ -23,7 +26,7 @@ jobs:
           node-version: 22
       - name: Check the tag matches both plugin.json
         run: |
-          for file in plugins/claude-code/.claude-plugin/plugin.json plugins/codex/plugin.json; do
+          for file in plugins/claude-code/.claude-plugin/plugin.json plugins/codex/plugin.json plugins/cursor/.cursor-plugin/plugin.json; do
             version=$(node -p "require('./$file').version")
             [ "plugin-v$version" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME, $file $version"; exit 1; }
           done
@@ -43,8 +46,27 @@ jobs:
         run: |
           zip -qr "$GITHUB_WORKSPACE/wildcrane-codex.zip" .agents codex -x 'codex/node_modules/*'
           echo "codex sha256: $(sha256sum "$GITHUB_WORKSPACE/wildcrane-codex.zip" | cut -d' ' -f1)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish the Codex marketplace and the Cursor plugin to their branches
+        run: |
+          publish() { # <branch> <folder> <name>
+            parent=$(git ls-remote origin "refs/heads/$1" | cut -f1)
+            [ -z "$parent" ] || git fetch -q origin "$parent"
+            tree=$(GIT_INDEX_FILE="$RUNNER_TEMP/$1-index" GIT_WORK_TREE="$2" sh -c 'git add -A && git write-tree')
+            commit=$(GIT_AUTHOR_NAME=WildCrane GIT_AUTHOR_EMAIL=noreply@wildcrane.ai GIT_COMMITTER_NAME=WildCrane GIT_COMMITTER_EMAIL=noreply@wildcrane.ai \
+              git commit-tree "$tree" ${parent:+-p "$parent"} -m "WildCrane $3 plugin ${GITHUB_REF_NAME#plugin-v}")
+            git push -q origin "$commit:refs/heads/$1"
+          }
+          codex="$RUNNER_TEMP/codex-plugin"
+          mkdir -p "$codex"
+          cp -R plugins/.agents "$codex/"
+          tar -C plugins --exclude=codex/node_modules --exclude=codex/.gitignore -cf - codex | tar -C "$codex" -xf -
+          publish codex-plugin "$codex" Codex
+          cursor="$RUNNER_TEMP/cursor-plugin"
+          mkdir -p "$cursor"
+          tar -C plugins/cursor --exclude=./node_modules --exclude=./.gitignore -cf - . | tar -C "$cursor" -xf -
+          publish cursor-plugin "$cursor" Cursor
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          gh release create "$GITHUB_REF_NAME" wildcrane-plugin.zip wildcrane-codex.zip --title "WildCrane plugins ${GITHUB_REF_NAME#plugin-v}" --notes "Claude Code: \`claude plugin marketplace add wildcrane-ai/wildcrane\`, then \`claude plugin install wildcrane@wildcrane\`. Codex: unzip wildcrane-codex.zip, then \`codex plugin marketplace add <folder>\` and \`codex plugin add wildcrane@wildcrane\`." --latest=false
+          gh release create "$GITHUB_REF_NAME" wildcrane-plugin.zip wildcrane-codex.zip --title "WildCrane plugins ${GITHUB_REF_NAME#plugin-v}" --notes "Claude Code: \`claude plugin marketplace add wildcrane-ai/wildcrane\`, then \`claude plugin install wildcrane@wildcrane\`. Codex: \`codex plugin marketplace add wildcrane-ai/wildcrane --ref codex-plugin\`, then \`codex plugin add wildcrane@wildcrane\`. Cursor: the \`cursor-plugin\` branch." --latest=false

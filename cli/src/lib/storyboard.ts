@@ -53,10 +53,10 @@ export function storyboardMarkers(body: string, tagOf: (raw: string) => string |
   return found
 }
 
-/** The file name a same-card `.assets/<card>/<name>` path points at, or why it may not.
- *  `nested` lets the name sit in a subfolder, `previews/cover.png`. */
+/** The file name a same-card `.assets/<card>/<name>` path points at, or why it may not. No
+ *  `exts` takes any type; `nested` lets the name sit in a subfolder, `previews/cover.png`. */
 export function assetName(src: string, cardId: number, exts: readonly string[], nested = false): { name: string } | { expected: string; actual: string } {
-  const expected = `.assets/${cardId}/<file>.${exts.length === 1 ? exts[0] : `{${exts.join(',')}}`} in this card's asset folder`
+  const expected = `.assets/${cardId}/<file>${!exts.length ? '' : `.${exts.length === 1 ? exts[0] : `{${exts.join(',')}}`}`} in this card's asset folder`
   if (/^[a-z][a-z0-9+.-]*:/i.test(src)) return { expected, actual: `an external address ${JSON.stringify(src)}` }
   const parts = src.split('/')
   if (parts[0] !== '.assets' || parts.length < 3 || (!nested && parts.length !== 3)) return { expected, actual: JSON.stringify(src) }
@@ -64,6 +64,6 @@ export function assetName(src: string, cardId: number, exts: readonly string[], 
   if (!parts.slice(2).every((part) => SEGMENT.test(part))) return { expected, actual: JSON.stringify(src) }
   const name = parts.slice(2).join('/')
   const ext = name.split('.').pop()!.toLowerCase()
-  if (!name.includes('.') || !exts.includes(ext)) return { expected, actual: `file type ${JSON.stringify(name.includes('.') ? ext : '')}` }
+  if (exts.length && (!name.includes('.') || !exts.includes(ext))) return { expected, actual: `file type ${JSON.stringify(name.includes('.') ? ext : '')}` }
   return { name }
 }

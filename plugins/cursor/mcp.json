@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "wildcrane": {
+      "command": "${CURSOR_PLUGIN_ROOT}/server/bin/wildcrane",
+      "args": ["cursor"]
+    }
+  }
+}

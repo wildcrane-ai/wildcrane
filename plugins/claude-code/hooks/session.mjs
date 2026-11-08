@@ -27,6 +27,6 @@ process.stdin.on('end', () => {
   if (process.env.CLAUDE_ENV_FILE) {
     try { fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export CLAUDE_CODE_SESSION_ID='${session.replaceAll("'", "'\\''")}'\n`) } catch {}
   }
-  const additionalContext = `WildCrane: this Claude Code session's id is ${session}. Use the plugin’s bundled akb for discuss-goal.`
+  const additionalContext = `WildCrane: this Claude Code session's id is ${session}. Use akb for discuss-goal.`
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext } }))
 })

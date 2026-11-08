@@ -13,6 +13,7 @@ import { openRun, openResume, patch, peekRun } from '../src/lib/agent/sessions'
 import { setBoardProvider } from '../src/lib/board'
 import type { AgentAction } from '../src/lib/agent/types'
 import { watchRun } from '../src/lib/agent/watch'
+import { withStore } from '../src/lib/agent/store'
 import { move, refuses } from './helpers/board'
 import { PROMPT_OF } from './helpers/fake-agent'
 
@@ -241,7 +242,7 @@ describe('the card format contract', () => {
     assert.deepEqual(rules('a=".assets/1/a.mp4" b=".assets/1/b.mp4"'), ['compare-attributes'])
     assert.deepEqual(rules('a=".assets/1/a.mp4" b=".assets/1/c.mp4" label="A"'), ['compare-src'])
     assert.deepEqual(rules('a=".assets/1/a.mp4" b=".assets/2/b.mp4" label="A"'), ['compare-src'])
-    assert.deepEqual(rules('a=".assets/1/a.mp4" b=".assets/1/b.png" label="A"'), ['compare-src'])
+    assert.deepEqual(rules('a=".assets/1/a.mp4" b=".assets/1/b.png" label="A"'), [])
     assert.deepEqual(rules('a=".assets/1/a.png" b=".assets/1/b.png" label="A" shots=".assets/1/shots.json"'), ['compare-shots'])
     for (const bad of [[], [{ id: 'S1', start: 0, end: 2, name: 'A' }, { id: 'S1', start: 2, end: 3, name: 'B' }], [{ id: 'S1', start: 0, end: 2, name: 'A' }, { id: 'S2', start: 2.5, end: 3, name: 'B' }]]) {
       shots(bad)
@@ -263,12 +264,26 @@ describe('the card format contract', () => {
     const ok = 'a=".assets/1/a.mp4" b=".assets/1/clone.json" label="Source vs clone" shots=".assets/1/breakdown.json"'
     assert.deepEqual(rules(ok), [])
     assert.deepEqual(rules('a=".assets/1/a.mp4" b=".assets/1/clone.json" label="A"'), ['compare-shots'])
-    assert.deepEqual(rules('a=".assets/1/a.png" b=".assets/1/clone.json" label="A" shots=".assets/1/breakdown.json"'), ['compare-src'])
+    assert.deepEqual(rules('a=".assets/1/a.png" b=".assets/1/clone.json" label="A" shots=".assets/1/breakdown.json"'), ['compare-shots'])
+    assert.deepEqual(rules('a=".assets/1/a.png" b=".assets/1/clone.json" label="A"'), [])
     assert.deepEqual(rules('a=".assets/1/a.mp4" b=".assets/1/clone.json" label="A" shots=".assets/1/shots.json"'), ['compare-shots'])
     board('clone.json', ['S1', 'S4'])
     assert.match(validateSpec(file, tag(ok), 1)[0]!.message, /Add S4 to/)
     fs.writeFileSync(path.join(dir, 'clone.json'), JSON.stringify({ version: 1, shots: [] }))
     assert.deepEqual(rules(ok), ['compare-src'])
+  })
+
+  it('takes any file on either side of a Compare or in a storyboard frame, but no nesting (#526)', () => {
+    const dir = path.join(ASSETS, '1')
+    fs.mkdirSync(dir, { recursive: true })
+    for (const name of ['a.png', 'page.html', 'notes.md']) fs.writeFileSync(path.join(dir, name), '')
+    fs.writeFileSync(path.join(dir, 'pair.json'), JSON.stringify({ a: 'a.png', b: 'page.html' }))
+    fs.writeFileSync(path.join(dir, 'board.json'), JSON.stringify({ version: 1, shots: [{ id: 'S1', start: 0, end: 1, frames: [{ src: 'notes.md' }, { src: 'pair.json' }] }] }))
+    const body = (tag: string) => valid.replace('- [ ] Implement it.', `- [ ] Implement it.\n\n${tag}\n`)
+    const rules = (tag: string) => validateSpec(file, body(tag), 1).map((e) => e.rule)
+    assert.deepEqual(rules('<Compare a=".assets/1/page.html" b=".assets/1/notes.md" label="A" />'), [])
+    assert.deepEqual(rules('<Compare a=".assets/1/a.png" b=".assets/1/pair.json" label="A" />'), ['compare-src'])
+    assert.deepEqual(rules('<Storyboard src=".assets/1/board.json" />'), ['preview-nesting'])
   })
 
   it('validates specialist sections while ignoring examples inside code fences', () => {
@@ -371,6 +386,20 @@ describe('run completion validation', () => {
     assert.ok(!args[1]!.includes('--session-id'))
   })
 
+  it('repairs the format after the delivery already landed (#537)', async () => {
+    const id = await fakeRun(true, 'implement')
+    withStore((store) => {
+      store.deliveries.push({
+        deliveryId: 'd1', cardId: 1, title: 'A feature', status: 'finished', startedAt: 1, endedAt: 2,
+        sessions: [id], approved: '', steps: [], landing: { status: 'landed', attempts: 0, commit: 'c1e0306d', at: 2 },
+      })
+    })
+    patch(id, (r) => { r.deliveryId = 'd1' })
+    const last = await watchWithResume(id)
+    assert.match(fs.readFileSync(file, 'utf8'), /## Scope/)
+    assert.equal(peekRun(last)?.status, 'done')
+  })
+
   for (const repairable of [true, false]) it(`validates directly edited previews and returns errors to the same designer (${repairable})`, async () => {
     fs.mkdirSync(path.join(ASSETS, '1'), { recursive: true })
     fs.writeFileSync(file, valid.replace('<!-- agent -->', '## By `ui-designer` agent\n\n<Asset src=".assets/1/screen.tsx" label="Screen" device="desktop" />\n\n<!-- agent -->'))
@@ -389,7 +418,7 @@ describe('run completion validation', () => {
       const id = await fakeRun(false, action)
       const last = await watchWithResume(id)
       assert.equal(peekRun(last)?.status, 'error', action)
-      assert.match(peekRun(last)?.error ?? '', /Spec format validation failed/)
+      assert.match(peekRun(last)?.error ?? '', /Task format problems/)
     }
   })
 
@@ -411,7 +440,7 @@ describe('run completion validation', () => {
     const last = await watchWithResume(id)
     assert.equal(peekRun(last)?.status, 'error')
     assert.equal(peekRun(last)?.ok, false)
-    assert.match(peekRun(last)?.error ?? '', /1-feature.md:\d+ \[section-name\]/)
+    assert.match(peekRun(last)?.error ?? '', /^Task format problems:\n- Unknown ## Scpoe\./)
     assert.match(fs.readFileSync(file, 'utf8'), /status: todo/)
     assert.equal(fs.readFileSync(path.join(root, 'prompts.log'), 'utf8').trim().split('\n').length, 4)
   })

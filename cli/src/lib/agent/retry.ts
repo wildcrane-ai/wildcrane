@@ -54,6 +54,8 @@ export function planRetry(
   startedAt: number,
   now: number = Date.now(),
   random: () => number = Math.random,
+  /** False for a run that went silent: its silence alone outlasts the window. */
+  windowed = true,
 ): RunRetry | null {
   const attempt = (prev?.attempt ?? 1) + 1
   if (attempt > RETRY_ATTEMPTS) return null
@@ -65,7 +67,7 @@ export function planRetry(
   // A wait that would leave the next attempt starting outside the window is not a wait
   // worth holding a card through: the answer is the same either way, and this way the user
   // gets it now.
-  if (at > since + RETRY_WINDOW_MS) return null
+  if (windowed && at > since + RETRY_WINDOW_MS) return null
   return { attempt, of: RETRY_ATTEMPTS, reason: failure.reason, at, since }
 }
 
@@ -74,7 +76,7 @@ export function planRetry(
 export function retryLine(retry: RunRetry, now: number = Date.now()): string {
   const seconds = Math.max(1, Math.round((retry.at - now) / 1_000))
   return (
-    `${retry.reason} — the provider failed for a moment, so this run tries again in ` +
+    `${retry.reason} — this run tries again in ` +
     `${seconds}s (attempt ${retry.attempt} of ${retry.of}).`
   )
 }

@@ -17,7 +17,7 @@ wildcrane-runner
 更新交接的作业保留 7 天，期间断网会等待重连。已完成的结果直接回写；操作结果不明或
 连接器无法提供恢复依据时，任务会提示检查后续跑，避免重复执行。
 
-- **看板与技能**：通过插件连接云端项目；插件自带 kanban 技能，无需手动安装。Runner 为其他 Agent 准备项目技能并维护提交保护，保留用户文件和已有钩子。
+- **看板与技能**：通过插件连接云端项目；Runner 在绑定目录和运行任务时把 kanban 技能写入项目，无需手动安装，并维护提交保护，保留用户文件和已有钩子。
 
 - **Node**: 22 or newer.
 - **代理**：宿主未传入代理时，在 `~/.wildcrane/proxy.env` 写入 `HTTPS_PROXY=...` 等代理变量并重启 Runner。支持 HTTP、HTTPS、ALL 和 NO_PROXY 的大小写形式。
@@ -55,13 +55,13 @@ Releasing: [`docs/deploy.md`](../docs/deploy.md).
 
 Codex 使用 `wildcrane_draft_read({ path?, discussionId? })`，Claude 使用 `wildcrane_draft_read({ discussionId?, sessionId? })`。返回 version、workflows、goals 和同值 ideas，以及讨论 url 和各目标 url；已开始目标链接任务。
 
-`wildcrane_draft_save({ discussionId, expectedVersion, goals })` 保存全部开放目标，最多 10 个，遗漏的开放目标会丢弃，保存不会开始任务。旧 ideas 入参继续可用，缺少或同传两者均返回 bad_request。冲突返回最新 version、goals 和 ideas，供合并后重试。两个宿主的保存结果都含目标网页链接。Claude 面板只管理项目、任务和 Agent，目标从网页管理和开始。`wildcrane_status().recent[]` 提供 goals 计数及兼容 ideas 计数。
+`wildcrane_draft_save({ discussionId, expectedVersion, goals })` 保存全部开放目标，最多 10 个，遗漏的开放目标会丢弃，保存不会开始任务。旧 ideas 入参继续可用，缺少或同传两者均返回 bad_request。冲突返回最新 version、goals 和 ideas，供合并后重试。两个宿主的保存结果都含目标网页链接。目标从网页管理和开始。`wildcrane_status().recent[]` 提供 goals 计数及兼容 ideas 计数。
 
 Runner（含启动器的更新与下载、它启动的看板命令）与其启动的 Agent 优先继承 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及其小写变量。缺少这些变量时，macOS 上使用系统已启用的手动 HTTP、HTTPS、SOCKS 代理与绕过列表，每分钟及每个任务前重新读取，开关或修改代理无需重启；不执行 PAC。其他平台通过启动 Runner 的环境配置代理。无代理配置时保持直连。连接恢复后以最终执行结果收尾；可选 MCP 错误保留在日志中，不单独使任务失败。
 
 ## 共享本机设置
 
-运行 `wildcrane-runner --settings`，或在 Claude Code、Codex 中要求打开 WildCrane 设置，即可登录、查看工具状态、选择项目文件夹和解除绑定。Claude 面板提供“运行电脑设置”入口；旧的登录和添加目录工具继续可用。
+运行 `wildcrane-runner --settings`，或在 Claude Code、Codex 中要求打开 WildCrane 设置，即可登录、查看工具状态、选择项目文件夹和解除绑定。Claude Code 的 `/wildcrane`、Codex 的 `$wildcrane` 直接打开它；旧的登录和添加目录工具继续可用。
 
 选择文件夹后仍需确认才会授权。新项目可直接选择所属空间；绑定仅指定任务目录，不提供文件系统隔离。界面随 Runner 和两种插件打包，无需联网下载页面资源。
 

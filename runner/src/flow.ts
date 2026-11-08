@@ -175,7 +175,7 @@ export function deliveryEnding(ws: TaskFolder, id: string | undefined, asked = f
   if (held.status === 'cancelled') {
     return held.steps?.some((s) => s.step === 'discarded') ? { ok: false, reason: 'The build was discarded.' } : { ok: false, reason: '', stopped: true }
   }
-  if (held.status === 'active' && !asked) return { ok: false, reason: firstLine(stopped?.why) ?? NOT_COMPLETED }
+  if (held.status === 'active' && !asked) return { ok: false, reason: reasonOf(stopped?.why) ?? NOT_COMPLETED }
   return null
 }
 
@@ -213,7 +213,8 @@ const isArchived = (ws: TaskFolder, id: number) =>
   path.relative(ws.board, findCard(ws.board, id) ?? ws.board).split(path.sep)[0] === '.archive'
 
 const refusal = (ran: Ran) => ran.last.replace(/^akb( raw)?: /, '').slice(0, 300) || 'akb stopped with an error.'
-const firstLine = (text?: string) => (text ?? '').split('\n').map((l) => l.trim()).find(Boolean)?.slice(0, 300)
+// Every line but stack frames, so a list of problems reaches the task page whole.
+const reasonOf = (text?: string) => (text ?? '').split('\n').map((l) => l.trim()).filter((l) => l && !/^at\s/.test(l)).join('\n').slice(0, 300) || undefined
 
 /** What akb prints, as a terminal shows it: the JSON answer `--json` ends with gives back the
  *  prose it held, less the commands that only work on this computer. A line of
@@ -335,7 +336,7 @@ export async function runReview(job: Job, ws: TaskFolder, tasks: string[], deps:
   const ran = await akb(['review-memory', '--task', ...tasks, '--follow', '--events', '--json'], true)
   if (io.lost()) return { ok: false, reason: '' }
   const answer = answerOf<{ result?: string; error?: { message?: string } }>(ran)
-  if (ran.code !== 0) return { ok: false, reason: firstLine(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran) }
+  if (ran.code !== 0) return { ok: false, reason: reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran) }
   const runs = answerOf<{ runs?: Run[] }>(await akb(['run', 'list', '--all', '--json']))?.runs ?? []
   return { ok: true, report: { ...(answer?.result?.trim() ? { reply: answer.result.trim() } : {}), ...spentBy(runs.filter((r) => (r.startedAt ?? 0) >= since)) } }
 }
@@ -406,7 +407,7 @@ export async function runAgent(job: Job & { agent: AgentJob }, ws: TaskFolder, d
   const ran = await akb([...args, '--follow', '--events', '--json'], true, env)
   if (io.lost()) return { ok: false, reason: '' }
   const answer = answerOf<{ result?: string; error?: { message?: string } }>(ran)
-  if (ran.code !== 0) return { ok: false, reason: firstLine(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran) }
+  if (ran.code !== 0) return { ok: false, reason: reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran) }
   const runs = answerOf<{ runs?: Run[] }>(await akb(['run', 'list', '--all', '--json']))?.runs ?? []
   return { ok: true, report: { ...(answer?.result?.trim() ? { reply: answer.result.trim() } : {}), ...spentBy(runs.filter((r) => (r.startedAt ?? 0) >= since)) } }
 }
@@ -591,7 +592,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     const review = waiting && waiting !== true ? waiting : undefined
     // A build held on the user's question is reported as one, like a plan's.
     if (!rejected && ran.code !== 0 && !(verb === 'refine' && waiting) && !(answer?.error && asked)) {
-      return fail(firstLine(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran))
+      return fail(reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran))
     }
     const last = answer?.lastSessionId ?? answer?.error?.lastSessionId
     const runs = answerOf<{ runs?: Run[] }>(await akb(['run', 'list', '--card', String(id), '--all', '--json']))?.runs ?? []

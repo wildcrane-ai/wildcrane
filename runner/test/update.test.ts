@@ -13,7 +13,7 @@ import { akbVersionDir, currentAkb, followAkb, readAkbState, sweepAkb } from '..
 import { IDLE_MS } from '../src/cache'
 import { runnerHome, useRunnerHome } from '../src/home'
 import { acceptAlphaUpdates, saveAlphaUpdates } from '../src/preferences'
-import { launch, readState } from '../src/launcher'
+import { launch, pluginEntry, readState } from '../src/launcher'
 import { AKB_CONTRACT } from '../src/protocol'
 import { compare, extract, satisfies, versionDir, versionsDir } from '../src/update'
 
@@ -49,6 +49,8 @@ const runnerScript = (behaviour: string) => `import { createRequire } from 'node
 
 interface Published {
   script: string
+  /** Carries the plugins' component. */
+  plugin?: boolean
   node?: string
   corrupt?: boolean
 }
@@ -103,7 +105,7 @@ before(async () => {
     const version = decodeURIComponent((meta ?? tgz)?.[1] ?? '')
     const pkg = published[version]
     if (!pkg) return void res.writeHead(404).end()
-    const tar = tarball({ 'package/package.json': '{}', 'package/dist/runner.mjs': runnerScript(pkg.script) })
+    const tar = tarball({ 'package/package.json': '{}', 'package/dist/runner.mjs': runnerScript(pkg.script), ...(pkg.plugin ? { 'package/dist/plugin.mjs': '' } : {}) })
     if (tgz) { onDownload(); return void res.end(tar) }
     const integrity = `sha512-${crypto.createHash('sha512').update(pkg.corrupt ? Buffer.from('other') : tar).digest('base64')}`
     const { port } = server.address() as AddressInfo
@@ -335,6 +337,33 @@ describe('the launcher', () => {
     target = '1.1.0'
     await launch(own)
     assert.deepEqual(ran(), ['1.2.0', '1.1.0'])
+  })
+})
+
+describe("the plugins' component (#529)", () => {
+  it('downloads the version Cloud names when none is installed, then runs the newest installed', async () => {
+    target = '1.1.0'; published['1.1.0'] = { script: CONNECTS, plugin: true }
+    assert.equal(await pluginEntry(), path.join(versionDir('1.1.0'), 'dist', 'plugin.mjs'))
+    target = null
+    fs.mkdirSync(path.join(versionDir('1.2.0'), 'dist'), { recursive: true })
+    assert.equal(await pluginEntry(), path.join(versionDir('1.1.0'), 'dist', 'plugin.mjs'))
+    fs.writeFileSync(path.join(versionDir('1.2.0'), 'dist', 'plugin.mjs'), '')
+    assert.equal(await pluginEntry(), path.join(versionDir('1.2.0'), 'dist', 'plugin.mjs'))
+  })
+
+  it('answers none when the named version carries no component or cannot be had', async () => {
+    target = '1.1.0'; published['1.1.0'] = { script: CONNECTS }
+    assert.equal(await pluginEntry(), null)
+    registryUp = false; target = '1.3.0'
+    assert.equal(await pluginEntry(), null)
+  })
+
+  it('keeps the installed version a plugin runs once it connects', async () => {
+    fs.mkdirSync(path.join(versionDir('1.0.0'), 'dist'), { recursive: true })
+    const entry = path.join(versionDir('1.0.0'), 'dist', 'runner.mjs')
+    fs.writeFileSync(entry, runnerScript(CONNECTS))
+    await launch({ version: '1.0.0', entry })
+    assert.deepEqual(readState().good, ['1.0.0'])
   })
 })
 

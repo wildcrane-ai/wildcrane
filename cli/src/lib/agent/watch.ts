@@ -18,7 +18,7 @@ import fs from 'node:fs'
 
 import { rel, TODO, REPO_ROOT, SESSIONS_DIR } from '../paths'
 import { boardComplaints } from '../reconcile'
-import { formatContractErrors, snapshotSpecs, validateRunSpecs } from '../spec-contract'
+import { formatContractErrors, formatProblems, snapshotSpecs, validateRunSpecs } from '../spec-contract'
 import { validatePreview } from '../preview-validation'
 import { eventsPathOf, readRuns, withStore } from './store'
 import { lastSessionTotal, ownCost, reportsSessionTotal } from './own-cost'
@@ -443,26 +443,25 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       const unfinished = blocker || failure
       const result = spoken ? spoken.result : renderer?.result()
 
-      // ---- a provider that failed for a moment (#525) ------------------------
+      // ---- a provider that failed for a moment, or a run gone silent (#525) ----
       //
-      // Waited out HERE, before a word of this run is written down: the record is still
-      // `running` and this process is still up, so the run stays the card's live run and its failure is not yet reported as final.
-      //
-      // Only a failure the AGENT reported can be one. A run the board itself ended — the
-      // silence limit, a stop — produced no provider signal to read, and
-      // one that recorded a blocker stopped on purpose. And no conversation to pick up is
-      // no retry: this continues the very turn that died, it never starts the work again.
+      // Waited out HERE, before the run is written down, so it stays the card's live run.
+      // A stop or a recorded blocker is never retried, and neither is a run with no
+      // conversation to pick up: this continues the turn that died, never starts afresh.
       const held = peekRun(sessionId) ?? record
       const ours = asked || silent || !!blocker
       const said = failure ?? spoken?.error
       // What the CLI printed outside its own events — where a connection that dropped
       // mid-stream leaves its only word, with no `result` event behind it.
       const offStream = renderer?.offStream?.()
-      const blip =
-        ours || sub || (code === 0 && !said) || !resumeSessionId(held)
+      // A run that went silent is continued too: the agent picks up its own turn.
+      const quiet = silent && !asked && !blocker && !sub && !!resumeSessionId(held)
+      const blip = quiet
+        ? { reason: waited ? backgroundSaid(BACKGROUND_WAIT.minutes) : silenceSaid(silenceFor) }
+        : ours || sub || (code === 0 && !said) || !resumeSessionId(held)
           ? undefined
           : active.transient?.({ failure: said, result, offStream })
-      const again = blip ? planRetry(held.retry, blip, held.startedAt) : null
+      const again = blip ? planRetry(held.retry, blip, held.startedAt, Date.now(), Math.random, !quiet) : null
       if (again) {
         log.write(`\n[board] ${retryLine(again)}\n`)
         patch(sessionId, (r) => {
@@ -513,6 +512,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
         .filter((r) => r.sessionId !== sessionId && r.status === 'running' && holdsCard(r.action))
         .flatMap((r) => [r.cardId, ...(r.createdCardIds ?? [])]).filter((id): id is number => id !== null)))
       let formatErrors: ReturnType<typeof validateRunSpecs> = []
+      let broken: string[] = []
       if (!sub) {
         try {
           const discarded = new Set(cleanupDiscardedCards(sessionId))
@@ -562,6 +562,12 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
             required.add(record.cardId)
             formatErrors.push({ file: rel(TODO), line: 1, rule: 'missing-card', message: `Task #${record.cardId} disappeared. Restore its card file; this run must not delete it.` })
           }
+          // A board this run left inconsistent goes back to the agent like a format error.
+          if (repairable) {
+            const owed = new Set(record.formatRepair?.broken ?? [])
+            broken = boardComplaints().filter((line) => owed.has(line) || !wasBroken.has(line))
+            formatErrors.push(...broken.map((line) => ({ file: rel(TODO), line: 1, rule: 'board-broken', message: `${line} Take a card off the board with \`${boardCommand()} raw archive <id>\` or \`${boardCommand()} raw reject <id>\`, never by deleting its file.` })))
+          }
           for (const id of departed) log.write(`\n[board] Task #${id} left the board with its landing; there is nothing to restore.\n`)
           for (const id of rejected) log.write(`\n[board] Task #${id} was rejected; there is nothing to restore.\n`)
         } catch (error) {
@@ -569,6 +575,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
         }
       }
       const contractError = formatErrors.length ? formatContractErrors(formatErrors) : undefined
+      const problems = formatErrors.length ? formatProblems(formatErrors) : undefined
       if (contractError) {
         log.write(`\n[validation] ${contractError}\n`)
         if (status === 'done') status = 'error'
@@ -581,7 +588,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       const original = record.formatRepair ? new Map(record.formatRepair.existingIds.map((id) => [id, ''])) : before
       patch(sessionId, (r) => {
         r.formatRepair = contractError ? {
-          attempt: record.formatRepair?.attempt ?? 0, errors: contractError,
+          attempt: record.formatRepair?.attempt ?? 0, errors: contractError, ...(broken.length ? { broken } : {}),
           cardIds: [...required], changedIds: changed, existingIds: [...original.keys()],
         } : undefined
       })
@@ -615,12 +622,8 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       // Worked out BEFORE the record closes, so anything watching for the run to end sees
       // the note it ended with rather than catching the record a beat too early.
       const settled = status === 'done' && !sub ? settleBoard(record, changed, original) : null
-      const broke = status === 'done' && !sub ? brokeBoard(wasBroken) : null
-      const note = status === 'done' ? joinNotes(settled?.stalled, broke?.note) : undefined
-      const noteWhy: RunReason[] = [
-        ...(status === 'done' ? settled?.stalledWhy ?? [] : []),
-        ...(broke ? [broke.why] : []),
-      ]
+      const note = status === 'done' ? settled?.stalled : undefined
+      const noteWhy: RunReason[] = status === 'done' ? settled?.stalledWhy ?? [] : []
       // Only what the board said in its own words has a kind; an agent's own error has none,
       // and a screen shows nothing for it (#1241).
       const saidOurs = !asked && silent && !spawnError
@@ -654,7 +657,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
         // when it went quiet, the agent's own when the conversation ended badly or its
         // stream said so. That cause leads; a card it left half-written follows.
         error: joinNotes(spawnError ?? (asked ? undefined : silent ? quietSaid : (spoken?.error ?? failure)),
-          contractError),
+          problems),
         note,
         errorWhy,
         noteWhy,
@@ -665,7 +668,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
         && (record.formatRepair?.attempt ?? 0) < MAX_FORMAT_REPAIRS) {
         const next = await resume(sessionId)
         if ('error' in next) patch(sessionId, (r) => {
-          r.error = `${contractError}\nCannot resume format repair: ${next.error}`
+          r.error = `${problems}\nCannot resume format repair: ${next.error}`
           r.errorWhy = [{ kind: 'format' }, { kind: 'repairUnstarted', refusals: [next] }]
         })
       }
@@ -814,29 +817,6 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     })
     child.on('close', (code) => void finish(code, peekRun(sessionId)?.stopping === true || stopped))
   })
-}
-
-// How many broken links a run's note lists before it stops counting. The point is to say
-// the board came out of this run inconsistent, not to reprint the whole of it.
-const MAX_BROKEN = 5
-
-// What this run broke that was whole before it: a link into the README index, a card that
-// never got indexed, a `blocked_by` or `related` pointing at an id that isn't there any
-// more. Nothing else notices — the moves that check for it are the ones the agent skipped —
-// so a run that finished a card by deleting the file reads as a clean `✓ done` and the
-// board goes on quietly disagreeing with itself. Null when it came out whole.
-function brokeBoard(wasBroken: Set<string>): { note: string; why: RunReason } | null {
-  const broke = boardComplaints().filter((line) => !wasBroken.has(line))
-  if (!broke.length) return null
-  const shown = broke.slice(0, MAX_BROKEN)
-  const rest = broke.length - shown.length
-  const why: RunReason = { kind: 'broken', args: { n: String(broke.length), more: String(rest) }, lines: shown }
-  return { why, note: [
-    `the work is done, but the board came out of this run inconsistent — ${broke.length} thing${broke.length === 1 ? '' : 's'} to put right:`,
-    ...shown.map((line) => `  ${line}`),
-    ...(rest ? [`  … and ${rest} more`] : []),
-    `a card is taken off the board with \`${boardCommand()} raw archive <id>\` or \`${boardCommand()} raw reject <id>\`, never by deleting its file.`,
-  ].join('\n') }
 }
 
 const joinNotes = (...parts: (string | null | undefined)[]): string | undefined =>

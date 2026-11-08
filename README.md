@@ -41,4 +41,4 @@ Issues and pull requests are welcome. This repository is synced from our main re
 
 ## License
 
-[Functional Source License 1.1, ALv2 Future License](LICENSE). Each version becomes available under the Apache License 2.0 two years after its release; see [NOTICE](NOTICE).
+[Apache License 2.0](LICENSE); see [NOTICE](NOTICE).

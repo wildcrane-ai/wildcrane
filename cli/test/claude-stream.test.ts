@@ -65,7 +65,7 @@ describe('a run the CLI ended on a clean exit', () => {
   // A sign-in Claude Code was refused ends this way: the sentence is the result, not the subtype.
   it('reads the result when the subtype only says success', () => {
     const { renderer } = render([{ type: 'result', is_error: true, subtype: 'success', result: 'Failed to authenticate. API Error: 403 Request not allowed' }])
-    assert.equal(renderer.failure?.(), 'Failed to authenticate. API Error: 403 Request not allowed')
+    assert.equal(renderer.failure?.(), 'Failed to authenticate. API Error: 403 Request not allowed\nSign in to Claude Code again: run `claude` and enter /login.')
   })
 
   it('is never blank, however little the event carries', () => {

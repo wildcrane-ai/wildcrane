@@ -16,7 +16,7 @@ Still on the old `ai4kanban` package? Run `npm uninstall -g ai4kanban` first; bo
 
 Run `akb help` for commands and `akb guide` for workflows.
 
-通过插件连接云端项目。`akb install` 和整个 `akb skill` 命令树已移除；kanban 技能随插件提供。
+通过插件连接云端项目。`akb install` 和整个 `akb skill` 命令树已移除；kanban 技能由 Runner 在绑定目录时写入项目。
 `akb update` 只修复已有看板并检查 CLI 新版本，不安装技能或钩子。
 
 ## 讨论目标

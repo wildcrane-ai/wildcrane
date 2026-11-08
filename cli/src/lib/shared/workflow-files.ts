@@ -16,7 +16,13 @@ export const WORKFLOW_FILE = 'WORKFLOW.md'
 export const MCP_FILE = 'mcp.json'
 
 const KB = 1024
-export const FILE_LIMITS = { file: 256 * KB, total: 2 * KB * KB, count: 500, path: 512 }
+export const FILE_LIMITS = { file: 2 * KB * KB, total: 2 * KB * KB, count: 500, path: 512 }
+
+/** A marketplace workflow's id: `wf_builtin_<folder>`, `-` as `_`. */
+export const officialId = (folder: string) => `wf_builtin_${folder.replace(/-/g, '_')}`
+
+/** What is hashed to tell one version of a workflow's files from another. */
+export const hashInput = (files: WorkflowFiles) => JSON.stringify(Object.entries(files).sort(([a], [b]) => (a < b ? -1 : 1)))
 
 export type Checked =
   | { ok: true; def: WorkflowDef; files: WorkflowFiles }

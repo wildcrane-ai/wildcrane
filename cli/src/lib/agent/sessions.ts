@@ -339,7 +339,9 @@ function endedDeliveryRefusal(r: RunRecord, refusals?: Map<string, RunRefusal | 
   if (refusals?.has(r.deliveryId)) return refusals.get(r.deliveryId)
   const delivery = findDelivery(r.deliveryId)
   const ended = delivery && delivery.status !== 'active' && (delivery.status !== 'failed' || delivery.worktree)
-  const why = ended ? resumeRefusal(delivery) : undefined
+  // A format repair only touches cards, so a delivery that already landed does not stop it.
+  const repairsShipped = !!r.formatRepair && delivery?.status === 'finished'
+  const why = ended && !repairsShipped ? resumeRefusal(delivery) : undefined
   refusals?.set(r.deliveryId, why)
   return why
 }
@@ -1035,6 +1037,8 @@ async function resumeHeld(
     if (locked) return locked
     all.push(record)
     const delivery = store.deliveries.find((d) => d.deliveryId === prev.deliveryId && d.status === 'active')
+    // A format repair after landing stays under its finished delivery, so a failure keeps the card where it is.
+    if (!delivery && record.formatRepair) record.deliveryId = prev.deliveryId
     if (delivery) {
       delivery.sessions.push(record.sessionId)
       delivery.steps.push({ step: 'resume', at: record.startedAt })
