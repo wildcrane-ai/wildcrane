@@ -17,7 +17,7 @@ You write or change a workflow, one of its preview agents, or a scheduled agent.
 ## What to write
 
 - **Rules**: write it as the "How a workflow works" section of `akb guide update-workflow` says; its pull and push steps are not yours.
-- **The workflow**: it is the folder the card names; change it in place and keep what the request leaves alone. Give a new one a short name with `akb workflow rename`.
+- **The workflow**: it is the folder the card names; change it in place and keep what the request leaves alone. Give a new one a short name with `akb raw workflow rename`.
 - **Icons**: give each agent an `akb.icon` and `WORKFLOW.md` a top-level `icon` for what the whole workflow ships, both as `icons.md` says.
 - **Outside skills**: ship a skill from another repository as `vendor/<repo>.zip.b64` in the agent's
   folder: `git archive --format=zip <commit> <paths…> | base64`, under 2 MB. The agent unpacks it once
@@ -46,7 +46,7 @@ Sort each remark on a trial preview into form or content, and split a mixed one.
 
 ## Card
 
-Under your section heading, state the workflow's `when` in one sentence, quote the sample request, marking a made-up one, then add the tag `akb workflow diagram <workflow id> <card id>` prints once the files are final.
+Under your section heading, state the workflow's `when` in one sentence, quote the sample request, marking a made-up one, then add the tag `akb raw workflow diagram <workflow id> <card id>` prints once the files are final.
 
 - **One subsection per preview agent**: its rules in a few bullets, what it remembers, then its trial result embedded as an `<Asset>` followed by the preview tags that result kept for the card; note which agent a later stage waits for.
 - **Other agents**: one line each for `land` and `scheduled` agents: what it does, when it runs and what it remembers.

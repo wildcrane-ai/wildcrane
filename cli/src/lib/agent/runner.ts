@@ -27,7 +27,7 @@ export interface RunAsk {
   /** The agent's name on a `spec` or `write` run, and nothing on any other. */
   specAgent?: string
   /** Set on a pass a refine spawned, absent on a flow a user typed — the one thing that
-   *  tells a refine's `resolve` pass from an `akb card resolve` of its own. */
+   *  tells a refine's `resolve` pass from an `akb raw card resolve` of its own. */
   refineRound?: number
   /** The workflow this run's card runs on (#715). Given by a caller that already knows it —
    *  a delivery hands its frozen one down — and read off the card otherwise. */
@@ -60,14 +60,6 @@ export function agentForRun(ask: RunAsk = {}): string | undefined {
   // A specialist runs as itself, whichever hook it is on; a sub-run as its parent's agent.
   if (SPECIALIST_ACTIONS.has(action) || action === 'sub') return specAgent
   return roleForFlow(flowOf(ask, action), workflowForRun(ask))?.name
-}
-
-/** The agent of this run when it writes a section for the user to review (#868, #1574): a
- *  preview. With nothing to show, it writes none. */
-export function humanSectionFor(ask: RunAsk): { agent: string } | null {
-  if (ask.action !== 'spec') return null
-  const agent = findSpecAgent(agentForRun(ask) ?? '')
-  return agent ? { agent: agent.name } : null
 }
 
 // The flow this run belongs to. A pass belongs to the flow that spawned it, never to a flow

@@ -858,7 +858,7 @@ export function resetSorted(ws: TaskFolder): void {
 }
 
 /** Each item the job added to `triage/`, proposed from its task on its workflow — the job's when
- *  the file names none — as `akb triage add` cannot know either. */
+ *  the file names none — as `akb raw triage add` cannot know either. */
 function proposeItems(ws: TaskFolder, base: Base): void {
   const root = rootOf(ws)
   for (const p of localFiles(ws, base)) {

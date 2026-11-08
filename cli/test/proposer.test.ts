@@ -3,7 +3,7 @@
 // The reflection itself is an agent's judgment and cannot be asserted here. What can, and
 // what this covers, is the machinery around it: completed cards wait in a queue and one run
 // covers a batch of them (#1467), only a run that passed takes its cards off, the flow reads its cards out of `.archive/` where the ordinary card
-// read no longer finds them, and `akb triage add` puts one proposal in the inbox carrying
+// read no longer finds them, and `akb raw triage add` puts one proposal in the inbox carrying
 // the card that prompted it.
 
 import assert from 'node:assert/strict'

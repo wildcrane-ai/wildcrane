@@ -1,6 +1,6 @@
 # Narration voices
 
-Generate with `akb cloud tts --voice <name> [--tier standard|premium] --out <file> "<text>"`. Pick from the group of the narration's language; a voice reads only its own language, except the multilingual group, which speaks every language. Chinese voices write `.mp3`.
+Generate with `akb tts --voice <name> [--tier standard|premium] --out <file> "<text>"`. Pick from the group of the narration's language; a voice reads only its own language, except the multilingual group, which speaks every language. Chinese voices write `.mp3`.
 
 ## Chinese
 

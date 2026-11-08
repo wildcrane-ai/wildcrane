@@ -96,7 +96,7 @@ describe('交付的构建会话续接（#368）', () => {
     const opened = await openResume(old.sessionId, { deliveryId: old.deliveryId!, notes: '保留已完成的修改' })
     if ('error' in opened) throw new Error(opened.error)
     const prompt = readSpec(opened.run.sessionId)!.prompt
-    assert.equal(prompt, `Continue delivery ${old.deliveryId}. The delivery has not recorded completion. Finish its unchecked todos, then run akb delivery complete ${old.deliveryId}, with --commit <sha> --branch <name> in a git project.\n\n保留已完成的修改`)
+    assert.equal(prompt, `Continue delivery ${old.deliveryId}. The delivery has not recorded completion. Finish its unchecked todos, then run akb raw delivery complete ${old.deliveryId}, with --commit <sha> --branch <name> in a git project.\n\n保留已完成的修改`)
   })
 
   it('缺失真实会话 ID 时明确拒绝，不重新构建', async () => {

@@ -401,7 +401,7 @@ export interface Signal {
   meta: SignalMeta[]
   /** The agent whose run added it (#1475), or absent when no run did. */
   agent?: string
-  /** The workflow that does its work, as `akb triage add` named it (#2139). Absent on an older item. */
+  /** The workflow that does its work, as `akb raw triage add` named it (#2139). Absent on an older item. */
   workflow?: string
   /** The thing itself, when there is one to open. Empty otherwise. */
   url: string
@@ -477,7 +477,7 @@ export interface InboxDrop {
   /** A dropped file: its name, what the browser called it, and its bytes. */
   file?: { name: string; type: string; data: Uint8Array }
   /** The item's title, when the caller knows it rather than leaving it to be read off the
-   *  first line (#534) — what `akb triage add` passes. */
+   *  first line (#534) — what `akb raw triage add` passes. */
   title?: string
   /** And where it came from, for the same reason: a proposal names the card that prompted
    *  it. Empty or absent leaves whatever the input itself gave. */

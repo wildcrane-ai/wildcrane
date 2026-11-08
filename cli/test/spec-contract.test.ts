@@ -8,12 +8,11 @@ import { ASSETS, setBoardRoot, SESSIONS_DIR } from '../src/lib/paths'
 import { parseFrontmatter, serializeFrontmatter } from '../src/lib/frontmatter'
 import { byDispatchOrder } from '../src/lib/view/rules'
 import type { Card } from '../src/lib/view/types'
-import { formatContractErrors, snapshotSpecs, validateRunSpecs, validateSpec } from '../src/lib/spec-contract'
+import { formatContractErrors, snapshotSpecs, validateSpec } from '../src/lib/spec-contract'
 import { openRun, openResume, patch, peekRun } from '../src/lib/agent/sessions'
 import { setBoardProvider } from '../src/lib/board'
 import type { AgentAction } from '../src/lib/agent/types'
 import { watchRun } from '../src/lib/agent/watch'
-import { withStore } from '../src/lib/agent/store'
 import { move, refuses } from './helpers/board'
 import { PROMPT_OF } from './helpers/fake-agent'
 
@@ -291,44 +290,10 @@ describe('the card format contract', () => {
     assert.deepEqual(validateSpec(file, valid.replace('<!-- agent -->', example + '\n<!-- agent -->')), [])
     assert.ok(validateSpec(file, valid + '\n```md\ntext').some((e) => e.rule === 'code-fence'))
   })
-
-  it('catches raw malformed files, including cards created by non-spec runs, and excludes unrelated work', () => {
-    const before = snapshotSpecs()
-    const bad = path.join(path.dirname(file), '2-broken.md')
-    fs.writeFileSync(bad, 'no frontmatter')
-    assert.ok(validateRunSpecs(before, snapshotSpecs(), null).some((e) => e.file.endsWith('2-broken.md')))
-    assert.deepEqual(validateRunSpecs(before, snapshotSpecs(), null, new Set([2])), [])
-    assert.deepEqual(validateRunSpecs(snapshotSpecs(), snapshotSpecs(), null), [])
-    assert.ok(validateRunSpecs(snapshotSpecs(), snapshotSpecs(), null, new Set(), new Set([2])).some((e) => e.file.endsWith('2-broken.md')))
-  })
 })
 
-describe("a human-facing agent's own section (#868)", () => {
-  const section = '## By `outliner` agent\n\nAn outline.\n\n'
-  const above = valid.replace('<!-- agent -->', section + '<!-- agent -->')
-  const below = valid.replace('## Decided by the agent', section + '## Decided by the agent')
-  const check = (text: string, cards = new Set([1])) => {
-    const before = snapshotSpecs()
-    fs.writeFileSync(file, text)
-    return validateRunSpecs(before, snapshotSpecs(), 1, new Set(), new Set(), { agent: 'outliner', cards })
-  }
-
-  it('lets a run leave it out, but not below the boundary', () => {
-    assert.deepEqual(check(valid), [])
-    assert.match(check(below).map((e) => e.message).join('\n'), /Move ## By `outliner` agent above <!-- agent -->/)
-    assert.deepEqual(check(above), [])
-  })
-
-  it('checks only the cards the run owns', () => {
-    assert.deepEqual(check(valid, new Set()), [])
-    const other = path.join(path.dirname(file), '2-other.md')
-    fs.writeFileSync(other, below)
-    assert.deepEqual(check(above).filter((e) => e.file.endsWith('2-other.md')), [])
-    assert.ok(validateSpec(other, below).some((e) => e.rule === 'section-half'))
-  })
-})
-
-async function fakeRun(repairable: boolean, action: AgentAction = 'clarify', preview = false) {
+// `lose`: delete the card, and put it back when asked; `repairable: false` never does.
+async function fakeRun(repairable: boolean, action: AgentAction = 'clarify', lose = true) {
   const script = path.join(root, 'fake-agent.cjs')
   fs.writeFileSync(script, `${PROMPT_OF}
     (async () => {
@@ -337,17 +302,18 @@ async function fakeRun(repairable: boolean, action: AgentAction = 'clarify', pre
     const prompt = await promptOf();
     fs.appendFileSync(${JSON.stringify(path.join(root, 'prompts.log'))}, JSON.stringify(prompt) + '\\n');
     fs.appendFileSync(${JSON.stringify(path.join(root, 'args.log'))}, JSON.stringify(process.argv) + '\\n');
-    let text = fs.readFileSync(file, 'utf8');
-    if (${preview}) fs.writeFileSync(${JSON.stringify(path.join(ASSETS, '1/screen.tsx'))}, prompt.includes('[preview-render]') && ${repairable} ? 'export default () => <main>Fixed</main>' : 'export default () => { throw new Error(\"broken screen\") }');
-    else if (prompt.includes('Spec format validation failed.') && ${repairable}) text = text.replace('## Scpoe', '## Scope');
-    else text = text.replace('## Scope', '## Scpoe');
-    fs.writeFileSync(file, text);
+    if (!${lose}) fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('## Scope', '## Scpoe'));
+    else if (prompt.includes('disappeared') && ${repairable}) {
+      fs.writeFileSync(file, ${JSON.stringify(valid)});
+      fs.writeFileSync(${JSON.stringify(path.join(path.dirname(file), 'README.md'))}, '# Tasks\\n\\n- [ ] [#1 A feature](1-feature.md)\\n');
+    }
+    else fs.rmSync(file, { force: true });
     const turns = fs.readFileSync(${JSON.stringify(path.join(root, 'prompts.log'))}, 'utf8').trim().split('\\n').length;
     console.log(JSON.stringify({type: 'result', result: 'Done', total_cost_usd: turns * 0.1, usage: {input_tokens: 10, output_tokens: 5}}));
     })();
   `)
   fs.writeFileSync(path.join(root, 'docs/kanban/ui.config.json'), JSON.stringify({ harness: 'claude-code', harnessSettings: { 'claude-code': { command: `${process.execPath} ${script}` } } }))
-  const opened = openRun({ action, id: 1, ...(action === 'spec' ? { specAgent: 'ui-designer' } : {}) }, 'Write the spec.', [])
+  const opened = openRun({ action, id: 1 }, 'Write the spec.', [])
   if ('error' in opened) throw new Error(opened.error)
   opened.spec.plan.argv = [process.execPath, script]
   opened.spec.plan.harness = 'claude-code'
@@ -371,55 +337,31 @@ async function watchWithResume(id: string): Promise<string> {
 }
 
 describe('run completion validation', () => {
-  it('returns errors to the agent, and a repaired run finishes', async () => {
+  // #566: the card format is the agent's own check; it never fails a run.
+  it('finishes a run that leaves a malformed card', async () => {
+    for (const action of ['spec', 'clarify', 'edit'] as const) {
+      fs.writeFileSync(file, valid)
+      fs.rmSync(path.join(root, 'prompts.log'), { force: true })
+      const last = await watchWithResume(await fakeRun(false, action, false))
+      assert.equal(peekRun(last)?.status, 'done', action)
+      assert.match(fs.readFileSync(file, 'utf8'), /## Scpoe/)
+      assert.equal(fs.readFileSync(path.join(root, 'prompts.log'), 'utf8').trim().split('\n').length, 1)
+    }
+  })
+
+  it('asks the agent to restore a card it deleted, and a repaired run finishes', async () => {
     const id = await fakeRun(true)
     const last = await watchWithResume(id)
     const prompts = fs.readFileSync(path.join(root, 'prompts.log'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string)
     assert.equal(prompts.length, 2)
-    assert.match(prompts[1]!, /1-feature.md:\d+ \[section-name\]/)
-    assert.match(fs.readFileSync(file, 'utf8'), /## Scope/)
+    assert.match(prompts[1]!, /\[missing-card\] Task #1 disappeared/)
+    assert.ok(fs.existsSync(file))
     assert.equal(peekRun(last)?.status, 'done')
     assert.equal(peekRun(last)?.costUsd, 0.1)
     assert.equal(peekRun(last)?.usage?.input, 10)
     const args = fs.readFileSync(path.join(root, 'args.log'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[])
     assert.ok(args[1]!.includes('--resume'))
     assert.ok(!args[1]!.includes('--session-id'))
-  })
-
-  it('repairs the format after the delivery already landed (#537)', async () => {
-    const id = await fakeRun(true, 'implement')
-    withStore((store) => {
-      store.deliveries.push({
-        deliveryId: 'd1', cardId: 1, title: 'A feature', status: 'finished', startedAt: 1, endedAt: 2,
-        sessions: [id], approved: '', steps: [], landing: { status: 'landed', attempts: 0, commit: 'c1e0306d', at: 2 },
-      })
-    })
-    patch(id, (r) => { r.deliveryId = 'd1' })
-    const last = await watchWithResume(id)
-    assert.match(fs.readFileSync(file, 'utf8'), /## Scope/)
-    assert.equal(peekRun(last)?.status, 'done')
-  })
-
-  for (const repairable of [true, false]) it(`validates directly edited previews and returns errors to the same designer (${repairable})`, async () => {
-    fs.mkdirSync(path.join(ASSETS, '1'), { recursive: true })
-    fs.writeFileSync(file, valid.replace('<!-- agent -->', '## By `ui-designer` agent\n\n<Asset src=".assets/1/screen.tsx" label="Screen" device="desktop" />\n\n<!-- agent -->'))
-    const id = await fakeRun(repairable, 'spec', true)
-    const last = await watchWithResume(id)
-    const prompts = fs.readFileSync(path.join(root, 'prompts.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as string)
-    assert.match(prompts[1]!, /screen.tsx.*\[preview-render\].*broken screen/)
-    assert.equal(peekRun(last)?.status, repairable ? 'done' : 'error')
-    assert.equal(prompts.length, repairable ? 2 : 4)
-    assert.ok(fs.existsSync(path.join(ASSETS, '1/screen.tsx')))
-  })
-
-  it('also blocks spec, refinement, and revision runs when formatting stays invalid', async () => {
-    for (const action of ['spec', 'clarify', 'edit'] as const) {
-      fs.writeFileSync(file, valid)
-      const id = await fakeRun(false, action)
-      const last = await watchWithResume(id)
-      assert.equal(peekRun(last)?.status, 'error', action)
-      assert.match(peekRun(last)?.error ?? '', /Task format problems/)
-    }
   })
 
   it('keeps the failure when no harness conversation id is available', async () => {
@@ -435,13 +377,12 @@ describe('run completion validation', () => {
     assert.equal(fs.readFileSync(path.join(root, 'prompts.log'), 'utf8').trim().split('\n').length, 1)
   })
 
-  it('fails with detailed errors after bounded repair attempts and never marks the card ready', async () => {
+  it('fails with detailed errors after bounded repair attempts', async () => {
     const id = await fakeRun(false)
     const last = await watchWithResume(id)
     assert.equal(peekRun(last)?.status, 'error')
     assert.equal(peekRun(last)?.ok, false)
-    assert.match(peekRun(last)?.error ?? '', /^Task format problems:\n- Unknown ## Scpoe\./)
-    assert.match(fs.readFileSync(file, 'utf8'), /status: todo/)
+    assert.match(peekRun(last)?.error ?? '', /^Task format problems:\n- Task #1 disappeared\./)
     assert.equal(fs.readFileSync(path.join(root, 'prompts.log'), 'utf8').trim().split('\n').length, 4)
   })
 })

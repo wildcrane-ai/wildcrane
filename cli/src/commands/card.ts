@@ -27,7 +27,7 @@ import { findSpecAgent } from '../lib/agents'
 import { findCard } from '../lib/view/read'
 import { creationRefusal } from '../lib/view/rules'
 import { TASKS_HEADING, addReadmeRef, stripReadmeRefs, repointReadmeLink } from '../lib/readme'
-import { formatContractErrors, scanCardLines, validateSpec } from '../lib/spec-contract'
+import { scanCardLines } from '../lib/spec-contract'
 import { reconcileBoard } from '../lib/reconcile'
 import type { Meta, MoveResult, Question } from '../lib/types'
 
@@ -99,45 +99,39 @@ function bodyFromFile(opts: CreateOptions): string | null {
   return text!
 }
 
-function normalizeBody(text: string, file: string) {
-  let rows = text.replace(/\r\n/g, '\n').split('\n').map((text, i) => ({ text, line: i + 1 }))
-  const trim = (lines: typeof rows) => {
-    while (lines.length && !lines[0]!.text.trim()) lines.shift()
-    while (lines.length && !lines.at(-1)!.text.trim()) lines.pop()
+// The body is soft: reshape what we recognise, keep anything else as written.
+function normalizeBody(text: string) {
+  let rows = text.replace(/\r\n/g, '\n').split('\n')
+  const trim = (lines: string[]) => {
+    while (lines.length && !lines[0]!.trim()) lines.shift()
+    while (lines.length && !lines.at(-1)!.trim()) lines.pop()
     return lines
   }
-  const { visible } = scanCardLines(rows.map((row) => row.text))
+  const { visible } = scanCardLines(rows)
   const sections = visible.flatMap((line, index) => {
     const heading = line.match(/^ {0,3}(#{1,3})\s+(.+?)\s*#*\s*$/)
     return heading ? [{ index, level: heading[1]!.length, title: heading[2]! }] : []
   })
   const acceptance = sections.filter((h) => h.title === 'Done when' && h.level >= 2)
-  if (acceptance.length > 1) die(`${file}:${acceptance[1]!.index + 1} [duplicate-section] Duplicate Done when. Keep one ### Done when under ## Scope.`)
-  const source = sections.find((h) => h.level === 2 && h.title === 'Source')
-  if (source) {
-    die(`${file}:${source.index + 1}: the body carries a \`## Source\` section — drop it and pass --source <plan path | plan:<id> | #<id> | URL> instead`, { kind: 'needs-input' })
-  }
+  if (acceptance.length > 1 || sections.some((h) => h.level === 2 && h.title === 'Source')) return trim(rows).join('\n') + '\n'
   const boundary = (line: string) => /^\s*<!--\s*agent\s*-->\s*$/.test(line)
   const sectionEnd = (line: string) => /^ {0,3}#{1,2}\s/.test(line) || boundary(line)
   const formal = sections.some((h) => h.level <= 2 && h.title !== 'Done when') || visible.some(boundary)
   const done = acceptance.find((h) => h.level === 2)
-  let checklist: typeof rows = []
+  let checklist: string[] = []
   if (done) {
     const end = visible.findIndex((line, i) => i > done.index && sectionEnd(line))
     checklist = trim(rows.splice(done.index, (end < 0 ? rows.length : end) - done.index))
-    checklist[0]!.text = '### Done when'
+    checklist[0] = '### Done when'
   }
-  if (!formal) {
-    rows = [...trim(rows), ...defaultBody('').split('\n').slice(1).map((text) => ({ text, line: 1 }))]
-  }
+  if (!formal) rows = [...trim(rows), ...defaultBody('').split('\n').slice(1)]
   if (checklist.length) {
-    const scan = scanCardLines(rows.map((row) => row.text)).visible
+    const scan = scanCardLines(rows).visible
     const scope = scan.findIndex((line) => /^ {0,3}##\s+Scope\s*#*\s*$/.test(line))
     const next = scope < 0 ? -1 : scan.findIndex((line, i) => i > scope && sectionEnd(line))
-    rows.splice(next < 0 ? rows.length : next, 0, ...checklist, { text: '', line: 1 })
+    rows.splice(next < 0 ? rows.length : next, 0, ...checklist, '')
   }
-  rows = trim(rows)
-  return { body: rows.map((row) => row.text).join('\n') + '\n', lines: rows.map((row) => row.line) }
+  return trim(rows).join('\n') + '\n'
 }
 
 // Create writes one card under the number Cloud gave its task, and indexes it.
@@ -158,15 +152,7 @@ export function validateCreate(opts: CreateOptions) {
   if (opts.fromTask && !source.includes(opts.fromTask)) source.unshift(opts.fromTask)
   const questions = collectQuestions(opts.asked ?? [])
   const draft = bodyFromFile(opts)
-  const normalized = draft ? normalizeBody(draft, opts.bodyFile!) : null
-  const written = normalized?.body ?? null
-  if (written) {
-    const header = serializeFrontmatter({ title, priority, status: 'todo', blocked_by, related, modules, workflow, previews, stages, triage, source, questions }) + '\n\n'
-    const errors = validateSpec(opts.bodyFile!, header + written)
-    const offset = header.split('\n').length - 1
-    for (const error of errors) error.line = normalized!.lines[error.line - offset - 1] ?? 1
-    if (errors.length) die(formatContractErrors(errors))
-  }
+  const written = draft ? normalizeBody(draft) : null
   return { title, priority, blocked_by, related, modules, triage, workflow, previews, stages, source, questions, written }
 }
 

@@ -315,7 +315,7 @@ export function resumeRefusal(delivery: DeliveryRecord, store?: Store): RunRefus
   const live = store ?? readStore()
   const holder = activeIn(live, delivery.cardId)
   if (holder) {
-    const command = `${boardCommand()} delivery cancel ${holder.deliveryId}`
+    const command = `${boardCommand()} raw delivery cancel ${holder.deliveryId}`
     return refusal(
       'deliveryHeld',
       `delivery ${holder.deliveryId} is building #${card} now — end that one first with \`${command}\`.`,
@@ -471,7 +471,7 @@ function cardMeta(cardId: number): ReturnType<typeof parseFrontmatter>['meta'] |
 export const cardStatus = (cardId: number): string => cardMeta(cardId)?.status || 'todo'
 
 /** How many questions this card still has open — the count landing holds on (#307), and the
- *  one the Implement dialog and `akb card implement` warn about. A card nobody can read has
+ *  one the Implement dialog and `akb raw card implement` warn about. A card nobody can read has
  *  none: a missing card holds nothing up. */
 export const openQuestions = (cardId: number): number => openOf(cardMeta(cardId)?.questions ?? []).length
 
@@ -716,7 +716,7 @@ export function heldByDelivery(cardId: number, program?: string): string | undef
   const cmd = program ?? boardCommand()
   const state = deliveryState(delivery, openQuestions(cardId))
   const answer =
-    `Answer it with \`${cmd} card resolve ${cardId}\`.`
+    `Answer it with \`${cmd} raw card resolve ${cardId}\`.`
   const doing = state.paused
     ? `is waiting on you on #${cardId} — ${state.line} — so the board won't change the card. ` +
       `${answer} Or take the card back with `
@@ -724,6 +724,6 @@ export function heldByDelivery(cardId: number, program?: string): string | undef
         `so the board won't change it. Take the card back with `
   return (
     `delivery ${delivery.deliveryId} ${doing}` +
-    `Discard on the card page, or \`${cmd} delivery cancel ${delivery.deliveryId}\` to end it here.`
+    `Discard on the card page, or \`${cmd} raw delivery cancel ${delivery.deliveryId}\` to end it here.`
   )
 }

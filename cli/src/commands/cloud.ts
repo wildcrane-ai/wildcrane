@@ -1,4 +1,4 @@
-// `akb cloud` — which account this machine acts as.
+// `akb account` — which account this machine acts as.
 //
 // 登录由 Runner 或插件完成，命令读取本机共享会话。
 //
@@ -24,7 +24,7 @@ export async function cmdCloud(args: string[], program: string): Promise<MoveRes
   }
   if (sub !== undefined) {
     die(
-      `unknown \`cloud\` command "${sub}". Try \`${program} cloud\` or \`${program} cloud sign-out\`.`,
+      `unknown \`account\` command "${sub}". Try \`${program} account\` or \`${program} account sign-out\`.`,
       { kind: 'unknown-move' },
     )
   }
@@ -51,7 +51,7 @@ function report(account: Awaited<ReturnType<typeof readCloudAccount>>, program: 
     case 'signed-in':
       lines.push(`Signed in to Cloud as ${who}.`)
       lines.push(`Held at ${account.sessionFile}, for this whole machine.`)
-      lines.push(`Sign out with \`${program} cloud sign-out\`.`)
+      lines.push(`Sign out with \`${program} account sign-out\`.`)
       break
     case 'not-admitted':
       lines.push(`Signed in as ${who}, and not admitted.`)
@@ -62,7 +62,7 @@ function report(account: Awaited<ReturnType<typeof readCloudAccount>>, program: 
           ? `You asked for an invite on ${account.inviteRequestedAt.slice(0, 10)}. We answer by email.`
           : 'Request an invite in the WildCrane app, under Configuration → Cloud.',
       )
-      lines.push(`Sign out with \`${program} cloud sign-out\`.`)
+      lines.push(`Sign out with \`${program} account sign-out\`.`)
       break
     case 'expired':
       lines.push(`Your Cloud sign-in as ${who} has expired.`)
@@ -129,12 +129,12 @@ function usage(problem: string, line: string): never {
 const TIERS = ['economy', 'standard', 'premium']
 const SPEECH_TIERS = ['standard', 'premium']
 
-/** `akb cloud image --aspect <ratio> [--tier <tier>] [--ref <file>]… --out <file.png> "<prompt>"` */
+/** `akb image --aspect <ratio> [--tier <tier>] [--ref <file>]… --out <file.png> "<prompt>"` */
 export async function cloudImage(
   opts: { aspect?: string; tier?: string; refs: string[]; out?: string; prompt: string },
   program: string,
 ): Promise<MoveResult> {
-  const line = `${program} cloud image --aspect <ratio> [--tier economy|standard|premium] [--ref <file>]… --out <file.png> "<prompt>"`
+  const line = `${program} image --aspect <ratio> [--tier economy|standard|premium] [--ref <file>]… --out <file.png> "<prompt>"`
   if (!opts.aspect) usage('Missing --aspect.', line)
   const tier = opts.tier ?? 'standard'
   if (!TIERS.includes(tier)) usage(`--tier ${tier}: pick one of ${TIERS.join(', ')}.`, line)
@@ -169,13 +169,13 @@ export async function cloudImage(
   })
 }
 
-/** `akb cloud tts --voice <name> [--tier <tier>] --out <file.wav> "<text>"` — never falls back to
+/** `akb tts --voice <name> [--tier <tier>] --out <file.wav> "<text>"` — never falls back to
  *  another voice or tier. */
 export async function cloudTts(
   opts: { voice?: string; tier?: string; out?: string; text: string },
   program: string,
 ): Promise<MoveResult> {
-  const line = `${program} cloud tts --voice <name> [--tier standard|premium] --out <file.wav> "<text>"`
+  const line = `${program} tts --voice <name> [--tier standard|premium] --out <file.wav> "<text>"`
   if (!opts.voice) usage('Missing --voice.', line)
   const tier = opts.tier ?? 'standard'
   if (!SPEECH_TIERS.includes(tier)) usage(`--tier ${tier}: pick one of ${SPEECH_TIERS.join(', ')}.`, line)
@@ -207,12 +207,12 @@ export async function cloudTts(
   })
 }
 
-/** `akb cloud music --seconds <n> --out <file.mp3> "<prompt>"` */
+/** `akb music --seconds <n> --out <file.mp3> "<prompt>"` */
 export async function cloudMusic(
   opts: { seconds?: string; out?: string; prompt: string },
   program: string,
 ): Promise<MoveResult> {
-  const line = `${program} cloud music --seconds <n> --out <file.mp3> "<prompt>"`
+  const line = `${program} music --seconds <n> --out <file.mp3> "<prompt>"`
   if (!opts.seconds) usage('Missing --seconds.', line)
   if (!opts.out) usage('Missing --out.', line)
   const seconds = Number(opts.seconds)

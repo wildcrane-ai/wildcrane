@@ -21,7 +21,7 @@ akb raw update-questions <id> --drop <n[,n...]>
 When an answer accepts a step the user was asked to review and asks for no changes, tick that
 step's review todo; an answer asking for changes leaves it unticked.
 
-When an answer chooses to discard the card, first run `akb delivery cancel <delivery>` if a
+When an answer chooses to discard the card, first run `akb raw delivery cancel <delivery>` if a
 delivery is in flight, then `akb raw reject <id> --reason "<why>"`, and stop. Skip every
 remaining step of this guide.
 
@@ -41,8 +41,8 @@ answer, so you are the only one who can tell a confirmation from a change — th
 your conclusion and never the card's text.
 
 ```text
-akb delivery answered <delivery> --unchanged "<why>"
-akb delivery answered <delivery> --changed "<why>"
+akb raw delivery answered <delivery> --unchanged "<why>"
+akb raw delivery answered <delivery> --changed "<why>"
 ```
 
 - **Record it before you drop the questions**: dropping the last one is what puts the board
@@ -55,7 +55,7 @@ akb delivery answered <delivery> --changed "<why>"
 - **One conclusion per round**: it covers every answer you applied in this session. The
   delivery a `--changed` reopens starts on the card as it then reads, with none of its own.
 
-`akb card implement <id> --print` prints the delivery's id and the copy it is building.
+`akb raw card implement <id> --print` prints the delivery's id and the copy it is building.
 Nothing to record when no delivery is in flight.
 
 ## Curate the human half

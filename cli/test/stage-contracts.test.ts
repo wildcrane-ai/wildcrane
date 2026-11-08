@@ -102,7 +102,7 @@ describe('the classification', () => {
   })
 
   it('claims the flows nobody types, too', () => {
-    // Not commands under `akb card`, and the board's work all the same.
+    // Not commands under `akb raw card`, and the board's work all the same.
     assert.equal(stageOfFlow('chat'), 'discuss')
     assert.equal(flowNodes().find((n) => n.flow === 'reflect')?.kind, 'event')
   })

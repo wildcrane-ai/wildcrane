@@ -75,7 +75,7 @@ after(() => fs.rmSync(root, { recursive: true, force: true }))
 
 describe('card approve on a Runner board', () => {
   it('decides in Cloud on the review it reads, and starts no run here', async () => {
-    await run(root, ['card', 'approve', '3', '--board', board])
+    await run(root, ['raw', 'card', 'approve', '3', '--board', board])
     const post = sent.find((s) => s.method === 'POST')!
     assert.equal(post.route, '/v1/tasks/WC-3/decisions')
     assert.deepEqual(post.body, { decision: 'approve', review_revision: 4 })
@@ -84,7 +84,7 @@ describe('card approve on a Runner board', () => {
 
   it('a refusal says what Cloud said', async () => {
     serve({ status: 409, code: 'conflict', message: 'A step is already running.' })
-    await assert.rejects(() => run(root, ['card', 'approve', '3', '--board', board]), /Cloud did not approve #3: A step is already running\./)
+    await assert.rejects(() => run(root, ['raw', 'card', 'approve', '3', '--board', board]), /Cloud did not approve #3: A step is already running\./)
   })
 
   const staged = (phase: number, status: string, questions = '[]') => {
@@ -95,7 +95,7 @@ describe('card approve on a Runner board', () => {
   const approve = async () => {
     const sink = startCollecting()
     try {
-      await run(root, ['card', 'approve', '3', '--board', board, '--print'])
+      await run(root, ['raw', 'card', 'approve', '3', '--board', board, '--print'])
       assert.deepEqual(sent, [])
       assert.equal(readRuns().length, 0)
       return sink.out.join('\n')

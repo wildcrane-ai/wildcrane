@@ -77,9 +77,12 @@ akb:
   # Optional; UI text only. Runs use English; omitted text falls back to English.
   i18n:
     # Language tag; every field below is optional.
+    en:
+      # Display name, shown as the stage name: name the output, not the role; at most
+      # 3 English words or 4 Chinese characters. Does not change the agent's name.
+      title: UI copy
     zh:
-      # Display name; does not change the agent's name.
-      title: 界面文案师
+      title: 界面文案
       description: 撰写界面上的文字。
       when: 卡片新增或修改界面文字时。
 ```
@@ -131,7 +134,7 @@ correction should change the agent's next output. Otherwise say in `AGENT.md`:
 
 Declare the preview components the agent uses in `akb.components` (Asset, Compare, Storyboard).
 Their usage documentation is supplied with the run; omitted declarations default to Asset.
-Use `akb components --agent <name> --docs` or `--workflow <id> --docs` to read it.
+Use `akb raw components --agent <name> --docs` or `--workflow <id> --docs` to read it.
 
 Choose the form the reader takes in fastest and say it in `AGENT.md`: an image for a look, a
 storyboard for a sequence over time, readable Markdown for everything else.
@@ -163,13 +166,13 @@ never when it runs.
 
 ## Check it
 
-- **Validate before finishing**: after creating or editing an agent, run `akb previews`. Read all trigger conditions with `akb previews --triggers`.
+- **Validate before finishing**: after creating or editing an agent, run `akb raw previews`. Read all trigger conditions with `akb raw previews --triggers`.
   Fix every problem reported for its file under "Problems on this board", then run it again.
   Do not finish until the agent is accepted with no problems reported for it.
-- **`akb previews <name> <id> --print`** on a real card prints the whole prompt the agent will get:
+- **`akb raw previews <name> <id> --print`** on a real card prints the whole prompt the agent will get:
   its instructions, the reference for each chosen setting, its files and its memory. Read it, and cut whatever the run does not need.
 - **Workflow**: a new agent belongs to the workflow it was created in and starts switched on;
-  a preview agent joins the end of that workflow's `previews`. `akb previews` refuses it while it is off.
+  a preview agent joins the end of that workflow's `previews`. `akb raw previews` refuses it while it is off.
   Switch it in that workflow's `WORKFLOW.md`.
 - **Schedule**: set `reads` from what the agent works on; it runs automatically by default.
   For a fixed cadence, add `cadence: 1d` to its entry in the workflow's `scheduled`.

@@ -14,6 +14,9 @@ export type WorkflowFiles = Record<string, string>
 
 export const WORKFLOW_FILE = 'WORKFLOW.md'
 export const MCP_FILE = 'mcp.json'
+/** Which workflow and version a fetched folder came from (#564): written on every read, never stored. */
+export const VERSION_FILE = 'version.json'
+export const versionText = (id: string, version: number) => `${JSON.stringify({ id, version })}\n`
 
 const KB = 1024
 export const FILE_LIMITS = { file: 2 * KB * KB, total: 2 * KB * KB, count: 500, path: 512 }
@@ -118,6 +121,7 @@ function mcpProblem(text: string): string | null {
 export function checkWorkflowFiles(value: unknown, official = false): Checked {
   const fail = (file: string, reason: string, tooLarge = false): Checked => ({ ok: false, file, reason, ...(tooLarge ? { tooLarge } : {}) })
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fail('files', 'must be an object of path → text')
+  value = Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([file]) => file !== VERSION_FILE))
   const entries = Object.entries(value as Record<string, unknown>)
   if (entries.length > FILE_LIMITS.count) return fail('files', `holds at most ${FILE_LIMITS.count} files`, true)
 

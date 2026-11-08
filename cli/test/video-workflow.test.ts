@@ -36,7 +36,7 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
-// What `akb card <action> --print` prints; a refine prints the pass it would start.
+// What `akb raw card <action> --print` prints; a refine prints the pass it would start.
 const printed = (action: 'refine' | 'implement', id: number): string => {
   const req: AgentRequest | { error: string } = action === 'refine' ? refinementRequest({ action: 'refine', id }) : { action, id }
   if ('error' in req) throw new Error(req.error)
@@ -65,7 +65,7 @@ describe('the hyperframes-video workflow', () => {
     const id = await videoCard()
     assert.equal(agentForRun({ action: 'clarify', id, refineRound: 1 }), 'planner')
     const first = printed('refine', id)
-    assert.match(first, /<preview-agents>[\s\S]*akb previews --triggers --workflow hyperframes-video/)
+    assert.match(first, /<preview-agents>[\s\S]*akb raw previews --triggers --workflow hyperframes-video/)
     await move(root, ['update', String(id), '--previews', 'scriptwriter,hyperframes-editor'])
     const refine = printed('refine', id)
     assert.doesNotMatch(refine, /`hyperframes-editor`/)

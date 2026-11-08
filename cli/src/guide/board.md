@@ -13,7 +13,7 @@ docs/kanban/
 │                   one card per file; a group keeps its cards in one folder
 ├── memory/         all memory — see "Who owns a memory file"
 │   ├── readme.md   what shipped — the board's own record
-│   ├── project.md  what the project is today — written only by `akb describe-project`
+│   ├── project.md  what the project is today — written only by `akb raw describe-project`
 │   ├── <name>/     a global memory: `MEMORY.md` (its rules, unless built in), `README.md`
 │   │               (its index) and its entries
 │   └── agents/     one folder per agent that keeps memory, named after it —
@@ -22,7 +22,7 @@ docs/kanban/
 │                   does; written from the board UI or `akb raw rule`
 ├── triage/         items waiting to be sorted, one file each — not cards. Only
 │   │               Cloud's sort or Refine idea on the web's Triage page turns one
-│   │               into a card; `akb triage check <source-id>` finds an existing one
+│   │               into a card; `akb raw triage check <source-id>` finds an existing one
 │   ├── archived/   items a card was made of
 │   ├── dismissed/  items ignored, with the reason
 │   └── files/      dropped-in files
@@ -61,12 +61,12 @@ only closed by hand.
 
 - **`memory/readme.md`**: the board's record of shipped user-facing work.
 - **`memory/project.md`**: what the project is today, from its users' side, and the
-  direction every judgement serves. Only `akb describe-project` writes it.
+  direction every judgement serves. Only `akb raw describe-project` writes it.
 - **`memory/agents/planner/`**: `decisions.md` holds user-facing answers that guide future
   planning and `redesign.md` design mistakes to avoid, both written by the memory review (`akb
   guide review-memory`); `rejected.md` holds what the user turned down and why, written only
   by the rejection and dismissal review (`akb guide review-rejections`). Other flows only read
-  them, `akb prune-memory` aside.
+  them, `akb raw memory prune` aside.
 - **`memory/<name>/`**: a global memory, kept by every agent listing it under `akb.memory`
   by the rules each run is given. Only the user changes its `MEMORY.md`, from the board UI.
 - **`memory/agents/<agent>/`**: an agent keeps only the files and split paths its own AGENT.md

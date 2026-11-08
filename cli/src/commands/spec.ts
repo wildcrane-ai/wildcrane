@@ -23,7 +23,7 @@ import { cardWorkflowId } from '../lib/agent/workflows'
 import type { MoveResult } from '../lib/types'
 import { followStarted, short } from './run'
 
-/** `akb previews`, as its command declares it (lib/cli/agent.ts). */
+/** `akb raw previews`, as its command declares it (lib/cli/agent.ts). */
 export interface SpecOptions {
   agent?: string
   id?: number
@@ -69,7 +69,7 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
 
   const id = opts.id
   if (id === undefined) {
-    die(`say which card: ${program} previews ${name} <id> [note]`, { kind: 'needs-input' })
+    die(`say which card: ${program} raw previews ${name} <id> [note]`, { kind: 'needs-input' })
   }
   if (!locate(id)) die(`no task with id ${id} under ${rel(TODO)}`, { kind: 'card-not-found', id })
 
@@ -137,8 +137,8 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
     say(`${name} runs in ${ownRuntime ? 'its own runtime' : 'a session of its own'}, so it started as a separate run — don't write its section yourself.`)
   }
   say(`previews ${name} #${id} — run ${run.sessionId}`)
-  say(`  follow it: ${program} run log ${short(run.sessionId)} --follow${BOARD_FLAG}`)
-  say(`  stop it:   ${program} run stop ${short(run.sessionId)}${BOARD_FLAG}`)
+  say(`  follow it: ${program} raw run log ${short(run.sessionId)} --follow${BOARD_FLAG}`)
+  say(`  stop it:   ${program} raw run stop ${short(run.sessionId)}${BOARD_FLAG}`)
   if (opts.follow === true) return await followStarted(run.sessionId, program)
   return { sessionId: run.sessionId, action: 'spec', specAgent: name, cardId: id }
 }

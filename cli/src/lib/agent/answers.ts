@@ -10,7 +10,7 @@
 // cancelled the build and started it again (#613).
 //
 // The run that APPLIES the answers is the one thing that can tell, so it says so:
-// `akb delivery answered <id> --changed|--unchanged "<why>"`, written down before the
+// `akb raw delivery answered <id> --changed|--unchanged "<why>"`, written down before the
 // questions are dropped. The review an answer resumes and the landing queue both read that
 // conclusion; neither reads card text.
 //

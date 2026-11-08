@@ -62,7 +62,7 @@ const end = (text: string): string => (/[.!?)]$/.test(text) ? text : `${text}.`)
 
 // The command that ends a stopped build with no card (#428). A carded delivery says the card
 // page's controls instead; this one has no page to say them on.
-const cancelCommand = (delivery: DeliveryRecord): string => `${boardCommand()} delivery cancel ${delivery.deliveryId}`
+const cancelCommand = (delivery: DeliveryRecord): string => `${boardCommand()} raw delivery cancel ${delivery.deliveryId}`
 
 const backInMotion = (delivery: DeliveryRecord): string => `\`${cancelCommand(delivery)}\` ends it and leaves the branch.`
 

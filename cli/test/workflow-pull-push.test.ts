@@ -1,5 +1,6 @@
-// `akb workflow pull` / `push` (#544): a pulled folder pushes back unchanged, screenshots come
-// back as bytes, an edit saves the next version, and a version moved in Cloud is refused.
+// `akb workflow pull` / `push` (#544, #564): a pulled folder, with its visible `version.json`, pushes
+// back unchanged, screenshots come back as bytes, an edit saves the next version, and a version
+// moved in Cloud is refused.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -45,7 +46,7 @@ beforeEach(() => {
       cloud = { version: cloud.version + 1, files: (patched.at(-1) as { files: Record<string, string> }).files }
       return new Response(JSON.stringify({ id, version: cloud.version }))
     }
-    const files = id === OWN ? cloud.files : { 'WORKFLOW.md': WORKFLOW, 'screenshots/a.png': `data:image/png;base64,${PNG.toString('base64')}` }
+    const files = id === OWN ? { ...cloud.files, 'version.json': JSON.stringify({ id, version: cloud.version }) } : { 'WORKFLOW.md': WORKFLOW, 'screenshots/a.png': `data:image/png;base64,${PNG.toString('base64')}` }
     return new Response(JSON.stringify({ id, version: cloud.version, files }))
   }) as typeof fetch
 })
@@ -58,10 +59,12 @@ afterEach(() => {
   delete process.env.AI4KANBAN_CLOUD_URL
 })
 
+const note = (dir: string) => JSON.parse(fs.readFileSync(path.join(dir, 'version.json'), 'utf8'))
+
 const pulled = (version: number) => {
-  const dir = path.join(root, 'layout')
+  const dir = path.join(root, `layout-${version}`)
   fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(path.join(dir, '.akb-workflow.json'), JSON.stringify({ id: OWN, version }))
+  fs.writeFileSync(path.join(dir, 'version.json'), JSON.stringify({ id: OWN, version }))
   fs.writeFileSync(path.join(dir, 'WORKFLOW.md'), WORKFLOW)
   return dir
 }
@@ -70,6 +73,7 @@ it('pulls screenshots back as bytes and refuses to push a built-in', async () =>
   const dir = path.join(root, 'coding')
   await run(root, ['workflow', 'pull', 'coding', dir])
   assert.deepEqual(fs.readFileSync(path.join(dir, 'screenshots', 'a.png')), PNG)
+  assert.deepEqual(note(dir), { id: 'wf_builtin_coding', version: 3 })
   await refuses(root, ['workflow', 'pull', 'coding', dir], /not empty/)
   await refuses(root, ['workflow', 'push', dir], /copy it on the web first/)
 })
@@ -82,5 +86,7 @@ it('pushes only a change, and refuses once Cloud moved on', async () => {
   await run(root, ['workflow', 'push', dir])
   assert.equal(cloud.version, 4)
   assert.match(cloud.files['WORKFLOW.md']!, /Name the breakpoint/)
+  assert.deepEqual(Object.keys(cloud.files), ['WORKFLOW.md'])
+  assert.deepEqual(note(dir), { id: OWN, version: 4 })
   await refuses(root, ['workflow', 'push', pulled(3)], /at v4 now; pull again/)
 })

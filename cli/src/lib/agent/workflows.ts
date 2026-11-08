@@ -335,7 +335,7 @@ function landRefused(flow: Workflow, agent: string, found: RefusedAgent): RunRef
     noFile: `${found.file} is missing — add it`,
     nameTaken: `${found.file} takes a name already in use — rename one of the two`,
     folderName: `its folder is \`${found.folder}\` but ${found.file} names it \`${declared}\` — make the two match`,
-    file: `${found.file} has an error — \`akb previews\` says which`,
+    file: `${found.file} has an error — \`akb raw previews\` says which`,
   }
   return refusal('workflowLandRefused', `\`${agent}\`, which lands \`${flow.name}\`, can't be used: ${fix[found.cause]}.`, {
     name: flow.name,

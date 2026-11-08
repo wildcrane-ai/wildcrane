@@ -196,7 +196,7 @@ describe('an older board that still says product (#1391)', () => {
     writeOld("# Product\n\nWhat the product is today, from its users' side. Rewritten whole by `akb describe-product`;\nedits here do not last.\n")
     assert.match(renameProductFile()!, /removed/)
     scaffoldProjectMemory()
-    assert.match(fs.readFileSync(projectFile(), 'utf8'), /^# Project\n[\s\S]*akb describe-project/)
+    assert.match(fs.readFileSync(projectFile(), 'utf8'), /^# Project\n[\s\S]*akb raw describe-project/)
   })
 
   it('carries the cadence, the last pass and the runtime pick to the new names', () => {

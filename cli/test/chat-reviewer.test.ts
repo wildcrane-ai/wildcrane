@@ -186,10 +186,10 @@ describe("the Runner's archived tasks a review takes (#2065, #165)", () => {
 
   it('starts no run for a batch with nothing to read, and answers with no result (#185)', async () => {
     taskChat(1, TASK, {}, [])
-    assert.match(await printed(['review-memory', '--task', `${TASK}:1`]), /nothing to review, so no run started/)
+    assert.match(await printed(['raw', 'memory', 'review', '--task', `${TASK}:1`]), /nothing to review, so no run started/)
     assert.deepEqual(readRuns(), [])
 
-    const answer = JSON.parse((await printed(['review-memory', '--task', `${TASK}:1`, '--follow', '--events', '--json'])).split('\n').at(-1)!)
+    const answer = JSON.parse((await printed(['raw', 'memory', 'review', '--task', `${TASK}:1`, '--follow', '--events', '--json'])).split('\n').at(-1)!)
     assert.equal(answer.ok, true)
     assert.equal(answer.result, undefined)
     assert.deepEqual(readRuns(), [])
@@ -197,10 +197,10 @@ describe("the Runner's archived tasks a review takes (#2065, #165)", () => {
 
   it('still prints the flow for a batch with nothing to read, by hand or inside a run (#185)', async () => {
     taskChat(1, TASK, {}, [])
-    assert.match(await printed(['review-memory', '--task', `${TASK}:1`, '--print']), /nothing to review/)
+    assert.match(await printed(['raw', 'memory', 'review', '--task', `${TASK}:1`, '--print']), /nothing to review/)
     process.env.KANBAN_RUN = 'a-run'
     try {
-      assert.match(await printed(['review-memory', '--task', `${TASK}:1`]), /cards[\s\S]*\(none\)/)
+      assert.match(await printed(['raw', 'memory', 'review', '--task', `${TASK}:1`]), /cards[\s\S]*\(none\)/)
     } finally {
       delete process.env.KANBAN_RUN
     }
@@ -252,11 +252,11 @@ describe("the Runner's archived tasks a review takes (#2065, #165)", () => {
   })
 
   it('names the command that prints them in the run’s ask', () => {
-    assert.match(buildAsk({ action: 'review-memory', tasks: [`${TASK}:1`] }), /review-memory --task task_0190ab:1 --print/)
+    assert.match(buildAsk({ action: 'review-memory', tasks: [`${TASK}:1`] }), /raw memory review --task task_0190ab:1 --print/)
   })
 
   it('is refused without the tasks to review', async () => {
-    await assert.rejects(() => run(root, ['review-memory', '--print']), /name the archived Cloud tasks to review: --task <task:card\.\.\.>/)
+    await assert.rejects(() => run(root, ['raw', 'memory', 'review', '--print']), /name the archived Cloud tasks to review: --task <task:card\.\.\.>/)
   })
 })
 

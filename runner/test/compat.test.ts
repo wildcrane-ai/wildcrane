@@ -88,21 +88,23 @@ describe('the akb the Runner carries (#171)', () => {
     for (const folder of ['.claude', '.agents']) {
       assert.match(fs.readFileSync(path.join(project, folder, 'skills', 'kanban', 'SKILL.md'), 'utf8'), /<!-- ai4kanban \S+ -->\s*$/)
     }
-    ok(await onBoard(['agent', 'use', 'claude-code']))
-    ok(await onBoard(['agent', 'set', 'model', 'opus']))
-    ok(await onBoard(['agent', 'set', 'model']))
-    ok(await onBoard(['agent', 'set', 'args', '--', '--verbose']))
-    ok(await onBoard(['agent', 'set', 'args']))
+    ok(await onBoard(['raw', 'agent', 'use', 'claude-code']))
+    ok(await onBoard(['raw', 'agent', 'set', 'model', 'opus']))
+    ok(await onBoard(['raw', 'agent', 'set', 'model']))
+    ok(await onBoard(['raw', 'agent', 'set', 'args', '--', '--verbose']))
+    ok(await onBoard(['raw', 'agent', 'set', 'args']))
   })
 
-  it('packs a drafted workflow landing with the built-in builder (#494)', async () => {
+  it('packs a drafted workflow landing with the built-in builder, its version note dropped (#494, #564)', async () => {
     const ws = { task: 'task_9', cloudTask: 'task_9', board, cwd: project, project, number: 9, workflow: BUILDER }
     const dir = path.join(board, 'workflows', draftFolder(ws.task))
     fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, 'WORKFLOW.md'), '---\nname: Site\nneedsArtifact: false\nland: [builder]\n---\n')
+    fs.writeFileSync(path.join(dir, 'version.json'), '{"id":"wf_1","version":2}\n')
     const built = await builtWorkflow(ws, akb)
     assert.ok(built?.ok, built && !built.ok ? built.reason : '')
     assert.match(built.files['agents/builder/AGENT.md']!, /^name: builder$/m)
+    assert.equal(built.files['version.json'], undefined)
   })
 
   it('makes a card with the task’s number, keeps a retry to that card, and names what it refuses', async () => {
@@ -130,21 +132,21 @@ describe('the akb the Runner carries (#171)', () => {
   it('answers the workflow checks', async () => {
     const list = answerOf<{ workflows?: { id: string; problems?: string[] }[]; problems?: string[] }>(await onBoard(['workflow', 'list', '--json']))
     assert.ok(list?.workflows?.some((w) => w.id === 'coding'))
-    const spec = answerOf<{ problems?: string[] }>(await onBoard(['previews', '--json']))
+    const spec = answerOf<{ problems?: string[] }>(await onBoard(['raw', 'previews', '--json']))
     assert.ok(Array.isArray(spec?.problems))
   })
 
   it('runs an agent on a card and on the board, and lists what it spent', async () => {
     const started = Date.now()
-    assert.equal(typeof finishes(await onBoard(['card', 'refine', '2', ...follow])).agentSession, 'string')
-    finishes(await onBoard(['card', 'revise', '2', ...follow, '--', 'Shorter.']))
-    finishes(await onBoard(['card', 'resolve', '2', ...follow, '--', 'Yes.']))
-    finishes(await onBoard(['reflect', '--cards', '2', ...follow]))
-    finishes(await onBoard(['prune-memory', ...follow]))
-    finishes(await onBoard(['review-dismissals', ...follow]))
+    assert.equal(typeof finishes(await onBoard(['raw', 'card', 'refine', '2', ...follow])).agentSession, 'string')
+    finishes(await onBoard(['raw', 'card', 'revise', '2', ...follow, '--', 'Shorter.']))
+    finishes(await onBoard(['raw', 'card', 'resolve', '2', ...follow, '--', 'Yes.']))
+    finishes(await onBoard(['raw', 'reflect', '--cards', '2', ...follow]))
+    finishes(await onBoard(['raw', 'memory', 'prune', ...follow]))
+    finishes(await onBoard(['raw', 'review-dismissals', ...follow]))
 
     const listed = answerOf<{ runs?: { sessionId: string; status?: string; startedAt?: number; result?: string; usage?: { input: number; cacheCreation: number; cacheRead: number; output: number }; costUsd?: number }[] }>(
-      await onBoard(['run', 'list', '--card', '2', '--all', '--json']))
+      await onBoard(['raw', 'run', 'list', '--card', '2', '--all', '--json']))
     const run = listed?.runs?.at(-1)
     assert.ok(run, 'no run was listed')
     assert.equal(typeof run.sessionId, 'string')
@@ -153,8 +155,8 @@ describe('the akb the Runner carries (#171)', () => {
     assert.equal(run.result, 'Done.')
     assert.equal(run.usage?.output, 1)
     assert.ok(run.costUsd === undefined || typeof run.costUsd === 'number')
-    ok(await onBoard(['run', 'list', '--all', '--json']))
-    assert.notEqual((await onBoard(['run', 'stop', 'nobody'])).code, 0)
+    ok(await onBoard(['raw', 'run', 'list', '--all', '--json']))
+    assert.notEqual((await onBoard(['raw', 'run', 'stop', 'nobody'])).code, 0)
   })
 
   it('gives a reflection the scheduled agents it is told, or else the ones the workflows list (#277)', async () => {
@@ -163,7 +165,7 @@ describe('the akb the Runner carries (#171)', () => {
     ok(await onBoard(['raw', 'create', '--title', 'Done', '--workflow', 'coding', '--body-file', body, '--id', '3', '--priority', 'med', '--json']))
     ok(await onBoard(['raw', 'archive', '3']))
     const printed = async (env?: NodeJS.ProcessEnv) => {
-      const ran = await runAkb(akb, ['reflect', '--cards', '3', '--print', '--board', board], { cwd: project, board, env })
+      const ran = await runAkb(akb, ['raw', 'reflect', '--cards', '3', '--print', '--board', board], { cwd: project, board, env })
       ok(ran)
       return ran.out
     }
@@ -173,7 +175,7 @@ describe('the akb the Runner carries (#171)', () => {
   })
 
   it('builds a card, and leaves the delivery the Runner reads', async () => {
-    const ran = await onBoard(['card', 'implement', '2', ...follow])
+    const ran = await onBoard(['raw', 'card', 'implement', '2', ...follow])
     assert.notEqual(ran.code, 0, 'an unregistered result must remain unfinished')
     const answer = answerOf<{ error?: { delivery?: { id?: string } } }>(ran)
     const id = answer?.error?.delivery?.id
@@ -186,9 +188,9 @@ describe('the akb the Runner carries (#171)', () => {
   })
 
   it('takes every other verb a job sends', async () => {
-    refused(await onBoard(['delivery', 'resume', 'gone', '--json']), /no delivery/)
-    refused(await onBoard(['delivery', 'cancel', 'gone', '--json']), /no delivery/)
-    refused(await onBoard(['agent', 'run', 'coding', 'nobody', ...follow]), /nobody/)
-    ok(await onBoard(['review-memory', '--task', 'task_1:2', ...follow]))
+    refused(await onBoard(['raw', 'delivery', 'resume', 'gone', '--json']), /no delivery/)
+    refused(await onBoard(['raw', 'delivery', 'cancel', 'gone', '--json']), /no delivery/)
+    refused(await onBoard(['raw', 'agent', 'run', 'coding', 'nobody', ...follow]), /nobody/)
+    ok(await onBoard(['raw', 'memory', 'review', '--task', 'task_1:2', ...follow]))
   })
 })

@@ -50,7 +50,7 @@ Do both, in order. A sub-run does neither: see "Sub-runs".
 - **Feedback**: replace each touched case's `## Feedback` with your candid view of the
   experience as a user meets it, friction included.
 - **Broken behavior**: when the product fails a step it should pass, leave the case as
-  written and send one item naming the case and step with `akb triage add`, its
+  written and send one item naming the case and step with `akb raw triage add`, its
   `--workflow` the one you are scheduled under; write its title and body in the
   **Goal format** of `akb guide discuss-goal`.
 - **Change nothing else**: no product code and no card.
@@ -60,9 +60,9 @@ Do both, in order. A sub-run does neither: see "Sub-runs".
 When the finished cards fall under two or more modules, hand each module to a sub-run
 instead of following its cards yourself.
 
-- **Start**: `akb run start "<task>"` once per module; the task names the module and lists
+- **Start**: `akb raw run start "<task>"` once per module; the task names the module and lists
   its cards, each with its card file and commit. A card under several modules goes to each.
-- **Wait**: repeat `akb run wait` until no sub-run is still running.
+- **Wait**: repeat `akb raw run wait` until no sub-run is still running.
 - **Take over**: follow the cards of a sub-run that failed or was stopped yourself.
 - **Index**: only you edit `docs/qa/README.md`, once every sub-run has ended.
 

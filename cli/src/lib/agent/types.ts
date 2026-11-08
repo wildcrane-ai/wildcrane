@@ -57,7 +57,7 @@ export type AgentAction =
    *  no card. The board starts it when its cadence comes round; it is a card-less delivery of
    *  its own, so what it changes is committed and landed like a build. */
   | 'scheduled'
-  /** A sub-run (#1421): a prompt another run handed off with `akb run start`, in that run's
+  /** A sub-run (#1421): a prompt another run handed off with `akb raw run start`, in that run's
    *  folder, as the same agent. Named by `parentId`; it holds no card and lands nothing. */
   | 'sub'
   /** Squeeze the memory back down to what helps planning (#514) — the memory pruner's one
@@ -453,7 +453,7 @@ export interface RunRecord {
   /** The delivery this run belongs to, when it belongs to one. Only an `implement` run
    *  does today; a refine or a resolve stands alone and carries none. */
   deliveryId?: string
-  /** The run that started this one with `akb run start` (#1421). */
+  /** The run that started this one with `akb raw run start` (#1421). */
   parentId?: string
   /** reflect: the completed cards it covers (#1467). */
   cards?: number[]
@@ -466,7 +466,7 @@ export type DeliveryStatus = 'active' | 'finished' | 'failed' | 'cancelled'
 /** Why a build ended with its delivery still active. The task page shows the first sentence. */
 export const NOT_COMPLETED = 'The delivery has not recorded completion.'
 export const notCompletedWhy = (deliveryId: string): string =>
-  `${NOT_COMPLETED} Finish its unchecked todos, then run akb delivery complete ${deliveryId}, with --commit <sha> --branch <name> in a git project.`
+  `${NOT_COMPLETED} Finish its unchecked todos, then run akb raw delivery complete ${deliveryId}, with --commit <sha> --branch <name> in a git project.`
 
 /** One step a delivery entered, as history. Resuming never trusts it — a stored position
  *  goes stale in exactly the crash it exists for — so it is read, not acted on. */
@@ -755,7 +755,7 @@ export interface SpecAsk {
 }
 
 /** One ask for a refinement, written down by the run that asked for it with
- *  `akb card refine <id>`. Same handoff as `SpecAsk`, in the same file and started by the same
+ *  `akb raw card refine <id>`. Same handoff as `SpecAsk`, in the same file and started by the same
  *  watcher — and in the same flow, so the refinement reads as the next step of the job
  *  that handed the card over. */
 export interface RefineAsk {

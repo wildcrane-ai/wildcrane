@@ -91,7 +91,7 @@ export function resumePrompt(deliveryId: string | undefined, action: AgentAction
 /** Where a delivery's approved requirements are, for a build that starts a new session. */
 function deliveryRequirements(deliveryId: string, cardId: number | null): string {
   if (cardId !== null) {
-    return DELIVERY_RESUME_CARD.replace('%c', `${boardCommandFor(cardId)} card implement ${cardId} --print`)
+    return DELIVERY_RESUME_CARD.replace('%c', `${boardCommandFor(cardId)} raw card implement ${cardId} --print`)
   }
   const delivery = findDelivery(deliveryId)
   const approved = delivery?.approved.trim()
@@ -103,13 +103,11 @@ function deliveryRequirements(deliveryId: string, cardId: number | null): string
   return `Follow \`akb guide implement\`: create no card and build exactly this approved requirement and nothing more — "${approved}".`
 }
 
-/** A format repair continues the same run without repeating its task. */
+/** A board repair continues the same run without repeating its task. */
 export function contractRepairPrompt(req: AgentRequest, errors: string): string {
-  const command = boardCommandFor(req.id)
   return boardText([
-    'The task ended with card validation errors. Fix only the errors below in the listed files, including preview sources and dependencies. Preserve planned behavior and completed work; do not repeat the task or request other agents.',
+    'The task left the board broken. Fix only the errors below. Preserve planned behavior and completed work; do not repeat the task or request other agents.',
     errors,
-    `Run \`${command} raw validate <id>\` for every affected card and fix every error before finishing.`,
     ruleBlock(req, frozenRules(req)),
   ].filter(Boolean).join('\n\n'))
 }
@@ -418,7 +416,7 @@ function answeredNote(cardId: number | undefined, command: string): string {
   if (!delivery) return ''
   return (
     `Delivery ${delivery.deliveryId} is already building this card. Once your answers are on it, say what they did ` +
-    `to what it was approved to build: \`${command} delivery answered ${delivery.deliveryId} ` +
+    `to what it was approved to build: \`${command} raw delivery answered ${delivery.deliveryId} ` +
     `--changed|--unchanged "<why>"\`, before you drop the questions. Judge the meaning, not the words — say ` +
     `nothing and the board carries the build on as unchanged.`
   )
@@ -520,7 +518,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
     case 'review-memory':
       return [
         `${kb}. Review what this board's conversations settled and write it into memory, following \`akb guide review-memory\`.`,
-        req.tasks?.length ? `The conversations are the ones \`${command} review-memory --task ${req.tasks.join(' ')} --print\` prints.` : '',
+        req.tasks?.length ? `The conversations are the ones \`${command} raw memory review --task ${req.tasks.join(' ')} --print\` prints.` : '',
         `Read each conversation the flow lists right through, and hold to "What earns a note" in \`akb guide board\`.`,
         `Rewrite or delete a note an earlier review wrote that the conversation has since overturned, rather than adding a second one.`,
         `Change nothing but the memory files: no card, no question for anyone.`,
@@ -543,7 +541,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
           `${kb}. These tasks have just been completed: ${titles.join(', ')}. Propose the work that should follow them, following \`akb guide reflect\`.`,
           `They have left the board — read each in its own <card> block below, with the discussion it came from when the block lists one.`,
           `Skip anything already on the board, already in the inbox, or turned down before.`,
-          `Write each survivor with \`${command} triage add\`, and revise an open card whose plan what shipped made untrue with \`${command} card revise\`: that is all you may do${settingsBlock(req) ? ' unless your settings below say otherwise' : ''} — you edit and archive no card yourself, and finding nothing worth proposing is a complete result.`,
+          `Write each survivor with \`${command} raw triage add\`, and revise an open card whose plan what shipped made untrue with \`${command} raw card revise\`: that is all you may do${settingsBlock(req) ? ' unless your settings below say otherwise' : ''} — you edit and archive no card yourself, and finding nothing worth proposing is a complete result.`,
           `Don't ask me questions with human-in-the-loop.`,
         ].join(' '),
         ...reflectBlocks(ids),
@@ -608,7 +606,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
           `You are the \`${req.specAgent}\` agent of the \`${flow?.name ?? req.workflow ?? ''}\` workflow.`,
           `The board is at \`${BOARD_FOLDER}\`, in the project at \`${PROJECT_FOLDER}\`.`,
           `Nobody is watching: never ask.`,
-          req.deliveryId ? `When the outcome is complete, run \`${command} delivery complete ${req.deliveryId}\`.` : '',
+          req.deliveryId ? `When the outcome is complete, run \`${command} raw delivery complete ${req.deliveryId}\`.` : '',
         ].join(' '),
         agent && own ? `——— you, the \`${agent.name}\` agent ———\n\n${own.instructions}` : '',
         own?.files ? `——— your own files ———\n\n${own.files}` : '',
@@ -632,7 +630,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
           `You are a sub-run: ${whose} \`${req.parentId ?? ''}\` started you and works beside you in this same folder.`,
           `The board is at \`${BOARD_FOLDER}\`, in the project at \`${PROJECT_FOLDER}\`.`,
           `Nobody is watching: never ask.`,
-          req.deliveryId ? `When the outcome is complete, run \`${command} delivery complete ${req.deliveryId}\`.` : '',
+          req.deliveryId ? `When the outcome is complete, run \`${command} raw delivery complete ${req.deliveryId}\`.` : '',
         ].join(' '),
         'Do only the task below, and finish with one message saying what you did and what you could not do: it is all the run that started you will read.',
         `——— your task ———\n\n${req.description ?? ''}`,

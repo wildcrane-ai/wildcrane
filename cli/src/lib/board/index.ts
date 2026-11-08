@@ -46,7 +46,7 @@ export const setCardStatusOn = (id: number, status: string) =>
 
 export const archiveCard = (id: number) => withLease({ card: id }, (env) => board().archiveCard(id, env))
 
-// `akb delivery cancel`, `resume` and `discard`.
+// `akb raw delivery cancel`, `resume` and `discard`.
 export const cancelBoardDelivery = (id: string) => withLease({ board: true }, (env) => board().cancelDelivery(id, env))
 export const resumeBoardDelivery = (id: string) => withLease({ board: true }, (env) => board().resumeDelivery(id, env))
 

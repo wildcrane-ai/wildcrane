@@ -96,7 +96,7 @@ describe('in-session spec work', () => {
     const before = fs.readFileSync(file, 'utf8')
     const sink = startCollecting()
     try {
-      await akb(root, ['previews', 'ui-designer', '1', 'Use scrolling tabs.', '--print'])
+      await akb(root, ['raw', 'previews', 'ui-designer', '1', 'Use scrolling tabs.', '--print'])
     } finally {
       stopCollecting()
     }
@@ -217,7 +217,7 @@ describe('the prompt', () => {
     } finally {
       stopCollecting()
     }
-    await assert.rejects(() => akb(root, ['card', 'refine', '1', '--effort', 'standard', '--print']))
+    await assert.rejects(() => akb(root, ['raw', 'card', 'refine', '1', '--effort', 'standard', '--print']))
   })
 
   it('gives a finishing run the archive page, and a build the shipped line beside board', () => {
@@ -282,7 +282,7 @@ describe('the prompt', () => {
       const prompt = buildPrompt({ action, id: 1 })
       assert.match(prompt, /<preview-agents>/)
       // A card with no `previews` is asked to choose them, never shown a skill's own instructions.
-      assert.match(prompt, /akb previews --triggers --workflow/)
+      assert.match(prompt, /akb raw previews --triggers --workflow/)
       assert.doesNotMatch(prompt, /You draw the screen a card needs/)
     }
     assert.doesNotMatch(buildPrompt({ action: 'implement', id: 1 }), /<preview-agents>/)

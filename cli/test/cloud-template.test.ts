@@ -1,4 +1,4 @@
-// `akb cloud template` (#1708): bounded search, previews apart from the template, a hashed
+// `akb template` (#1708): bounded search, previews apart from the template, a hashed
 // download that never overwrites, and a publish that keeps previews and evidence out of the
 // template's own files. Every refusal is bilingual and offers carrying on without a template.
 
@@ -98,10 +98,10 @@ async function akb(argv: string[]): Promise<{ code: number; out: string; err: st
   }
 }
 
-describe('akb cloud template', () => {
+describe('akb template', () => {
   it('refuses while signed out, in both languages, offering to carry on without one', async () => {
     serve({})
-    const { code, err } = await akb(['cloud', 'template', 'list-tags', '--category', 'ui'])
+    const { code, err } = await akb(['template', 'list-tags', '--category', 'ui'])
     assert.equal(code, 1)
     assert.match(err, /未登录 WildCrane Cloud/)
     assert.match(err, /可以不用模板继续。\nYou can continue without a template\./)
@@ -118,31 +118,31 @@ describe('akb cloud template', () => {
         }],
       }),
     })
-    const found = await akb(['cloud', 'template', 'search', '--category', 'ui', '--tags', 'hero', 'dark', 'saas'])
+    const found = await akb(['template', 'search', '--category', 'ui', '--tags', 'hero', 'dark', 'saas'])
     assert.equal(found.code, 0)
     assert.equal(sent[0]?.url, '?category=ui&tags=hero&q=dark+saas')
     assert.match(found.out, /^hero-tilted-screen — Hero \[free\]\n {2}A dark hero\.\n {2}tags: hero · previews: cover\.png/)
 
     serve({ '': json({ templates: [] }) })
-    const none = await akb(['cloud', 'template', 'search', '--category', 'ui', '--tags', 'hero'])
+    const none = await akb(['template', 'search', '--category', 'ui', '--tags', 'hero'])
     assert.match(none.out, /没有匹配的模板/)
     assert.match(none.out, /No template matches/)
 
-    const missing = await akb(['cloud', 'template', 'search', '--category', 'ui'])
+    const missing = await akb(['template', 'search', '--category', 'ui'])
     assert.equal(missing.code, 2)
   })
 
   it('reads a 404 on tags as the catalog being unavailable, not as a missing template', async () => {
     signIn()
     serve({ '/tags': refusal(404, 'not_found') })
-    const tags = await akb(['cloud', 'template', 'list-tags', '--category', 'ui'])
+    const tags = await akb(['template', 'list-tags', '--category', 'ui'])
     assert.equal(tags.code, 1)
     assert.match(tags.err, /模板库暂时无法使用，请稍后重试。\nTemplates are not available right now\. Try again later\./)
     assert.match(tags.err, /可以不用模板继续。\nYou can continue without a template\./)
     assert.doesNotMatch(tags.err, /没有这个模板|no template with this name/)
 
     serve({ '/hero-tilted-screen': refusal(404, 'not_found') })
-    const named = await akb(['cloud', 'template', 'get', 'hero-tilted-screen', '--to', path.join(home, 'x')])
+    const named = await akb(['template', 'get', 'hero-tilted-screen', '--to', path.join(home, 'x')])
     assert.equal(named.code, 1)
     assert.match(named.err, /模板库里没有这个模板。/)
   })
@@ -154,7 +154,7 @@ describe('akb cloud template', () => {
       '/hero-tilted-screen/previews/cover.png': () => new Response('png'),
     })
     const to = path.join(home, 'assets')
-    const { code } = await akb(['cloud', 'template', 'preview', 'hero-tilted-screen', '--to', to])
+    const { code } = await akb(['template', 'preview', 'hero-tilted-screen', '--to', to])
     assert.equal(code, 0)
     assert.deepEqual(fs.readdirSync(to), ['hero-tilted-screen-cover.png'])
   })
@@ -166,7 +166,7 @@ describe('akb cloud template', () => {
       '/hero-tilted-screen/previews/hero-tilted-screen-cover.png': () => new Response('png'),
     })
     const to = path.join(home, 'assets')
-    const { code } = await akb(['cloud', 'template', 'preview', 'hero-tilted-screen', '--to', to])
+    const { code } = await akb(['template', 'preview', 'hero-tilted-screen', '--to', to])
     assert.equal(code, 0)
     assert.deepEqual(fs.readdirSync(to), ['hero-tilted-screen-cover.png'])
   })
@@ -183,7 +183,7 @@ describe('akb cloud template', () => {
       '/hero-tilted-screen/files/src/hero.tsx': () => new Response('tampered'),
     })
     const to = path.join(home, 'out')
-    const bad = await akb(['cloud', 'template', 'get', 'hero-tilted-screen', '--to', to])
+    const bad = await akb(['template', 'get', 'hero-tilted-screen', '--to', to])
     assert.equal(bad.code, 1)
     assert.match(bad.err, /未写入任何文件/)
     assert.equal(fs.existsSync(to), false)
@@ -193,13 +193,13 @@ describe('akb cloud template', () => {
       '/hero-tilted-screen/files/template.md': () => new Response(files['template.md']),
       '/hero-tilted-screen/files/src/hero.tsx': () => new Response(files['src/hero.tsx']),
     })
-    const good = await akb(['cloud', 'template', 'get', 'hero-tilted-screen', '--to', to])
+    const good = await akb(['template', 'get', 'hero-tilted-screen', '--to', to])
     assert.equal(good.code, 0)
     assert.equal(fs.readFileSync(path.join(to, 'src', 'hero.tsx'), 'utf8'), 'export {}')
 
     fs.writeFileSync(path.join(to, 'template.md'), 'mine')
     fs.rmSync(path.join(to, 'src'), { recursive: true })
-    const taken = await akb(['cloud', 'template', 'get', 'hero-tilted-screen', '--to', to])
+    const taken = await akb(['template', 'get', 'hero-tilted-screen', '--to', to])
     assert.equal(taken.code, 1)
     assert.match(taken.err, /目标文件夹已有同名文件：template\.md/)
     assert.equal(fs.readFileSync(path.join(to, 'template.md'), 'utf8'), 'mine')
@@ -209,7 +209,7 @@ describe('akb cloud template', () => {
   it('names Pro when a Pro template is refused', async () => {
     signIn()
     serve({ '/pro-hero': refusal(403, 'pro_required') })
-    const { code, err } = await akb(['cloud', 'template', 'get', 'pro-hero', '--to', path.join(home, 'x')])
+    const { code, err } = await akb(['template', 'get', 'pro-hero', '--to', path.join(home, 'x')])
     assert.equal(code, 1)
     assert.match(err, /这个模板需要 Pro/)
     assert.match(err, /You can continue without a template/)
@@ -226,7 +226,7 @@ describe('akb cloud template', () => {
     fs.writeFileSync(path.join(home, 'linear.webp'), 'shot')
     serve({ '': json({ name: 'hero-tilted-screen', replaced: false }) })
     const { code, out } = await akb([
-      'cloud', 'template', 'publish', dir,
+      'template', 'publish', dir,
       '--preview', path.join(home, 'cover.png'), '--evidence', path.join(home, 'linear.webp'),
     ])
     assert.equal(code, 0, out)
@@ -248,10 +248,10 @@ describe('akb cloud template', () => {
     fs.mkdirSync(dir)
     fs.writeFileSync(path.join(dir, 'template.md'), TEMPLATE_MD)
     fs.writeFileSync(path.join(dir, 'cover.png'), 'png')
-    const inside = await akb(['cloud', 'template', 'publish', dir, '--preview', path.join(dir, 'cover.png'), '--evidence', path.join(dir, 'cover.png')])
+    const inside = await akb(['template', 'publish', dir, '--preview', path.join(dir, 'cover.png'), '--evidence', path.join(dir, 'cover.png')])
     assert.equal(inside.code, 1)
     assert.match(inside.err, /预览图与来源凭证需放在模板文件夹之外/)
-    const bare = await akb(['cloud', 'template', 'publish', dir])
+    const bare = await akb(['template', 'publish', dir])
     assert.match(bare.err, /--evidence/)
     assert.equal(sent.length, 0)
   })
@@ -262,7 +262,7 @@ describe('akb cloud template', () => {
     fs.mkdirSync(dir)
     fs.writeFileSync(path.join(dir, 'template.md'), TEMPLATE_MD.replace(/source:[\s\S]*?---/, 'source:\n  original: true\n---'))
     serve({ '': refusal(409, 'template_exists') })
-    const { code, err } = await akb(['cloud', 'template', 'publish', dir])
+    const { code, err } = await akb(['template', 'publish', dir])
     assert.equal(code, 1)
     assert.match(err, /本地文件未改动/)
     assert.match(err, /--replace/)
@@ -276,7 +276,7 @@ describe('akb cloud template', () => {
     fs.writeFileSync(path.join(dir, 'showcase.json'), JSON.stringify({ cover: '01.png', pages }))
     for (const f of ['01.png', '02.png', '02.mp4']) fs.writeFileSync(path.join(dir, f), f)
     serve({ '/long-read/showcase': json({ name: 'long-read', files: 2 }) })
-    const { code, out } = await akb(['cloud', 'template', 'showcase', 'long-read', dir])
+    const { code, out } = await akb(['template', 'showcase', 'long-read', dir])
     assert.equal(code, 0, out)
     const fields: string[] = []
     ;(sent[0]?.body as FormData).forEach((_, k) => void fields.push(k))
@@ -294,7 +294,7 @@ describe('akb cloud template', () => {
     }))
     for (const f of ['cover.jpg', 'original.jpg', 'clone.mp4', 'notes.txt']) fs.writeFileSync(path.join(dir, f), f)
     serve({ '/ui-walkthrough-launch/showcase': json({ name: 'ui-walkthrough-launch', files: 3 }) })
-    const { code, out } = await akb(['cloud', 'template', 'showcase', 'ui-walkthrough-launch', dir])
+    const { code, out } = await akb(['template', 'showcase', 'ui-walkthrough-launch', dir])
     assert.equal(code, 0, out)
     assert.equal(sent[0]?.method, 'PUT')
     const fields: string[] = []

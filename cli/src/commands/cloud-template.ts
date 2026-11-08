@@ -1,4 +1,4 @@
-// `akb cloud template` — the shared template catalog (#1708).
+// `akb template` — the shared template catalog (#1708).
 //
 // Agents list a category's tags, search within one for bounded metadata, preview, and fetch
 // the whole template. Maintainers publish. Every
@@ -105,9 +105,9 @@ function category(value: string | undefined, line: string): string {
 
 // ---- reading -----------------------------------------------------------------------
 
-/** `akb cloud template list-tags --category <category>` */
+/** `akb template list-tags --category <category>` */
 export async function templateTags(opts: { category?: string }, program: string): Promise<MoveResult> {
-  const cat = category(opts.category, `${program} cloud template list-tags --category <category>`)
+  const cat = category(opts.category, `${program} template list-tags --category <category>`)
   const { tags } = await asJson<{ tags: { tag: string; count: number }[] }>(
     await ask(`/tags?category=${cat}`, {}, WITHOUT),
   )
@@ -116,12 +116,12 @@ export async function templateTags(opts: { category?: string }, program: string)
   return { category: cat, tags }
 }
 
-/** `akb cloud template search --category <category> --tags <tags> [--limit N] [words…]` */
+/** `akb template search --category <category> --tags <tags> [--limit N] [words…]` */
 export async function templateSearch(
   opts: { category?: string; tags?: string; limit?: string; words: string[] },
   program: string,
 ): Promise<MoveResult> {
-  const line = `${program} cloud template search --category <category> --tags <tag[,tag]> [--limit N] [topic words…]`
+  const line = `${program} template search --category <category> --tags <tag[,tag]> [--limit N] [topic words…]`
   const cat = category(opts.category, line)
   const tags = (opts.tags ?? '').split(',').map((t) => t.trim()).filter(Boolean)
   if (tags.length === 0) usage('Missing --tags.', line)
@@ -139,10 +139,10 @@ export async function templateSearch(
   return { templates }
 }
 
-/** `akb cloud template preview <name> --to <dir>` — its catalog previews, as `<name>-<file>`
+/** `akb template preview <name> --to <dir>` — its catalog previews, as `<name>-<file>`
  * unless the file already starts with `<name>-`. */
 export async function templatePreview(name: string, opts: { to?: string }, program: string): Promise<MoveResult> {
-  if (!opts.to) usage('Missing --to.', `${program} cloud template preview <name> --to <dir>`)
+  if (!opts.to) usage('Missing --to.', `${program} template preview <name> --to <dir>`)
   const at = encodeURIComponent(name)
   const { previews } = await asJson<{ previews: Entry[] }>(await ask(`/${at}/previews`, {}, WITHOUT))
   if (previews.length === 0) say(`这个模板没有预览图。\nThis template has no preview.`)
@@ -159,10 +159,10 @@ export async function templatePreview(name: string, opts: { to?: string }, progr
   return { name, previews: written }
 }
 
-/** `akb cloud template get <name> --to <dir>` — every file, checked against the catalog's
+/** `akb template get <name> --to <dir>` — every file, checked against the catalog's
  *  hashes before any is written, and never over a file already there. */
 export async function templateGet(name: string, opts: { to?: string }, program: string): Promise<MoveResult> {
-  if (!opts.to) usage('Missing --to.', `${program} cloud template get <name> --to <dir>`)
+  if (!opts.to) usage('Missing --to.', `${program} template get <name> --to <dir>`)
   const to = opts.to
   const at = encodeURIComponent(name)
   const { template } = await asJson<{ template: { files: Entry[] } }>(await ask(`/${at}`, {}, WITHOUT))
@@ -193,7 +193,7 @@ export async function templateGet(name: string, opts: { to?: string }, program: 
 
 const route = (p: string) => p.split('/').map(encodeURIComponent).join('/')
 
-/** `akb cloud template source <name> [--to <dir>]` — where it came from, and the evidence
+/** `akb template source <name> [--to <dir>]` — where it came from, and the evidence
  *  captured at the time, which stays readable after the original site changes. */
 export async function templateSource(name: string, opts: { to?: string }): Promise<MoveResult> {
   const at = encodeURIComponent(name)
@@ -218,7 +218,7 @@ export async function templateSource(name: string, opts: { to?: string }): Promi
 
 // ---- publishing ---------------------------------------------------------------------
 
-/** `akb cloud template publish <dir> [--preview <file>]… [--evidence <file>]… [--replace]` */
+/** `akb template publish <dir> [--preview <file>]… [--evidence <file>]… [--replace]` */
 export async function templatePublish(
   dir: string,
   opts: { preview: string[]; evidence: string[]; replace?: boolean },
@@ -260,14 +260,14 @@ export async function templatePublish(
   return { name: done.name, replaced: done.replaced, files }
 }
 
-/** `akb cloud template delete <name>` — maintainers only. */
+/** `akb template delete <name>` — maintainers only. */
 export async function templateDelete(name: string): Promise<MoveResult> {
   await ask(`/${encodeURIComponent(name)}`, { method: 'DELETE' })
   say(`已从模板库删除 ${name}。\nDeleted ${name} from the catalog.`)
   return { name, deleted: true }
 }
 
-/** `akb cloud template showcase <name> <dir>` — what the site shows for a published template,
+/** `akb template showcase <name> <dir>` — what the site shows for a published template,
  *  described by `<dir>/showcase.json` and kept apart from the template. Maintainers only. */
 export async function templateShowcase(name: string, dir: string): Promise<MoveResult> {
   const file = path.join(dir, 'showcase.json')

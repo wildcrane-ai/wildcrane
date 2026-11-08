@@ -13,6 +13,8 @@ export interface Manifest {
   title?: { en: string; zh: string };
   schema?: unknown;
   references?: Reference[];
+  /** Regular expressions, matched case-insensitively, whose matches `text` references skip. */
+  skip?: string[];
 }
 
 /** A reference found in content: its line for text, its JSON path otherwise. */
@@ -54,12 +56,12 @@ function mapJson(node: unknown, keys: string[], at: string, visit: (src: string,
   return out;
 }
 
-function mapText(text: string, rule: { text: string; list?: string }, visit: (src: string, line: number) => string): string {
+function mapText(text: string, rule: { text: string; list?: string }, skipped: [number, number][], visit: (src: string, line: number) => string): string {
   let out = '';
   let last = 0;
   for (const m of text.matchAll(new RegExp(rule.text, 'gid'))) {
     const span = m.indices?.[1];
-    if (!span || m[1] === undefined) continue;
+    if (!span || m[1] === undefined || skipped.some(([a, b]) => span[0] >= a && span[0] < b)) continue;
     const line = text.slice(0, span[0]).split('\n').length;
     const one = (src: string) => (remote(src) ? src : visit(src, line));
     const value = rule.list
@@ -73,12 +75,13 @@ function mapText(text: string, rule: { text: string; list?: string }, visit: (sr
 
 /** `content` with each reference `manifest` declares replaced by what `map` returns for it. */
 export function mapReferences(manifest: Manifest | undefined, content: unknown, map: (src: string, found: Found) => string): unknown {
+  const skipped = (text: string) => (manifest?.skip ?? []).flatMap(re => [...text.matchAll(new RegExp(re, 'gi'))].map(m => [m.index, m.index + m[0].length] as [number, number]));
   for (const rule of manifest?.references ?? []) {
     const types = rule.types ?? [];
     if ('json' in rule) {
       if (typeof content !== 'string') content = mapJson(content, rule.json.split('/').filter(Boolean), '', (src, at) => map(src, { src, types, text: false, at: at || '/' }));
     } else if (typeof content === 'string') {
-      content = mapText(content, rule, (src, line) => map(src, { src, types, text: true, line }));
+      content = mapText(content, rule, skipped(content), (src, line) => map(src, { src, types, text: true, line }));
     }
   }
   return content;

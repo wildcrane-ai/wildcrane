@@ -38,6 +38,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { creationProject, createProjectTask, linkedProject, createTask, workspaceTask } from '../cloud/tasks'
 import { validateCreate, type CreateOptions } from '../../commands/card'
+import { declareRaw } from './agent'
 
 /** What the door hands in — see `runBoard`. */
 export interface BoardCliOptions {
@@ -179,9 +180,8 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
   const program = withShared(newCommand(cli.program))
   program
     .description(
-      "the board's bookkeeping. The agent calls these between runs; a person never has to type one. " +
-        "They own a card's frontmatter — write and edit only a " +
-        "card's body.",
+      "the local board and the commands an agent uses inside a run; a person never has to type one. " +
+        "They own a card's frontmatter — write and edit only a card's body.",
     )
     .helpCommand('help [move]', 'this list, or one move in full')
 
@@ -419,6 +419,8 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
       say(cli.version)
     })
   if (cli.version) program.version(cli.version, '-v, --version', 'print the installed version')
+
+  declareRaw(program, { program: cli.program.replace(/ raw$/, ''), cwd: cli.cwd, installHint: cli.installHint })
 
   assertEveryMoveDeclared(program)
   return program

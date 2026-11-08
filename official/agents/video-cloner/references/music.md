@@ -9,7 +9,7 @@ Score the clone with new music that follows the source's rhythm, never its melod
 
 ## Template
 
-- **Generate**: create the default score with `akb cloud music --seconds <n> --out <file> "<prompt>"`, where `<n>` is the beat table's total length, which spends the user's Pro credits per track. The prompt gives the tempo, mood, instrumentation, instrumental only, and each section's time range from the cue sheet; never the source's title, artist, lyrics or audio.
+- **Generate**: create the default score with `akb music --seconds <n> --out <file> "<prompt>"`, where `<n>` is the beat table's total length, which spends the user's Pro credits per track. The prompt gives the tempo, mood, instrumentation, instrumental only, and each section's time range from the cue sheet; never the source's title, artist, lyrics or audio.
 - **Align**: trim or time-stretch the track to that length so its accents land on the cue times and it ends with the last beat, and put it in the content file's music slot for the user to replace.
 - **Refused**: when Cloud refuses, leave the music slot empty and say so on the card.
 - **Clicks**: give every click in the beat table a short click sound synthesised in code.

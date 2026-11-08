@@ -1,6 +1,6 @@
 // Has this been seen before? (#559)
 //
-// The one duplicate check, shared by the three ways in — the endpoint pull, `akb triage add`
+// The one duplicate check, shared by the three ways in — the endpoint pull, `akb raw triage add`
 // and **Add** on the page. It is a scan of the item files themselves rather than a list kept
 // alongside them: where a file sits IS its state, so there is no index to keep in step and
 // nothing to lose when a folder is edited by hand.

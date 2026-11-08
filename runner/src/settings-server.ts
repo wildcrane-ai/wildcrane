@@ -136,13 +136,13 @@ export async function startSettingsServer(action: SettingsAction) {
         if (route === '/control/ping') return json(res, 200, { ready: true })
         for (const [key, value] of tickets) if (value.until < Date.now()) tickets.delete(key)
         const ticket = random()
-        tickets.set(ticket, { context: { path: typeof body.path === 'string' ? body.path : undefined, project: typeof body.project === 'string' ? body.project : undefined }, until: Date.now() + 60_000 })
+        tickets.set(ticket, { context: { path: typeof body.path === 'string' ? body.path : undefined, project: typeof body.project === 'string' ? body.project : undefined }, until: Date.now() + 12 * 3600_000 })
         return json(res, 200, { url: `${origin}/#${ticket}` })
       }
       if (req.headers.origin !== origin) return json(res, 403, { error: 'forbidden' })
       if (route === '/session') {
+        // Reusable until it expires: a copied link must still open after the browser already did.
         const entry = tickets.get(String(body.ticket))
-        tickets.delete(String(body.ticket))
         if (!entry || entry.until < Date.now()) return json(res, 403, { error: 'expired' })
         const browser = /(?:^|;\s*)wc_settings=([a-f0-9]{64})/.exec(req.headers.cookie ?? '')?.[1] ?? random()
         const csrf = random()

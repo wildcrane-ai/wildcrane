@@ -28,7 +28,7 @@ import {
 } from '../lib/agent/workflows'
 import type { MoveResult } from '../lib/types'
 import { readWorkflowFolder } from '../lib/agent/workflow-folder'
-import { checkWorkflowFiles, isAboutFile } from '../lib/shared/workflow-files'
+import { checkWorkflowFiles, isAboutFile, VERSION_FILE, versionText } from '../lib/shared/workflow-files'
 import { workflowName } from '../lib/shared/board-files'
 import { call } from '../lib/cloud/tasks'
 
@@ -103,9 +103,6 @@ export function cmdWorkflowDiagram(id: string, card: string): MoveResult {
   return { file, tag, diagram }
 }
 
-// What `pull` leaves in the folder for `push`: which workflow, at which version.
-const PULLED = '.akb-workflow.json'
-
 const cloudIdOf = (id: string): string | undefined => cloudFlows().find((f) => workflowName(f.cloudId) === id)?.cloudId
 
 /** `akb workflow pull <id> [folder]` (#544): the workflow's current version as a folder. */
@@ -117,13 +114,12 @@ export async function cmdWorkflowPull(id: string, folder?: string): Promise<Move
   const read = await call<{ id: string; version: number; files: WorkflowFiles }>('GET', `/v1/workflows/${encodeURIComponent(cloudId!)}`)
   if (!read.ok) die(read.error, read.code === 'not_found' ? 'no-such-workflow' : 'cloud-refused')
   const { version, files } = read.value
-  for (const [file, text] of Object.entries(files)) {
+  for (const [file, text] of Object.entries({ ...files, [VERSION_FILE]: versionText(cloudId!, version) })) {
     const full = path.join(dir, ...file.split('/'))
     fs.mkdirSync(path.dirname(full), { recursive: true })
     const data = isAboutFile(file) && !file.endsWith('.md') && /^data:[^;]+;base64,/.exec(text)
     fs.writeFileSync(full, data ? Buffer.from(text.slice(data[0].length), 'base64') : text)
   }
-  fs.writeFileSync(path.join(dir, PULLED), `${JSON.stringify({ id: cloudId, version })}\n`)
   const shown = folder ?? `./${id}`
   say(`Pulled ${id} v${version} into ${shown}.`)
   return { id, version, folder: dir }
@@ -134,20 +130,20 @@ export async function cmdWorkflowPush(folder: string, opts: { dryRun?: boolean }
   const dir = path.resolve(folder)
   let pulled: { id: string; version: number } | null = null
   try {
-    pulled = JSON.parse(fs.readFileSync(path.join(dir, PULLED), 'utf8'))
+    pulled = JSON.parse(fs.readFileSync(path.join(dir, VERSION_FILE), 'utf8'))
   } catch {}
   if (!pulled?.id || !Number.isInteger(pulled.version)) die(`${folder} was not written by \`akb workflow pull\``, 'bad-args')
   const { id: cloudId, version } = pulled!
   const id = workflowName(cloudId)
   const readOnly = () => die(`${id} is not this workspace's own; copy it on the web first.`, 'workflow-read-only')
   if (cloudId.startsWith('wf_builtin_')) readOnly()
-  const files = readWorkflowFolder(dir)
-  const checked = checkWorkflowFiles(files)
+  const checked = checkWorkflowFiles(readWorkflowFolder(dir))
   if (!checked.ok) die(`${checked.file} ${checked.reason}`, 'bad-workflow')
+  const { files } = checked as { files: WorkflowFiles }
   const now = await call<{ version: number; files: WorkflowFiles }>('GET', `/v1/workflows/${encodeURIComponent(cloudId)}`)
   if (!now.ok) die(now.error, now.code === 'not_found' ? 'no-such-workflow' : 'cloud-refused')
   if (now.value.version !== version) die(`${id} is at v${now.value.version} now; pull again and redo the change.`, 'workflow-moved')
-  if (JSON.stringify(files) === JSON.stringify(Object.fromEntries(Object.entries(now.value.files).sort()))) {
+  if (JSON.stringify(files) === JSON.stringify(Object.fromEntries(Object.entries(now.value.files).filter(([f]) => f !== VERSION_FILE).sort()))) {
     say(`${id} is unchanged (v${version}).`)
     return { id, version, changed: false, ...(opts.dryRun ? { dryRun: true } : {}) }
   }
@@ -162,7 +158,7 @@ export async function cmdWorkflowPush(folder: string, opts: { dryRun?: boolean }
     die(res.error, res.code === 'bad_request' || res.code === 'payload_too_large' ? 'bad-workflow' : 'cloud-refused')
   }
   const next = res.value.version
-  fs.writeFileSync(path.join(dir, PULLED), `${JSON.stringify({ id: cloudId, version: next })}\n`)
+  fs.writeFileSync(path.join(dir, VERSION_FILE), versionText(cloudId, next))
   say(`Pushed ${id} v${next}. New tasks take it.`)
   return { id, version: next, changed: true }
 }

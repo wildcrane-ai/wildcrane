@@ -260,7 +260,7 @@ export function setRuntimeSetting(id: string, key: string, value: string): Saved
   })
 }
 
-/** Save the harness **Global default** runs — `akb agent use`, and the board's own answer to
+/** Save the harness **Global default** runs — `akb raw agent use`, and the board's own answer to
  *  "what does a run spawn". Every other runtime is untouched. */
 export function setHarness(name: string): Saved {
   return setRuntimeHarness(GLOBAL_ID, name)

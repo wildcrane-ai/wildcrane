@@ -49,7 +49,7 @@ export interface AgentRole {
 
 // The role every conversation is held by (#502). It
 // leads the discussion stage, and `chat` is that stage's one flow: not a flow anyone types
-// under `akb card`, and the role's work all the same. It comes first because a discussion
+// under `akb raw card`, and the role's work all the same. It comes first because a discussion
 // comes before a card — what it helps with is whether an idea deserves work at all, and a
 // discussion that ends in nothing is a discussion that did its job.
 const DISCUSSION_HELPER: AgentRole = {

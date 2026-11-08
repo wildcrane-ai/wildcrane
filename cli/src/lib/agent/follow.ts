@@ -13,7 +13,7 @@ import type { AgentRequest, RefineAsk, SpecAsk } from './types'
  * The spec agents this run asked for while it was going, as runs to start now that it has
  * ended (#187).
  *
- * A flow asks with `akb previews <agent> <id>`, which starts nothing: a run never starts
+ * A flow asks with `akb raw previews <agent> <id>`, which starts nothing: a run never starts
  * another, so the ask was written down (`askForSpec`) and this is where it is finally
  * spawned. By now the conversation that wanted it is over, which is the whole point — the
  * agent reads the card, not the reading of it.
@@ -49,7 +49,7 @@ export function specRunsAfter(asks: SpecAsk[]): AgentRequest[] {
 }
 
 /**
- * The cards a run explicitly handed to a refinement with `akb card refine <id>`, as the sessions
+ * The cards a run explicitly handed to a refinement with `akb raw card refine <id>`, as the sessions
  * to start now that it has ended.
  *
  * The card is read here, as the session is about to start, so an ask for a card that has

@@ -1,6 +1,6 @@
 // The task chats a Runner answered, kept on its computer (#2065): one JSON line per message in
 // `<home>/chats/<task>.jsonl`, the comments left on the task's reviews among them (#212). The
-// Runner writes them; `akb review-memory --task` reads them.
+// Runner writes them; `akb raw memory review --task` reads them.
 
 import fs from 'node:fs'
 import path from 'node:path'

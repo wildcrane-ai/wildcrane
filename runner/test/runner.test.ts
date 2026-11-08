@@ -1181,10 +1181,10 @@ describe('the Runner', () => {
     assert.deepEqual(stop, { reason: 'elsewhere', machine: 'laptop' })
   })
 
-  it('registers with protocol 16', async () => {
+  it('registers with protocol 17', async () => {
     start()
     await until(() => cloud.registrations > 0)
-    assert.equal(cloud.protocol, 16)
+    assert.equal(cloud.protocol, 17)
   })
 
   it('stops as outdated when Cloud no longer takes its protocol', async () => {
@@ -2443,8 +2443,10 @@ function flowReport(job: FakeJob) {
 
 describe('flow jobs (#2020)', () => {
   const board = () => path.join(cached(), '.akb', 'kanban')
-  const calls = () =>
-    fs.readFileSync(process.env.FAKE_AKB_LOG!, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as string[])
+  const typed = () => fs.readFileSync(process.env.FAKE_AKB_LOG!, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as string[])
+  // The calls by the group they act on: `raw card refine` (#551) reads as `card refine`.
+  const calls = () => typed().map((c) =>
+    c[0] !== 'raw' || c[1] === 'init' || c[1] === 'create' ? c : c[1] === 'memory' ? [`${c[2]}-memory`, ...c.slice(3)] : c.slice(1))
   const cardCalls = () => calls().filter((c) => c[0] === 'card').map((c) => c.join(' '))
   const flowJob = async (id: string, flow: Partial<NonNullable<FakeFlow>> & { verb: string }, extra: Partial<Parameters<FakeCloud['dispatch']>[0]> = {}) => {
     const job = cloud.dispatch({ id, task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code', flow: { workflow: 'wf_builtin_coding', ...flow }, ...extra })
@@ -2766,7 +2768,8 @@ describe('flow jobs (#2020)', () => {
     process.env.FAKE_AKB = JSON.stringify({ implement: { result: 'Built it.', landed: 'Landed it.' } })
     const answered = await flowJob('j4', { verb: 'implement', card: 2, text: 'Keep the old page?\n\nNo' })
     assert.equal(answered.outcome, 'done', answered.reason)
-    const log = fs.readFileSync(process.env.FAKE_AKB_LOG!, 'utf8').trim().split('\n').map((l) => JSON.parse(l).join(' '))
+    assert.ok(typed().some((c) => c.slice(0, 3).join(' ') === 'raw card resolve'), 'the Runner typed the old path')
+    const log = calls().map((c) => c.join(' '))
     const resolveAt = log.findIndex((l) => l.startsWith('card resolve 2 --follow --events --json'))
     assert.ok(resolveAt >= 0 && log.slice(resolveAt).some((l) => l.startsWith('card implement 2 --follow --events --json')),
       'the answer was not resolved before the build carried on')

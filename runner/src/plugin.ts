@@ -464,17 +464,18 @@ export function server(): McpServer {
     })
     mcp.registerTool('wildcrane_draft_save', { description: saveWhat, inputSchema: saveSchema }, save)
     mcp.registerTool('wildcrane_status', {
-      description: "WildCrane on this computer: whether the user is signed in, the projects added here with their boards (the one for `path` marked), this computer's recent discussions, which agent CLIs are ready, and `next` when the plugin needs an update, setup on this computer is unfinished, or a newer one is out.",
+      description: "WildCrane on this computer: whether the user is signed in, the `akb` to run, the projects added here with their boards (the one for `path` marked), this computer's recent discussions, which agent CLIs are ready, and `next` when the plugin needs an update, setup on this computer is unfinished, or a newer one is out.",
       inputSchema: { path: z.string().optional().describe('The current working directory.') },
     }, async ({ path: given }, extra) => {
       const dir = pathOf(given, extra._meta as Meta)
       const now = await state(dir || os.homedir())
       const found = (await connections()).connections
-      if (!now.signedIn) return text({ signedIn: false, signing: settings.signingState(), connections: found })
+      const akb = akbFile ? { akb: akbFile } : {}
+      if (!now.signedIn) return text({ signedIn: false, ...akb, signing: settings.signingState(), connections: found })
       const recent = (await chats()).chats.map((c) => ({ title: c.title, goals: c.goals, ideas: c.goals, at: c.at, dir: c.dir, url: discussionUrl(c.discussion) }))
       const { next: _, ...rest } = now
       const next = nextOf(host, runnerState, now.plugin, { connections: found, folder: 'folder' in now ? now.folder : null, refused: 'refused' in now ? now.refused : undefined, web: now.web })
-      return text({ ...rest, ...(next ? { next } : {}), dir: dir ? home(dir) : null, recent, connections: found })
+      return text({ ...rest, ...akb, ...(next ? { next } : {}), dir: dir ? home(dir) : null, recent, connections: found })
     })
     mcp.registerTool('wildcrane_sign_in', {
       description: 'Sign in to WildCrane in the browser. When goal commands report signed out, call this and retry after sign-in. Answers at once when already signed in.',

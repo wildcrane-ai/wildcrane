@@ -137,12 +137,12 @@ async function stopRuns(akb: Akb, ws: TaskFolder, id: number, since: number, ms:
   const until = Date.now() + ms
   const call = (args: string[]) => runAkb(akb, [...args, '--board', ws.board], { cwd: ws.cwd, board: ws.board })
   while (Date.now() < until) {
-    const runs = answerOf<{ runs?: (Run & { status?: string; agentPid?: number; agentStartedAt?: number })[] }>(await call(['run', 'list', '--card', String(id), '--all', '--json']))?.runs
+    const runs = answerOf<{ runs?: (Run & { status?: string; agentPid?: number; agentStartedAt?: number })[] }>(await call(['raw', 'run', 'list', '--card', String(id), '--all', '--json']))?.runs
     const live = (runs ?? []).filter((r) => r.status === 'running' && (r.startedAt ?? 0) >= since)
     if (!runs) return false
     if (!live.length && (runs ?? []).filter((r) => (r.startedAt ?? 0) >= since).every((r) =>
       processesStopped(runMark(r.sessionId), r.agentPid && r.agentStartedAt ? { pid: r.agentPid, since: r.agentStartedAt } : undefined))) return true
-    for (const r of live) await call(['run', 'stop', r.sessionId])
+    for (const r of live) await call(['raw', 'run', 'stop', r.sessionId])
     await wait(250)
   }
   return false
@@ -291,7 +291,7 @@ async function setUp(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Prom
   if (hook.note) io.show(`${hook.note}\n`)
   const pulled = await pull(ws, deps.machineId)
   if (!pulled.ok) return pulled.error
-  const used = await akb(['agent', 'use', runtime])
+  const used = await akb(['raw', 'agent', 'use', runtime])
   if (used.code !== 0) return refusal(used)
   // The runtime's settings on the board's Global default, each one set or cleared (#2135); the
   // workflow's MCP servers ride on the extra arguments, or on `mcpConfig` for a CLI that talks.
@@ -305,7 +305,7 @@ async function setUp(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Prom
   const secrets = secretsOf(job.runtimeId)
   const valueOf = (key: string) => (secretKeys(runtime).includes(key) ? secrets[key] : values[key]) ?? ''
   const set = async (key: string, value: string) => {
-    const done = await akb(['agent', 'set', key, ...(value ? (key === RAW_ARGS_KEY ? ['--', value] : [value]) : [])])
+    const done = await akb(['raw', 'agent', 'set', key, ...(value ? (key === RAW_ARGS_KEY ? ['--', value] : [value]) : [])])
     return done.code === 0 ? null : refusal(done)
   }
   // A provider is never cleared, and is picked only once what it needs is filled in; what it
@@ -333,11 +333,11 @@ export async function runReview(job: Job, ws: TaskFolder, tasks: string[], deps:
   const failed = await setUp(job, ws, deps, io)
   if (failed) return { ok: false, reason: failed }
   const akb = boardAkb(job, ws, deps, io)
-  const ran = await akb(['review-memory', '--task', ...tasks, '--follow', '--events', '--json'], true)
+  const ran = await akb(['raw', 'memory', 'review', '--task', ...tasks, '--follow', '--events', '--json'], true)
   if (io.lost()) return { ok: false, reason: '' }
   const answer = answerOf<{ result?: string; error?: { message?: string } }>(ran)
   if (ran.code !== 0) return { ok: false, reason: reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran) }
-  const runs = answerOf<{ runs?: Run[] }>(await akb(['run', 'list', '--all', '--json']))?.runs ?? []
+  const runs = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--all', '--json']))?.runs ?? []
   return { ok: true, report: { ...(answer?.result?.trim() ? { reply: answer.result.trim() } : {}), ...spentBy(runs.filter((r) => (r.startedAt ?? 0) >= since)) } }
 }
 
@@ -353,10 +353,10 @@ async function reviewRejections(job: Job, ws: TaskFolder, deps: FlowDeps, io: Fl
   const akb = boardAkb(job, ws, deps, io)
   return withBoard(ws, async (push) => {
     const laid = layOut(ws.board, read.value)
-    const ran = await akb(['review-dismissals', '--follow', '--events', '--json'], true)
+    const ran = await akb(['raw', 'review-dismissals', '--follow', '--events', '--json'], true)
     clearLaid(ws.board)
     resetSorted(ws)
-    const runs = (answerOf<{ runs?: Run[] }>(await akb(['run', 'list', '--all', '--json']))?.runs ?? []).filter((r) => (r.startedAt ?? 0) >= since)
+    const runs = (answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--all', '--json']))?.runs ?? []).filter((r) => (r.startedAt ?? 0) >= since)
     if (io.lost()) return { runs }
     if (ran.code !== 0) return { runs, failure: refusal(ran) }
     const sent = await push({ id: job.id, machineId: deps.machineId })
@@ -397,18 +397,18 @@ export async function runAgent(job: Job & { agent: AgentJob }, ws: TaskFolder, d
     return failure ? { ok: false, reason: failure } : { ok: true, report: spentBy(runs) }
   }
   if (name === 'reflect' && !tasks?.length) return { ok: true, report: {} }
-  const args = workflow ? ['agent', 'run', workflowName(workflow), name]
-    : name === 'reflect' ? ['reflect', '--cards', ...tasks!.map((t) => String(t.number))]
-    : [name]
+  const args = workflow ? ['raw', 'agent', 'run', workflowName(workflow), name]
+    : name === 'reflect' ? ['raw', 'reflect', '--cards', ...tasks!.map((t) => String(t.number))]
+    : ['raw', ...(name === 'prune-memory' ? ['memory', 'prune'] : [name])]
   const akb = boardAkb(job, ws, deps, io, ws.cloudTask ?? undefined)
   // Listing reaps a run a stopped Runner left recorded as live, which would hold the agent for good.
-  await akb(['run', 'list', '--all', '--json'])
+  await akb(['raw', 'run', 'list', '--all', '--json'])
   const env = name === 'reflect' && !workflow ? await scheduledEnv(ws, deps) : undefined
   const ran = await akb([...args, '--follow', '--events', '--json'], true, env)
   if (io.lost()) return { ok: false, reason: '' }
   const answer = answerOf<{ result?: string; error?: { message?: string } }>(ran)
   if (ran.code !== 0) return { ok: false, reason: reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran) }
-  const runs = answerOf<{ runs?: Run[] }>(await akb(['run', 'list', '--all', '--json']))?.runs ?? []
+  const runs = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--all', '--json']))?.runs ?? []
   return { ok: true, report: { ...(answer?.result?.trim() ? { reply: answer.result.trim() } : {}), ...spentBy(runs.filter((r) => (r.startedAt ?? 0) >= since)) } }
 }
 
@@ -532,7 +532,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     let continuation: string[] | undefined
     let expectedDelivery: string | undefined
     if (verb === 'implement' && flow.resume) {
-      const restored = await akb(['delivery', 'resume', String(id), '--json'])
+      const restored = await akb(['raw', 'delivery', 'resume', String(id), '--json'])
       const resumed = answerOf<{ landed?: boolean; deliveryId?: string; sessionId?: string; error?: { message?: string; reason?: string; args?: { id?: string } } }>(restored)
       if (io.lost()) return fail('')
       if (resumed?.landed) return { ok: true, report: { card: id } }
@@ -544,20 +544,20 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       const deliveryId = reason && reason !== 'deliveryActive' ? undefined : resumed?.deliveryId ?? resumed?.error?.args?.id
       expectedDelivery = deliveryId
       if (resumed?.sessionId) {
-        continuation = ['run', 'log', resumed.sessionId]
+        continuation = ['raw', 'run', 'log', resumed.sessionId]
       } else if (deliveryId) {
-        const previous = answerOf<{ runs?: Run[] }>(await akb(['run', 'list', '--card', String(id), '--all', '--json']))?.runs
+        const previous = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--card', String(id), '--all', '--json']))?.runs
           ?.filter((r) => ['implement', 'conflict', 'hook'].includes(r.action ?? '') && r.deliveryId === deliveryId)
           .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0]
         // With no run to rejoin, a fresh build run works inside the same delivery.
         if (previous) {
           continuation = previous.status === 'done'
-            ? ['run', 'log', previous.sessionId]
-            : ['run', 'resume', previous.sessionId, '--require-session']
+            ? ['raw', 'run', 'log', previous.sessionId]
+            : ['raw', 'run', 'resume', previous.sessionId, '--require-session']
         }
       }
     } else if (verb === 'implement' && text) {
-      const resolved = await akb(['card', 'resolve', String(id), '--follow', '--events', '--json', '--', text], true)
+      const resolved = await akb(['raw', 'card', 'resolve', String(id), '--follow', '--events', '--json', '--', text], true)
       if (io.lost()) return fail('')
       const file = findCard(ws.board, id)
       rejected = !!file && path.relative(ws.board, file).split(path.sep)[0] === '.archive'
@@ -566,7 +566,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       else if (resolved.code !== 0) note = text
     }
     // `implement` returns once the delivery landed and the card is archived.
-    const fresh = () => akb(['card', verb, String(id), '--follow', '--events', '--json', ...carryArgs(verb), ...(note ? ['--', note] : [])], true)
+    const fresh = () => akb(['raw', 'card', verb, String(id), '--follow', '--events', '--json', ...carryArgs(verb), ...(note ? ['--', note] : [])], true)
     ran ??= await (continuation ? akb([...continuation, '--follow', '--events', '--json'], true) : fresh())
     // A conversation that cannot be picked up again: a fresh build run carries the delivery on.
     if (continuation && ran.code !== 0 && answerOf<{ error?: { reason?: string } }>(ran)?.error?.reason === 'runNoSession') ran = await fresh()
@@ -595,7 +595,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       return fail(reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran))
     }
     const last = answer?.lastSessionId ?? answer?.error?.lastSessionId
-    const runs = answerOf<{ runs?: Run[] }>(await akb(['run', 'list', '--card', String(id), '--all', '--json']))?.runs ?? []
+    const runs = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--card', String(id), '--all', '--json']))?.runs ?? []
     const said = ((last ? runs.find((r) => r.sessionId === last)?.result : undefined) ?? answer?.result ?? answer?.error?.result)?.trim()
     const spent = spentBy([...learned, ...runs.filter((r) => (r.startedAt ?? 0) >= since)])
     const commit = !rejected && ran.code === 0 ? answer?.delivery?.commit : undefined
@@ -611,7 +611,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     const card = akbCardOf(ws) ?? flow.card
     if (!card) return { ok: true, report: {} }
     for (const delivery of checkoutsOf(ws, card)) {
-      const ran = await akb(['delivery', 'cancel', delivery, '--json'], true)
+      const ran = await akb(['raw', 'delivery', 'cancel', delivery, '--json'], true)
       if (ran.code !== 0) return fail(refusal(ran))
     }
     return { ok: true, report: { card } }
@@ -632,7 +632,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
 export async function confirmFlowStopped(ws: TaskFolder, job: Job, deps: FlowDeps): Promise<boolean> {
   const id = akbCardOf(ws) ?? job.number
   if (!id) return false
-  const ran = await runAkb(deps.akb, ['run', 'list', '--card', String(id), '--all', '--json', '--board', ws.board], { cwd: ws.cwd, board: ws.board })
+  const ran = await runAkb(deps.akb, ['raw', 'run', 'list', '--card', String(id), '--all', '--json', '--board', ws.board], { cwd: ws.cwd, board: ws.board })
   const runs = answerOf<{ runs?: { sessionId: string; status?: string; agentPid?: number; agentStartedAt?: number }[] }>(ran)?.runs
   return !!runs && runs.every((r) => r.status !== 'running' && processesStopped(runMark(r.sessionId),
     r.agentPid && r.agentStartedAt ? { pid: r.agentPid, since: r.agentStartedAt } : undefined))

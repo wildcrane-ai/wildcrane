@@ -16,11 +16,11 @@ akb goal save --id idea_1 --previews ""
 ## 查询已启用 Preview Agent 的触发条件
 
 ```sh
-akb previews --triggers --workflow coding --workspace ws_1
-akb previews --triggers --workflow coding --json
+akb raw previews --triggers --workflow coding --workspace ws_1
+akb raw previews --triggers --workflow coding --json
 ```
 
-`akb previews --triggers` 新增 `--workflow <id>` 与 `--workspace <id>`。带 `--workflow` 时只列该工作流已启用的 agent，按工作流顺序；目标讨论中省略 `--workspace` 即用讨论所属工作空间。不带 `--workflow` 时保持 #397 的全目录输出。
+`akb raw previews --triggers` 新增 `--workflow <id>` 与 `--workspace <id>`。带 `--workflow` 时只列该工作流已启用的 agent，按工作流顺序；目标讨论中省略 `--workspace` 即用讨论所属工作空间。不带 `--workflow` 时保持 #397 的全目录输出。
 
 输出沿用 #397：agent 名称与完整原始 `when`，未配置显示 `Not configured`；JSON 为标准响应外层及 `agents: {name,when}[]`、`problems`、`output`。工作流没有启用的 agent 时 `agents: []`。查询只读。
 
@@ -93,7 +93,7 @@ curl -X POST "$API/v1/discussions/dsc_1/goals/idea_1/start" \
 
 ```sh
 akb workflow list
-akb previews --triggers --workflow coding
+akb raw previews --triggers --workflow coding
 akb goal new --workflow coding --previews ui,api --title "Review goal previews" --body-file /tmp/goal.md
 ```
 

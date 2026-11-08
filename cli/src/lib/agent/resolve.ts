@@ -730,7 +730,7 @@ function runtimeView(
 }
 
 /** What one agent runs here, and whether that is its own pick or **Global default** (#467).
- *  The one answer the Agents pane and `akb agent` both draw. */
+ *  The one answer the Agents pane and `akb raw agent` both draw. */
 export function agentRun(agent: string, table = readAgentRuntime()): HarnessRun {
   const owner = runtimeOwner(agent)
   const picked = runtimeOfAgent(specAgentNames(owner), table)

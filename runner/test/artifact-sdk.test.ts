@@ -74,6 +74,17 @@ describe('SDK 资源声明与依赖图', () => {
     assert.match(mapReferences(manifestOf('html'), page, s => s === 'a.png' ? 'art_a' : s) as string, /srcset="art_a 1x, b.png 2x"/)
   })
 
+  it('脚本里的文字不算引用，标签和样式里缺失的文件照旧报错（#560）', () => {
+    const page = '<script src="app.js"></script><script>const f = e => `url(${e})`; el.innerHTML = \'<img src="x.png">\'</script>\n<img src="gone.png"><style>b{background:url(gone-bg.png)}</style><link rel="stylesheet" href="s.css">'
+    const graph = collect('<Asset src="p.html" />', '/c/card.md', {
+      resolve: (src, owner) => { const key = new URL(src, `file://${owner}`).pathname; if (key.includes('gone')) throw new Error('no such file'); return { key, file: key } },
+      read: () => page, retained: () => [],
+    })
+    const p = graph.find(n => n.key === '/c/p.html')!
+    assert.deepEqual([...p.dependencies.keys()], ['app.js', 's.css'])
+    assert.deepEqual(p.problems.map(x => x.src), ['gone.png', 'gone-bg.png'])
+  })
+
   it('本机缺少已有云端分镜时，仍保留依赖的用途和嵌套资源', () => {
     const graph = collect('<Storyboard src="remote.json" />', 'card.md', {
       resolve: src => ({ key: src, file: src === 'remote.json' ? null : src }),

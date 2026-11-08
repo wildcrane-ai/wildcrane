@@ -32,12 +32,12 @@ Use the first available source for each file:
 
 - **Recorder**: obtain your bundled `record.mjs` with `akb raw agent-file hyperframes-editor record.mjs` and keep it in the project. Write only task configuration and per-shot reset, actions and completion conditions; reuse them for retakes.
 - **Capture**: follow the demo procedure; restore and verify the starting state before every take and preserve unrelated work. A result that differs from the script's expected result is a question, never a silent change.
-- **Narration**: generate it from the exact scripted lines with the approved voice: `akb cloud tts --tier premium` for a hosted voice unless the user asks for cheaper, local Kokoro for a Kokoro ID, `af_heart` / `zf_xiaobei` when the source names none; name the tier in your section. Never switch voice, tier or service silently; regenerate only narration whose voice changed. For a human voice, reuse the supplied recording or ask for it.
+- **Narration**: generate it from the exact scripted lines with the approved voice: `akb tts --tier premium` for a hosted voice unless the user asks for cheaper, local Kokoro for a Kokoro ID, `af_heart` / `zf_xiaobei` when the source names none; name the tier in your section. Never switch voice, tier or service silently; regenerate only narration whose voice changed. For a human voice, reuse the supplied recording or ask for it.
 - **Checks**: assets you make or generate and repository assets are trusted; use an outside asset only under an open license, checked for quality and match with the script. Remove secrets, personal data and private paths.
 
 ## Templates
 
-- **Named video template**: when the card names a catalog video template, `akb cloud template get` it and build the whole video on it, replacing its content with the approved script's.
+- **Named video template**: when the card names a catalog video template, `akb template get` it and build the whole video on it, replacing its content with the approved script's.
 - **Props and motions**: otherwise, use a prop or motion where the card names one; for any other shot, build it yourself or, when a catalog piece may save work, look for one as `template-selection.md` says.
 
 ## Build

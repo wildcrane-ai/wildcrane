@@ -1,4 +1,4 @@
-// `akb triage add` writes one item from words the caller already has (#534); `check` says
+// `akb raw triage add` writes one item from words the caller already has (#534); `check` says
 // where a source id already is (#559). Nothing in triage is a task.
 
 import fs from 'node:fs'
@@ -10,7 +10,7 @@ import { say } from '../lib/io'
 import { die } from '../lib/paths'
 import type { MoveResult } from '../lib/types'
 
-/** `akb triage add`, as its command declares it. */
+/** `akb raw triage add`, as its command declares it. */
 export interface TriageAddOptions {
   title?: string
   text?: string
@@ -48,7 +48,7 @@ export async function cmdTriageAdd(opts: TriageAddOptions): Promise<MoveResult> 
   return { title: done.signal.title, source_id: done.signal.sourceId, file: done.signal.relPath }
 }
 
-/** `akb triage check` — where triage already holds one source id, if it holds it at all.
+/** `akb raw triage check` — where triage already holds one source id, if it holds it at all.
  *
  *  The answer the three ways in share, said out loud so a caller can ask it before writing.
  *  `unseen` is an answer and never a failure: it is what most ids are. */

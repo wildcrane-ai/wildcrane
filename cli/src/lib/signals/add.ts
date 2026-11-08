@@ -19,7 +19,7 @@
 // Downloads folder would be dead the moment the file moved or the board was cloned.
 //
 // A caller may say the title and the source outright instead of leaving them to be read off
-// the input (#534): `akb triage add` does, so a proposal carries the card that prompted it.
+// the input (#534): `akb raw triage add` does, so a proposal carries the card that prompted it.
 //
 // Something already waiting, or already made into a card, is refused and told where it is.
 // Something only IGNORED is taken: pasting a link back in is the one way out of a dismissal,
@@ -118,7 +118,7 @@ export function addToInbox(drop: InboxDrop): InboxAddResult {
   const read = describe(typed, file)
   const keep = read.keep
   // A caller that knows the two facts says them rather than leaving them to be read off the
-  // words (#534): `akb triage add` is given a title and the card the item came from. What it
+  // words (#534): `akb raw triage add` is given a title and the card the item came from. What it
   // says about the source reads through the one match rule, and a miss — `#452`, a newsletter
   // name — is kept as it was written rather than becoming a source of its own.
   const said = drop.source?.trim() ?? ''

@@ -46,7 +46,7 @@ it('真实入口在两棵命令树的无看板错误中保留诊断并提示插�
   const project = path.join(root, 'empty')
   fs.mkdirSync(project)
   for (const program of ['akb', '/plugin path/bin/akb']) {
-    for (const command of [['raw', 'list'], ['run', 'list']]) {
+    for (const command of [['raw', 'list'], ['raw', 'run', 'list']]) {
       for (const [options, diagnostic] of [
         [[], `no board here. Looked in ${project} and every folder above it for docs/kanban/.`],
         [['--dir', project], `no board in ${project} — it has no docs/kanban/.`],

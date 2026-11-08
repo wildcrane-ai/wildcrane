@@ -17,7 +17,7 @@ Plan one card in this session until it can be built.
   previews in stages, one stage per Approve, and the card's `previews` were chosen when its
   goal was written. A card without `previews` has not chosen: choose and save them first, as
   the list says, then run only its first stage. Run each agent the list above names whose
-  section is missing or outdated with `akb previews <agent> <id> --print`, one at a time in this
+  section is missing or outdated with `akb raw previews <agent> <id> --print`, one at a time in this
   session; leave out `--print` only for an agent the list says runs in a session of its own.
 - **Stale mentions**: rewrite any sentence that relies on a card no longer on the board.
 - **Questions**: settle every decision you can and record the answers as `akb guide writing`

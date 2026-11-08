@@ -95,12 +95,12 @@ export async function builtWorkflow(ws: TaskFolder, akb: Akb): Promise<Built | n
   if (!checked.ok) return fail(`${checked.file} ${checked.reason}.`)
 
   const list = await run<{ workflows?: { id: string; problems?: string[] }[]; problems?: string[] }>(['workflow', 'list'])
-  const spec = await run<{ problems?: string[] }>(['previews'])
+  const spec = await run<{ problems?: string[] }>(['raw', 'previews'])
   if (!list?.workflows || !spec) return fail('akb could not check it.')
   const problems = [
     ...(list.workflows.find((w) => w.id === id)?.problems ?? []),
     ...(list.problems ?? []).filter((p) => p.includes(`workflows/${id}/`)),
     ...(spec.problems ?? []).filter((p) => names.some((n) => p.includes(`agents/${n}/`))),
   ]
-  return problems.length ? fail(problems.join(' ')) : { ok: true, files }
+  return problems.length ? fail(problems.join(' ')) : { ok: true, files: checked.files }
 }

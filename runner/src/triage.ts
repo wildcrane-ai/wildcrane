@@ -1,7 +1,7 @@
 // The rejection review's files (#2067). Triage items are board files, synced with the board
 // (#2107); before a task is planned, the synced `dismissed/` and `archived/` are moved aside and
 // only the rejections and dismissals Cloud has not learned are laid out, as akb keeps them, for
-// `akb review-dismissals`.
+// `akb raw review-dismissals`.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -32,7 +32,7 @@ function freeName(dir: string, title: string): string {
   return name
 }
 
-/** One item as akb writes it; its source id is the one `akb triage add` derives from its words. */
+/** One item as akb writes it; its source id is the one `akb raw triage add` derives from its words. */
 function itemText(item: api.Triage, fields: Record<string, string> = {}): string {
   const lines = [
     '---',

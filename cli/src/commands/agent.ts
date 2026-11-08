@@ -12,7 +12,7 @@
 //   docs/kanban/.env              one key line per runtime, named after that runtime's id.
 //                                 git never carries it.
 //
-// `akb agent set` writes one row's settings and its key; `akb agent use` moves **Global
+// `akb raw agent set` writes one row's settings and its key; `akb raw agent use` moves **Global
 // default** to another harness.
 
 import { providerSetting } from '../lib/agent/providers'
@@ -32,7 +32,7 @@ import { say } from '../lib/io'
 import { die } from '../lib/paths'
 import type { MoveResult } from '../lib/types'
 
-/** `akb agent` and its words. Split here rather than in the dispatcher so the whole of the
+/** `akb raw agent` and its words. Split here rather than in the dispatcher so the whole of the
  *  agent setting is one file. */
 export function cmdAgent(args: string[]): MoveResult {
   const [word, ...rest] = args
@@ -45,7 +45,7 @@ export function cmdAgent(args: string[]): MoveResult {
     case 'set':
       return setSetting(rest)
     default:
-      die(`unknown agent command "${word}" — try \`akb agent\`, or one of use, set`, {
+      die(`unknown agent command "${word}" — try \`akb raw agent\`, or one of use, set`, {
         kind: 'unknown-move',
         move: word,
       })
@@ -132,7 +132,7 @@ function valueOf(
 // it moves, and a setting the new harness doesn't declare goes with the old one.
 function useAgent(args: string[]): MoveResult {
   const name = args[0]?.trim()
-  if (!name) die('name a harness: akb agent use claude-code', { kind: 'needs-input' })
+  if (!name) die('name a harness: akb raw agent use claude-code', { kind: 'needs-input' })
   const harness = knownHarness(name)
   const res = setHarness(harness.name)
   if (!res.ok) die(res.error ?? 'the setting could not be saved', { kind: 'save-failed' })

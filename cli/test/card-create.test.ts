@@ -108,6 +108,14 @@ describe('card creation', () => {
     }
   })
 
+  // #566: a request that opens with `# Title` failed task creation.
+  it('writes a body that breaks the card format as given', async () => {
+    const bodyFile = path.join(root, 'request.md')
+    fs.writeFileSync(bodyFile, '# 登录页\n\n加一个登录页。\n\n## Source\nsomewhere\n')
+    const made = await create(['--title', 'Login', '--body-file', bodyFile])
+    assert.ok(fs.readFileSync(path.join(root, String(made.file)), 'utf8').endsWith('\n\n# 登录页\n\n加一个登录页。\n\n## Source\nsomewhere\n'))
+  })
+
   it('refuses the retired recurring options and points at the agent guide (#1414)', async () => {
     await refuses(root, ['create', '--title', 'A repeated job', '--recurring'], /--recurring is gone[\s\S]*akb guide write-agent/)
     await refuses(root, ['create', '--title', 'A job', '--cadence', '1d'], /--cadence is gone[\s\S]*akb guide write-agent/)

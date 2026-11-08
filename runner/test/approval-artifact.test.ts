@@ -24,7 +24,7 @@ for (const [phase, status, expectedPhase, action] of [
       assert.ok(process.env.RUNNER_DIST, 'test the actual Runner build')
       const result = spawnSync(process.execPath, [
         path.join(process.env.RUNNER_DIST, 'akb', 'bin', 'ai4kanban.mjs'),
-        'card', 'approve', '3', '--board', board, '--print', '--json',
+        'raw', 'card', 'approve', '3', '--board', board, '--print', '--json',
       ], {
         cwd: root, encoding: 'utf8', timeout: 15_000,
         env: { ...process.env, KANBAN_RUN: '', AI4KANBAN_TASK: 'task_3',

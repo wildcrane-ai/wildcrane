@@ -1,4 +1,4 @@
-// A run's sub-runs (#1421): `akb run start` from inside a run, `akb run wait`, and what the
+// A run's sub-runs (#1421): `akb raw run start` from inside a run, `akb raw run wait`, and what the
 // parent's end does to them.
 
 import assert from 'node:assert/strict'

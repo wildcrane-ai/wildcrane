@@ -18,8 +18,7 @@ import fs from 'node:fs'
 
 import { rel, TODO, REPO_ROOT, SESSIONS_DIR } from '../paths'
 import { boardComplaints } from '../reconcile'
-import { formatContractErrors, formatProblems, snapshotSpecs, validateRunSpecs } from '../spec-contract'
-import { validatePreview } from '../preview-validation'
+import { formatContractErrors, formatProblems, snapshotSpecs, type ContractError } from '../spec-contract'
 import { eventsPathOf, readRuns, withStore } from './store'
 import { lastSessionTotal, ownCost, reportsSessionTotal } from './own-cost'
 import { cleanupDiscardedCards } from '../../commands/remove'
@@ -35,7 +34,6 @@ import { costLine, durationLine, modelLine, RESULT_MARKER, usageLine } from './l
 import { createStderrFilter, type RunEvent } from './wire'
 import { contractRepairPrompt, restartPrompt, resumePrompt } from './prompts'
 import { openPlan } from './resolve'
-import { humanSectionFor } from './runner'
 import { planRetry, retryLine } from './retry'
 import {
   claimChanges,
@@ -511,7 +509,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       const heldElsewhere = withStore((store) => new Set(store.runs
         .filter((r) => r.sessionId !== sessionId && r.status === 'running' && holdsCard(r.action))
         .flatMap((r) => [r.cardId, ...(r.createdCardIds ?? [])]).filter((id): id is number => id !== null)))
-      let formatErrors: ReturnType<typeof validateRunSpecs> = []
+      let formatErrors: ContractError[] = []
       let broken: string[] = []
       if (!sub) {
         try {
@@ -540,14 +538,6 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
             return true
           }
           for (const id of [...required]) if (!onBoard(id) && !missing(id)) required.delete(id)
-          const human = humanSectionFor(requestOf(record))
-          const own = new Set([record.cardId, ...(peekRun(sessionId)?.createdCardIds ?? [])].filter((id): id is number => id !== null))
-          formatErrors = validateRunSpecs(sources, current, record.cardId, heldElsewhere, required, human ? { ...human, cards: own } : undefined)
-          if (status === 'done' && record.action === 'spec' && record.specAgent === 'ui-designer') {
-            for (const [file, card] of current) if (card.id === record.cardId) {
-              formatErrors.push(...await validatePreview(file, card.text))
-            }
-          }
           for (const [file, card] of current) {
             if (card.id === record.cardId || (!heldElsewhere.has(card.id) && sources.get(file)?.text !== card.text)) required.add(card.id)
           }

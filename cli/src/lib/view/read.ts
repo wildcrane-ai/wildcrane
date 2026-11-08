@@ -326,7 +326,7 @@ function attachDiscard(card: Card, active: DeliveryRecord | undefined): void {
     active: holder.status === 'active',
     // Whether that ended delivery can be carried on instead of thrown away (#639): its
     // checkout is really here and nothing else has taken the card. The same judgement
-    // `akb delivery resume` makes, so the button and the command never disagree.
+    // `akb raw delivery resume` makes, so the button and the command never disagree.
     resumable: holder.status !== 'active' && isResumable(holder),
   }
 }

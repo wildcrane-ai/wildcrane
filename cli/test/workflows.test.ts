@@ -223,7 +223,7 @@ describe('the approvals a card goes through (#2154)', () => {
   it('has a first planning choose its previews, then lists only the current stage’s chosen ones', async () => {
     const id = await create('Launch video', 'hyperframes-video')
     const first = specAgentSelector(id, 'hyperframes-video', null)
-    assert.match(first, /akb previews --triggers --workflow hyperframes-video/)
+    assert.match(first, /akb raw previews --triggers --workflow hyperframes-video/)
     assert.doesNotMatch(first, /`scriptwriter`|`hyperframes-editor`/)
     const chosen = { previews: ['scriptwriter', 'hyperframes-editor'], phase: 0 }
     const stage1 = specAgentSelector(id, 'hyperframes-video', chosen)

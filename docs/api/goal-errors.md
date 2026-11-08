@@ -5,7 +5,7 @@ POST /v1/discussions/{id}/goals/{goal}/start（兼容 /ideas/{idea}/start）：�
 wildcrane_draft_save({discussionId, expectedVersion, goals?, ideas?})：二选一传目标数组；成功返回 saved:true，冲突返回 saved:false、最新 version/goals/ideas/url，参数错误保持 isError:true。
 akb goal <new|save|drop|start> [--id <goal>] [--title <title>] [--body-file <file>] [--workflow <id>] [--previews <agents>]：编辑目标及审阅要点，成功结果增加 previews，文件校验失败沿用现有退出行为。
 
-`akb previews --triggers [--workflow <id>] [--workspace <id>] [--json]` 查询已启用要点；[完整接口与兼容语义](goal-previews.md)。
+`akb raw previews --triggers [--workflow <id>] [--workspace <id>] [--json]` 查询已启用要点；[完整接口与兼容语义](goal-previews.md)。
 
 | 场景 | 英文文字 |
 | --- | --- |

@@ -92,7 +92,7 @@ akb guide discuss-goal
 
 保存不会开始任务；网页讨论的 start 标记本轮结束后开始，外部会话立即发起。`--previews ui,api` 选择审阅要点，空字符串清空，省略保留同一工作流的选择。Codex 与 Claude Code 会话使用同一命令；成功结果附讨论链接。10 个目标上限不变。未登录时报下节的 `signed_out`。`akb raw goal` 与 `akb raw idea` 已删除；`guide discuss-idea` 保留兼容。
 
-`akb previews --triggers --workflow <id> [--workspace <id>] [--json]` 只列该工作流启用的要点；讨论中可省略工作空间。详见 [目标审阅接口](../docs/api/goal-previews.md)。
+`akb raw previews --triggers --workflow <id> [--workspace <id>] [--json]` 只列该工作流启用的要点；讨论中可省略工作空间。详见 [目标审阅接口](../docs/api/goal-previews.md)。
 
 ## 软件故障根因定位
 
@@ -103,10 +103,10 @@ akb guide discuss-goal
 
 ## Preview agents
 
-`akb previews [agent] [id] [note...]` lists this board's agents or asks one to preview a card.
+`akb raw previews [agent] [id] [note...]` lists this board's agents or asks one to preview a card.
 Add `--print` to work in the current session, or `--follow` to watch a separate run.
 
-`akb previews --triggers [--json]` lists names and original `akb.when` conditions in catalog order,
+`akb raw previews --triggers [--json]` lists names and original `akb.when` conditions in catalog order,
 including disabled and unassigned agents. Missing conditions display `Not configured`.
 JSON returns `agents: { name: string, when: string | null }[]`, `problems` and `output` in the standard response.
 An empty catalog returns `agents: []` with a message. Catalog diagnostics match the regular listing.
@@ -118,9 +118,9 @@ This read-only query accepts `--board` and `--dir`. Combining it with positional
 所属交付的当前运行登记自己的工作流步骤。最后一步同时结束交付并归档，返回既有归档交接。
 
 ```sh
-akb delivery complete <id> [--commit <sha> --branch <name>] --json
-akb delivery cancel <id> --json
-akb delivery resume <id> --json
+akb raw delivery complete <id> [--commit <sha> --branch <name>] --json
+akb raw delivery cancel <id> --json
+akb raw delivery resume <id> --json
 ```
 
 `id` 接受卡片或交付编号。软件步骤提供已合入的完整 40 或 64 位提交号和目标分支，两项必须同时提供。
@@ -134,4 +134,4 @@ Builder 自行创建分支和 worktree、处理冲突、检查并合入，登记
 `cancel` 停止运行并结束交付，保留磁盘成果。`resume` 返回交付与运行编号，继续原会话或从既有成果恢复。
 交付外仍可使用 `akb raw archive <id>` 手动归档。`delivery conflict`、`delivery blocked`、`delivery discard` 和 `workflow worktree` 已移除。
 
-工作流只存于云端（#409）：`akb workflow list` 列出当前工作区可用的工作流，各版本缓存在本机 `workflows/`；`akb workflow rename` 只在「搭建工作流」任务里写草稿，`delete`、`agent` 已移除，改在网页上管理。
+工作流只存于云端（#409）：`akb workflow list` 列出当前工作区可用的工作流，各版本缓存在本机 `workflows/`；`akb raw workflow rename` 只在「搭建工作流」任务里写草稿，`delete`、`agent` 已移除，改在网页上管理。

@@ -8,7 +8,7 @@ description: Manage the file-based task board with akb. Use for creating and pla
 The board is worked only through `akb`. Find the command for the job in `akb help` and run
 it; never do its work by hand or from memory.
 
-- **`--print` does it here**: `akb card revise 12 --print "drop the export"` prints the whole
+- **`--print` does it here**: `akb raw card revise 12 --print "drop the export"` prints the whole
   flow for that card on this board; follow it to its closing steps. Without `--print` the
   same command starts a separate agent.
-- **Keys**: never read or write API keys; the user sets them with `akb agent set apiKey`.
+- **Keys**: never read or write API keys; the user sets them with `akb raw agent set apiKey`.

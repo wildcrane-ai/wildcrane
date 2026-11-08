@@ -1,7 +1,7 @@
 // Which account this machine acts as, and whether Cloud takes its work.
 //
 // One call, four answers — the four a sign-in can come back with, which is exactly what the
-// Cloud section of the Configuration dialog draws and what `akb cloud` prints. Admission is
+// Cloud section of the Configuration dialog draws and what `akb account` prints. Admission is
 // never decided here: the service is asked every time, and its refusal is carried through
 // word for word so a client shows it as it stands.
 

@@ -312,7 +312,7 @@ export function validateStoryboards(file: string, id: number, text: string): Con
   const dir = path.join(ASSETS, String(id))
   for (const [tag, tagOf, rule, fix] of [
     ['Storyboard', storyboardTag, 'storyboard-src', 'Write the JSON there or fix the path.'],
-    ['Workflow', workflowTag, 'workflow-src', 'Write it with `akb workflow diagram <workflow id> <card id>` or fix the path.'],
+    ['Workflow', workflowTag, 'workflow-src', 'Write it with `akb raw workflow diagram <workflow id> <card id>` or fix the path.'],
   ] as const) {
     for (const marker of storyboardMarkers(text, tagOf)) {
       const named = assetName(marker.src, id, ['json'])
@@ -331,54 +331,3 @@ export function formatContractErrors(errors: readonly ContractError[]): string {
 /** The same errors as the task page shows them. */
 export const formatProblems = (errors: readonly ContractError[]): string =>
   ['Task format problems:', ...errors.map((e) => `- ${e.message}`)].join('\n')
-
-/** An agent whose output is the user's to review (#868): on the cards its own run owns, its
- *  section, when it writes one, sits above the boundary. */
-export interface HumanSection {
-  agent: string
-  cards: ReadonlySet<number>
-}
-
-/** Ignore unrelated cards held by another run; validate this run's target and changed files. */
-export function validateRunSpecs(
-  before: SpecSnapshot,
-  now: SpecSnapshot,
-  target: number | null,
-  heldElsewhere: ReadonlySet<number> = new Set(),
-  required: ReadonlySet<number> = new Set(),
-  human?: HumanSection,
-): ContractError[] {
-  return [...now].flatMap(([file, card]) => {
-    const own = human?.cards.has(card.id) ? validateHumanSection(file, card.text, human) : []
-    if (card.id !== target && !required.has(card.id) && (heldElsewhere.has(card.id) || before.get(file)?.text === card.text)) return own
-    return [...validateSpec(file, card.text, card.id), ...own]
-  })
-}
-
-function validateHumanSection(file: string, text: string, { agent }: HumanSection): ContractError[] {
-  const title = `By \`${agent}\` agent`
-  const lines = text.replace(/\r\n/g, '\n').split('\n')
-  const end = lines.findIndex((line, i) => i > 0 && line.trim() === '---')
-  if (lines[0]?.trim() !== '---' || end < 0) return []
-  const markers: number[] = []
-  let heading = 0
-  let fence: { char: string; length: number } | null = null
-  let comment = false
-  for (let i = end + 1; i < lines.length; i++) {
-    const line = lines[i]!
-    const delimiter = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/)
-    if (fence) {
-      if (delimiter && delimiter[1]![0] === fence.char && delimiter[1]!.length >= fence.length && !delimiter[2]!.trim()) fence = null
-      continue
-    }
-    if (comment) { if (line.includes('-->')) comment = false; continue }
-    if (delimiter) { fence = { char: delimiter[1]![0]!, length: delimiter[1]!.length }; continue }
-    if (/^\s*<!--\s*agent\s*-->\s*$/.test(line)) { markers.push(i + 1); continue }
-    if (line.trim().startsWith('<!--')) { comment = !line.includes('-->'); continue }
-    if (!heading && line.match(/^ {0,3}##\s+(.+?)\s*#*\s*$/)?.[1] === title) heading = i + 1
-  }
-  if (markers.length !== 1 || !heading) return []
-  const where = { file: rel(file), rule: 'human-section' }
-  if (heading > markers[0]!) return [{ ...where, line: heading, message: `Move ## ${title} above <!-- agent -->: the \`${agent}\` agent's output is for the user to review.` }]
-  return []
-}

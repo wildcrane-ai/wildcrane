@@ -5,7 +5,7 @@
 // and no source has a branch of its own.
 //
 // One rule reads every way in. A pull's `source_type`, a pull's older `platform`/`source`,
-// `akb triage add --source`, a pasted link's domain and a file already on disk all come down
+// `akb raw triage add --source`, a pasted link's domain and a file already on disk all come down
 // to one string, and that string either matches a row or it does not. What does not match is
 // kept as it was written rather than guessed at.
 

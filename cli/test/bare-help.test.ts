@@ -50,3 +50,32 @@ describe('a command with no subcommand', () => {
     assert.match(err, /unknown command/)
   })
 })
+
+describe('akb and akb raw (#551)', () => {
+  const words = (help: string) => [...help.split('Commands:')[1]!.matchAll(/^ {2}(\S+)/gm)].map((m) => m[1])
+
+  it('akb lists only Cloud and tool commands; raw lists the local ones', async () => {
+    const top = await captured(() => runAgent(['help'], { program: 'akb', cwd }))
+    assert.deepEqual(words(top.out).sort(), [
+      'account', 'goal', 'guide', 'help', 'image', 'music', 'project', 'raw', 'runner', 'task',
+      'telemetry', 'template', 'tts', 'update', 'workflow', 'workspace',
+    ])
+    const raw = words((await captured(() => runAgent(['raw', 'help'], { program: 'akb', cwd }))).out)
+    for (const word of ['card', 'delivery', 'run', 'triage', 'memory', 'previews', 'components', 'agent', 'workflow', 'create']) {
+      assert.ok(raw.includes(word), word)
+    }
+  })
+
+  it('an old name refuses and names the new path', async () => {
+    for (const [argv, said] of [
+      [['delivery', 'complete', 'd_42'], '`akb delivery` is now `akb raw delivery`.'],
+      [['prune-memory'], '`akb prune-memory` is now `akb raw memory prune`.'],
+      [['workflow', 'diagram', 'coding', '1'], '`akb workflow diagram` is now `akb raw workflow diagram`.'],
+      [['cloud', 'image'], '`akb cloud` is gone: use `akb account`, `akb image`, `akb tts`, `akb music` or `akb template`.'],
+    ] as const) {
+      const { code, err } = await captured(() => runAgent([...argv], { program: 'akb', cwd }))
+      assert.equal(code, 1, argv.join(' '))
+      assert.ok(err.includes(said), err)
+    }
+  })
+})

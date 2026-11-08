@@ -18,7 +18,7 @@ akb raw create --title "..." --modules <names> --priority <high|med|low> \
 ```
 
 - **Workflow**: the request's own, else the id from `akb workflow list` that fits the work.
-- **Previews**: the agents from `akb previews --triggers --workflow <id>` whose conditions the
+- **Previews**: the agents from `akb raw previews --triggers --workflow <id>` whose conditions the
   card meets, or `--previews ""` when none is met.
 - **Dependencies**: `--blocked-by` for cards this one waits on, `--related` for cards that only
   relate; an existing card that needs this one's output gets

@@ -148,13 +148,13 @@ describe('a card archived by its own landing mid-run', () => {
   it('is dropped from the repair list while another card still fails', async () => {
     const other = path.join(path.dirname(file), '2-other.md')
     fs.writeFileSync(other, card.replace('title: A feature', 'title: Another feature'))
-    const id = fakeRun(`${archives()}\n    fs.writeFileSync(${JSON.stringify(other)}, 'no frontmatter\\n');`)
+    const id = fakeRun(`${archives()}\n    fs.rmSync(${JSON.stringify(other)});`)
     patch(id, (r) => {
       r.formatRepair = { attempt: 1, errors: 'Task #1 disappeared.', cardIds: [1, 2], changedIds: [], existingIds: [] }
     })
     await watchRun(id, async () => ({ error: 'no resume' }))
     assert.equal(peekRun(id)?.status, 'error')
-    assert.doesNotMatch(logOf(id), /missing-card/)
+    assert.doesNotMatch(logOf(id), /Task #1 disappeared/)
     assert.match(logOf(id), /\[board\] Task #1 left the board with its landing/)
     assert.deepEqual(peekRun(id)?.formatRepair?.cardIds, [2])
   })

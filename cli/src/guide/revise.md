@@ -14,7 +14,7 @@ the project and leave only decisions the user owns.
   "Preview agents" in `akb guide refine` says; a plan of that work written into `## Scope` is
   no substitute.
 - **Drafts**: when the change affects a draft on the card, revise its files and previews in
-  place on this run, with `akb previews` for each preview agent whose draft it affects, including
+  place on this run, with `akb raw previews` for each preview agent whose draft it affects, including
   one from an earlier stage. Keep the unaffected content and the IDs. A note or todo is no
   substitute.
 - **Superseded decisions**: An entry under `## Decided by the agent`, or a line under the

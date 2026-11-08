@@ -66,10 +66,11 @@ describe('本机 Alpha 偏好', () => {
 })
 
 describe('本机设置服务', () => {
-  it('一次性入口建立会话，复用同一随机端口且各入口保留上下文', async () => {
+  it('入口可重复打开，建立会话，复用同一随机端口且各入口保留上下文', async () => {
     const a = await browser({ path: '/a' }), b = await browser({ path: '/b' })
     assert.equal(a.origin, b.origin)
-    assert.equal((await a.exchange()).status, 403)
+    assert.equal((await a.exchange()).status, 200)
+    assert.equal((await a.exchange('0'.repeat(64))).status, 403)
     assert.deepEqual(await (await a.call()).json(), { action: 'state', context: { path: '/a' } })
     assert.deepEqual(await (await b.call()).json(), { action: 'state', context: { path: '/b' } })
     assert.equal(fs.statSync(path.join(runnerHome(), 'settings-page.json')).mode & 0o777, 0o600)

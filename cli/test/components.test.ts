@@ -79,7 +79,7 @@ describe('preview component context', () => {
     writeOfficial('workflows/example/WORKFLOW.md', '---\nname: Example\npreviews: [first]\nland: [second, builder]\nscheduled:\n  - agent: scheduled-example\n---\nWrite a card.\n')
     const docs = workflowComponents('example')
     assert.deepEqual(names(docs), ['Storyboard', 'Asset', 'Compare'])
-    const command = await outputOf(['components', '--workflow', 'example', '--docs'])
+    const command = await outputOf(['raw', 'components', '--workflow', 'example', '--docs'])
     assert.ok(command.includes(componentDocsText(docs)))
     for (const action of ['clarify', 'edit', 'resolve', 'approve'] as const) {
       const prompt = buildPrompt({ action, workflow: 'example', id: 1 })
@@ -98,11 +98,11 @@ describe('preview component context', () => {
   })
 
   it('requires exactly one selector and supports docs through the CLI', async () => {
-    const result = await outputOf(['components', '--agent', 'prompt-writer', '--docs'])
+    const result = await outputOf(['raw', 'components', '--agent', 'prompt-writer', '--docs'])
     assert.match(result, /^Asset\n\nTags draw only in the card body;.*\n\n# Asset/)
-    await assert.rejects(run(root, ['components']), /exactly one/)
-    await assert.rejects(run(root, ['components', '--agent', 'prompt-writer', '--workflow', 'coding']), /exactly one/)
-    await assert.rejects(run(root, ['components', '--agent', 'absent']), /absent/)
-    await assert.rejects(run(root, ['components', '--workflow', 'absent']), /absent/)
+    await assert.rejects(run(root, ['raw', 'components']), /exactly one/)
+    await assert.rejects(run(root, ['raw', 'components', '--agent', 'prompt-writer', '--workflow', 'coding']), /exactly one/)
+    await assert.rejects(run(root, ['raw', 'components', '--agent', 'absent']), /absent/)
+    await assert.rejects(run(root, ['raw', 'components', '--workflow', 'absent']), /absent/)
   })
 })

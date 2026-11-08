@@ -10,7 +10,11 @@ import path from 'node:path'
 const argv = process.argv.slice(2)
 fs.appendFileSync(process.env.FAKE_AKB_LOG, `${JSON.stringify(argv)}\n`)
 const cut = argv.indexOf('--')
-const words = cut < 0 ? argv : argv.slice(0, cut)
+// `raw <group> …` (#551) dispatches below by the group, as `memory review|prune` by its old name.
+const local = argv[0] === 'raw' && !['init', 'create'].includes(argv[1])
+  ? argv[1] === 'memory' ? [`${argv[2] === 'review' ? 'review' : 'prune'}-memory`, ...argv.slice(3)] : argv.slice(1)
+  : argv
+const words = cut < 0 ? local : local.slice(0, local.indexOf('--'))
 const text = cut < 0 ? '' : argv.slice(cut + 1).join(' ')
 const flag = (name) => (words.includes(name) ? words[words.indexOf(name) + 1] : undefined)
 const board = flag('--board')

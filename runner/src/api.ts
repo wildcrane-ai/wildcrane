@@ -138,7 +138,7 @@ export interface SettingDecl {
 
 /** Raised by Cloud when it no longer takes this Runner's protocol. 9 keeps keys (#2135); 10 stops
  *  a flow job, pausing its board runs (#2128); 11 holds the computer's lock (#2161); 14 shares local settings and account revocation. */
-export const PROTOCOL = 16
+export const PROTOCOL = 17
 
 const TIMEOUT_MS = 20_000
 

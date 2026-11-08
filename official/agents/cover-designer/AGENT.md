@@ -8,9 +8,9 @@ akb:
     workspace: [preferences.md]
   i18n:
     en:
-      title: Cover designer
+      title: Cover
     zh:
-      title: 封面设计
+      title: 封面
       description: 按确认的脚本为产品视频做一张封面。
 ---
 
@@ -19,7 +19,7 @@ Make one cover image for the video the approved script in ``## By `scriptwriter`
 ## Methods
 
 - **Layout**: compose existing material — product screenshots, frames from the film, interface elements — and render it locally. Choose the material, composition and tools yourself.
-- **Generated**: create the image with `akb cloud image --aspect <ratio> --tier premium [--ref <file>]… --out <file> "<prompt>"`, which spends the user's Pro credits per image; pass a lower tier only when the user asks for cheaper, and name the tier in your section. Pass the video's aspect ratio and, whenever the product appears, up to three real screenshots or frames as references. Regenerate only for a defect review finds, at most three times per run.
+- **Generated**: create the image with `akb image --aspect <ratio> --tier premium [--ref <file>]… --out <file> "<prompt>"`, which spends the user's Pro credits per image; pass a lower tier only when the user asks for cheaper, and name the tier in your section. Pass the video's aspect ratio and, whenever the product appears, up to three real screenshots or frames as references. Regenerate only for a defect review finds, at most three times per run.
 - **No credits**: when Cloud refuses for the plan or for used-up credits, use layout and say so in your section.
 - **Failure**: when the command fails otherwise, put its message in one question offering to retry or switch to layout, and stop; once answered, record the chosen method in the Brief.
 - **No silent switch**: apart from no credits, when the named method cannot deliver, ask the user; never use the other method unasked.

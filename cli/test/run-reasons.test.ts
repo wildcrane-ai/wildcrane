@@ -50,12 +50,12 @@ describe('a run the board ended', () => {
     assert.equal(run.unspawned, true)
   })
 
-  // A refused sign-in leaves the new card without its sections; the sign-in is what to fix.
-  it('leads with the agent\u2019s own failure, before the card it left half-written', async () => {
+  // A refused sign-in lost the card too; the sign-in is what to fix.
+  it('leads with the agent\u2019s own failure, before the card it lost', async () => {
     fs.writeFileSync(path.join(root, 'docs/kanban/todo/1-page.md'), '---\ntitle: page\nstatus: todo\n---\n\nAdd a page.\n')
     const agent = path.join(root, 'agent.cjs')
     fs.writeFileSync(agent, [
-      `require('node:fs').appendFileSync(${JSON.stringify(path.join(root, 'docs/kanban/todo/1-page.md'))}, 'More.\\n')`,
+      `require('node:fs').unlinkSync(${JSON.stringify(path.join(root, 'docs/kanban/todo/1-page.md'))})`,
       `console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Failed to authenticate. API Error: 403' }))`,
     ].join('\n'))
     const opened = openRun({ action: 'clarify', id: 1 }, 'Plan #1.', [])
@@ -68,7 +68,7 @@ describe('a run the board ended', () => {
     await watchRun(opened.run.sessionId, async () => ({ error: 'no resume' }))
     const run = peekRun(opened.run.sessionId)!
     assert.equal(run.status, 'error')
-    assert.match(run.error ?? '', /^Failed to authenticate\. API Error: 403\nSign in[^\n]*\n+Task format problems/)
+    assert.match(run.error ?? '', /^Failed to authenticate\. API Error: 403\nSign in[^\n]*\n+Task format problems:\n- Task #1 disappeared/)
   })
 
   it('keeps the kinds through a read of the record', () => {

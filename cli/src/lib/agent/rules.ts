@@ -121,7 +121,7 @@ function ownerOf(req: AgentRequest): RuleOwner | null {
     const name = canonicalSpecAgent(req.specAgent ?? '')
     return name ? { name } : null
   }
-  // A reflection is the proposer's (#534) and is no flow a person types under `akb card`,
+  // A reflection is the proposer's (#534) and is no flow a person types under `akb raw card`,
   // so it names itself here.
   const flow = req.action === 'reflect' ? req.action : flowForRequest(req)?.command
   const role = roleForFlow(flow ?? '', workflowForRun(req))

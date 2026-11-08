@@ -207,7 +207,7 @@ const agentsOf = (names: string[]): SpecAgent[] => {
   return names.map((name) => all.find((a) => a.name === name)).filter((a): a is SpecAgent => !!a)
 }
 
-/** Whether one workflow runs this agent as a preview — the one gate `akb previews`
+/** Whether one workflow runs this agent as a preview — the one gate `akb raw previews`
  *  and every ask written mid-run are checked against (#749). */
 export const specAgentAssigned = (name: string, workflow?: string): boolean => {
   const flow = workflowFor(workflow)
@@ -224,10 +224,10 @@ export function specAgentSelector(id: number | string, workflow: string | undefi
     return [
       '<preview-agents>',
       "This card has not chosen its previews yet. Choose them first: the agents from",
-      `\`akb previews --triggers --workflow ${flow.id}\` whose conditions the card meets. Save them with`,
+      `\`akb raw previews --triggers --workflow ${flow.id}\` whose conditions the card meets. Save them with`,
       `\`akb raw update ${id} --previews <agents>\` (\`""\` when none applies); its stages follow from them.`,
       'Then run only the chosen agents whose `After` is empty — the first stage; the rest run after its approval.',
-      `Command: \`akb previews <agent> ${id} <short note>\` — add \`--print\` to run it in this session, as \`akb guide refine\` says.`,
+      `Command: \`akb raw previews <agent> ${id} <short note>\` — add \`--print\` to run it in this session, as \`akb guide refine\` says.`,
       '</preview-agents>',
     ].join('\n')
   }
@@ -240,7 +240,7 @@ export function specAgentSelector(id: number | string, workflow: string | undefi
     '<preview-agents>',
     "The preview agents of this card's current stage, each writing one part of the card.",
     ...agents.map((a) => `- \`${a.name}\` — ${a.description}${a.session ? ' · runs in a session of its own: leave out `--print`' : ''}`),
-    `Command: \`akb previews <agent> ${id} <short note>\` — add \`--print\` to run it in this session, as \`akb guide refine\` says.`,
+    `Command: \`akb raw previews <agent> ${id} <short note>\` — add \`--print\` to run it in this session, as \`akb guide refine\` says.`,
     '</preview-agents>',
   ].join('\n')
 }
@@ -259,14 +259,14 @@ export const SPEC_ASSIGN_HOME =
 /** Where a project puts an agent of its own. */
 export const SPEC_AGENT_HOME = 'docs/kanban/agents/<name>/AGENT.md'
 
-/** The list of agents, one entry each — what `akb previews` with no agent named prints. Every one
+/** The list of agents, one entry each — what `akb raw previews` with no agent named prints. Every one
  *  on the board: this is typed with no card in hand, and which of them a card may ask for is
  *  its own workflow's answer (`specAgentSelector`). */
 export function specAgentList(program: string, forPerson = false): string {
   const problems = specAgentProblems()
   const agents = specAgents()
   return [
-    `${program} previews <agent> <id> [note] — put a preview agent on a card.`,
+    `${program} raw previews <agent> <id> [note] — put a preview agent on a card.`,
     '',
     "A preview agent writes one part of a card from the card, your note and its instructions.",
     '',

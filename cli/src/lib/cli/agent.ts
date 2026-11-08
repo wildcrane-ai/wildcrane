@@ -1,23 +1,11 @@
 import { queryPreviews, externalGoalSession, cloudGoal, cloudGoalWorkflows } from '../../commands/goal-cloud'
-// The runs, and everything you do to one — declared onto `akb` (./akb.ts).
+// Two halves (#551):
 //
-// `akb raw <move>` is the board's own bookkeeping (./board.ts). This is the other half:
-// starting a run, steering it, talking to the agent, and setting up what the runs run on.
+//   declareRuns  onto `akb` (./akb.ts): Cloud tasks and goals, the account, generation, guides
+//   declareRaw   onto `akb raw` (./board.ts): the local board and in-run commands —
+//                card, delivery, run, triage, memory, previews, agent, workflow rename|diagram
 //
-// Grouped by the thing each command acts on, because the words alone were ambiguous: `run`
-// meant several things at once — a move on a card, the list of runs, and the agent
-// process. So each noun holds its own verbs:
-//
-//   card <verb> <id>    the card on the board
-//   delivery <verb>     the build in flight on one
-//   run <verb>          the agent processes
-//   triage <verb>       what is waiting to be sorted
-//
-// A command that acts on nothing yet is typed bare — `create`.
-//
-// The flow commands are not written out here. They come from the board's own list of flows
-// (../agent/flows.ts), which the dispatcher reads too — so a flow shipped later is a command
-// and a help entry at once, with nothing to remember to add.
+// The flow commands come from ../agent/flows.ts, so a new flow is a command and a help entry at once.
 
 import { Option } from 'commander'
 
@@ -129,30 +117,28 @@ async function boardless(
 // the command. The two on the end are read off `this`, so only the arguments are wanted.
 const positional = (vals: unknown[]): unknown[] => vals.slice(0, -2)
 
-/** Declare the runs, and everything you do to one, on `akb` (./akb.ts). */
-export function declareRuns(program: Command, cli: AgentCliOptions): void {
-  // ---- the nouns, and the flows under them ----------------------------------
-  //
-  // Declared before the flows so the nouns head the help in this order, and so a flow only
-  // has to say which noun it belongs to.
+/** A noun on its own is a question: answer it with its own verbs. */
+function nounOf(program: Command, name: string, summary: string, description?: string): Command {
+  const cmd = withShared(program.command(name)).summary(summary)
+  if (description) cmd.description(description)
+  return cmd.allowExcessArguments().allowUnknownOption().action(function (this: Command) {
+    if (this.args.length) this.error(`unknown command '${this.args[0]}'`, { code: 'commander.unknownCommand' })
+    this.help()
+  })
+}
 
-  const noun = (name: string, summary: string, description?: string): Command => {
-    const cmd = withShared(program.command(name)).summary(summary)
-    if (description) cmd.description(description)
-    // A noun on its own is a question, not a command: answer it with its own verbs rather
-    // than with "missing subcommand".
-    return cmd.allowExcessArguments().allowUnknownOption().action(function (this: Command) {
-      if (this.args.length) this.error(`unknown command '${this.args[0]}'`, { code: 'commander.unknownCommand' })
-      this.help()
-    })
-  }
+/** Declare the local board and in-run commands on `akb raw` (./board.ts). `cli.program` is the
+ *  `akb` the line was typed with, without `raw`. */
+export function declareRaw(program: Command, cli: AgentCliOptions): void {
+  const raw = `${cli.program} raw`
+  const noun = (name: string, summary: string, description?: string): Command => nounOf(program, name, summary, description)
 
   const groups: Record<FlowGroup | 'run', Command> = {
     card: noun(
       'card',
       'one card: build it, sharpen it, change it, finish it',
       'Every verb here takes the card’s id. A card with a delivery in flight refuses all of them but ' +
-        `\`implement\` — \`${cli.program} delivery cancel\` is what hands it back.`,
+        `\`implement\` — \`${raw} delivery cancel\` is what hands it back.`,
     ),
     delivery: noun(
       'delivery',
@@ -164,8 +150,9 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       'run',
       'the agent processes — what is going, and what went',
       'A run is one agent working once. A delivery is made of several, so ending a run leaves the ' +
-        `delivery in flight — \`${cli.program} delivery cancel\` is what ends that.`,
+        `delivery in flight — \`${raw} delivery cancel\` is what ends that.`,
     ),
+    memory: noun('memory', 'squeeze or review the memory the planning flows read'),
     // What is waiting to be sorted (#453, #499).
     triage: noun(
       'triage',
@@ -202,7 +189,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .option('--triggers', 'list agent names and trigger conditions without starting a run')
     .option('--workflow <id>', 'only enabled preview agents of this workflow')
     .option('--workspace <id>', 'the workspace whose workflows to query')
-    .addHelpText('after', `\nList trigger conditions: ${cli.program} previews --triggers --json`)
+    .addHelpText('after', `\nList trigger conditions: ${raw} previews --triggers --json`)
     .action(async function (this: Command, ...vals: unknown[]) {
       const [agent, id, note] = positional(vals) as [string | undefined, number | undefined, string[]]
       const opts = this.opts()
@@ -255,6 +242,36 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       await onBoard(this, cli, () => cmdTriageCheck(sourceId))
     })
 
+  withShared(program.command('components'))
+    .summary('list an agent or workflow’s preview components and their usage')
+    .option('--agent <name>', 'one agent’s components')
+    .option('--workflow <id>', 'all components used by a workflow')
+    .option('--docs', 'include component usage documentation')
+    .action(async function (this: Command) {
+      const ctx = ctxOf(this, cli.program)
+      useBoard(resolveBoard('components', { board: ctx.board, dir: ctx.dir, cwd: cli.cwd, installHint: cli.installHint }), ctx.dir !== null)
+      await boardless(this, cli, () => cmdComponents(this.opts()))
+    })
+
+  const workflow = noun('workflow', "rename a workflow draft, or draw a workflow's diagram, inside a run")
+  withShared(workflow.command('rename'))
+    .argument('<id>', 'the draft, from `workflow list`')
+    .argument('<name...>', 'what to call it now')
+    .summary('rename the Workflow builder draft. Only inside that task\'s run.')
+    .action(async function (this: Command, id: string, name: string[]) {
+      await onBoard(this, cli, () => cmdWorkflowRename(id, name.join(' ')))
+    })
+  withShared(workflow.command('diagram'))
+    .argument('<id>', 'the workflow, from `workflow list`')
+    .argument('<card>', 'the card whose asset folder gets workflow.json')
+    .summary('write the workflow\'s diagram to .assets/<card>/workflow.json and print the <Workflow> tag that shows it')
+    .action(async function (this: Command, id: string, card: string) {
+      await onBoard(this, cli, () => cmdWorkflowDiagram(id, card))
+    })
+}
+
+/** Declare the Cloud commands and the guides on `akb` (./akb.ts). */
+export function declareRuns(program: Command, cli: AgentCliOptions): void {
   // ---- WildCrane tasks and goals, in Cloud (#550) -----------------------------
 
   const ON_WEB = 'Reads and writes WildCrane Cloud as the signed-in account; changes show on the web at once.'
@@ -360,7 +377,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
 
   // ---- Cloud ----------------------------------------------------------------
 
-  const cloud = withShared(program.command('cloud'))
+  const account = withShared(program.command('account'))
     .summary('the account this MACHINE acts as')
     .description(
       'A sign-in is started in the WildCrane app, under Configuration → Cloud, and nowhere else: ' +
@@ -374,14 +391,14 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       await boardless(this, cli, (p) => cmdCloud([], p))
     })
 
-  withShared(cloud.command('sign-out'))
+  withShared(account.command('sign-out'))
     .summary('forget it: this machine stops reaching Cloud, and nothing on any board changes')
     .action(async function (this: Command) {
       await boardless(this, cli, (p) => cmdCloud(['sign-out'], p))
     })
 
   // Options are read in the handler, not required by Commander, so a missing one exits 2.
-  withShared(cloud.command('image'))
+  withShared(program.command('image'))
     .argument('[prompt...]', 'what to draw')
     .summary('generate an image through Cloud, spending Pro credits')
     .option('--aspect <ratio>', 'the aspect ratio, e.g. 16:9')
@@ -395,7 +412,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       )
     })
 
-  withShared(cloud.command('tts'))
+  withShared(program.command('tts'))
     .argument('[text...]', 'what to say')
     .summary('generate narration in a hosted voice, spending Pro credits')
     .option('--voice <name>', 'a hosted voice')
@@ -406,7 +423,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       await boardless(this, cli, (p) => cloudTts({ voice: o.voice, tier: o.tier, out: o.out, text: text.join(' ') }, p))
     })
 
-  withShared(cloud.command('music'))
+  withShared(program.command('music'))
     .argument('[prompt...]', 'the music to make')
     .summary('generate an instrumental track through Cloud, spending Pro credits')
     .option('--seconds <n>', 'how long the track runs')
@@ -419,7 +436,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     })
 
   // The shared template catalog (#1708). Options are read in the handlers, so a missing one exits 2.
-  const template = withShared(cloud.command('template'))
+  const template = withShared(program.command('template'))
     .summary('the shared UI and video template catalog')
     .action(function (this: Command) {
       this.help()
@@ -532,7 +549,11 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .allowExcessArguments()
     .allowUnknownOption()
     .action(async function (this: Command) {
-      if (this.args.length) this.error(`unknown command '${this.args[0]}'`, { code: 'commander.unknownCommand' })
+      const word = this.args[0]
+      if (word === 'rename' || word === 'diagram') {
+        this.error(`\`${cli.program} workflow ${word}\` is now \`${cli.program} raw workflow ${word}\`.`, { code: 'commander.unknownCommand' })
+      }
+      if (word) this.error(`unknown command '${word}'`, { code: 'commander.unknownCommand' })
       await workflowList(this, cli)
     })
 
@@ -542,22 +563,6 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .summary('every workflow this workspace can run, with its previews and what each waits on, land and scheduled agents. Offline, the ones downloaded before, marked (offline).')
     .action(async function (this: Command) {
       await workflowList(this, cli)
-    })
-
-  flowWord('rename')
-    .argument('<id>', 'the draft, from `workflow list`')
-    .argument('<name...>', 'what to call it now')
-    .summary('rename the Workflow builder draft. Only inside that task\'s run.')
-    .action(async function (this: Command, id: string, name: string[]) {
-      await onBoard(this, cli, () => cmdWorkflowRename(id, name.join(' ')))
-    })
-
-  flowWord('diagram')
-    .argument('<id>', 'the workflow, from `workflow list`')
-    .argument('<card>', 'the card whose asset folder gets workflow.json')
-    .summary('write the workflow\'s diagram to .assets/<card>/workflow.json and print the <Workflow> tag that shows it')
-    .action(async function (this: Command, id: string, card: string) {
-      await onBoard(this, cli, () => cmdWorkflowDiagram(id, card))
     })
 
   flowWord('pull')
@@ -574,19 +579,6 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .summary('save the edited folder as the workflow\'s next version, which new tasks take')
     .action(async function (this: Command, folder: string) {
       await boardless(this, cli, () => cmdWorkflowPush(folder, this.opts()))
-    })
-
-  // ---- the flows, as text ---------------------------------------------------
-
-  withShared(program.command('components'))
-    .summary('list an agent or workflow’s preview components and their usage')
-    .option('--agent <name>', 'one agent’s components')
-    .option('--workflow <id>', 'all components used by a workflow')
-    .option('--docs', 'include component usage documentation')
-    .action(async function (this: Command) {
-      const ctx = ctxOf(this, cli.program)
-      useBoard(resolveBoard('components', { board: ctx.board, dir: ctx.dir, cwd: cli.cwd, installHint: cli.installHint }), ctx.dir !== null)
-      await boardless(this, cli, () => cmdComponents(this.opts()))
     })
 
   withShared(program.command('guide'))
@@ -608,7 +600,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       await boardless(this, cli, (p) => cmdGuide(topic, p))
     })
 
-  // The watcher's own door. Not a command anyone types — `akb card implement 12` spawns it — and
+  // The watcher's own door. Not a command anyone types — `akb raw card implement 12` spawns it — and
   // spelled so it can never be mistaken for one.
   program
     .command('__watch', { hidden: true })
@@ -627,7 +619,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
 const RUN_ID = "a run's id, any prefix of one that names only one run, or `last`. Left out, it means the newest run"
 const DELIVERY = 'the delivery, or the card it is on'
 
-// ---- akb card run <verb> -------------------------------------------------------------------
+// ---- akb raw card run <verb> -------------------------------------------------------------------
 
 /** The agent processes: what is going, what went, and steering one. */
 function declareRunning(run: Command, cli: AgentCliOptions): void {
@@ -668,7 +660,7 @@ function declareRunning(run: Command, cli: AgentCliOptions): void {
   verb('log')
     .argument('[id]', RUN_ID, String)
     .summary("one run's log")
-    .description('Shows the failure reason, any triage source and recorded cost. A creation run with no card fails even if the agent exits with code 0. Non-following queries exit with code 0; following a failed run exits with code 1. Example: akb run log abc12345 --follow')
+    .description('Shows the failure reason, any triage source and recorded cost. A creation run with no card fails even if the agent exits with code 0. Non-following queries exit with code 0; following a failed run exits with code 1. Example: akb raw run log abc12345 --follow')
     .option('-f, --follow', 'keep printing it until the run ends')
     .option('--events', 'with --follow: print its structured events, one JSON object per line')
     .option('--full', 'all of it, rather than the tail')
@@ -694,7 +686,7 @@ function declareRunning(run: Command, cli: AgentCliOptions): void {
         'the conversation it was having, with everything it had already read — while the board counts the ' +
         'work as a fresh run. Before resuming a creation with no card, check sign-in, project access and connection. ' +
         'A refusal starts no run and leaves triage unchanged. Keep the triage source and request identity; reuse any task already created in Cloud. ' +
-        'Repairing an existing card creates no other task. Example: akb run resume abc12345',
+        'Repairing an existing card creates no other task. Example: akb raw run resume abc12345',
     )
     .option('-f, --follow', 'watch its log instead of returning')
     .option('--events', 'with --follow: print its structured events, one JSON object per line')
@@ -705,7 +697,7 @@ function declareRunning(run: Command, cli: AgentCliOptions): void {
     })
 }
 
-// ---- akb delivery <verb> --------------------------------------------------------------
+// ---- akb raw delivery <verb> --------------------------------------------------------------
 
 /** What you do to a build in flight, or to one that stopped. `conflict` is a flow and is
  *  declared with the rest of them; these start nothing. */

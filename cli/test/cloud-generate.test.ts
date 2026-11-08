@@ -1,4 +1,4 @@
-// `akb cloud image` and `akb cloud tts` (#1119): the messages and exit codes the scripts they
+// `akb image` and `akb tts` (#1119): the messages and exit codes the scripts they
 // replaced answered with — 1 for a refusal an agent relays to the user, 2 for a usage error.
 
 import assert from 'node:assert/strict'
@@ -71,33 +71,33 @@ async function akb(argv: string[]): Promise<{ code: number; out: string; err: st
   }
 }
 
-describe('akb cloud image / tts / music', () => {
+describe('akb image / tts / music', () => {
   it('exits 2 with the usage line when an option or the prompt is missing', async () => {
     for (const [argv, problem] of [
-      [['cloud', 'image', '--out', 'a.png', 'a cat'], 'Missing --aspect.'],
-      [['cloud', 'image', '--aspect', '16:9', 'a cat'], 'Missing --out.'],
-      [['cloud', 'image', '--aspect', '16:9', '--out', 'a.png'], 'Missing the prompt.'],
-      [['cloud', 'tts', '--out', 'a.wav', 'hi'], 'Missing --voice.'],
-      [['cloud', 'tts', '--voice', 'Ava', '--out', 'a.wav'], 'Missing the text to speak.'],
-      [['cloud', 'music', '--out', 'a.wav', 'calm piano'], 'Missing --seconds.'],
-      [['cloud', 'music', '--seconds', 'soon', '--out', 'a.wav', 'calm piano'], '--seconds soon: give a number of seconds.'],
-      [['cloud', 'music', '--seconds', '30', '--out', 'a.wav'], 'Missing the prompt.'],
+      [['image', '--out', 'a.png', 'a cat'], 'Missing --aspect.'],
+      [['image', '--aspect', '16:9', 'a cat'], 'Missing --out.'],
+      [['image', '--aspect', '16:9', '--out', 'a.png'], 'Missing the prompt.'],
+      [['tts', '--out', 'a.wav', 'hi'], 'Missing --voice.'],
+      [['tts', '--voice', 'Ava', '--out', 'a.wav'], 'Missing the text to speak.'],
+      [['music', '--out', 'a.wav', 'calm piano'], 'Missing --seconds.'],
+      [['music', '--seconds', 'soon', '--out', 'a.wav', 'calm piano'], '--seconds soon: give a number of seconds.'],
+      [['music', '--seconds', '30', '--out', 'a.wav'], 'Missing the prompt.'],
     ] as const) {
       const { code, err } = await akb([...argv])
       assert.equal(code, 2, argv.join(' '))
-      assert.match(err, new RegExp(`^${problem}\\nusage: akb cloud ${argv[1]} `))
+      assert.match(err, new RegExp(`^${problem}\\nusage: akb ${argv[0]} `))
     }
   })
 
   it('exits 2 for a reference that is not an image', async () => {
-    const { code, err } = await akb(['cloud', 'image', '--aspect', '1:1', '--ref', 'x.gif', '--out', 'a.png', 'cat'])
+    const { code, err } = await akb(['image', '--aspect', '1:1', '--ref', 'x.gif', '--out', 'a.png', 'cat'])
     assert.equal(code, 2)
     assert.match(err, /--ref x\.gif: use a PNG, JPEG or WebP file\./)
   })
 
   it('exits 1 when signed out, in both languages, offering the fallback', async () => {
     answer(() => assert.fail('nothing is sent while signed out'))
-    const { code, err } = await akb(['cloud', 'tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'])
+    const { code, err } = await akb(['tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'])
     assert.equal(code, 1)
     assert.match(err, /^未登录 WildCrane Cloud/)
     assert.match(err, /Not signed in to WildCrane Cloud/)
@@ -107,14 +107,14 @@ describe('akb cloud image / tts / music', () => {
   it('exits 1 without Pro, naming what Pro unlocks', async () => {
     signIn()
     answer(refusal(403, 'pro_required'))
-    const image = await akb(['cloud', 'image', '--aspect', '16:9', '--out', 'a.png', 'a cat'])
+    const image = await akb(['image', '--aspect', '16:9', '--out', 'a.png', 'a cat'])
     assert.equal(image.code, 1)
     assert.match(image.err, /图像生成是 Pro 功能/)
     assert.match(image.err, /use an existing image or screenshot/)
-    const tts = await akb(['cloud', 'tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'])
+    const tts = await akb(['tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'])
     assert.equal(tts.code, 1)
     assert.match(tts.err, /Hosted voices are a Pro feature/)
-    const music = await akb(['cloud', 'music', '--seconds', '30', '--out', 'a.wav', 'calm piano'])
+    const music = await akb(['music', '--seconds', '30', '--out', 'a.wav', 'calm piano'])
     assert.equal(music.code, 1)
     assert.match(music.err, /托管配乐是 Pro 功能/)
     assert.match(music.err, /leave the music slot empty/)
@@ -123,17 +123,17 @@ describe('akb cloud image / tts / music', () => {
   it('exits 1 when the credits are used up, and 2 when Cloud refuses the request', async () => {
     signIn()
     answer(refusal(429, 'credits_used_up', { 'retry-after': '3600' }))
-    const spent = await akb(['cloud', 'tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'])
+    const spent = await akb(['tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'])
     assert.equal(spent.code, 1)
     assert.match(spent.err, /本月积分已用完/)
     answer(refusal(429, 'credits_used_up'))
-    const trial = await akb(['cloud', 'tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'])
+    const trial = await akb(['tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'])
     assert.equal(trial.code, 1)
     assert.match(trial.err, /试用期的 AI 积分已用完/)
     answer(refusal(400, 'Unknown voice.'))
-    const bad = await akb(['cloud', 'tts', '--voice', 'Nobody', '--out', 'a.wav', 'hi'])
+    const bad = await akb(['tts', '--voice', 'Nobody', '--out', 'a.wav', 'hi'])
     assert.equal(bad.code, 2)
-    assert.match(bad.err, /^Unknown voice\.\nusage: akb cloud tts /)
+    assert.match(bad.err, /^Unknown voice\.\nusage: akb tts /)
   })
 
   it('writes the file and names it with the model and tier', async () => {
@@ -142,7 +142,7 @@ describe('akb cloud image / tts / music', () => {
     fs.writeFileSync(ref, 'png')
     answer(() => new Response('image-bytes', { headers: { 'x-model': 'model-x', 'x-tier': 'premium' } }))
     const out = path.join(home, 'covers', 'a.png')
-    const { code, out: said } = await akb(['cloud', 'image', '--aspect', '16:9', '--tier', 'premium', '--ref', ref, '--out', out, 'a', 'cat'])
+    const { code, out: said } = await akb(['image', '--aspect', '16:9', '--tier', 'premium', '--ref', ref, '--out', out, 'a', 'cat'])
     assert.equal(code, 0)
     assert.equal(fs.readFileSync(out, 'utf8'), 'image-bytes')
     assert.equal(said, `${out} (model-x, premium)`)
@@ -158,14 +158,14 @@ describe('akb cloud image / tts / music', () => {
     signIn()
     answer(() => new Response('image-bytes', { headers: { 'x-model': 'model-x' } }))
     const out = path.join(home, 'b.png')
-    const { code, out: said } = await akb(['cloud', 'image', '--aspect', '1:1', '--out', out, 'a cat'])
+    const { code, out: said } = await akb(['image', '--aspect', '1:1', '--out', out, 'a cat'])
     assert.equal(code, 0)
     assert.equal(said, `${out} (model-x, standard)`)
     assert.equal((sent[0].body as { tier: string }).tier, 'standard')
 
-    const bad = await akb(['cloud', 'image', '--aspect', '1:1', '--tier', 'ultra', '--out', out, 'a cat'])
+    const bad = await akb(['image', '--aspect', '1:1', '--tier', 'ultra', '--out', out, 'a cat'])
     assert.equal(bad.code, 2)
-    assert.match(bad.err, /^--tier ultra: pick one of economy, standard, premium\.\nusage: akb cloud image /)
+    assert.match(bad.err, /^--tier ultra: pick one of economy, standard, premium\.\nusage: akb image /)
     assert.equal(sent.length, 1)
   })
 
@@ -173,20 +173,20 @@ describe('akb cloud image / tts / music', () => {
     signIn()
     answer(() => new Response('wav-bytes', { headers: { 'content-type': 'audio/wav', 'x-voice': 'Kore', 'x-tier': 'premium' } }))
     const out = path.join(home, 'line.wav')
-    const { code, out: said } = await akb(['cloud', 'tts', '--voice', 'kore', '--tier', 'premium', '--out', out, 'hi'])
+    const { code, out: said } = await akb(['tts', '--voice', 'kore', '--tier', 'premium', '--out', out, 'hi'])
     assert.equal(code, 0)
     assert.equal(said, `${out} (Kore, premium)`)
     assert.deepEqual(sent, [{ url: `${API}/v1/speech`, body: { voice: 'kore', text: 'hi', tier: 'premium' } }])
 
-    const bad = await akb(['cloud', 'tts', '--voice', 'Kore', '--tier', 'economy', '--out', out, 'hi'])
+    const bad = await akb(['tts', '--voice', 'Kore', '--tier', 'economy', '--out', out, 'hi'])
     assert.equal(bad.code, 2)
-    assert.match(bad.err, /^--tier economy: pick one of standard, premium\.\nusage: akb cloud tts /)
+    assert.match(bad.err, /^--tier economy: pick one of standard, premium\.\nusage: akb tts /)
   })
 
   it('writes an mp3 answer beside the .wav asked for', async () => {
     signIn()
     answer(() => new Response('mp3-bytes', { headers: { 'content-type': 'audio/mpeg', 'x-voice': 'Yunzhou', 'x-tier': 'standard' } }))
-    const { code, out: said } = await akb(['cloud', 'tts', '--voice', 'Yunzhou', '--out', path.join(home, 'line.wav'), '你好'])
+    const { code, out: said } = await akb(['tts', '--voice', 'Yunzhou', '--out', path.join(home, 'line.wav'), '你好'])
     assert.equal(code, 0)
     assert.equal(said, `${path.join(home, 'line.mp3')} (Yunzhou, standard)`)
     assert.equal(fs.readFileSync(path.join(home, 'line.mp3'), 'utf8'), 'mp3-bytes')
@@ -197,7 +197,7 @@ describe('akb cloud image / tts / music', () => {
     signIn()
     answer(() => new Response('wav-bytes', { headers: { 'content-type': 'audio/wav' } }))
     const out = path.join(home, 'music', 'score.wav')
-    const { code, out: said } = await akb(['cloud', 'music', '--seconds', '42.5', '--out', out, 'calm', 'piano'])
+    const { code, out: said } = await akb(['music', '--seconds', '42.5', '--out', out, 'calm', 'piano'])
     assert.equal(code, 0)
     assert.equal(fs.readFileSync(out, 'utf8'), 'wav-bytes')
     assert.equal(said, `${out} (42.5s)`)

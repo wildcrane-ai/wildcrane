@@ -5,6 +5,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, beforeEach, it } from 'node:test'
 import { buildAkbProgram } from '../src/lib/cli/akb.ts'
+import { buildBoardProgram } from '../src/lib/cli/board.ts'
 import { completeDelivery } from '../src/lib/agent/complete.ts'
 import { activeDelivery, findDelivery, joinDelivery, settleOrphanedDeliveries } from '../src/lib/agent/deliveries.ts'
 import { RUN_ENV } from '../src/lib/agent/env.ts'
@@ -187,7 +188,7 @@ it('delivers through the CLI after agent-owned conflict repair, checks and a new
   const commit = atTree('rev-parse', 'HEAD')
   git('merge', '--ff-only', 'card/1/builder')
   git('merge-base', '--is-ancestor', commit, 'main')
-  await run(root, ['delivery', 'complete', '1', '--commit', commit, '--branch', 'main', '--json'])
+  await run(root, ['raw', 'delivery', 'complete', '1', '--commit', commit, '--branch', 'main', '--json'])
   assert.equal(findDelivery(deliveryId)?.status, 'finished')
   assert.equal(findDelivery(deliveryId)?.landing?.commit, commit)
   assert.equal(fs.readFileSync(path.join(root, 'parallel.txt'), 'utf8'), 'another target update')
@@ -228,13 +229,15 @@ it('recovers a non-Git delivery from its local log when its live index is lost',
 
 it('rejects retired Git commands and keeps leaf arguments strict', async () => {
   for (const args of [
-    ['delivery', 'conflict', '1'], ['delivery', 'blocked', '1', 'why'],
-    ['delivery', 'discard', '1', '--yes'], ['workflow', 'worktree', 'coding', 'on'],
+    ['delivery', 'conflict', '1'], ['raw', 'delivery', 'blocked', '1', 'why'],
+    ['raw', 'delivery', 'discard', '1', '--yes'], ['workflow', 'worktree', 'coding', 'on'],
   ]) {
-    const program = buildAkbProgram({ program: 'akb', cwd: root, installHint: '' })
-    await assert.rejects(() => program.parseAsync(args, { from: 'user' }), { code: 'commander.unknownCommand' })
+    const program = args[0] === 'raw'
+      ? buildBoardProgram({ program: 'akb raw', cwd: root, installHint: '', version: null })
+      : buildAkbProgram({ program: 'akb', cwd: root, installHint: '' })
+    await assert.rejects(() => program.parseAsync(args[0] === 'raw' ? args.slice(1) : args, { from: 'user' }), { code: 'commander.unknownCommand' })
   }
-  await assert.rejects(() => run(root, ['delivery', 'complete', '1', 'extra']), /too many arguments/)
+  await assert.rejects(() => run(root, ['raw', 'delivery', 'complete', '1', 'extra']), /too many arguments/)
   await assert.rejects(() => run(root, ['workflow', 'list', '--unexpected']), /unknown option/)
 })
 

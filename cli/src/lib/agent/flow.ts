@@ -214,7 +214,7 @@ const bodyScaffoldClose = (lead = 'fill the existing'): string[] =>
 
 function answeringField(delivery: DeliveryRecord, self: string): string[] {
   const approved = delivery.approved.trim()
-  const say = (flag: string) => `  ${self} delivery answered ${delivery.deliveryId} ${flag}`
+  const say = (flag: string) => `  ${self} raw delivery answered ${delivery.deliveryId} ${flag}`
   return [
     ...field('delivery', [
       `${delivery.deliveryId} is already building this card, from the copy below — frozen when it started.`,
@@ -240,7 +240,7 @@ function answeringField(delivery: DeliveryRecord, self: string): string[] {
 // conclusion, written down before the questions go, because dropping the last one is what
 // puts the board back in motion.
 const answeredClose = (delivery: DeliveryRecord, self: string): string =>
-  `${self} delivery answered ${delivery.deliveryId} --changed|--unchanged "<why>" — before you drop the questions; ` +
+  `${self} raw delivery answered ${delivery.deliveryId} --changed|--unchanged "<why>" — before you drop the questions; ` +
   `dropping the last one with nothing said carries the build on as --unchanged`
 
 // The card's post-implementation notes as they read right now — NOT part of the approved
@@ -421,12 +421,12 @@ function buildFlow(req: AgentRequest, program: string): Flow {
         'tick each box in ## Todo as you finish it — they are the record of what was built',
         `write the shipped line in the memory file above — \`akb guide archive\``,
         delivery
-          ? `${self} delivery complete ${delivery.deliveryId} — finish your step and follow its handoff; software steps in a git project supply --commit <full-sha> --branch <target>`
+          ? `${self} raw delivery complete ${delivery.deliveryId} — finish your step and follow its handoff; software steps in a git project supply --commit <full-sha> --branch <target>`
           : `${raw} archive ${req.id} — once every box is ticked and the card's goal is met`,
       )
       if (openOf(card.meta.questions).length) {
         next.push(
-          `${self} card resolve ${req.id} --print — first: the card has open questions, and building on a guess is what they are there to stop`,
+          `${self} raw card resolve ${req.id} --print — first: the card has open questions, and building on a guess is what they are there to stop`,
         )
       }
       break
@@ -570,7 +570,7 @@ function buildFlow(req: AgentRequest, program: string): Flow {
     case 'reflect': {
       for (const id of reflectedCards(req)) readCard(id, 'archive')
       close.push(
-        `${self} triage add --title ".." --slug <short-english-slug> --source "#<id>" --workflow <that card's workflow> --text ".." — one call per proposal, each naming the archived file of the card it traces to`,
+        `${self} raw triage add --title ".." --slug <short-english-slug> --source "#<id>" --workflow <that card's workflow> --text ".." — one call per proposal, each naming the archived file of the card it traces to`,
         'propose nothing at all when nothing follows: that is a complete result, and most batches are it',
         'change nothing else — no card is created, edited or archived, and no memory file is written',
       )

@@ -236,7 +236,7 @@ describe('the hold on the card', () => {
     const held = heldByDelivery(5)
     assert.match(held!, new RegExp(id))
     assert.match(held!, /Discard/)
-    // Not `akb delivery cancel`: with no `akb` on PATH the board spells its own command as
+    // Not `akb raw delivery cancel`: with no `akb` on PATH the board spells its own command as
     // `node <path>/ai4kanban.mjs`, so the command is what to look for, not the program.
     assert.match(held!, new RegExp(`cancel ${id}`))
   })
@@ -328,7 +328,7 @@ describe('a delivery with no card', () => {
     })
     assert.equal(
       resumePrompt(id, 'implement'),
-      `Continue delivery ${id}. The delivery has not recorded completion. Finish its unchecked todos, then run akb delivery complete ${id}, with --commit <sha> --branch <name> in a git project.`,
+      `Continue delivery ${id}. The delivery has not recorded completion. Finish its unchecked todos, then run akb raw delivery complete ${id}, with --commit <sha> --branch <name> in a git project.`,
     )
   })
 
@@ -805,7 +805,7 @@ describe('carrying an ended delivery on', () => {
   })
 
   // A conflict keeps its whole record: the rebase and the resolutions staged in the
-  // worktree are untouched, and `akb delivery conflict` is what carries them through.
+  // worktree are untouched, and `akb raw delivery conflict` is what carries them through.
   it('leaves a landing conflict exactly as it was', async () => {
     stopped('carry555', {
       landing: { status: 'conflict', attempts: 1, conflictFiles: ['shared.txt'], why: 'a conflict', at: 3_000 },

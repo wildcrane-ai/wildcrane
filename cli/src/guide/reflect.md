@@ -7,9 +7,9 @@ Find needs the work left behind or revealed, and verify them in the project. Pro
 
 ## Filter
 
-- **Duplicates**: check `akb raw list` and `akb triage check <source-id>`; propose shared work only once.
+- **Duplicates**: check `akb raw list` and `akb raw triage check <source-id>`; propose shared work only once.
 - **Exclude**: skip unsupported guesses, work covered by `<scheduled-agents>`, work rejected in `docs/kanban/memory/agents/planner/rejected.md` or its module folders, and calls the user reversed, in any `redesign.md` under `docs/kanban/memory/agents/` or under a card's `Overruled by the user`.
-- **Existing cards**: when shipped work invalidates an open card's plan, run `akb card revise <id> "<the change and why>"` instead of proposing an item.
+- **Existing cards**: when shipped work invalidates an open card's plan, run `akb raw card revise <id> "<the change and why>"` instead of proposing an item.
 
 ## Write
 
@@ -18,7 +18,7 @@ Write one triage item per proposal. Exploratory ideas are welcome; identify smal
 Use the source card's `workflow:`, or the id from `akb workflow list` that fits the work when it has none.
 
 ```text
-akb triage add --title "<one line>" --slug <short-english-slug> --source "#<id>" --workflow <workflow> --file <body.md>
+akb raw triage add --title "<one line>" --slug <short-english-slug> --source "#<id>" --workflow <workflow> --file <body.md>
 ```
 
 Briefly report what you proposed and what you skipped, with reasons.

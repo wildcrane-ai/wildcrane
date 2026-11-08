@@ -15,7 +15,7 @@ formats like these:
 
 ## Archive the card
 
-Use `akb delivery complete <id>` to finish your current workflow step. The last step archives
+Use `akb raw delivery complete <id>` to finish your current workflow step. The last step archives
 the card and prints its handoff. Earlier steps leave it for the remaining workflow agents.
 Outside an active delivery, use `akb raw archive <id>` or `akb raw reject <id>`.
 
@@ -24,6 +24,6 @@ Outside an active delivery, use `akb raw archive <id>` or `akb raw reject <id>`.
 finds those, and nothing else will. A run that does this is reported as having broken the
 board.
 
-After completing the approved step and required outputs, run `akb delivery complete <id>`
+After completing the approved step and required outputs, run `akb raw delivery complete <id>`
 and follow its handoff. Software steps in a git project supply `--commit <full-sha> --branch <target>`.
 If completion was interrupted, inspect the recorded result and retry the same completion.

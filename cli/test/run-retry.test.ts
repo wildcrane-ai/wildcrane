@@ -140,7 +140,7 @@ describe('Retry is offered', () => {
   })
 })
 
-describe('akb run list', () => {
+describe('akb raw run list', () => {
   it('names the same command for a retry as for a resume, in other words', async () => {
     run({ sessionId: 'quiet-0000' })
     run({ sessionId: 'started-00', harness: 'claude-code' })
@@ -151,8 +151,8 @@ describe('akb run list', () => {
       stopCollecting()
     }
     const said = sink.out.join('\n')
-    assert.match(said, /try it again with `akb run resume quiet-00/)
-    assert.match(said, /continue it with `akb run resume started-/)
+    assert.match(said, /try it again with `akb raw run resume quiet-00/)
+    assert.match(said, /continue it with `akb raw run resume started-/)
   })
 })
 

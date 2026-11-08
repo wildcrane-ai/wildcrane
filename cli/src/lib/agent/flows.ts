@@ -1,6 +1,6 @@
 // The flows this board can start — the one list, read by everything that needs it.
 //
-// A flow is a command a person types (`akb card implement 12`) and the program it starts.
+// A flow is a command a person types (`akb raw card implement 12`) and the program it starts.
 // The list used to be written down three times: the dispatcher's table of commands, the
 // runs table `akb help` prints, and — once flow rules shipped (#306) — the pane that
 // writes them. Three copies fall behind each other, and a flow shipped later would take a
@@ -17,14 +17,14 @@
 // in flight loses the rules it froze.
 //
 // `group` and `verb` are the line a person types. A flow with a group is typed under that
-// noun (`akb card refine`); one without is typed bare, because it acts on nothing that
+// noun (`akb raw card refine`); one without is typed bare, because it acts on nothing that
 // exists yet — `create`.
 
 import type { AgentAction, CommandAction } from './types'
 
 /** The nouns the commands are grouped under. A flow acts on one of these, or on nothing
  *  yet — see `Flow.group`. */
-export type FlowGroup = 'card' | 'delivery' | 'triage'
+export type FlowGroup = 'card' | 'delivery' | 'triage' | 'memory'
 
 /** One option a flow takes, as its command declares it. `flags` is Commander's own
  *  notation, so `--workflow <id>` takes a value and `--discard` does not. */
@@ -122,10 +122,11 @@ export const FLOWS: Flow[] = [
     gloss: 'change the card to say something else',
     options: CARRY_OPTIONS,
   },
-  // The memory pruner's one flow (#514). Typed bare: it acts on the memory
-  // set rather than on a card, so there is nothing to name.
+  // The memory pruner's one flow (#514).
   {
     command: 'prune-memory',
+    group: 'memory',
+    verb: 'prune',
     action: 'prune-memory',
     argument: '',
     gloss: 'squeeze the memory back down to what helps planning',
@@ -134,6 +135,8 @@ export const FLOWS: Flow[] = [
   // The chat reviewer's one flow (#748, #2065): a Runner's Cloud task chats, never a card.
   {
     command: 'review-memory',
+    group: 'memory',
+    verb: 'review',
     action: 'review-memory',
     argument: '',
     gloss: "read archived tasks' cards and chats, and write down what they settled",
@@ -175,8 +178,7 @@ export const FLOWS: Flow[] = [
 /** The word typed under the flow's noun. */
 export const flowVerb = (flow: Flow): string => flow.verb ?? flow.command
 
-/** The line a person types, without the command's own name — `card refine`, `delivery conflict`,
- *  `create`. What every message and every doc spells. */
+/** The line a person types after `akb raw` — `card refine`, `memory prune`, `reflect`. */
 export const flowPath = (flow: Flow): string => (flow.group ? `${flow.group} ${flowVerb(flow)}` : flowVerb(flow))
 
 export const flowByCommand = (command: string): Flow | undefined =>

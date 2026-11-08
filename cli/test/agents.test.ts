@@ -29,7 +29,6 @@ import { readRuns } from '../src/lib/agent/sessions.ts'
 import { parseSpecAgent } from '../src/lib/agents/parse.ts'
 import { parseYamlBlock } from '../src/lib/agents/yaml.ts'
 import { previewStages, workflowById } from '../src/lib/agent/workflows.ts'
-import { humanSectionFor } from '../src/lib/agent/runner.ts'
 import { findGuide } from '../src/lib/guide.ts'
 import { roleNamed } from '../src/lib/agent/roles.ts'
 import { writeConfig } from '../src/lib/agent/settings.ts'
@@ -362,7 +361,7 @@ describe('what a session is shown', () => {
     assert.ok(catalog.includes(findSpecAgent('ui-designer')!.description))
     assert.doesNotMatch(catalog, /When:|choose and run them/)
     assert.doesNotMatch(catalog, /planned by guess|Asking for none is the usual answer/)
-    assert.match(catalog, /akb previews <agent> 12 <short note>/)
+    assert.match(catalog, /akb raw previews <agent> 12 <short note>/)
     assert.doesNotMatch(catalog, /Rendered screen/)
     assert.doesNotMatch(catalog, /You draw the screen a card needs/)
   })
@@ -378,7 +377,7 @@ describe('what a session is shown', () => {
   // A card created without a choice once listed all nine previews at once (#422).
   it('has an unchosen card choose and save its previews, listing no agent', () => {
     const ask = specAgentSelector(12, 'coding', null)
-    assert.match(ask, /akb previews --triggers --workflow coding/)
+    assert.match(ask, /akb raw previews --triggers --workflow coding/)
     assert.match(ask, /akb raw update 12 --previews/)
     assert.doesNotMatch(ask, /^- `/m)
     assert.match(specAgentSelector(12, 'coding', { previews: [], phase: 1 }), /^$/)
@@ -406,7 +405,7 @@ describe('what a session is shown', () => {
     board()
     assert.equal(switchAgent('coding', 'ui-designer', false).ok, true)
     await assert.rejects(
-      () => run(root, ['previews', 'ui-designer', '12', 'a note']),
+      () => run(root, ['raw', 'previews', 'ui-designer', '12', 'a note']),
       /is off or no preview of the workflow of #12/,
     )
   })
@@ -679,9 +678,6 @@ describe("where a spec agent's section goes", () => {
     const prompt = buildPrompt({ action: 'spec', id: 12, specAgent: 'hyperframes-editor' })
     assert.doesNotMatch(prompt, /Your output is set to/)
     assert.match(findGuide('preview-agent')!.text, /edit your section in place above `<!-- agent -->`/)
-    assert.deepEqual(humanSectionFor({ action: 'spec', id: 12, specAgent: 'hyperframes-editor' }), {
-      agent: 'hyperframes-editor',
-    })
   })
 
   // #226: `workflow-writer` writes `WORKFLOW.md` and agents, not only its section.
@@ -714,18 +710,6 @@ describe("where a spec agent's section goes", () => {
 
     pick('skip')
     assert.match(reflect(), /Do not propose small fixes/)
-  })
-})
-
-// A preview's own section (#868, #1574): only a spec run writes one.
-describe("a preview's section", () => {
-  it('checks where a spec run puts its section, and asks planning for none', () => {
-    card(12)
-    assert.deepEqual(humanSectionFor({ action: 'spec', id: 12, specAgent: 'ui-designer' }), { agent: 'ui-designer' })
-    assert.equal(humanSectionFor({ action: 'clarify', id: 12, refineRound: 1 }), null)
-    assert.doesNotMatch(buildPrompt({ action: 'clarify', id: 12 }), /Your output is reviewed by me/)
-    // A retired review on an old record puts nothing anywhere (#1203).
-    assert.equal(humanSectionFor({ action: 'review', id: 12 }), null)
   })
 })
 
@@ -774,12 +758,12 @@ describe('preview command queries (#397)', () => {
     assert.equal(switchAgent('coding', 'ui-designer', false).ok, true)
     fs.writeFileSync(path.join(kanban(), 'config.md'), '# Board\n')
     const before = readRuns()
-    const listed = await query(['previews'])
+    const listed = await query(['raw', 'previews'])
     const files = () => Object.fromEntries((fs.readdirSync(kanban(), { recursive: true }) as string[])
       .filter((name) => fs.statSync(path.join(kanban(), name)).isFile())
       .map((name) => [name, fs.readFileSync(path.join(kanban(), name), 'utf8')]))
     const unchanged = files()
-    const triggers = await query(['previews', '--triggers', '--board', kanban()])
+    const triggers = await query(['raw', 'previews', '--triggers', '--board', kanban()])
     assert.equal(triggers.code, 0, triggers.output)
     assert.equal(triggers.data.ok, true)
     assert.deepEqual(triggers.data.agents, specAgentCatalog().agents.map((agent) => ({ name: agent.name, when: agent.when ?? null })))
@@ -788,7 +772,7 @@ describe('preview command queries (#397)', () => {
     assert.ok(triggers.data.problems.some((problem: string) => problem.includes('already on this board')))
     assert.deepEqual(triggers.data.agents.find((agent: { name: string }) => agent.name === 'plain'), { name: 'plain', when: null })
     assert.deepEqual(triggers.data.agents.find((agent: { name: string }) => agent.name === 'api-contract'), { name: 'api-contract', when: 'A card needs it.' })
-    const text = await query(['previews', '--triggers', '--dir', root], false)
+    const text = await query(['raw', 'previews', '--triggers', '--dir', root], false)
     assert.equal(text.code, 0)
     assert.equal(text.output.trimEnd(), triggers.data.output)
     assert.match(text.output, /plain\n  Not configured/)
@@ -802,7 +786,7 @@ describe('preview command queries (#397)', () => {
       ['ui-designer'], ['ui-designer', '12'], ['ui-designer', '12', 'note'],
       ['--print'], ['--follow'], ['-f'], ['--notes', 'note'], ['--notes', ''],
     ]) {
-      const result = await query(['previews', '--triggers', ...args])
+      const result = await query(['raw', 'previews', '--triggers', ...args])
       assert.equal(result.code, 1, args.join(' '))
       assert.equal(result.data.error.kind, 'invalid-usage')
     }
@@ -810,19 +794,19 @@ describe('preview command queries (#397)', () => {
   })
 
   it('documents trigger queries, removes the old command and prints a preview through the new entry', async () => {
-    const help = await query(['previews', '--help'], false)
+    const help = await query(['raw', 'previews', '--help'], false)
     assert.match(help.output, /--triggers/)
-    assert.match(help.output, /akb previews --triggers --json/)
+    assert.match(help.output, /akb raw previews --triggers --json/)
     const old = await query(['spec'])
     assert.equal(old.code, 1)
     assert.equal(old.data.error.kind, 'unknownCommand')
     card(12)
-    const printed = await query(['previews', 'ui-designer', '12', '--print'])
+    const printed = await query(['raw', 'previews', 'ui-designer', '12', '--print'])
     assert.equal(printed.code, 0)
     assert.match(printed.data.output, /You are the `ui-designer` preview agent on task 12/)
     assert.deepEqual(readRuns(), [])
     for (const guide of ['refine', 'revise', 'write-agent']) {
-      assert.match(findGuide(guide)!.text, /akb previews/)
+      assert.match(findGuide(guide)!.text, /akb raw previews/)
       assert.doesNotMatch(findGuide(guide)!.text, /akb spec\b/)
     }
   })
@@ -831,7 +815,7 @@ describe('preview command queries (#397)', () => {
     try {
       fs.rmSync(path.join(editableOfficial(), 'workflows'), { recursive: true })
       fs.mkdirSync(path.join(editableOfficial(), 'workflows'))
-      const result = await query(['previews', '--triggers'])
+      const result = await query(['raw', 'previews', '--triggers'])
       assert.equal(result.code, 0)
       assert.deepEqual(result.data.agents, [])
       assert.match(result.data.output, /no preview agent/)

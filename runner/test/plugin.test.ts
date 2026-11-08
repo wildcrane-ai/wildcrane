@@ -194,6 +194,16 @@ describe('the plugin akb in a session started by hand (#187)', () => {
     await stop(codex.child)
   })
 
+  it('tells dsh, which reads no instructions, the shim through wildcrane_status (#561)', async () => {
+    const dsh = component('dsh')
+    await dsh.ready
+    dsh.send(2, 'tools/call', { name: 'wildcrane_status', arguments: { path: os.homedir() } })
+    await until(() => dsh.answers.has(2))
+    const status = JSON.parse((dsh.answers.get(2)!.result as { content: { text: string }[] }).content[0]!.text)
+    assert.equal(status.akb, path.join(runnerHome(), 'bin', 'akb', 'akb'))
+    await stop(dsh.child)
+  })
+
   it('leaves a job session alone', async () => {
     const shim = path.join(runnerHome(), 'bin', 'akb', 'akb')
     fs.rmSync(path.dirname(shim), { recursive: true, force: true })

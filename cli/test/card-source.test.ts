@@ -88,14 +88,6 @@ describe('--source', () => {
     assert.equal(fs.readdirSync(todo()).filter((f) => /^\d+-/.test(f)).length, 0)
   })
 
-  it('refuses a body carrying ## Source, but not one quoted in a fence', () => {
-    const body = path.join(root, 'body.md')
-    fs.writeFileSync(body, 'Words.\n\n## Source\n- plans/12-a.md\n\n## Todo\n- [ ] Build it.\n')
-    assert.throws(() => create({ bodyFile: body }), /pass --source/)
-    fs.writeFileSync(body, '```\n## Source\n```\n')
-    assert.doesNotThrow(() => create({ bodyFile: body }))
-  })
-
   it('replaces on update, appends with --add-source, and clears on ""', () => {
     const id = create({ source: ['plan:12'] }).id as number
     quiet(() => cmdUpdate(id, { addSource: ['https://example.test/b', 'plan:12'] }))

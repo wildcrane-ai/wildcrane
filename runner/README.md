@@ -57,6 +57,13 @@ Codex 使用 `wildcrane_draft_read({ path?, discussionId? })`，Claude 使用 `w
 
 `wildcrane_draft_save({ discussionId, expectedVersion, goals })` 保存全部开放目标，最多 10 个，遗漏的开放目标会丢弃，保存不会开始任务。旧 ideas 入参继续可用，缺少或同传两者均返回 bad_request。冲突返回最新 version、goals 和 ideas，供合并后重试。两个宿主的保存结果都含目标网页链接。目标从网页管理和开始。`wildcrane_status().recent[]` 提供 goals 计数及兼容 ideas 计数。
 
+`wildcrane_status({ path? })` 另返回 `akb`：本插件 `akb` 的绝对路径，登录与否都有；本机未能写好时省略。不支持 MCP 说明的宿主（如 dsh）用它运行 `akb task`，无需打开讨论。
+
+```text
+wildcrane_status({ path: "/Users/me/app" })
+→ { "signedIn": false, "akb": "/Users/me/.wildcrane/bin/akb/akb", "signing": null, "connections": [...] }
+```
+
 Runner（含启动器的更新与下载、它启动的看板命令）与其启动的 Agent 优先继承 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及其小写变量。缺少这些变量时，macOS 上使用系统已启用的手动 HTTP、HTTPS、SOCKS 代理与绕过列表，每分钟及每个任务前重新读取，开关或修改代理无需重启；不执行 PAC。其他平台通过启动 Runner 的环境配置代理。无代理配置时保持直连。连接恢复后以最终执行结果收尾；可选 MCP 错误保留在日志中，不单独使任务失败。
 
 ## 共享本机设置
