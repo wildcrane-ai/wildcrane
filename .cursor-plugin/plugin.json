@@ -1,0 +1,11 @@
+{
+  "name": "wildcrane",
+  "version": "0.1.17",
+  "description": "Shape goals in Cursor and start them as WildCrane tasks, run on this computer.",
+  "author": { "name": "WildCrane" },
+  "homepage": "https://wildcrane.ai/",
+  "repository": "https://github.com/wildcrane-ai/wildcrane",
+  "license": "Apache-2.0",
+  "keywords": ["tasks", "goals", "kanban", "agents"],
+  "logo": "assets/logo-mark-white.png"
+}
