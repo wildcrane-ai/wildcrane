@@ -56,7 +56,7 @@ describe('preview component context', () => {
   it('supplies only each specialist’s declarations in runs and printed flows', async () => {
     fs.writeFileSync(path.join(root, 'docs/kanban/todo/1-example.md'), '---\ntitle: Example\nstatus: ready\n---\nA draft.\n')
     for (const [agent, expected] of [
-      ['prompt-writer', ['Asset']], ['video-cloner', ['Compare', 'Storyboard']],
+      ['prompt-writer', ['Asset', 'Set']], ['video-cloner', ['Compare', 'Storyboard']],
       ['deck-planner', ['Storyboard']], ['deck-builder', ['Asset', 'Storyboard']],
     ] as const) {
       assert.deepEqual(names(agentComponents([agent])), expected)
@@ -66,7 +66,7 @@ describe('preview component context', () => {
         printFlow({ action: 'spec', specAgent: agent, id: 1 })
         assert.ok(sink.out.join('\n').replace(/^  /gm, '').includes(componentDocsText(agentComponents([agent]))))
       } finally { stopCollecting() }
-      for (const component of ['Asset', 'Compare', 'Storyboard']) {
+      for (const component of ['Asset', 'Compare', 'Storyboard', 'Set']) {
         assert.equal(prompt.includes(`# ${component}\n`), (expected as readonly string[]).includes(component))
       }
     }
@@ -86,7 +86,7 @@ describe('preview component context', () => {
       assert.ok(prompt.includes(componentDocsText(docs)))
       for (const component of names(docs)) assert.equal(prompt.split(`# ${component}\n`).length - 1, 1)
     }
-    assert.deepEqual(names(workflowComponents('coding')), ['Asset', 'Compare', 'Storyboard'])
+    assert.deepEqual(names(workflowComponents('coding')), ['Asset', 'Set', 'Compare', 'Storyboard'])
   })
 
   it('reports missing component docs', () => {
@@ -99,7 +99,7 @@ describe('preview component context', () => {
 
   it('requires exactly one selector and supports docs through the CLI', async () => {
     const result = await outputOf(['raw', 'components', '--agent', 'prompt-writer', '--docs'])
-    assert.match(result, /^Asset\n\nTags draw only in the card body;.*\n\n# Asset/)
+    assert.match(result, /^Asset\nSet\n\nTags draw only in the card body;.*\n\n# Asset[^]*\n\n# Set\n/)
     await assert.rejects(run(root, ['raw', 'components']), /exactly one/)
     await assert.rejects(run(root, ['raw', 'components', '--agent', 'prompt-writer', '--workflow', 'coding']), /exactly one/)
     await assert.rejects(run(root, ['raw', 'components', '--agent', 'absent']), /absent/)

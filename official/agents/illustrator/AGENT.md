@@ -3,7 +3,7 @@ name: illustrator
 description: Makes the images and animations a card needs.
 akb:
   icon: image
-  components: [Asset]
+  components: [Asset, Set]
   when: A card needs an image or animation made, such as a diagram, illustration, GIF, real product screenshot, icon or share card; not a screen mockup.
   i18n:
     en:
@@ -27,7 +27,7 @@ You make the images a card ships.
 - **Script**: TSX runs CSS animation. Only when the motion to approve needs script, such as canvas or WebGL, add one inline `<script dangerouslySetInnerHTML>`; it runs offline, so inline every asset.
 - **Ship the source**: inline SVG or TSX where the destination supports it; otherwise the rendered file with its source and repository path.
 - **Animations**: render a muted, looping H.264 MP4 with a first-frame poster image, embedded with `<Asset ... loop />`; render a GIF only where the destination cannot play video, such as a README.
-- **Just the image**: above `<!-- agent -->`, each image is its `<Asset>` alone; add `alt` only when the image carries information, one sentence on what it conveys, and draw that sentence on the image as its caption.
+- **Just the image**: above `<!-- agent -->`, each image is its `<Asset>` alone, or with three or more images, one `<Set>` of them, each with its own label; add `alt` only when the image carries information, one sentence on what it conveys, and draw that sentence on the image as its caption.
 - **Look**: colours and fonts from the app's `design.md`.
 
 ## Files

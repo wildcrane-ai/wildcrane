@@ -170,7 +170,8 @@ interface NoteOptions {
   text?: string
 }
 
-function noteText(what: string, { file, text }: NoteOptions): string {
+/** The new text, or undefined to read the current one. */
+function noteText({ file, text }: NoteOptions): string | undefined {
   if (file !== undefined && text !== undefined) die('pass --file or --text, not both', 'bad-args')
   if (file !== undefined) {
     try {
@@ -179,8 +180,7 @@ function noteText(what: string, { file, text }: NoteOptions): string {
       die(`can't read ${file}`, 'bad-args')
     }
   }
-  if (text !== undefined) return text.trim()
-  die(`the ${what} have to come from --text or --file`, 'bad-args')
+  return text?.trim()
 }
 
 function cloudOk<T>(res: CloudCall<T>): T {
@@ -198,13 +198,13 @@ async function cloudScope(): Promise<{ project: string; workspace: string }> {
 }
 
 interface WorkspaceRules {
-  workflows: { id: string }[]
-  data: { agent: string }[]
+  workflows: { id: string; rule?: string }[]
+  data: { agent: string; rule?: string }[]
 }
 
 /** `akb workflow rule <workflow>`: the rules every card on it follows. */
 export async function cmdWorkflowRule(name: string, opts: NoteOptions): Promise<MoveResult> {
-  const rule = noteText('rules', opts)
+  const rule = noteText(opts)
   const { workspace } = await cloudScope()
   const held = cloudOk(await call<WorkspaceRules>('GET', `/v1/workspaces/${enc(workspace)}/workflow-rules`))
   const flow = held.workflows.find((w) => workflowName(w.id) === name)
@@ -214,6 +214,11 @@ export async function cmdWorkflowRule(name: string, opts: NoteOptions): Promise<
       workflow: name,
     })
   }
+  if (rule === undefined) {
+    const now = flow!.rule ?? ''
+    say(now || `${name} has no rules`)
+    return { workflow: name, rule: now }
+  }
   cloudOk(await call('PUT', `/v1/workspaces/${enc(workspace)}/workflows/${enc(flow!.id)}/rule`, { rule }))
   say(`${rule ? 'saved' : 'cleared'} the rules of ${name}`)
   return { workflow: name, rule }
@@ -221,20 +226,27 @@ export async function cmdWorkflowRule(name: string, opts: NoteOptions): Promise<
 
 /** `akb workflow instructions <agent>`: a workflow agent's are the workspace's, a board agent's this project's. */
 export async function cmdWorkflowInstructions(agent: string, opts: NoteOptions): Promise<MoveResult> {
-  const rule = noteText('instructions', opts)
+  const rule = noteText(opts)
   const { project, workspace } = await cloudScope()
   const [shared, own] = await Promise.all([
     call<WorkspaceRules>('GET', `/v1/workspaces/${enc(workspace)}/workflow-rules`),
-    call<{ board: string[] }>('GET', `/v1/projects/${enc(project)}/agents`),
+    call<{ board: string[]; data: { agent: string; rule?: string }[] }>('GET', `/v1/projects/${enc(project)}/agents`),
   ])
-  const flowAgents = cloudOk(shared).data.map((a) => a.agent)
-  const board = cloudOk(own).board
+  const sharedRows = cloudOk(shared).data
+  const ownRows = cloudOk(own)
+  const flowAgents = sharedRows.map((a) => a.agent)
+  const board = ownRows.board
   const scope = board.includes(agent) ? 'project' : flowAgents.includes(agent) ? 'workspace' : null
   if (!scope) {
     die(`no agent called "${agent}" here. There are: ${[...new Set([...flowAgents, ...board])].join(', ')}.`, {
       kind: 'no-such-agent',
       agent,
     })
+  }
+  if (rule === undefined) {
+    const now = (scope === 'project' ? ownRows.data : sharedRows).find((a) => a.agent === agent)?.rule ?? ''
+    say(now || `${agent} has no instructions`)
+    return { agent, rule: now, scope }
   }
   const route = scope === 'project' ? `/v1/projects/${enc(project)}/agents/${enc(agent)}` : `/v1/workspaces/${enc(workspace)}/agents/${enc(agent)}`
   cloudOk(await call('PUT', route, { rule }))

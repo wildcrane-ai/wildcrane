@@ -91,8 +91,8 @@ export const SAID = {
     en: 'Could not reach WildCrane Cloud. Check your connection and try again.',
   },
   credits_used_up: {
-    zh: '本月积分已用完，下月 1 日（UTC）重置；可在 WildCrane 网页设置中查看余额。',
-    en: 'This month’s AI credits are used up. They reset on the 1st of next month (UTC); check your balance in WildCrane web settings.',
+    zh: '本月 AI 积分已用完。可在 WildCrane 网页的“设置 → 账单”中以 $10 加购 2,500 积分，或等下月 1 日（UTC）重置。',
+    en: 'This month’s AI credits are used up. Buy 2,500 more for $10 in Settings → Billing on the WildCrane web app, or wait for the reset on the 1st of next month (UTC).',
   },
   trial_credits_used_up: {
     zh: '试用期的 AI 积分已用完。试用结束后可在 WildCrane 网页设置中购买 Pro。',

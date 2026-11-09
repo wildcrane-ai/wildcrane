@@ -119,12 +119,14 @@ An agent may carry several skills, each whole in its own `skills/<skill>/` folde
 
 ## Memory
 
-`docs/kanban/memory/agents/<name>/` is read into every run. Keep none unless a user's
-correction should change the agent's next output. Otherwise say in `AGENT.md`:
+`docs/kanban/memory/agents/<name>/` is read into every run. Keep none unless the agent has wide
+latitude and its mistakes or the user's corrections should change its next output. Otherwise say
+in `AGENT.md`:
 
 - **Files**: each file and what it holds; `## General` for what always holds, and a heading per
   situation (a format, a recipe, a channel) for what holds only there.
-- **When**: which file to apply before which step, and which answers or corrections to record.
+- **When**: which file to apply before which step, and which error-prone points, answers or
+  corrections to record.
 - **What goes in**: lasting preferences, decisions and corrections only — never raw feedback,
   run history, or what the instructions already say.
 - **Shared material**: what other agents also use goes in a global memory under `akb.memory`;
@@ -132,7 +134,7 @@ correction should change the agent's next output. Otherwise say in `AGENT.md`:
 
 ## Output
 
-Declare the preview components the agent uses in `akb.components` (Asset, Compare, Storyboard).
+Declare the preview components the agent uses in `akb.components` (Asset, Compare, Storyboard, Set).
 Their usage documentation is supplied with the run; omitted declarations default to Asset.
 Use `akb raw components --agent <name> --docs` or `--workflow <id> --docs` to read it.
 

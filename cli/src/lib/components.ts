@@ -1,5 +1,6 @@
 import asset from '../components/Asset.md'
 import compare from '../components/Compare.md'
+import set from '../components/Set.md'
 import storyboard from '../components/Storyboard.md'
 import workflow from '../components/Workflow.md'
 import shared from '../components/shared.md'
@@ -8,7 +9,7 @@ import { BoardError } from './io'
 import { boardText } from './paths'
 import { workflowById, previewMembers, scheduledMembers } from './agent/workflows'
 
-const DOCUMENTS: Record<string, string> = { Asset: asset, Compare: compare, Storyboard: storyboard, Workflow: workflow }
+const DOCUMENTS: Record<string, string> = { Asset: asset, Compare: compare, Storyboard: storyboard, Set: set, Workflow: workflow }
 
 export interface ComponentDoc {
   name: string

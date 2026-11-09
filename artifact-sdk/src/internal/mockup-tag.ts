@@ -4,23 +4,9 @@ import { type Shot } from "./format/compare";
 import type { Context as BridgeContext } from "../index";
 import type { StoryboardView } from "./storyboard";
 import type { SpriteSheet } from "./format/spritesheet";
+import type { Device } from "./tags";
 
-/** A mockup as a card body points at it. */
-export type MockupTag = {
-  src: string;
-  /** The name on the frame. Empty when the tag carries none. */
-  label: string;
-  alt: string;
-  /** The screen an HTML mockup is laid out on (#1097). Anything but `mobile` is desktop. */
-  device: Device;
-  /** A bare `loop` (#1595): a video that plays muted, looping and without controls. */
-  loop: boolean;
-  variants: Variant[];
-};
-
-export type Variant = { label: string; src: string };
-
-export type Device = "mobile" | "desktop";
+export * from "./tags";
 
 /** The canvas each device's screen is laid out on, before it is scaled. */
 export const SCREENS: Record<Device, { w: number; h: number }> = {
@@ -28,7 +14,6 @@ export const SCREENS: Record<Device, { w: number; h: number }> = {
   mobile: { w: 393, h: 852 },
 };
 
-export const deviceOf = (value: string | null | undefined): Device => (value === "mobile" ? "mobile" : "desktop");
 
 export type ArticleFile = { text: string; href: string };
 
@@ -44,6 +29,8 @@ export type Drawn = {
   media?: { kind: "video" | "audio"; href: string };
   file?: { name: string; load: () => Promise<string> };
   article?: ArticleFile;
+  /** A text file, shown as its text: `lang` colours it, `diff` for a `.diff` or `.patch`. */
+  code?: { text: string; lang: string; href: string };
   /** The note in its place. */
   error?: string;
 };
@@ -98,49 +85,6 @@ export type MockupView = Drawn & {
   /** The original file, to download. */
   download?: { name: string; load: () => Promise<string> };
 };
-
-// A self-closing tag with no `<` or `>` inside it.
-const TAG = /<(?:Asset|Mockup)\b([^<>]*?)\/>/g;
-const ATTR = /(\w+)\s*=\s*"([^"]*)"|(\w+)\s*=\s*'([^']*)'/g;
-const LOOP = /(?:^|\s)loop(?=\s|$)/;
-
-/** Every mockup tag in a run of raw HTML, in the order they appear. */
-export function mockupTags(raw: string): MockupTag[] {
-  const found: MockupTag[] = [];
-  for (const match of raw.matchAll(TAG)) {
-    const attrs: Record<string, string> = {};
-    for (const a of match[1]!.matchAll(ATTR)) {
-      attrs[(a[1] ?? a[3])!] = (a[2] ?? a[4])!;
-    }
-    if (!attrs.src) continue;
-    const loop = LOOP.test(match[1]!.replace(ATTR, ""));
-    found.push({ src: attrs.src, label: attrs.label ?? "", alt: attrs.alt ?? "", device: deviceOf(attrs.device), loop, variants: variantsOf(attrs.variants, attrs.src) });
-  }
-  return found;
-}
-
-/** `variants` as written: two or more, `src` among them — anything else is no variants. */
-export function variantsOf(raw: string | undefined, src: string): Variant[] {
-  if (!raw) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return [];
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-  const list = Object.entries(parsed).filter((e): e is [string, string] => typeof e[1] === "string" && !!e[1]);
-  if (list.length < 2 || !list.some(([, s]) => s === src)) return [];
-  return list.map(([label, s]) => ({ label, src: s }));
-}
-
-/** The tags in a block that holds nothing but tags — `null` when anything else is in there. */
-export function mockupBlock(raw: string): MockupTag[] | null {
-  const tags = mockupTags(raw);
-  if (tags.length === 0) return null;
-  return raw.replace(TAG, "").trim() === "" ? tags : null;
-}
-
 
 /** Every path a body's tags name: variants, `<Compare>` sides and `<Storyboard>`s included. */
 export { bodySources } from "./references";

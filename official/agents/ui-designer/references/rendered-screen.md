@@ -54,4 +54,6 @@ written exactly as above and resolved by the board; `label` is required and is t
 for a reader, in the board's language. `device` is `mobile` for a 393×852 phone screen or
 `desktop` for a 1280×800 one; write it on every screen. Use `<Asset>` for mockups; cards also support `<Storyboard>`
 for scripts with storyboard manifests. Inside backticks or a fenced block, either remains text.
+With three or more screens, put them in one `<Set>` per purpose instead, giving a screen's desktop
+and phone mockups the same `label`.
 The board's phone frame overlays the iOS status bar and home indicator on a mobile screen as an iPhone does, with the same safe-area insets and status bar style; never draw them.

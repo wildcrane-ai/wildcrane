@@ -3,7 +3,7 @@ name: ui-designer
 description: Draws the screens a card changes, with every word on them.
 akb:
   icon: screen
-  components: [Asset]
+  components: [Asset, Set]
   when: A card designs or changes a user-facing feature, including screens, layouts, interactions, flows and the text inside them; a detailed plan or an existing component does not change this. Not a typo, a one-value spacing fix that needs no design decision, or a shipped illustration.
   after: [copywriting, illustrator]
   memoryFiles:

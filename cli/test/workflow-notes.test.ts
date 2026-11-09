@@ -39,7 +39,7 @@ beforeEach(() => {
     if (route === '/v1/projects/prj_1') return Response.json({ id: 'prj_1', workspace: 'ws_1' })
     if (route === '/v1/projects/prj_1/agents') return Response.json({ board: ['proposer', 'memory-pruner'] })
     if (route === '/v1/workspaces/ws_1/workflow-rules') {
-      return Response.json({ workflows: [{ id: 'wf_builtin_coding' }, { id: 'wf_01own' }], data: [{ agent: 'ui-designer' }, { agent: 'builder' }] })
+      return Response.json({ workflows: [{ id: 'wf_builtin_coding', rule: '- Titles in English.\n- Tests first.' }, { id: 'wf_01own' }], data: [{ agent: 'ui-designer' }, { agent: 'builder' }] })
     }
     return Response.json({ error: { code: 'not_found', message: 'Not found.' } }, { status: 404 })
   }) as typeof fetch
@@ -76,6 +76,20 @@ it("saves a workflow agent's instructions on the workspace and a board agent's o
 it('refuses an unknown name with the valid choices', async () => {
   await assert.rejects(() => run(root, ['workflow', 'rule', 'blog', '--text', 'x']), /There are: coding, wf-01own\./)
   await assert.rejects(() => run(root, ['workflow', 'instructions', 'deployer', '--text', 'x']), /There are: ui-designer, builder, proposer, memory-pruner\./)
-  await assert.rejects(() => run(root, ['workflow', 'rule', 'coding']), /--text or --file/)
+  assert.deepEqual(puts, [])
+})
+
+// #592: a bare call reads the current text, so a new rule can keep the old ones.
+it('prints the current rules without writing when no text is given', async () => {
+  const out: string[] = []
+  const write = process.stdout.write
+  process.stdout.write = ((chunk: string) => (out.push(String(chunk)), true)) as typeof process.stdout.write
+  try {
+    await run(root, ['workflow', 'rule', 'coding'])
+    await run(root, ['workflow', 'instructions', 'builder'])
+  } finally {
+    process.stdout.write = write
+  }
+  assert.match(out.join(''), /- Titles in English\.\n- Tests first\.[\s\S]*builder has no instructions/)
   assert.deepEqual(puts, [])
 })

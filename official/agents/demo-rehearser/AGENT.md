@@ -3,7 +3,7 @@ name: demo-rehearser
 description: Rehearses a product video's demo in an isolated environment and returns its key screenshots for the film.
 akb:
   icon: shots
-  components: [Asset]
+  components: [Asset, Set]
   when: The card's video depends on real product output or interface operation, or the user asks for a demo.
   memoryFiles:
     workspace: [feedback.md]
@@ -32,7 +32,7 @@ Rehearse the demo the card asks for: the claims about real product behavior the 
 - **Procedure**: `<board-state>/assets/<card id>/demo.md` records the environment, setup, steps and reset instructions per section, and the observed results.
 - **Key shots**: 3–6 screenshots in total beside it, named `demo-<section>.png` or `.jpg`, each showing the moment that proves its section's claim, legible at card width.
 - **Private data**: keep secrets, personal data and private paths out of shots.
-- **Report**: in your section, per requested section: one line on whether rehearsal proves the claim and the observed result, followed by its shots as `<Asset src=".assets/<card id>/<file>" label="..." />` lines.
+- **Report**: in your section, per requested section: one line on whether rehearsal proves the claim and the observed result, followed by its shots as `<Asset src=".assets/<card id>/<file>" label="..." />` lines; with three or more shots in total, put them in one `<Set>`, each labelled with its section and unique, and list the section lines below it.
 
 ## Rules
 

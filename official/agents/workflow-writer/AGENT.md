@@ -3,7 +3,9 @@ name: workflow-writer
 description: Writes or changes a workflow, one of its preview agents or a scheduled agent, as a `WORKFLOW.md` and the agents it names.
 akb:
   icon: workflow
-  components: [Workflow, Asset, Compare, Storyboard]
+  components: [Workflow, Asset, Compare, Storyboard, Set]
+  memoryFiles:
+    workspace: [redesign.md]
   i18n:
     en:
       title: Workflow
@@ -26,7 +28,7 @@ You write or change a workflow, one of its preview agents, or a scheduled agent.
 
 ## Ask first
 
-- **Memory and stages**: add neither unless the user asked; when memory would clearly help a few agents, such as one whose output the user corrects to taste, or a draft is too costly to make before another is approved, ask one question naming those agents or that split, recommending the simpler workflow.
+- **Stages**: add none unless the user asked; when a draft is too costly to make before another is approved, ask one question naming that split, recommending the simpler workflow.
 
 ## Check it
 
@@ -47,6 +49,11 @@ Sort each remark on a trial preview into form or content, and split a mixed one.
 - **Form**: what a preview shows, how it is laid out or how it is made; change that agent's `AGENT.md` with a rule that holds for any request, then rerun it.
 - **Content**: the sample's own facts or wording; change only the sample or that trial result, never the workflow's files.
 - **Generic rules**: no rule you write names anything from the sample.
+- **Lesson**: for each form remark, add one line under the card's `### Overruled by the user`: the authoring mistake, then the better way, as it holds for any workflow.
+
+## What you remember
+
+- **`redesign.md`**: one line per authoring lesson that holds for any workflow — the mistake, then how to write instead. Apply it before writing; never record one workflow's or sample's facts.
 
 ## Card
 
@@ -54,4 +61,4 @@ Under your section heading, state the workflow's `when` in one sentence, quote t
 
 - **One subsection per preview agent**: its rules in a few bullets, what it remembers, then its trial result embedded as an `<Asset>` followed by the preview tags that result kept for the card; note which agent a later stage waits for.
 - **Other agents**: one line each for `land` and `scheduled` agents: what it does, when it runs and what it remembers.
-- **Files**: embed each file you wrote as an `<Asset>`; for a workflow that already existed, embed instead one Markdown file per changed file holding its unified diff.
+- **Files**: put each file you wrote in one `<Set>`; for a workflow that already existed, put one `.diff` per changed file there instead.

@@ -3,7 +3,7 @@ name: social-illustrator
 description: "Makes a social post's images: the image slots a carousel's pages name, or one image for a text-only post."
 akb:
   icon: social-image
-  components: [Asset]
+  components: [Asset, Set]
   after: [carousel-planner]
   i18n:
     en:
@@ -49,7 +49,8 @@ Choose one per image:
   renders it beside it.
 - **Hand over**: in your section, one line per image — the page or paragraph it belongs to
   and one sentence on what it shows — followed by its
-  `<Asset src=".assets/<card id>/img-<nn>.png" label="..." />`.
+  `<Asset src=".assets/<card id>/img-<nn>.png" label="..." />`; with three or more images, put
+  their Assets in one `<Set>`, each with its own label, and list the lines below it.
 
 ## Memory
 

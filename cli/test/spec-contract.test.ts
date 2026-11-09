@@ -9,6 +9,8 @@ import { parseFrontmatter, serializeFrontmatter } from '../src/lib/frontmatter'
 import { byDispatchOrder } from '../src/lib/view/rules'
 import type { Card } from '../src/lib/view/types'
 import { formatContractErrors, snapshotSpecs, validateSpec } from '../src/lib/spec-contract'
+import { setBlock, setItems } from '../../artifact-sdk/src/internal/tags'
+import { bodySources } from '../../artifact-sdk/src/internal/references'
 import { openRun, openResume, patch, peekRun } from '../src/lib/agent/sessions'
 import { setBoardProvider } from '../src/lib/board'
 import type { AgentAction } from '../src/lib/agent/types'
@@ -176,6 +178,20 @@ describe('the card format contract', () => {
       assert.ok(validateSpec(file, valid.replace(heading, heading + '\n' + checklist)).some((e) => e.rule === 'acceptance-section'), heading)
     }
     assert.ok(validateSpec(file, valid.replace('## Todo', checklist.replace('###', '##') + '## Todo')).some((e) => e.rule === 'acceptance-section'))
+  })
+
+  it('checks a Set and draws its Assets as one item per label (#587)', () => {
+    const set = '<Set label="States">\n<Asset src="a.tsx" label="A" device="desktop" />\n<Asset src="a.m.tsx" label="A" device="mobile" />\n<Asset src="b.ts.diff" label="b.ts" />\n</Set>'
+    const card = (body: string) => valid.replace('An observable feature.', `An observable feature.\n\n${body}\n\nMore.`)
+    assert.deepEqual(validateSpec(file, card(set)), [])
+    for (const broken of [set.replace(' label="States"', ''), set.replace('\n</Set>', ''), set.replace('<Asset src="b', 'Prose\n<Asset src="b'), `Prose\n${set}`, set.replace('<Set label="States">\n', '')]) {
+      assert.ok(validateSpec(file, card(broken)).some((e) => e.rule.startsWith('set-')), broken)
+    }
+    const parsed = setBlock(set)!
+    assert.equal(parsed.label, 'States')
+    assert.deepEqual(setItems(parsed.tags).map((i) => [i.label, i.tags.length]), [['A', 2], ['b.ts', 1]])
+    assert.equal(setBlock(set.replace(' label="States"', '')), null)
+    assert.deepEqual(bodySources(card(set)), ['a.tsx', 'a.m.tsx', 'b.ts.diff'])
   })
 
   it('accepts only mobile or desktop as a mockup device', () => {

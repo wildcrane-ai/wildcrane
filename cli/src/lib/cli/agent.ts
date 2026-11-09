@@ -586,7 +586,10 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .option('--text <text>', 'the rules, for a one-liner; empty clears them')
     .option('--file <path>', 'the rules, as markdown written to a file first')
     .summary("set a workflow's rules — what every card on it follows — in the user's own words")
-    .description("Saved to Cloud for every project in the workspace; empty clears them.")
+    .description(
+      "Without --text or --file, prints the workflow's current rules. With them, replaces all of them, " +
+        'saved to Cloud for every project in the workspace; empty clears them.',
+    )
     .action(async function (this: Command, id: string) {
       await onBoard(this, cli, () => cmdWorkflowRule(id, this.opts()))
     })
@@ -597,7 +600,8 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .option('--file <path>', 'the instructions, as markdown written to a file first')
     .summary("set one agent's instructions — appended to every run it does — in the user's own words")
     .description(
-      "A workflow's agent is the workspace's, shared by every workflow listing it; a board's scheduled " +
+      "Without --text or --file, prints the agent's current instructions. With them, replaces all of them. " +
+        "A workflow's agent is the workspace's, shared by every workflow listing it; a board's scheduled " +
         "agent is this project's. Saved to Cloud; empty clears them.",
     )
     .action(async function (this: Command, agent: string) {

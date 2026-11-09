@@ -125,7 +125,7 @@ describe('akb image / tts / music', () => {
     answer(refusal(429, 'credits_used_up', { 'retry-after': '3600' }))
     const spent = await akb(['tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'])
     assert.equal(spent.code, 1)
-    assert.match(spent.err, /本月积分已用完/)
+    assert.match(spent.err, /本月 AI 积分已用完/)
     answer(refusal(429, 'credits_used_up'))
     const trial = await akb(['tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'])
     assert.equal(trial.code, 1)

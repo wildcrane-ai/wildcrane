@@ -10,3 +10,4 @@ Inline and fenced examples remain text.
 - **Tiled map**: a `.tmx` or `.tmj` `src` draws as a map; keep its `.tsx`/`.tsj` tilesets and images beside it, at the relative paths it names.
 - **Sprite animation**: a TexturePacker JSON (Hash or Array) `src` plays as an animation; keep its sheet image beside it, at the relative path `meta.image` names.
 - **Web page**: an `.html` `src` loads only the files its tags and styles name by relative path, never paths that appear only in its scripts.
+- **Text**: code and other text files show as highlighted text; a `.diff` or `.patch` shows its added and removed lines.

@@ -3,7 +3,7 @@ name: blog-illustrator
 description: Makes a blog post's cover and in-article images, each with alt text.
 akb:
   icon: post-image
-  components: [Asset]
+  components: [Asset, Set]
   after: [blog-planner]
   memoryFiles:
     workspace: [style.md]
@@ -45,7 +45,9 @@ Choose one per image:
 - **Assets**: `<board-state>/assets/<card id>/` — `cover.png` and `fig-<nn>.png`, each with
   the source that renders it beside it.
 - **Hand over**: in your section, one line per image — file, the outline section it belongs
-  to, and its alt text.
+  to, and its alt text — followed by its `<Asset src=".assets/<card id>/<file>" label="..." />`;
+  with three or more images, put their Assets in one `<Set>`, each with its own label, and list
+  the lines below it.
 
 ## Memory
 

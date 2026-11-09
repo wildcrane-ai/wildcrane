@@ -142,6 +142,7 @@ export function validateSpec(file: string, text: string, id?: number): ContractE
   const markers: number[] = []
   const { visible, fence, comment } = scanCardLines(lines, end + 1)
   const acceptance: { line: number; level: number }[] = []
+  const sets = new Set<number>()
   for (let i = end + 1; i < lines.length; i++) {
     const line = visible[i]!
     if (/^\s*<!--\s*agent\s*-->\s*$/.test(line)) { markers.push(i + 1); continue }
@@ -150,8 +151,16 @@ export function validateSpec(file: string, text: string, id?: number): ContractE
     const heading = line.match(/^ {0,3}(#{1,2})\s+(.+?)\s*#*\s*$/)
     if (heading?.[1] === '#') add(i + 1, 'heading', 'Do not repeat the card title as an H1. Remove this heading or use ### inside your section.')
     if (heading?.[1] === '##') headings.push({ title: heading[2]!, line: i + 1 })
+    if (/^\s*<\/?Set\b/.test(line) && !sets.has(i)) {
+      const close = /^\s*<Set\b/.test(line) ? setEnd(visible, i) : -1
+      if (close < 0) add(i + 1, 'set-block', 'Write <Set label="..."> on its own line after a blank line, then one <Asset ... /> per line, then </Set> followed by a blank line.')
+      else {
+        sets.add(i).add(close)
+        if (!/\blabel="[^"]+"/.test(line)) add(i + 1, 'set-label', 'Add a non-empty label="..." attribute to the Set tag.')
+      }
+    }
     if (/^\s*<(?:Asset|Mockup)\b/.test(line)) {
-      if (!/^\s*<(?:Asset|Mockup)\b[^<>]*\/>\s*$/.test(line) || (lines[i - 1]?.trim() && !/^\s*<(?:Asset|Mockup)\b/.test(lines[i - 1]!)) || (lines[i + 1]?.trim() && !/^\s*<(?:Asset|Mockup)\b/.test(lines[i + 1]!))) {
+      if (!/^\s*<(?:Asset|Mockup)\b[^<>]*\/>\s*$/.test(line) || (lines[i - 1]?.trim() && !BLOCK_LINE.test(lines[i - 1]!)) || (lines[i + 1]?.trim() && !BLOCK_LINE.test(lines[i + 1]!))) {
         add(i + 1, 'mockup-block', 'Put the self-closing <Asset ... /> tag on its own line, with blank lines separating it from prose.')
       }
       if (!/\bsrc="[^"]+"/.test(line) || !/\blabel="[^"]+"/.test(line)) add(i + 1, 'mockup-attributes', 'Add non-empty src="..." and label="..." attributes to the Asset tag.')
@@ -216,6 +225,18 @@ export function validateSpec(file: string, text: string, id?: number): ContractE
   }
   if (id !== undefined) errors.push(...validateStoryboards(file, id, text), ...validatePreviewFiles(file, id, text))
   return errors
+}
+
+const ASSET_LINE = /^\s*<(?:Asset|Mockup)\b[^<>]*\/>\s*$/
+const BLOCK_LINE = /^\s*<(?:Asset\b|Mockup\b|Set\b|\/Set>)/
+
+/** The line closing the `<Set>` opened at `at` (#587), or -1 when it is not one well-formed paragraph. */
+function setEnd(lines: string[], at: number): number {
+  if (!/^\s*<Set\b[^<>]*>\s*$/.test(lines[at]!) || lines[at - 1]?.trim()) return -1
+  let i = at + 1
+  while (i < lines.length && ASSET_LINE.test(lines[i]!)) i++
+  if (i === at + 1 || !/^\s*<\/Set>\s*$/.test(lines[i] ?? '') || lines[i + 1]?.trim()) return -1
+  return i
 }
 
 /** A file inside `dir`, symlinks resolved — `null` when absent or when it leads out. */

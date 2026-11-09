@@ -41,6 +41,26 @@ export type Host = {
 };
 
 const SAVE_LIMIT = 256 * 1024;
+const TEXT_LIMIT = 1024 * 1024;
+
+const LANGS: Record<string, string> = {
+  ts: "typescript", tsx: "typescript", mts: "typescript", cts: "typescript",
+  js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
+  json: "json", jsonc: "json", yml: "yaml", yaml: "yaml", py: "python", go: "go",
+  sh: "bash", bash: "bash", zsh: "bash", sql: "sql", css: "css", scss: "css",
+  xml: "xml", svg: "xml", diff: "diff", patch: "diff",
+};
+const PLAIN = new Set(["txt", "text", "log", "csv", "tsv", "toml", "ini", "env", "rs", "java", "kt", "swift", "rb", "php", "c", "h", "cpp", "hpp", "cs", "lua", "vue", "svelte", "graphql", "prisma", "dockerfile", "gitignore"]);
+
+/** The language a text file is coloured as, "" for plain text, or null for a file that is not text. */
+export function textLang(src: string, name: string, type = ""): string | null {
+  for (const path of [src, name]) {
+    const ext = /\.([\w-]+)$/.exec(path.split("/").pop()!)?.[1]?.toLowerCase();
+    if (ext && ext in LANGS) return LANGS[ext]!;
+    if (ext && PLAIN.has(ext)) return "";
+  }
+  return /^text\/|[/+](?:json|yaml|xml)\b/.test(type) ? "" : null;
+}
 
 export class Previews {
   private byId: Map<string, Artifact>;
@@ -251,8 +271,21 @@ export class Previews {
           if (!isObj(data)) throw new Error(this.services.copy.card.mockup.previewFailed);
           return this.compareOf(data, src).load();
         } } };
-      default:
-        return { src, file: this.fileOf(art, v) };
+      default: {
+        const lang = textLang(src, art.name, v.file?.content_type);
+        if (lang === null) return { src, file: this.fileOf(art, v) };
+        return {
+          src,
+          deferred: {
+            screen: false,
+            load: guard(async () => {
+              const text = (await resource.text("")) ?? JSON.stringify(v.content, null, 2);
+              if (text.length > TEXT_LIMIT) return { src, file: this.fileOf(art, v) };
+              return { src, code: { text, lang, href: urlOf(new Blob([text], { type: "text/plain" })) } };
+            }),
+          },
+        };
+      }
     }
   }
 

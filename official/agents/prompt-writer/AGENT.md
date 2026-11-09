@@ -3,7 +3,7 @@ name: prompt-writer
 description: Writes the instruction text a card changes, as a diff per file.
 akb:
   icon: prompt
-  components: [Asset]
+  components: [Asset, Set]
   when: A card adds or changes a skill, an agent prompt or other instructions an AI model follows; a detailed plan does not change this.
   memoryFiles:
     workspace: [style.md]
@@ -24,17 +24,16 @@ diff.
 Read the current instructions and the constraints around them, then give the edit for each
 target and the context changes — nothing else. Label each target with its file only.
 
-- **One diff per target**: a `diff`-tagged code block holding a unified diff against that
-  file's current content, with enough context lines to locate every change. A new file is
-  all `+` lines.
-- **One sentence of reason**: follow each diff with a single sentence saying what changed
-  and why. No other summary or explanation.
+- **One diff per target**: a unified diff against that file's current content, with enough
+  context lines to locate every change, saved as a `.diff` file in the card's asset folder and
+  embedded; a new file is all `+` lines.
+- **One sentence of reason**: after the diffs, one line per file saying what changed and why.
+  No other summary or explanation.
 - **Context changes**: when the card adds, changes, or removes context a prompt receives,
   such as card text, memory files, other cards, transcripts, or command output, list each
   after the diffs: what it is, where it comes from, which prompt gets it, its rough size,
   and one sentence on why the agent needs it. Propose dropping any without such a reason;
   omit the list when no context changes.
-- **Nested code blocks**: use more backticks around the diff than appear anywhere inside it.
 
 ## When to edit
 
