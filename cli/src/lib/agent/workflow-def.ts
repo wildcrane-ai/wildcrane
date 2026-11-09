@@ -11,6 +11,7 @@ import { ICON_COLORS, ICON_NAMES, readIcon, type AgentIcon } from '../agents/ico
 import { parseYamlBlock, splitFrontmatter, type YamlValue } from '../agents/yaml.ts'
 import { canonicalSpecAgent } from '../spec-agent-names.ts'
 import type { WorkflowHelper } from './types.ts'
+import { yamlScalar } from '../yaml.ts'
 
 export interface WorkflowDef {
   id: string
@@ -33,6 +34,31 @@ export interface WorkflowDef {
   /** Its body: the rules a card on this workflow is written by. */
   rules: string
 }
+
+// A ` #` would read back as a comment.
+export const scalar = (value: string): string => (/\s#/.test(value) ? JSON.stringify(value) : yamlScalar(value))
+
+const plain = (agents: WorkflowHelper[]): boolean => agents.every((h) => !h.extra && !h.off)
+
+// One group's agents as list items at `indent`: a bare name, or a map carrying what the
+// workflow asks of it and whether it is off.
+function agentLines(agents: WorkflowHelper[], indent: string): string[] {
+  return agents.flatMap((h) =>
+    !h.extra && !h.off
+      ? [`${indent}- ${scalar(h.agent)}`]
+      : [
+          `${indent}- agent: ${scalar(h.agent)}`,
+          ...(h.extra ? [`${indent}  extra: ${JSON.stringify(h.extra)}`] : []),
+          ...(h.off ? [`${indent}  off: true`] : []),
+        ],
+  )
+}
+
+const flowList = (agents: WorkflowHelper[]): string => `[${agents.map((h) => scalar(h.agent)).join(', ')}]`
+
+/** One group of agents as `WORKFLOW.md` writes it; nothing when empty. */
+export const groupLines = (key: string, agents: WorkflowHelper[]): string[] =>
+  !agents.length ? [] : plain(agents) ? [`${key}: ${flowList(agents)}`] : [`${key}:`, ...agentLines(agents, '  ')]
 
 /** What a workflow may be called on disk: the same shape an agent's name takes. */
 export const WORKFLOW_ID = /^[a-z0-9]+(-[a-z0-9]+)*$/

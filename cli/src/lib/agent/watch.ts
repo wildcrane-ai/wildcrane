@@ -18,7 +18,7 @@ import fs from 'node:fs'
 
 import { rel, TODO, REPO_ROOT, SESSIONS_DIR } from '../paths'
 import { boardComplaints } from '../reconcile'
-import { formatContractErrors, formatProblems, snapshotSpecs, type ContractError } from '../spec-contract'
+import { boardCheckErrors, boardProblems, snapshotSpecs, type ContractError } from '../spec-contract'
 import { eventsPathOf, readRuns, withStore } from './store'
 import { lastSessionTotal, ownCost, reportsSessionTotal } from './own-cost'
 import { cleanupDiscardedCards } from '../../commands/remove'
@@ -564,8 +564,10 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
           formatErrors = [{ file: rel(TODO), line: 1, rule: 'read-error', message: `Cannot validate the card files: ${String(error)}. Restore readable Markdown files and retry.` }]
         }
       }
-      const contractError = formatErrors.length ? formatContractErrors(formatErrors) : undefined
-      const problems = formatErrors.length ? formatProblems(formatErrors) : undefined
+      const contractError = formatErrors.length ? boardCheckErrors(formatErrors) : undefined
+      // A repair about to start is not a failure yet; only one that cannot fix it is said.
+      const repairing = !!contractError && repairable && (record.formatRepair?.attempt ?? 0) < MAX_FORMAT_REPAIRS
+      const problems = formatErrors.length && !repairing ? boardProblems(formatErrors) : undefined
       if (contractError) {
         log.write(`\n[validation] ${contractError}\n`)
         if (status === 'done') status = 'error'
@@ -618,7 +620,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       // and a screen shows nothing for it (#1241).
       const saidOurs = !asked && silent && !spawnError
       const errorWhy: RunReason[] = [
-        ...(contractError ? [{ kind: 'format' as const }] : []),
+        ...(problems ? [{ kind: 'format' as const }] : []),
         ...(spawnWhy ? [spawnWhy] : []),
         ...(saidOurs ? [waited
           ? { kind: 'backgroundSilent' as const, args: { n: String(BACKGROUND_WAIT.minutes / 60) } }
@@ -654,11 +656,10 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
         endedAt,
       })
       letGo()
-      if (contractError && repairable
-        && (record.formatRepair?.attempt ?? 0) < MAX_FORMAT_REPAIRS) {
+      if (repairing) {
         const next = await resume(sessionId)
         if ('error' in next) patch(sessionId, (r) => {
-          r.error = `${problems}\nCannot resume format repair: ${next.error}`
+          r.error = `${boardProblems(formatErrors)}\nCannot resume board repair: ${next.error}`
           r.errorWhy = [{ kind: 'format' }, { kind: 'repairUnstarted', refusals: [next] }]
         })
       }

@@ -326,6 +326,8 @@ async function watchWithResume(id: string): Promise<string> {
   let last = id
   await watchRun(id, async (previous) => {
     assert.equal(peekRun(previous)?.status, 'error')
+    assert.doesNotMatch(peekRun(previous)?.error ?? '', /Board problems/)
+    assert.ok(!peekRun(previous)?.errorWhy?.some((why) => why.kind === 'format'))
     const opened = await openResume(previous)
     if ('error' in opened) return opened
     assert.equal(peekRun(previous), undefined)
@@ -373,7 +375,7 @@ describe('run completion validation', () => {
       return opened
     })
     assert.equal(peekRun(id)?.status, 'error')
-    assert.match(peekRun(id)?.error ?? '', /never reported a session id/)
+    assert.match(peekRun(id)?.error ?? '', /^Board problems:[\s\S]*\nCannot resume board repair: [^\n]*never reported a session id/)
     assert.equal(fs.readFileSync(path.join(root, 'prompts.log'), 'utf8').trim().split('\n').length, 1)
   })
 
@@ -382,7 +384,7 @@ describe('run completion validation', () => {
     const last = await watchWithResume(id)
     assert.equal(peekRun(last)?.status, 'error')
     assert.equal(peekRun(last)?.ok, false)
-    assert.match(peekRun(last)?.error ?? '', /^Task format problems:\n- Task #1 disappeared\./)
+    assert.match(peekRun(last)?.error ?? '', /^Board problems:\n- Task #1 disappeared\./)
     assert.equal(fs.readFileSync(path.join(root, 'prompts.log'), 'utf8').trim().split('\n').length, 4)
   })
 })

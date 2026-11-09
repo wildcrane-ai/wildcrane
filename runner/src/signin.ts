@@ -1,6 +1,6 @@
-// Signing in from a terminal: the same GitHub PKCE flow as the CLI's (cli/src/lib/cloud/
-// signin.ts), with the answer caught on a loopback port instead of the app's URL scheme.
-// The Supabase project must allow `http://127.0.0.1:*/**` as a redirect URL.
+// Signing in from a terminal: GitHub or Google with PKCE, chosen on a page served from a
+// loopback port, which also catches the answer. The Supabase project must allow
+// `http://127.0.0.1:*/**` as a redirect URL.
 
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
@@ -18,16 +18,23 @@ const CRANE =
 const CREST = 'M44.97 27.45C44.61 26.89 46.57 25.76 47.87 25.76C48.72 25.76 50.6 26.7 50.6 27.14C50.6 27.64 45.27 27.97 44.97 27.45Z'
 
 type Outcome = 'ok' | 'denied' | 'failed'
+type Provider = 'github' | 'google'
 
 const COPY = {
   zh: {
+    choose: ['登录 WildCrane', '选择登录方式，完成后回到 WildCrane。'],
+    github: '用 GitHub 登录',
+    google: '用 Google 登录',
     ok: ['已登录 WildCrane', '可以关闭此页面，回到 WildCrane 继续。'],
-    denied: ['登录未完成', '你取消了 GitHub 授权。请回到 WildCrane 重新登录。'],
+    denied: ['登录未完成', '你取消了授权。请回到 WildCrane 重新登录。'],
     failed: ['登录未完成', '登录时出了点问题。请回到 WildCrane 重试。'],
   },
   en: {
+    choose: ['Sign in to WildCrane', 'Choose how to sign in, then return to WildCrane.'],
+    github: 'Sign in with GitHub',
+    google: 'Sign in with Google',
     ok: ['Signed in to WildCrane', 'You can close this page and return to WildCrane.'],
-    denied: ["Sign-in didn't finish", 'GitHub access was cancelled. Return to WildCrane to sign in again.'],
+    denied: ["Sign-in didn't finish", 'Access was cancelled. Return to WildCrane to sign in again.'],
     failed: ["Sign-in didn't finish", 'Something went wrong while signing in. Return to WildCrane to try again.'],
   },
 }
@@ -36,11 +43,28 @@ const COPY = {
 const langOf = (accept: string | undefined): 'zh' | 'en' =>
   /^\s*zh\b/i.test(accept ?? '') ? 'zh' : 'en'
 
+const GITHUB_ICON = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" \
+stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61\
+c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 \
+5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>'
+const GOOGLE_ICON = '<svg viewBox="0 0 48 48" width="17" height="17" aria-hidden="true">\
+<path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>\
+<path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>\
+<path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>\
+<path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>'
+
 // Colors and type follow web/src/review/globals.css; icons are Feather's check and x.
-const PAGE = (outcome: Outcome, lang: 'zh' | 'en') => {
-  const [title, body] = COPY[lang][outcome]
+const PAGE = (outcome: Outcome | 'choose', lang: 'zh' | 'en', links?: Record<Provider, string>) => {
+  const c = COPY[lang]
+  const [title, body] = c[outcome]
   const ok = outcome === 'ok'
   const icon = ok ? '<polyline points="20 6 9 17 4 12"/>' : '<path d="M18 6 6 18M6 6l12 12"/>'
+  const top = links
+    ? `<h1>${title}</h1><p>${body}</p><nav><a class="dark" href="${links.github}">${GITHUB_ICON}${c.github}</a>\
+<a href="${links.google}">${GOOGLE_ICON}${c.google}</a></nav>`
+    : `<span class="icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" \
+stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg></span>\
+<h1 class="below">${title}</h1><p>${body}</p>`
   return `<!doctype html><html lang="${lang === 'zh' ? 'zh-CN' : 'en'}"><meta charset="utf-8">\
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} · WildCrane</title><style>\
 *{margin:0;box-sizing:border-box}\
@@ -50,13 +74,17 @@ header{padding:16px 36px 0}\
 main{flex:1;display:flex;align-items:center;justify-content:center;padding:0 36px 64px;text-align:center}\
 .icon{display:flex;margin:0 auto;width:44px;height:44px;border-radius:50%;align-items:center;justify-content:center;\
 background:${ok ? '#e4f3ea' : '#f7ddce'};color:${ok ? '#2f6b46' : '#b83a12'}}\
-h1{margin-top:16px;font-size:24px;font-weight:850;line-height:1.25;letter-spacing:-0.02em}\
+h1{font-size:24px;font-weight:850;line-height:1.25;letter-spacing:-0.02em}\
+h1.below{margin-top:16px}\
 p{margin:8px auto 0;max-width:38ch;font-size:13px;line-height:19px;color:#565550}\
+main>div.choose{width:100%;max-width:320px}\
+nav{margin-top:28px;display:flex;flex-direction:column;gap:12px}\
+nav a{display:flex;height:44px;align-items:center;justify-content:center;gap:8px;border-radius:10px;font-size:14.5px;\
+font-weight:600;color:#24231f;text-decoration:none;background:#fff;border:1px solid rgba(36,35,31,0.14)}\
+nav a.dark{background:#24231f;color:#fff;border-color:#24231f}\
 </style><header><svg viewBox="2 4 56 52" width="23.7" height="22" aria-hidden="true">\
 <path d="${CRANE}" fill="#24231f"/><path d="${CREST}" fill="#dd4f1e"/></svg></header>\
-<main><div><span class="icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" \
-stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg></span>\
-<h1>${title}</h1><p>${body}</p></div></main></html>`
+<main><div${links ? ' class="choose"' : ''}>${top}</div></main></html>`
 }
 
 /** Why a sign-in did not finish. `detail` is the provider's or the network's own words. */
@@ -83,6 +111,12 @@ export async function signIn(options: SignInOptions = {}): Promise<SignInFailure
   let answering = false
   const server = http.createServer(async (req, res) => {
     const asked = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const lang = langOf(req.headers['accept-language'])
+    if (asked.pathname === '/' && !answering) {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(PAGE('choose', lang, { github: authorize('github'), google: authorize('google') }))
+      return
+    }
     if (asked.pathname !== '/signed-in' || answering) {
       res.writeHead(404).end()
       return
@@ -96,22 +130,26 @@ export async function signIn(options: SignInOptions = {}): Promise<SignInFailure
           detail: params.get('error_description') || error || 'no code came back' }
     const outcome = !failure ? 'ok' : failure.why === 'denied' ? 'denied' : 'failed'
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-    res.end(PAGE(outcome, langOf(req.headers['accept-language'])))
+    res.end(PAGE(outcome, lang))
     finish(failure)
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const { port } = server.address() as { port: number }
 
   const { supabaseUrl } = cloudEndpoints()
-  const url = new URL(`${supabaseUrl}/auth/v1/authorize`)
-  url.searchParams.set('provider', 'github')
-  url.searchParams.set('redirect_to', `http://127.0.0.1:${port}/signed-in`)
-  url.searchParams.set('scopes', 'user:email')
-  url.searchParams.set('code_challenge', challenge)
-  url.searchParams.set('code_challenge_method', 's256')
+  const authorize = (provider: Provider) => {
+    const url = new URL(`${supabaseUrl}/auth/v1/authorize`)
+    url.searchParams.set('provider', provider)
+    url.searchParams.set('redirect_to', `http://127.0.0.1:${port}/signed-in`)
+    if (provider === 'github') url.searchParams.set('scopes', 'user:email')
+    url.searchParams.set('code_challenge', challenge)
+    url.searchParams.set('code_challenge_method', 's256')
+    return url.toString().replace(/&/g, '&amp;')
+  }
+  const choose = `http://127.0.0.1:${port}/`
   const onUrl = options.onUrl ?? ((u: string) => status(t.signIn(u)))
-  onUrl(url.toString())
-  openBrowser(url.toString())
+  onUrl(choose)
+  openBrowser(choose)
 
   const timer = setTimeout(() => finish({ why: 'timeout', detail: 'timed out' }), WAIT_MS)
   const cancel = () => finish({ why: 'cancelled', detail: 'cancelled' })

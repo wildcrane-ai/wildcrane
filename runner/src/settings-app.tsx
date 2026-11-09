@@ -36,8 +36,13 @@ type Result = Record<string, any> & { error?: string }
 
 let csrf = ''
 let onExpired = () => {}
+/** The Runner version serving this page; a newer one took over when it changes. */
+let version: string | null = null
 async function api(action: string, body: Record<string, unknown> = {}): Promise<Result> {
   const response = await fetch('/api/' + action, { method: 'POST', headers: { 'content-type': 'application/json', 'x-settings-csrf': csrf }, body: JSON.stringify(body) })
+  const served = response.headers.get('x-settings-version')
+  if (version && served && served !== version) { location.reload(); throw Error('reloading') }
+  version ??= served
   if (response.status === 403) { onExpired(); throw Error('expired') }
   return response.json()
 }
@@ -65,7 +70,7 @@ function App() {
   const [open, setOpen] = useState(0)
   const stateRef = useRef(state)
   stateRef.current = state
-  const live = useRef({ refreshing: false, disconnected: false, saving: false, open: 0, dialog: false, tools: null as Tool[] | null })
+  const live = useRef({ refreshing: false, disconnected: false, saving: false, open: 0, dialog: false, tools: null as Tool[] | null, failures: 0 })
   live.current = { ...live.current, disconnected, saving: updateStatus === 'saving', open, dialog: !!dialog, tools }
   onExpired = () => setDisconnected(true)
   const opened = (value: boolean) => setOpen((n) => n + (value ? 1 : -1))
@@ -93,8 +98,13 @@ function App() {
         stateRef.current = next
       }
       setState(stateRef.current)
+      live.current.failures = 0
       if (stateRef.current.signedIn && !tools) void checkTools()
-    } catch { setDisconnected(true) } finally { live.current.refreshing = false }
+    } catch (e) {
+      // A newer Runner takes the page over in a moment: ride that out, not a page that went away.
+      if (e instanceof TypeError && ++live.current.failures < 5) return
+      if (!(e instanceof Error && e.message === 'reloading')) setDisconnected(true)
+    } finally { live.current.refreshing = false }
   }, [checkTools])
 
   useEffect(() => {

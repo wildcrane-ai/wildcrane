@@ -37,7 +37,7 @@ export function cloudWorkflow(name: string): string {
   return `wf_builtin_${name.replace(/-/g, '_')}`
 }
 
-export async function call<T>(method: 'GET' | 'POST' | 'PATCH', route: string, body?: unknown, key?: string): Promise<CloudCall<T> & { replayed?: boolean }> {
+export async function call<T>(method: 'GET' | 'POST' | 'PATCH' | 'PUT', route: string, body?: unknown, key?: string): Promise<CloudCall<T> & { replayed?: boolean }> {
   if (!cloudConfigured()) return { ok: false, error: NOT_CONFIGURED, code: 'bad_request' }
   const token = await accessToken()
   if (!token.ok) {

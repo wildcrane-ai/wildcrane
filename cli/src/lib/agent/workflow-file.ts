@@ -10,35 +10,12 @@ import { forgetFileMemos } from '../file-memo'
 import { draftFolder } from '../shared/board-files.ts'
 import { workspaceTask } from '../cloud/tasks'
 import { WORKFLOWS, rel } from '../paths'
-import { yamlScalar } from '../yaml'
 import { cloudFlows } from './cloud-workflows'
-import type { WorkflowHelper } from './types'
-import { parseWorkflowFile, type WorkflowDef } from './workflow-def'
+import { groupLines, parseWorkflowFile, scalar, type WorkflowDef } from './workflow-def'
 
 export { WORKFLOW_ID, parseWorkflowFile, stagesOf, type WorkflowDef } from './workflow-def'
 
 const WORKFLOW_FILE = 'WORKFLOW.md'
-
-// A ` #` would read back as a comment.
-const scalar = (value: string): string => (/\s#/.test(value) ? JSON.stringify(value) : yamlScalar(value))
-
-const plain = (agents: WorkflowHelper[]): boolean => agents.every((h) => !h.extra && !h.off)
-
-// One group's agents as list items at `indent`: a bare name, or a map carrying what the
-// workflow asks of it and whether it is off.
-function agentLines(agents: WorkflowHelper[], indent: string): string[] {
-  return agents.flatMap((h) =>
-    !h.extra && !h.off
-      ? [`${indent}- ${scalar(h.agent)}`]
-      : [
-          `${indent}- agent: ${scalar(h.agent)}`,
-          ...(h.extra ? [`${indent}  extra: ${JSON.stringify(h.extra)}`] : []),
-          ...(h.off ? [`${indent}  off: true`] : []),
-        ],
-  )
-}
-
-const flowList = (agents: WorkflowHelper[]): string => `[${agents.map((h) => scalar(h.agent)).join(', ')}]`
 
 /** One `WORKFLOW.md`, written the way the built-ins are; each group left out when empty. */
 export function workflowFileText(def: WorkflowDef): string {
@@ -48,9 +25,7 @@ export function workflowFileText(def: WorkflowDef): string {
   if (def.description) lines.push(`description: ${scalar(def.description)}`)
   if (def.when) lines.push(`when: ${scalar(def.when)}`)
   lines.push(`needsArtifact: ${def.needsArtifact}`)
-  const group = (key: string, agents: WorkflowHelper[]): string[] =>
-    !agents.length ? [] : plain(agents) ? [`${key}: ${flowList(agents)}`] : [`${key}:`, ...agentLines(agents, '  ')]
-  lines.push(...group('previews', def.previews), ...group('land', def.land))
+  lines.push(...groupLines('previews', def.previews), ...groupLines('land', def.land))
   if (def.scheduled.length) {
     lines.push('scheduled:')
     for (const s of def.scheduled) {

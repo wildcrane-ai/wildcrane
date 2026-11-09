@@ -2509,6 +2509,13 @@ describe('flow jobs (#2020)', () => {
     assert.equal(spawnSync('git', ['-C', cached(), 'log', '--oneline'], { encoding: 'utf8' }).stdout.trim().split('\n').length, 1)
   })
 
+  it('sends a new card to Cloud before planning it, so another task’s pull keeps it (#575)', async () => {
+    process.env.FAKE_AKB = JSON.stringify({ refine: { refuse: 'stopped' } })
+    const job = await flowJob('j1', { verb: 'create' })
+    assert.equal(job.outcome, 'failed')
+    assert.match(cloud.file('todo/2-pricing-page.md') ?? '', /^---\ntitle: Pricing page\n/)
+  })
+
   it('首次准备同源技能，重复运行不改写，也不调用旧命令', async () => {
     process.env.FAKE_AKB = JSON.stringify({ refine: { result: 'Planned.' } })
     const job = await flowJob('j1', { verb: 'create' })
@@ -3261,6 +3268,14 @@ describe('flow jobs (#2020)', () => {
       const job = await flowJob('j1', { verb: 'create', workflow: BUILDER })
       assert.equal(job.outcome, 'failed')
       assert.match(job.reason!, /^The workflow has a problem: .*agents\/writer\/AGENT\.md: no description/)
+      assert.equal(cloud.file(`${DRAFT}WORKFLOW.md`), null)
+    })
+
+    it('sends its card to Cloud before planning, without the draft (#577)', async () => {
+      process.env.FAKE_AKB = JSON.stringify({ refine: { refuse: 'stopped' } })
+      const job = await flowJob('j1', { verb: 'create', workflow: BUILDER })
+      assert.equal(job.outcome, 'failed')
+      assert.match(cloud.file('todo/2-pricing-page.md') ?? '', /workflow folder: \.akb\/kanban\/workflows\/task-1\//)
       assert.equal(cloud.file(`${DRAFT}WORKFLOW.md`), null)
     })
   })

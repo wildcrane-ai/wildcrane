@@ -16,7 +16,7 @@ import { printFlow } from '../src/lib/agent/flow.ts'
 import { buildPrompt } from '../src/lib/agent/prompts.ts'
 import { openPlan, planRun } from '../src/lib/agent/resolve.ts'
 import { addRuntime, setAgentRuntime } from '../src/lib/agent/runtimes.ts'
-import { readRule, ruleFor, setAgentRule } from '../src/lib/agent/rules.ts'
+import { readRule, ruleFor } from '../src/lib/agent/rules.ts'
 import { findGuide, guideNames } from '../src/lib/guide.ts'
 import { setLanguage } from '../src/lib/machine/settings.ts'
 import { runLanguage, LANGUAGE_ENV, translating } from '../src/lib/agent/language.ts'
@@ -27,6 +27,11 @@ import { RULES, setBoardRoot } from '../src/lib/paths.ts'
 import { restoreMachineHome, run as akb } from './helpers/board.ts'
 
 let root = ''
+
+const setRule = (agent: string, text: string): void => {
+  fs.mkdirSync(RULES, { recursive: true })
+  fs.writeFileSync(path.join(RULES, `${agent}.md`), `${text}\n`)
+}
 // This machine, for the tests that read the language off it (#337). Pinned for every test
 // here, so the developer's own pick can never change what a prompt says.
 let home = ''
@@ -91,7 +96,7 @@ async function end(sessionId: string): Promise<void> {
 
 describe('in-session spec work', () => {
   it('prints specialist instructions and rules without starting a run', async () => {
-    setAgentRule('ui-designer', 'Keep to the existing palette.')
+    setRule('ui-designer', 'Keep to the existing palette.')
     const file = path.join(root, 'docs/kanban/todo/features/1-card.md')
     const before = fs.readFileSync(file, 'utf8')
     const sink = startCollecting()
@@ -151,31 +156,16 @@ describe('in-session spec work', () => {
 })
 
 describe('the files', () => {
-  it('is nothing until a rule is saved, and nothing again when one is cleared', async () => {
-    assert.equal(fs.existsSync(RULES), false)
-    assert.deepEqual(setAgentRule('builder', 'Install first.'), { ok: true })
-    assert.equal(fs.readFileSync(path.join(RULES, 'builder.md'), 'utf8').trim(), 'Install first.')
-    assert.deepEqual(setAgentRule('builder', '   '), { ok: true })
-    assert.equal(fs.existsSync(path.join(RULES, 'builder.md')), false)
-  })
-
   it('gives planning no rule of its own: what it is asked is its workflow\'s (#2152)', async () => {
     workflowRule('Say what changed.')
     for (const action of ['edit', 'resolve'] as const) {
       assert.equal(ruleFor({ action, id: 1 }), '', action)
       assert.match(buildPrompt({ action, id: 1 }), /<workflow name="Coding">[\s\S]*Say what changed\./, action)
     }
-    assert.equal(setAgentRule('planner', 'Say what changed.').ok, false)
-  })
-
-  it('refuses a name no agent on this board answers to', async () => {
-    const agent = setAgentRule('deployer', 'Ship it.')
-    assert.equal(agent.ok, false)
-    assert.match(agent.error!, /discussion-helper, memory-pruner, .*, builder, /)
   })
 
   it("reads back each agent's rule, and nothing for the ones without one", async () => {
-    setAgentRule('builder', 'Install first.')
+    setRule('builder', 'Install first.')
     assert.equal(readRule('builder'), 'Install first.')
     assert.equal(readRule('ui-designer'), '')
     // One rule, every flow that agent runs.
@@ -342,7 +332,7 @@ describe('the prompt', () => {
   })
 
   it('ends on the rule, after everything the board writes', async () => {
-    setAgentRule('builder', 'Install dependencies first.')
+    setRule('builder', 'Install dependencies first.')
     const prompt = buildPrompt({ action: 'implement', id: 1, title: 'card one' })
     assert.ok(prompt.trimEnd().endsWith('Install dependencies first.'))
     assert.match(prompt, /`builder` agent carries one rule of its own\./)
@@ -354,13 +344,13 @@ describe('the prompt', () => {
   })
 
   it("reads only its own agent's rule", async () => {
-    setAgentRule('ui-designer', 'Keep to the existing palette.')
+    setRule('ui-designer', 'Keep to the existing palette.')
     assert.doesNotMatch(buildPrompt({ action: 'implement', id: 1 }), /existing palette/)
   })
 
   it('reaches every flow its agent runs, the refinement passes included', async () => {
     workflowRule('Ask about the data model.')
-    setAgentRule('builder', 'Install dependencies first.')
+    setRule('builder', 'Install dependencies first.')
     // One planner, so the composite refine and the standalone resolve read the same words.
     for (const req of [
       { action: 'clarify' as const, id: 1, refineRound: 2 },
@@ -375,7 +365,7 @@ describe('the prompt', () => {
 
   it("puts a spec agent's own rule after its instructions, and no role's", async () => {
     workflowRule('Ask about the data model.')
-    setAgentRule('ui-designer', 'Keep to the existing palette.')
+    setRule('ui-designer', 'Keep to the existing palette.')
     const prompt = buildPrompt({ action: 'spec', id: 1, specAgent: 'ui-designer' })
     assert.ok(prompt.trimEnd().endsWith('Keep to the existing palette.'))
     assert.match(prompt, /`ui-designer` agent carries one rule of its own\./)
@@ -385,7 +375,7 @@ describe('the prompt', () => {
   // A printed flow says the same thing in its own words, at the very end. It must name the
   // AGENT too: saying "the rule for `implement`" would tell the reader it stops there.
   it('names the same agent when the flow is printed, last of all', async () => {
-    setAgentRule('builder', 'Install dependencies first.')
+    setRule('builder', 'Install dependencies first.')
     const sink = startCollecting()
     try {
       printFlow({ action: 'implement', id: 1, title: 'card one' })
@@ -401,7 +391,7 @@ describe('the prompt', () => {
 
 describe('a delivery', () => {
   it('freezes the rules of the agents it is built by, keyed by agent', async () => {
-    setAgentRule('builder', 'Install dependencies first.')
+    setRule('builder', 'Install dependencies first.')
     workflowRule('Stay small.')
     const built = run('implement', 1)
     const delivery = activeDelivery(1)!
@@ -410,9 +400,9 @@ describe('a delivery', () => {
   })
 
   it('gives its later sessions the rules it started with, not the files as they read now', async () => {
-    setAgentRule('builder', 'Run the smoke tests.')
+    setRule('builder', 'Run the smoke tests.')
     const built = run('implement', 1)
-    setAgentRule('builder', 'Something else entirely.')
+    setRule('builder', 'Something else entirely.')
     const prompt = buildPrompt({ action: 'implement', id: 1, title: 'card one' })
     assert.match(prompt, /smoke tests/)
     assert.doesNotMatch(prompt, /Something else entirely/)

@@ -328,6 +328,10 @@ export function formatContractErrors(errors: readonly ContractError[]): string {
   return ['Spec format validation failed. Fix these errors without changing the planned behavior:', ...errors.map((e) => `${e.file}:${e.line} [${e.rule}] ${e.message}`)].join('\n')
 }
 
+/** What a run's end-of-run board check hands the agent to fix. */
+export const boardCheckErrors = (errors: readonly ContractError[]): string =>
+  ['Board check failed. Fix these errors without changing the planned behavior:', ...errors.map((e) => `${e.file}:${e.line} [${e.rule}] ${e.message}`)].join('\n')
+
 /** The same errors as the task page shows them. */
-export const formatProblems = (errors: readonly ContractError[]): string =>
-  ['Task format problems:', ...errors.map((e) => `- ${e.message}`)].join('\n')
+export const boardProblems = (errors: readonly ContractError[]): string =>
+  ['Board problems:', ...errors.map((e) => `- ${e.message}`)].join('\n')

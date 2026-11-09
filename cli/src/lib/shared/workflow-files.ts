@@ -6,7 +6,7 @@
  * MCP servers its runs get, `mcp.json` (#2030).
  */
 
-import { parseWorkflowFile, stagesOf, type WorkflowDef } from '../agent/workflow-def.ts'
+import { groupLines, parseWorkflowFile, stagesOf, type WorkflowDef } from '../agent/workflow-def.ts'
 import { AGENT_NAME, parseSpecAgent, type SpecAgent } from '../agents/parse.ts'
 import { workflowDiagram, type WorkflowDiagram } from '../agent/workflow-diagram.ts'
 
@@ -213,6 +213,20 @@ export function cloneFiles(files: WorkflowFiles, name?: string): { files: Workfl
   ]
   kept[WORKFLOW_FILE] = ['---', ...named, ...head, ...lines.slice(end)].join('\n')
   return { files: kept }
+}
+
+/** Its files with the workspace's `off` preview agents written `off: true` (#571). */
+export function withPreviewsOff(files: WorkflowFiles, off: string[]): WorkflowFiles {
+  const source = files[WORKFLOW_FILE] ?? ''
+  const read = parseWorkflowFile('workflow', source, WORKFLOW_FILE)
+  if ('problem' in read || !read.def.previews.some((h) => !h.off && off.includes(h.agent))) return files
+  const lines = source.split('\n')
+  const end = lines.indexOf('---', 1)
+  const at = lines.findIndex((line, i) => i > 0 && i < end && /^previews\s*:/.test(line))
+  let to = at + 1
+  while (to < end && /^[\s-]/.test(lines[to] as string)) to++
+  lines.splice(at, to - at, ...groupLines('previews', read.def.previews.map((h) => (off.includes(h.agent) ? { ...h, off: true } : h))))
+  return { ...files, [WORKFLOW_FILE]: lines.join('\n') }
 }
 
 export function previewCatalog(files: WorkflowFiles) {

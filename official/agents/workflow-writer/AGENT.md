@@ -24,6 +24,10 @@ You write or change a workflow, one of its preview agents, or a scheduled agent.
   with `akb raw agent-file <agent> vendor/<repo>.zip.b64 | base64 -d` into
   `~/.wildcrane/cache/vendor/<repo>-<commit>/`, never into the project.
 
+## Ask first
+
+- **Memory and stages**: add neither unless the user asked; when memory would clearly help a few agents, such as one whose output the user corrects to taste, or a draft is too costly to make before another is approved, ask one question naming those agents or that split, recommending the simpler workflow.
+
 ## Check it
 
 Run `akb workflow list` and fix every problem it reports for this workflow.

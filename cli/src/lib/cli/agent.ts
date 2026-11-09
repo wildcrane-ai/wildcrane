@@ -46,7 +46,7 @@ import {
   workspaceList,
 } from '../../commands/task'
 import { cmdGuide } from '../../commands/guide'
-import { cmdWorkflowDiagram, cmdWorkflowList, cmdWorkflowPull, cmdWorkflowPush, cmdWorkflowRename } from '../../commands/workflow'
+import { cmdWorkflowDiagram, cmdWorkflowInstructions, cmdWorkflowList, cmdWorkflowRule, cmdWorkflowPull, cmdWorkflowPush, cmdWorkflowRename } from '../../commands/workflow'
 import {
   cmdAnswered,
   cmdCancel,
@@ -579,6 +579,29 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .summary('save the edited folder as the workflow\'s next version, which new tasks take')
     .action(async function (this: Command, folder: string) {
       await boardless(this, cli, () => cmdWorkflowPush(folder, this.opts()))
+    })
+
+  flowWord('rule')
+    .argument('<workflow>', 'a workflow id from `akb workflow list`')
+    .option('--text <text>', 'the rules, for a one-liner; empty clears them')
+    .option('--file <path>', 'the rules, as markdown written to a file first')
+    .summary("set a workflow's rules — what every card on it follows — in the user's own words")
+    .description("Saved to Cloud for every project in the workspace; empty clears them.")
+    .action(async function (this: Command, id: string) {
+      await onBoard(this, cli, () => cmdWorkflowRule(id, this.opts()))
+    })
+
+  flowWord('instructions')
+    .argument('<agent>', 'an agent `akb workflow list` names')
+    .option('--text <text>', 'the instructions, for a one-liner; empty clears them')
+    .option('--file <path>', 'the instructions, as markdown written to a file first')
+    .summary("set one agent's instructions — appended to every run it does — in the user's own words")
+    .description(
+      "A workflow's agent is the workspace's, shared by every workflow listing it; a board's scheduled " +
+        "agent is this project's. Saved to Cloud; empty clears them.",
+    )
+    .action(async function (this: Command, agent: string) {
+      await onBoard(this, cli, () => cmdWorkflowInstructions(agent, this.opts()))
     })
 
   withShared(program.command('guide'))

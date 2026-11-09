@@ -2,8 +2,7 @@
 //
 // What is asked here: every flow the board can start belongs to exactly one agent, the
 // roster names the roles before the specialists, a board written when rules were per flow
-// is folded onto its agents once and says so, and `akb raw rule` writes the same file the
-// board reads.
+// is folded onto its agents once and says so.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -15,10 +14,9 @@ import { FLOWS } from '../src/lib/agent/flows.ts'
 import { buildRun } from '../src/lib/agent/prompts.ts'
 import { agentNames, agentRoster, roleForFlow, roleNamed, roles, stageContractProblems } from '../src/lib/agent/roles.ts'
 import { agentForFlow } from '../src/lib/agent/stages.ts'
-import { migrateFlowRules, readRule, ruleFor, setAgentRule } from '../src/lib/agent/rules.ts'
+import { migrateFlowRules, readRule, ruleFor } from '../src/lib/agent/rules.ts'
 import { specAgentProblems } from '../src/lib/agents/index.ts'
 import { RULES, setBoardRoot, UI_CONFIG } from '../src/lib/paths.ts'
-import { move, refuses } from './helpers/board.ts'
 
 let root = ''
 
@@ -216,6 +214,15 @@ describe("the one-time move onto the agents", () => {
     assert.match(prompt, /smoke tests/)
   })
 
+  // The agent was renamed, and a rule is saved under the agent's name.
+  it('moves a spec agent’s rule off the name it had before, once', () => {
+    fs.mkdirSync(RULES, { recursive: true })
+    fs.writeFileSync(path.join(RULES, 'ui-design.md'), 'Keep to the existing palette.\n')
+    assert.equal(readRule('ui-designer'), 'Keep to the existing palette.')
+    assert.equal(ruleText('ui-designer'), 'Keep to the existing palette.')
+    assert.equal(fs.existsSync(path.join(RULES, 'ui-design.md')), false)
+  })
+
   it('leaves a board that never had a rule alone', () => {
     assert.deepEqual(migrateFlowRules(), [])
     assert.equal(fs.existsSync(RULES), false)
@@ -224,39 +231,3 @@ describe("the one-time move onto the agents", () => {
   })
 })
 
-describe('akb raw rule', () => {
-  it('writes one agent\'s rule from a file, replaces it, and clears it', async () => {
-    const file = path.join(root, 'rule.md')
-    fs.writeFileSync(file, 'Install dependencies first.\n')
-    const wrote = await move(root, ['rule', 'builder', '--file', file])
-    assert.equal(wrote.agent, 'builder')
-    assert.equal(ruleText('builder'), 'Install dependencies first.')
-
-    await move(root, ['rule', 'builder', '--text', 'Something else.'])
-    assert.equal(ruleText('builder'), 'Something else.')
-
-    const cleared = await move(root, ['rule', 'builder', '--text', ''])
-    assert.equal(cleared.cleared, true)
-    assert.equal(fs.existsSync(path.join(RULES, 'builder.md')), false)
-  })
-
-  it('takes a spec agent by name too, and refuses a name no agent answers to', async () => {
-    await move(root, ['rule', 'ui-designer', '--text', 'Keep to the existing palette.'])
-    assert.equal(ruleText('ui-designer'), 'Keep to the existing palette.')
-    await refuses(root, ['rule', 'designer', '--text', 'Anything.'], /discussion-helper, memory-pruner, .*, builder, /)
-  })
-
-  // The agent was renamed, and a rule is saved under the agent's name.
-  it('moves a spec agent’s rule off the name it had before, once', async () => {
-    fs.mkdirSync(RULES, { recursive: true })
-    fs.writeFileSync(path.join(RULES, 'ui-design.md'), 'Keep to the existing palette.\n')
-    assert.equal(readRule('ui-designer'), 'Keep to the existing palette.')
-    assert.equal(ruleText('ui-designer'), 'Keep to the existing palette.')
-    assert.equal(fs.existsSync(path.join(RULES, 'ui-design.md')), false)
-  })
-
-  it('refuses two sources, and no source at all', async () => {
-    await refuses(root, ['rule', 'builder', '--file', 'a.md', '--text', 'b'], /not both/)
-    await refuses(root, ['rule', 'builder'], /--file <path>/)
-  })
-})

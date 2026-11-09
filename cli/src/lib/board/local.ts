@@ -33,7 +33,6 @@ import { cmdList, type ListOptions } from '../../commands/list'
 import { cmdRemove, type RemoveOptions } from '../../commands/remove'
 import { cmdAgentFile } from '../../commands/agent-file'
 import { cmdMemoryFile } from '../../commands/memory-file'
-import { cmdRule, type RuleOptions } from '../../commands/rule'
 import { cmdValidate } from '../../commands/validate'
 import { quietly } from '../io'
 import { withBoardLock } from '../lock'
@@ -82,7 +81,6 @@ const MOVES: Record<string, RunMove> = {
   list: ({ opts }) => cmdList(as<ListOptions>(opts)),
   archive: ({ args }) => cmdRemove(Number(args[0]), 'completed'),
   reject: ({ args, opts }) => cmdRemove(Number(args[0]), 'rejected', as<RemoveOptions>(opts)),
-  rule: ({ args, opts }) => cmdRule(args[0] ?? '', as<RuleOptions>(opts)),
   'agent-file': ({ args }) => cmdAgentFile(args[0] ?? '', args[1] ?? ''),
   'memory-file': ({ args }) => cmdMemoryFile(args[0] ?? ''),
 }

@@ -33,7 +33,7 @@ const [PLANNER_DECISIONS, PLANNER_REJECTED, PLANNER_REDESIGN] = ['decisions.md',
 
 /** One role: an agent the board ships, named by the work rather than by a flow. */
 export interface AgentRole {
-  /** Its name — the rule file it carries, and the word `akb raw rule` takes. */
+  /** Its name — and the rule file it carries. */
   name: string
   /** Runs, but is on no roster: no runtime of its own, and no rule. */
   hidden?: true
@@ -258,8 +258,7 @@ const ownMemoryOf = (name: string, memory: string[]): string[] =>
   memoryNamesOf(name).filter((file) => memory.includes(rel(agentMemoryFile(name, file))))
 
 /** Every agent this board has, in the board's order: the roles first, then the specialists
- *  the command ships, then the ones the project added. One list, so `akb raw rule` and the
- *  Agents pane name the same team. */
+ *  the command ships, then the ones the project added. */
 export function agentRoster(): RosterEntry[] {
   // A specialist's words are the ones its own file declares, in the language this
   // machine reads — an agent is user-facing, and its `akb.i18n` block is where it says so.

@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 import { clearSession, readSession, writeSession } from '../../cli/src/lib/cloud/session'
 import { adoptLegacy, allow, allowedProjects, refusal } from '../src/folders'
 import { runnerHome, useRunnerHome } from '../src/home'
-import { closeSettings, openSettings, startSettingsServer } from '../src/settings-server'
+import { closeSettings, followNewest, openSettings, startSettingsServer } from '../src/settings-server'
 import { settingsAction, addFolder } from '../src/settings'
 import { acceptAlphaUpdates, saveAlphaUpdates } from '../src/preferences'
 import { hold, kept } from '../src/cache'
@@ -119,7 +119,7 @@ describe('本机设置服务', () => {
     const response = await a.call({ 'x-settings-csrf': b.csrf })
     assert.deepEqual(await response.json(), { action: 'state', context: { path: '/b' } })
   })
-  it('本机运行过更新的 Runner 时由它提供设置页，旧版不带设置页时用自带的', async () => {
+  it('本机运行过更新的 Runner 时由它提供设置页，已开的页随之换新且地址与会话不变；旧版不带设置页时用自带的', async () => {
     const versions = path.join(runnerHome(), 'bin', 'runner')
     const install = (version: string, settings: boolean) => {
       const dist = path.join(versions, version, 'dist')
@@ -131,10 +131,16 @@ describe('本机设置服务', () => {
     const owner = () => (JSON.parse(fs.readFileSync(path.join(runnerHome(), 'settings-page.json'), 'utf8')) as { pid: number }).pid
     try {
       install('9.9.8', false)
-      await browser()
+      const old = await browser()
       assert.equal(owner(), process.pid)
-      await closeSettings()
+      // A newer Runner takes the open page over on the same address, keeping its session.
       install('9.9.9', true)
+      await followNewest()
+      assert.notEqual(owner(), process.pid)
+      const kept = await old.call()
+      assert.equal(kept.status, 200)
+      assert.equal(kept.headers.get('x-settings-version'), '9.9.9')
+      await closeSettings()
       const a = await browser({ path: '/a' }), b = await browser({ path: '/b' })
       assert.equal(a.origin, b.origin)
       assert.notEqual(owner(), process.pid)

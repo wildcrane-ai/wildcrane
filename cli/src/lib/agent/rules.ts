@@ -23,9 +23,8 @@ import path from 'node:path'
 
 import { rel, RULES } from '../paths'
 import { canonicalSpecAgent, FOLDED_SPEC_AGENTS, specAgentNames } from '../spec-agent-names'
-import type { WriteResult } from '../view/types'
 import { DELIVERY_FLOWS, FLOWS, flowByAction, flowByCommand, type Flow } from './flows'
-import { agentNames, hiddenRole, roleForFlow, roleFlowsInOrder, roleNamed, roles, type AgentRole } from './roles'
+import { hiddenRole, roleForFlow, roleFlowsInOrder, roleNamed, roles, type AgentRole } from './roles'
 import { agentForRun, workflowForRun } from './runner'
 import { landAgents, workflowFor } from './workflows'
 import { REFINE_ACTIONS, SPECIALIST_ACTIONS } from './types'
@@ -49,30 +48,6 @@ export function readRule(agent: string): string {
   migrateFlowRules()
   return ruleFile(agent)
 }
-
-/** Save one agent's rule. An empty rule deletes the file rather than leaving a blank one
- *  behind: an agent with no rule and an agent with an empty rule are the same agent. */
-export function setAgentRule(agent: string, text: string): WriteResult {
-  migrateFlowRules()
-  if (!agentNames().includes(agent)) return { ok: false, error: notOnTheRoster(agent) }
-  const rule = String(text ?? '').trim()
-  try {
-    if (!rule) {
-      fs.rmSync(rulePath(agent), { force: true })
-      return { ok: true }
-    }
-    fs.mkdirSync(RULES, { recursive: true })
-    fs.writeFileSync(rulePath(agent), `${rule}\n`)
-    return { ok: true }
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) }
-  }
-}
-
-/** Why a name is not one this board can be given a rule for, and what it does answer to.
- *  Not `lib/agents`' `notAnAgent`, which answers for the spec hook alone. */
-export const notOnTheRoster = (name: string): string =>
-  `"${name}" is not an agent on this board. It has: ${agentNames().join(', ')}.`
 
 /** The rules a delivery freezes when it starts, keyed by the AGENT that carries each: the
  *  agents a delivery's flows are run by, read once, the way it reads the card it was

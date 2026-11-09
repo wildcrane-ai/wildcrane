@@ -19,7 +19,7 @@ docs/kanban/
 │   └── agents/     one folder per agent that keeps memory, named after it —
 │                   `planner/` holds `decisions.md`, `rejected.md`, `redesign.md`
 ├── rules/          `<agent>.md` — the user's rule for one agent, appended to every run it
-│                   does; written from the board UI or `akb raw rule`
+│                   does; written from the web or `akb workflow instructions`
 ├── triage/         items waiting to be sorted, one file each — not cards. Only
 │   │               Cloud's sort or Refine idea on the web's Triage page turns one
 │   │               into a card; `akb raw triage check <source-id>` finds an existing one

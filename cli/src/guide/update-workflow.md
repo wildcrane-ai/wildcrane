@@ -6,8 +6,10 @@ Change one of this workspace's workflows so new tasks run the new version.
 
 A workflow is steerable: agents do the work, and a person reviews and fine-tunes only the parts where precision matters most, so the result stays reliable.
 
-- **Previews**: give a part its own preview agent only when it needs precision and a mistake there is costly, such as a developer tool's screens, whose experience drives retention. Each shows only what the person decides on, without overlapping another.
-- **Stages**: previews are approved together in one stage by default. Add `after` only when a draft is too costly to make before another is approved, such as a video's storyboard, which waits for its script.
+- **Previews**: usually one preview agent shows the first draft; add another only when a part needs precision and a mistake there is costly, such as a developer tool's screens. Each shows only what the person decides on, without overlapping another. With none, the card the `WORKFLOW.md` body writes is the only review.
+- **Unreviewable previews**: when the user finds a preview unneeded or cannot judge it, remove it; a land agent checks that part instead, or nobody does.
+- **Stages**: one stage by default. Add `after` only when a draft is too costly to make before another is approved, such as a video's storyboard, which waits for its script.
+- **Minimal**: when the user outlines the workflow, keep it that simple or simpler; add no review point or constraint they did not ask for, and let the trial show what else needs review.
 - **Land**: everything else runs unattended after the last approval and follows the approved drafts, such as building and merging a change; leave `land` empty when the last approved preview is the deliverable.
 - **Scheduled**: repeating work runs as a scheduled agent without previews; a workflow may hold only scheduled agents.
 - **`WORKFLOW.md`**: list its agents under `previews`, `land` and `scheduled`; `description` says in one sentence what it does; `when` tells an agent which requests it is for, exceptions included; the body is how a card of this kind is written.

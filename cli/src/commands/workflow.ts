@@ -11,7 +11,7 @@ import { locate } from '../lib/cards'
 import { say } from '../lib/io'
 import { ASSETS, die } from '../lib/paths'
 import { workflowDiagram } from '../lib/agent/workflow-diagram'
-import { NEEDS_CLOUD, cloudFlows, workflowsOffline, workflowsReachable, type WorkflowFiles } from '../lib/agent/cloud-workflows'
+import { NEEDS_CLOUD, boardProject, cloudFlows, workflowsOffline, workflowsReachable, type WorkflowFiles } from '../lib/agent/cloud-workflows'
 import {
   workflowPurpose,
   workflowWhen,
@@ -30,7 +30,7 @@ import type { MoveResult } from '../lib/types'
 import { readWorkflowFolder } from '../lib/agent/workflow-folder'
 import { checkWorkflowFiles, isAboutFile, VERSION_FILE, versionText } from '../lib/shared/workflow-files'
 import { workflowName } from '../lib/shared/board-files'
-import { call } from '../lib/cloud/tasks'
+import { call, type CloudCall } from '../lib/cloud/tasks'
 
 const found = (id: string) => {
   const flow = workflowById(id)
@@ -161,4 +161,83 @@ export async function cmdWorkflowPush(folder: string, opts: { dryRun?: boolean }
   fs.writeFileSync(path.join(dir, VERSION_FILE), versionText(cloudId, next))
   say(`Pushed ${id} v${next}. New tasks take it.`)
   return { id, version: next, changed: true }
+}
+
+// ---- rules and instructions, saved to Cloud the way the web saves them (#585) ----
+
+interface NoteOptions {
+  file?: string
+  text?: string
+}
+
+function noteText(what: string, { file, text }: NoteOptions): string {
+  if (file !== undefined && text !== undefined) die('pass --file or --text, not both', 'bad-args')
+  if (file !== undefined) {
+    try {
+      return fs.readFileSync(file, 'utf8').trim()
+    } catch {
+      die(`can't read ${file}`, 'bad-args')
+    }
+  }
+  if (text !== undefined) return text.trim()
+  die(`the ${what} have to come from --text or --file`, 'bad-args')
+}
+
+function cloudOk<T>(res: CloudCall<T>): T {
+  if (!res.ok) die(res.error, res.code === 'unauthenticated' ? 'needs-cloud' : 'cloud-refused')
+  return (res as { value: T }).value
+}
+
+const enc = encodeURIComponent
+
+async function cloudScope(): Promise<{ project: string; workspace: string }> {
+  const project = boardProject()
+  if (!project) die('This board is not linked to a Cloud project.', 'needs-cloud')
+  const held = cloudOk(await call<{ workspace: string }>('GET', `/v1/projects/${enc(project)}`))
+  return { project, workspace: held.workspace }
+}
+
+interface WorkspaceRules {
+  workflows: { id: string }[]
+  data: { agent: string }[]
+}
+
+/** `akb workflow rule <workflow>`: the rules every card on it follows. */
+export async function cmdWorkflowRule(name: string, opts: NoteOptions): Promise<MoveResult> {
+  const rule = noteText('rules', opts)
+  const { workspace } = await cloudScope()
+  const held = cloudOk(await call<WorkspaceRules>('GET', `/v1/workspaces/${enc(workspace)}/workflow-rules`))
+  const flow = held.workflows.find((w) => workflowName(w.id) === name)
+  if (!flow) {
+    die(`no workflow called "${name}" here. There are: ${held.workflows.map((w) => workflowName(w.id)).join(', ')}.`, {
+      kind: 'no-such-workflow',
+      workflow: name,
+    })
+  }
+  cloudOk(await call('PUT', `/v1/workspaces/${enc(workspace)}/workflows/${enc(flow!.id)}/rule`, { rule }))
+  say(`${rule ? 'saved' : 'cleared'} the rules of ${name}`)
+  return { workflow: name, rule }
+}
+
+/** `akb workflow instructions <agent>`: a workflow agent's are the workspace's, a board agent's this project's. */
+export async function cmdWorkflowInstructions(agent: string, opts: NoteOptions): Promise<MoveResult> {
+  const rule = noteText('instructions', opts)
+  const { project, workspace } = await cloudScope()
+  const [shared, own] = await Promise.all([
+    call<WorkspaceRules>('GET', `/v1/workspaces/${enc(workspace)}/workflow-rules`),
+    call<{ board: string[] }>('GET', `/v1/projects/${enc(project)}/agents`),
+  ])
+  const flowAgents = cloudOk(shared).data.map((a) => a.agent)
+  const board = cloudOk(own).board
+  const scope = board.includes(agent) ? 'project' : flowAgents.includes(agent) ? 'workspace' : null
+  if (!scope) {
+    die(`no agent called "${agent}" here. There are: ${[...new Set([...flowAgents, ...board])].join(', ')}.`, {
+      kind: 'no-such-agent',
+      agent,
+    })
+  }
+  const route = scope === 'project' ? `/v1/projects/${enc(project)}/agents/${enc(agent)}` : `/v1/workspaces/${enc(workspace)}/agents/${enc(agent)}`
+  cloudOk(await call('PUT', route, { rule }))
+  say(rule ? `saved ${agent}'s instructions (${scope === 'project' ? 'this project' : 'every project'})` : `cleared ${agent}'s instructions`)
+  return { agent, rule, scope }
 }

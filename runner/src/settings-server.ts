@@ -7,7 +7,7 @@ import { runnerHome } from './home'
 import { provenNewer } from './launcher'
 import { VERSION } from './protocol'
 import { openBrowser } from './settings-browser'
-import { versionDir } from './update'
+import { compare, versionDir } from './update'
 import page from './settings.html'
 import client from 'virtual:settings-client'
 
@@ -15,11 +15,20 @@ export interface SettingsContext { path?: string; project?: string }
 export type SettingsAction = (action: string, body: Record<string, unknown>, context: SettingsContext) => Promise<unknown>
 interface RecordFile { port: number; secret: string; pid: number }
 const recordFile = () => path.join(runnerHome(), 'settings-page.json')
+/** Tickets and sessions, so a page restarted on the same port keeps its open tabs. */
+const sessionsFile = () => path.join(runnerHome(), 'settings-sessions.json')
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const random = () => crypto.randomBytes(32).toString('hex')
-let own: { close(): Promise<void> } | null = null
+/** A page started from a newer Runner's folder is that version. */
+const PAGE_VERSION = process.env.WILDCRANE_SETTINGS_VERSION ?? VERSION
+let own: { port: number; close(): Promise<void> } | null = null
 /** 由本机更新的 Runner 提供设置页时，随宿主存活的子进程。 */
 let helper: ChildProcess | null = null
+/** What the page this process owns runs, followed to each newer Runner. */
+let served: { version: string; port: number; action: SettingsAction } | null = null
+let follower: ReturnType<typeof setInterval> | null = null
+let swapping = false
+let refused: string | null = null
 
 async function control(record: RecordFile, action: string, body = {}): Promise<Response> {
   return fetch(`http://127.0.0.1:${record.port}/control/${action}`, {
@@ -48,7 +57,7 @@ export async function openSettings(action: SettingsAction, context: SettingsCont
         }
       } catch {}
     }
-    if (attempt === 0 && await startNewer()) continue
+    if (attempt === 0 && await startNewer(action)) continue
     try {
       const fd = fs.openSync(lock, 'wx', 0o600)
       fs.writeFileSync(fd, String(process.pid))
@@ -67,18 +76,25 @@ export async function openSettings(action: SettingsAction, context: SettingsCont
       if (current) {
         try { if ((await control(current, 'ping')).ok) continue } catch {}
       }
-      own = await startSettingsServer(action)
+      own = await startSettingsServer(action, Number(process.env.WILDCRANE_SETTINGS_PORT) || 0)
+      follow({ version: PAGE_VERSION, port: own.port, action })
     } finally { fs.rmSync(lock, { force: true }) }
   }
   throw new Error('settings_unavailable')
 }
 
+/** The newest Runner that ran here and carries a settings page, when newer than this one. */
+const newerPage = () => {
+  const version = process.env.WILDCRANE_SETTINGS_CHILD ? null : provenNewer(VERSION)
+  return version && fs.existsSync(path.join(versionDir(version), 'dist', 'settings.mjs')) ? version : null
+}
+
 /** 本机已运行过更新的 Runner 且它带设置页时，由它提供；旧版或启动失败时用自带的。 */
-async function startNewer(): Promise<boolean> {
-  const version = process.env.WILDCRANE_SETTINGS_CHILD || helper ? null : provenNewer(VERSION)
-  const entry = version && path.join(versionDir(version), 'dist', 'settings.mjs')
-  if (!entry || !fs.existsSync(entry)) return false
-  const child = spawn(process.execPath, [entry], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], env: { ...process.env, WILDCRANE_SETTINGS_CHILD: '1' } })
+async function startNewer(action: SettingsAction, port = 0): Promise<boolean> {
+  const version = helper ? null : newerPage()
+  if (!version || version === refused) return false
+  const entry = path.join(versionDir(version), 'dist', 'settings.mjs')
+  const child = spawn(process.execPath, [entry], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], env: { ...process.env, WILDCRANE_SETTINGS_CHILD: '1', WILDCRANE_SETTINGS_VERSION: version, WILDCRANE_SETTINGS_PORT: String(port) } })
   const ready = await new Promise<boolean>((resolve) => {
     const timer = setTimeout(() => resolve(false), 10_000)
     child.once('message', (m: { type?: string }) => { clearTimeout(timer); resolve(m?.type === 'settings-ready') })
@@ -88,13 +104,36 @@ async function startNewer(): Promise<boolean> {
   if (ready && child.exitCode === null) {
     helper = child
     child.once('exit', () => { if (helper === child) helper = null })
-  } else child.kill()
+    follow({ version, port: discover()?.port ?? port, action })
+  } else { child.kill(); refused = version }
   return ready
+}
+
+/** The owner swaps its page to each newer Runner on the same port, so open tabs carry on. */
+function follow(next: typeof served): void {
+  served = next
+  if (follower || process.env.WILDCRANE_SETTINGS_CHILD) return
+  follower = setInterval(() => void followNewest(), 5000)
+  follower.unref()
+}
+
+export async function followNewest(): Promise<void> {
+  const version = newerPage()
+  if (!served || swapping || !version || version === refused || compare(version, served.version) <= 0) return
+  swapping = true
+  const { port, action } = served
+  try {
+    await stopPage()
+    if (!await startNewer(action, port)) {
+      own = await startSettingsServer(action, port)
+      served = { version: PAGE_VERSION, port: own.port, action }
+    }
+  } finally { swapping = false }
 }
 
 export const ownsSettings = () => own !== null || helper !== null
 
-export async function closeSettings(): Promise<void> {
+async function stopPage(): Promise<void> {
   await own?.close(); own = null
   const child = helper
   helper = null
@@ -105,10 +144,27 @@ export async function closeSettings(): Promise<void> {
   if (child.exitCode === null) child.kill()
 }
 
-export async function startSettingsServer(action: SettingsAction) {
+export async function closeSettings(): Promise<void> {
+  if (follower) clearInterval(follower)
+  follower = null; served = null; refused = null
+  await stopPage()
+}
+
+export async function startSettingsServer(action: SettingsAction, port = 0) {
   const secret = random()
   const tickets = new Map<string, { context: SettingsContext; until: number }>()
   const sessions = new Map<string, { browser: string; context: SettingsContext; until: number }>()
+  try {
+    const held = JSON.parse(fs.readFileSync(sessionsFile(), 'utf8')) as { tickets?: [string, never][]; sessions?: [string, never][] }
+    for (const [key, value] of held.tickets ?? []) tickets.set(key, value)
+    for (const [key, value] of held.sessions ?? []) sessions.set(key, value)
+  } catch {}
+  const keep = () => {
+    for (const map of [tickets, sessions]) for (const [key, value] of map) if (value.until < Date.now()) map.delete(key)
+    const tmp = `${sessionsFile()}.${process.pid}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify({ tickets: [...tickets], sessions: [...sessions] }), { mode: 0o600 })
+    fs.renameSync(tmp, sessionsFile())
+  }
   let origin = ''
   let record: RecordFile
   const json = (res: http.ServerResponse, code: number, value: unknown) => {
@@ -116,6 +172,7 @@ export async function startSettingsServer(action: SettingsAction) {
   }
   const server = http.createServer(async (req, res) => {
     res.setHeader('cache-control', 'no-store')
+    res.setHeader('x-settings-version', PAGE_VERSION)
     res.setHeader('referrer-policy', 'no-referrer')
     res.setHeader('x-content-type-options', 'nosniff')
     res.setHeader('content-security-policy', "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
@@ -134,9 +191,9 @@ export async function startSettingsServer(action: SettingsAction) {
       if (route === '/control/ping' || route === '/control/open') {
         if (req.headers.authorization !== `Bearer ${secret}`) return json(res, 403, { error: 'forbidden' })
         if (route === '/control/ping') return json(res, 200, { ready: true })
-        for (const [key, value] of tickets) if (value.until < Date.now()) tickets.delete(key)
         const ticket = random()
         tickets.set(ticket, { context: { path: typeof body.path === 'string' ? body.path : undefined, project: typeof body.project === 'string' ? body.project : undefined }, until: Date.now() + 12 * 3600_000 })
+        keep()
         return json(res, 200, { url: `${origin}/#${ticket}` })
       }
       if (req.headers.origin !== origin) return json(res, 403, { error: 'forbidden' })
@@ -146,8 +203,8 @@ export async function startSettingsServer(action: SettingsAction) {
         if (!entry || entry.until < Date.now()) return json(res, 403, { error: 'expired' })
         const browser = /(?:^|;\s*)wc_settings=([a-f0-9]{64})/.exec(req.headers.cookie ?? '')?.[1] ?? random()
         const csrf = random()
-        for (const [key, value] of sessions) if (value.until < Date.now()) sessions.delete(key)
         sessions.set(csrf, { browser, context: entry.context, until: Date.now() + 12 * 3600_000 })
+        keep()
         res.setHeader('set-cookie', `wc_settings=${browser}; HttpOnly; SameSite=Strict; Path=/`)
         return json(res, 200, { csrf })
       }
@@ -159,15 +216,17 @@ export async function startSettingsServer(action: SettingsAction) {
       return json(res, 200, await action(name, body, session.context))
     } catch { return json(res, 500, { error: 'failed' }) }
   })
-  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
-  const port = (server.address() as { port: number }).port
-  origin = `http://127.0.0.1:${port}`
-  record = { port, secret, pid: process.pid }
+  const listen = (at: number) => new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(at, '127.0.0.1', resolve) })
+  await listen(port).catch(() => listen(0))
+  const bound = (server.address() as { port: number }).port
+  origin = `http://127.0.0.1:${bound}`
+  record = { port: bound, secret, pid: process.pid }
   const tmp = `${recordFile()}.${process.pid}.tmp`
   fs.writeFileSync(tmp, JSON.stringify(record), { mode: 0o600 })
   fs.renameSync(tmp, recordFile())
   return {
     origin,
+    port: bound,
     async close() {
       if (discover()?.secret === secret) fs.rmSync(recordFile(), { force: true })
       server.closeAllConnections()

@@ -68,7 +68,7 @@ describe('a run the board ended', () => {
     await watchRun(opened.run.sessionId, async () => ({ error: 'no resume' }))
     const run = peekRun(opened.run.sessionId)!
     assert.equal(run.status, 'error')
-    assert.match(run.error ?? '', /^Failed to authenticate\. API Error: 403\nSign in[^\n]*\n+Task format problems:\n- Task #1 disappeared/)
+    assert.match(run.error ?? '', /^Failed to authenticate\. API Error: 403\nSign in[^\n]*\n+Board problems:\n- Task #1 disappeared/)
   })
 
   it('keeps the kinds through a read of the record', () => {
