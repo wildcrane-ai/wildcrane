@@ -3,7 +3,8 @@
 import { cloudLanguage, cloudPrompt } from '../../cli/src/lib/agent/language'
 import { authorizedFolder, progressEvidence, progressFolder, restartFolder } from './handoff'
 import { markEnv, stopMark } from '../../cli/src/lib/agent/stop'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process'
+import { spawnable } from '../../cli/src/lib/agent/spawnable'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -21,6 +22,7 @@ import { allowedProjects } from './folders'
 import { goalsFileOf, readGoals, writeGoals } from './goals'
 import { replySpent, checkpointEvent, clearCheckpoint, readCheckpoint, saveCheckpoint, stopReply, replyRetry, replayable, resumable, UNCERTAIN, type Checkpoint } from './recovery'
 import { runnerHome } from './home'
+import { trackSubagents } from './subagents'
 import { followProxy } from './proxy'
 import { detectRuntimes, forks, plan as realPlan, type Plan, type Settings } from './runtimes'
 import { keepSecrets, secretsOf } from './secrets'
@@ -619,9 +621,11 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
     return { ...rest, ...replySpent(checkpoint, job.runtime) }
   }
   let replyProgress = false
+  const subagents = trackSubagents()
   const remember = (event: RunEvent) => {
     if (['message', 'tool_call', 'tool_call_update'].includes(event.kind)) replyProgress = true
     if (stream.lost()) return
+    subagents.event(event)
     checkpointEvent(checkpoint, event)
     const session = run?.session()
     if (session) checkpoint.session = session
@@ -663,8 +667,10 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
     persist()
   }
   let savedGoals: JobReport['goals']
-  const told = (said: JobReport): JobReport => {
+  const told = (report: JobReport): JobReport => {
     if (goalFile) savedGoals ??= readGoals(goalFile)
+    const ran = subagents.summary()
+    const said = ran ? { ...report, subagents: ran } : report
     return savedGoals ? { ...said, ...(job.discussion?.goals !== undefined ? { goals: savedGoals } : { ideas: savedGoals }) } : said
   }
   track(stream.stop)
@@ -736,7 +742,7 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
     beginAttempt()
     const plan = run
     const converse = run.converse
-    const child = spawn(plan.command, plan.args, { cwd, env: markEnv(plan.env, checkpoint.mark!), detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = launch(plan.command, plan.args, { cwd, env: markEnv(plan.env, checkpoint.mark!), detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
     if (child.pid) { checkpoint.process = { pid: child.pid, since: Date.now() }; persist() }
     stream.adopt(child)
     child.stdin.on('error', () => {})
@@ -785,7 +791,7 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
     return sendBack(deps, id, lease, ws, said, () => keepChat(job, said.reply))
   }
   const printed = async (plan: Plan) => {
-    const child = spawn(plan.command, plan.args, { cwd, env: markEnv(plan.env, checkpoint.mark!), detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = launch(plan.command, plan.args, { cwd, env: markEnv(plan.env, checkpoint.mark!), detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
     if (child.pid) { checkpoint.process = { pid: child.pid, since: Date.now() }; persist() }
     stream.adopt(child)
     child.stdin.on('error', () => {})
@@ -914,11 +920,18 @@ const sessionMissing = (text: string) =>
   /\b(?:session|conversation|thread)\b[^\n]*(?:\bnot found\b|\bdoes not exist\b)/i.test(text)
   || /\bno (?:conversation|session|thread) found\b/i.test(text))
 
+/** A runtime's process, started the way Windows needs (agent/spawnable.ts). */
+function launch(command: string, args: string[], options: SpawnOptions): ChildProcessWithoutNullStreams {
+  const start = spawnable(command, args, options)
+  return spawn(start.command, start.args, start.options) as ChildProcessWithoutNullStreams
+}
+
 function signalTree(child: ChildProcess, signal: NodeJS.Signals): void {
   if (!child.pid) return
   if (process.platform === 'win32') {
-    const kill = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+    const kill = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
     kill.on('error', () => child.kill(signal))
+    kill.on('exit', (code) => code && child.exitCode === null && child.kill(signal))
     return
   }
   try { process.kill(-child.pid, signal) } catch { child.kill(signal) }
@@ -976,8 +989,7 @@ async function finish(deps: Shared, id: string, lease: Lease, outcome: Outcome, 
 /** What the job changed goes back, then how it ended; `landed` once both were taken. */
 async function sendBack(deps: StepDeps, id: string, lease: Lease, ws: TaskFolder, said: JobReport, landed = () => {}): Promise<void> {
   const built = await builtWorkflow(ws, deps.akb)
-  if (built && !built.ok) return finish(deps, id, lease, 'failed', built.reason, said)
-  const report = built ? { ...said, workflow: { files: built.files } } : said
+  const report = built ? { ...said, workflow: { files: built } } : said
   const pushed = await whileOffline<Pushed>(deps, id, lease, () => push(ws, { id, machineId: deps.machineId }))
   if (!pushed) return
   if (pushed.ok) {
@@ -1018,7 +1030,7 @@ async function runTest(job: Job, deps: Shared, lease: Lease): Promise<void> {
   const run = deps.plan(job.runtime, job.prompt, cwd, null, job.model, settingsOf(job))
   const startedAt = Date.now()
   if (run.converse) {
-    const child = spawn(run.command, run.args, { cwd, env: run.env, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'ignore'] })
+    const child = launch(run.command, run.args, { cwd, env: run.env, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'ignore'] })
     child.stdin.on('error', () => {})
     let timer: NodeJS.Timeout | undefined
     const end = await Promise.race([
@@ -1036,7 +1048,7 @@ async function runTest(job: Job, deps: Shared, lease: Lease): Promise<void> {
   const renderer = run.renderer!
   const exited = await new Promise<{ code: number | null; error?: NodeJS.ErrnoException; timedOut?: boolean; said: string }>((resolve) => {
     let said = ''
-    const child = spawn(run.command, run.args, { cwd, env: run.env, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = launch(run.command, run.args, { cwd, env: run.env, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
     const timer = setTimeout(() => {
       child.kill('SIGTERM')
       setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS).unref()

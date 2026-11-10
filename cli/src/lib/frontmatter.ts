@@ -48,7 +48,7 @@ export function serializeFrontmatter(m: Partial<Meta>): string {
     out.push('questions:')
     for (const raw of m.questions) {
       const q = normalizeQuestion(raw)
-      if (!hasOptions(q) && !q.agent && !q.skipped) {
+      if (!hasOptions(q) && !q.agent) {
         out.push(`  - ${yamlScalar(q.text)}`)
         continue
       }
@@ -60,7 +60,6 @@ export function serializeFrontmatter(m: Partial<Meta>): string {
         out.push(`    recommend: [${q.recommend.join(', ')}]`)
       }
       if (q.agent) out.push(`    agent: ${yamlScalar(q.agent)}`)
-      if (q.skipped) out.push('    skipped: true')
     }
   }
   out.push('---')

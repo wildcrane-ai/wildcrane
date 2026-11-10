@@ -16,8 +16,7 @@ cannot proceed and offer ways forward.
   card ids, agent names, or board jargon.
 - **Options**: exclusive unless they genuinely combine (`--mode multi`); never write an
   "other" option, the user always gets one.
-- **Not a question**: where a fix goes (`akb guide follow-up`), and one marked
-  `skipped: true` — the user declined to answer it, which grants nothing.
+- **Not a question**: where a fix goes (`akb guide follow-up`).
 
 ```text
 akb raw update-questions <id> \

@@ -43,6 +43,8 @@ export interface Runtime {
   /** That harness's own declared settings, plus the optional `command` override. A `secret`
    *  is never here: its value lives in `docs/kanban/.env` under `secretVar`'s name. */
   settings: Record<string, string>
+  /** Why this computer cannot run it (#625): set by a Runner for a pick bound to another computer. */
+  away?: string
 }
 
 /** The id of the first row, which every board has. */
@@ -78,7 +80,8 @@ function parseRuntime(value: unknown): Runtime | null {
   for (const [key, v] of Object.entries(configBlock(raw.settings))) {
     if (typeof v === 'string' && v.trim()) settings[key] = v.trim()
   }
-  return { id, name: id === GLOBAL_ID ? GLOBAL_NAME : name, harness, settings }
+  const away = typeof raw.away === 'string' && raw.away.trim() ? { away: raw.away.trim() } : {}
+  return { id, name: id === GLOBAL_ID ? GLOBAL_NAME : name, harness, settings, ...away }
 }
 
 const isRuntime = (r: Runtime | null): r is Runtime => r !== null
@@ -203,6 +206,23 @@ export function setAgentRuntime(agent: string, runtime: string): Saved {
     if (keepsPick(runtime)) block[agent] = runtime
     else delete block[agent]
     writePicks(cfg, block)
+  })
+}
+
+/** A Runner's whole set of agent picks (#625): every runtime but **Global default** becomes the
+ *  ones these picks name, and each agent named runs its own. */
+export function replaceAgentRuntimes(picks: Record<string, Runtime>): Saved {
+  return writeConfig((cfg) => {
+    const global = readRuntimes(cfg)[0]!
+    const rows = new Map<string, Runtime>()
+    for (const r of Object.values(picks)) if (r.id !== GLOBAL_ID) rows.set(r.id, r)
+    cfg.runtimes = [global, ...rows.values()]
+    delete cfg.harnessSettings
+    delete cfg.harness
+    delete cfg.agentHarness
+    const block = Object.fromEntries(Object.entries(picks).filter(([, r]) => rows.has(r.id)).map(([agent, r]) => [agent, r.id]))
+    if (Object.keys(block).length) cfg.agentRuntime = block
+    else delete cfg.agentRuntime
   })
 }
 

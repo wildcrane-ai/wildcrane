@@ -18,7 +18,7 @@ export interface PlanEntry {
 
 export type RunEvent =
   | { kind: 'message'; data: { text: string } }
-  | { kind: 'tool_call'; data: { toolCallId: string; title: string; kind: ToolKind; status: string; target?: string } }
+  | { kind: 'tool_call'; data: { toolCallId: string; title: string; kind: ToolKind; status: string; target?: string; subagent?: true } }
   | { kind: 'tool_call_update'; data: { toolCallId: string; status: string; result?: string } }
   | { kind: 'plan'; data: { entries: PlanEntry[] } }
   | { kind: 'error'; data: { text: string } }
@@ -153,6 +153,11 @@ export function createEventCollector() {
       close()
       const t = target ? targetOf(target) : undefined
       queue.push({ kind: 'tool_call', data: { toolCallId, title, kind, status: 'in_progress', ...(t ? { target: t } : {}) } })
+    },
+    /** A subagent the agent started, titled by its task; it ends with its call's `toolResult`. */
+    subagent(toolCallId: string, title: string): void {
+      close()
+      queue.push({ kind: 'tool_call', data: { toolCallId, title: targetOf(title) ?? 'subagent', kind: 'other', status: 'in_progress', subagent: true } })
     },
     toolResult(toolCallId: string, status: 'completed' | 'failed', result: string): void {
       close()

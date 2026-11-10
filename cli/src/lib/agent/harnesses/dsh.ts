@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { shimTarget } from '../spawnable'
 import { createAcpClient } from '../wire'
 import { MCP_CONFIG, namesFlag, SKILL_SENTENCE, type Harness } from './types'
 
@@ -21,17 +22,20 @@ import { MCP_CONFIG, namesFlag, SKILL_SENTENCE, type Harness } from './types'
 function dshHome(argv: string[]): string | undefined {
   const binary = argv[0]
   if (!binary) return undefined
+  const names = process.platform === 'win32' && !path.extname(binary) ? ['.exe', '.cmd'].map((ext) => binary + ext) : [binary]
   const candidates = binary.includes('/') || binary.includes('\\')
-    ? [binary]
+    ? names
     : (process.env.PATH ?? '')
         .split(path.delimiter)
         .filter(Boolean)
-        .map((dir) => path.join(dir, binary))
+        .flatMap((dir) => names.map((name) => path.join(dir, name)))
   let dir: string
   try {
     const found = candidates.find((candidate) => fs.existsSync(candidate))
     if (!found) return undefined
-    dir = path.dirname(fs.realpathSync(found))
+    // A Windows npm shim sits outside the package; the script it runs is inside.
+    const script = /\.cmd$/i.test(found) ? shimTarget(fs.readFileSync(found, 'utf8'), found)?.script : undefined
+    dir = path.dirname(fs.realpathSync(script ?? found))
   } catch {
     return undefined
   }
@@ -42,6 +46,13 @@ function dshHome(argv: string[]): string | undefined {
     dir = up
   }
   return undefined
+}
+
+/** Whether `dsh-acp` at `binary` has a dsh to boot: the one installed beside it, else the PATH's. */
+export function dshFound(binary: string, onPath: (name: string) => boolean): boolean {
+  const home = dshHome([binary])
+  const exts = process.platform === 'win32' ? ['.cmd', '.exe'] : ['']
+  return (!!home && exts.some((ext) => fs.existsSync(path.join(home, 'node_modules', '.bin', `dsh${ext}`)))) || onPath('dsh')
 }
 
 // What every `dsh-acp` run wants, added only when the user's own `command` hasn't already

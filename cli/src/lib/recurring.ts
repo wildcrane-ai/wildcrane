@@ -16,10 +16,10 @@ import { LEGACY_RECURRING, dropCrossRefs, idPrefix } from './cards'
 import { parseFrontmatter } from './frontmatter'
 import { readLanguage } from './machine/settings'
 import { AGENTS, TODO, rel } from './paths'
-import { hasOptions, openOf } from './questions'
+import { hasOptions } from './questions'
 import { stripReadmeRefs } from './readme'
 import { addToInbox } from './signals/add'
-import type { RecurringMigration } from './view/types'
+import type { Question, RecurringMigration } from './view/types'
 import { yamlScalar } from './yaml'
 
 const PRUNE_SLUG = 'prune-the-memory'
@@ -177,8 +177,8 @@ function agentName(card: LegacyCard, text: (name: string) => string): string {
 }
 
 /** Every open question becomes a triage item naming the agent. One already there is left. */
-function questionsToTriage(meta: { questions: Parameters<typeof openOf>[0] }, agent: string): void {
-  for (const q of openOf(meta.questions)) {
+function questionsToTriage(meta: { questions: Question[] }, agent: string): void {
+  for (const q of meta.questions) {
     const options = hasOptions(q) ? `\n\n${q.options.map((o) => `- ${o}`).join('\n')}` : ''
     addToInbox({ title: q.text, text: `${q.text}${options}`, source: `agent ${agent}` })
   }

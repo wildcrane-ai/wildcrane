@@ -278,8 +278,6 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
     .option('--append <text>', 'add one question to the end', opInOrder('append'))
     .option('--update <n> <text...>', 'rewrite question <n> whole', opInOrder('update'))
     .option('--drop <positions>', 'remove answered questions, e.g. 1 or 1,3', opInOrder('drop'))
-    .option('--skip <positions>', 'mark questions skipped: kept as a record, no longer open', opInOrder('skip'))
-    .option('--unskip <positions>', 'reopen skipped questions', opInOrder('unskip'))
     .option('--clear', 'remove every open question', opInOrder('clear'))
     .option('--option <text>', 'a choice for the op before it', opInOrder('option'))
     .option('--recommended-option <text>', 'a choice for the op before it, ticked to start', opInOrder('recommended-option'))

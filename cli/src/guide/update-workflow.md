@@ -38,5 +38,6 @@ A workflow is steerable: agents do the work, and a person reviews and fine-tunes
   instead when the change adds, removes or restages agents, or when the user wants to see it
   work before it applies.
 - **Steps**: `akb workflow pull <id> <folder>`, edit the files there and keep what the request
-  leaves alone, fix every problem `akb workflow list` reports, then `akb workflow push <folder>`.
+  leaves alone, fix every problem `akb raw workflow validate <folder>` reports, then
+  `akb workflow push <folder>`.
 - **Moved on**: when push says Cloud has a newer version, pull again and redo the change.

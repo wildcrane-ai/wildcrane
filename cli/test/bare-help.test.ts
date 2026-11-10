@@ -57,7 +57,7 @@ describe('akb and akb raw (#551)', () => {
   it('akb lists only Cloud and tool commands; raw lists the local ones', async () => {
     const top = await captured(() => runAgent(['help'], { program: 'akb', cwd }))
     assert.deepEqual(words(top.out).sort(), [
-      'account', 'goal', 'guide', 'help', 'image', 'music', 'project', 'raw', 'runner', 'task',
+      'account', 'agent', 'goal', 'guide', 'help', 'image', 'music', 'project', 'raw', 'runner', 'task',
       'telemetry', 'template', 'tts', 'update', 'workflow', 'workspace',
     ])
     const raw = words((await captured(() => runAgent(['raw', 'help'], { program: 'akb', cwd }))).out)

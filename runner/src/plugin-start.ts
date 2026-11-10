@@ -3,8 +3,13 @@
 
 import { pathToFileURL } from 'node:url'
 
-import { useRunnerHome } from './home'
-import { pluginEntry } from './launcher'
+// Windows starts this with whatever node the PATH has (server/bin/wildcrane.cmd).
+if (Number(process.versions.node.split('.')[0]) < 22) {
+  process.stderr.write('WildCrane needs Node.js 22 or later. Install it from https://nodejs.org, then restart.\n')
+  process.exit(1)
+}
+const { useRunnerHome } = await import('./home')
+const { pluginEntry } = await import('./launcher')
 
 /** The first Runner whose component knows each host; an older one would run it as Claude Code. */
 const FIRST: Record<string, string> = { kimi: '0.6.35' }

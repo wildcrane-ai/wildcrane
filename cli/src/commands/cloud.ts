@@ -11,6 +11,7 @@ import path from 'node:path'
 import { readCloudAccount, signOutOfCloud } from '../lib/cloud/account'
 import { cloudEndpoints } from '../lib/cloud/config'
 import { accessToken } from '../lib/cloud/session'
+import { workspaceTask } from '../lib/cloud/tasks'
 import { die } from '../lib/paths'
 import { say } from '../lib/io'
 import type { MoveResult } from '../lib/types'
@@ -91,8 +92,8 @@ export const SAID = {
     en: 'Could not reach WildCrane Cloud. Check your connection and try again.',
   },
   credits_used_up: {
-    zh: '本月 AI 积分已用完。可在 WildCrane 网页的“设置 → 账单”中以 $10 加购 2,500 积分，或等下月 1 日（UTC）重置。',
-    en: 'This month’s AI credits are used up. Buy 2,500 more for $10 in Settings → Billing on the WildCrane web app, or wait for the reset on the 1st of next month (UTC).',
+    zh: '本月 AI 积分已用完。可在 WildCrane 网页的“设置 → 用量”中以 $10 加购 2,500 积分，或等下月 1 日（UTC）重置。',
+    en: 'This month’s AI credits are used up. Buy 2,500 more for $10 in Settings → Usage on the WildCrane web app, or wait for the reset on the 1st of next month (UTC).',
   },
   trial_credits_used_up: {
     zh: '试用期的 AI 积分已用完。试用结束后可在 WildCrane 网页设置中购买 Pro。',
@@ -244,11 +245,13 @@ function refuse(m: Said, fallback: Said): never {
 async function generate(g: Generation): Promise<MoveResult> {
   const token = await accessToken()
   if (!token.ok) refuse(SAID[token.reason], g.fallback)
+  const task = workspaceTask()
   let res: Response
   try {
     res = await fetch(`${cloudEndpoints().api}${g.endpoint}`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${token.token}`, 'content-type': 'application/json' },
+      // The task this spends credits for, inside a Runner task (#629).
+      headers: { authorization: `Bearer ${token.token}`, 'content-type': 'application/json', ...(task ? { 'x-wildcrane-task': task } : {}) },
       body: JSON.stringify(g.body),
     })
   } catch {

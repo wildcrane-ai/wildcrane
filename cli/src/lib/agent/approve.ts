@@ -8,7 +8,7 @@ import path from 'node:path'
 import { locate } from '../cards'
 import { parseFrontmatter, serializeFrontmatter } from '../frontmatter'
 import { findCard } from '../view/read'
-import { awaitingApproval, openOf } from '../view/rules'
+import { awaitingApproval } from '../view/rules'
 import { readRuns } from './store'
 import { holdsCard } from './types'
 import type { AgentRequest, CommandRequest } from './types'
@@ -20,7 +20,7 @@ export function approvalRequest(req: CommandRequest): AgentRequest | { error: st
   const id = req.id
   const card = id === undefined ? null : findCard(id)
   if (!card) return { error: `task #${id} does not exist` }
-  if (openOf(card.questions).length) return { error: `#${card.id} has open questions — answer them before approving it.` }
+  if (card.questions.length) return { error: `#${card.id} has open questions — answer them before approving it.` }
   if (readRuns().some((r) => r.status === 'running' && r.cardId === card.id && holdsCard(r.action))) {
     return { error: `#${card.id} has a run in flight — approve once it ends.` }
   }

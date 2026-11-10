@@ -6,7 +6,6 @@
 // `raw list --stale` prints every hold and filters nothing — a card waiting on the user is
 // still on the list.
 
-import { openOf } from './view/rules'
 import type { Question } from './types'
 
 /** The three things a card can be waiting on. */
@@ -31,7 +30,7 @@ export function heldBy(card: {
   if (card.blockers.length) {
     holds.push({ kind: 'blocked', text: `blocked by ${card.blockers.map((n) => `#${n}`).join(', ')}` })
   }
-  if (openOf(card.questions).length) {
+  if (card.questions.length) {
     holds.push({ kind: 'user', text: 'waiting on you' })
   }
   if (card.status === 'implementing') holds.push({ kind: 'building', text: 'being built' })

@@ -25,7 +25,6 @@ import { knownWorkflow, scheduledAgent } from '../lib/agent/workflows'
 import { insideScheduledPass } from '../lib/agent/scheduled'
 import { cardAges, staleAfter, type Age } from '../lib/card-age'
 import { heldBy, type Hold } from '../lib/card-holds'
-import { openOf } from '../lib/view/rules'
 import type { MoveResult, Question } from '../lib/types'
 
 // One open card as the list shows it — the frontmatter fields it prints, plus where the
@@ -248,7 +247,7 @@ export function cmdList(opts: ListOptions): MoveResult {
     const meta = [r.status, `priority ${r.priority}`]
     if (r.isRoot) meta.push('group root')
     if (r.blocked_by.length) meta.push(`blocked by ${r.blocked_by.map((n) => `#${n}`).join(', ')}`)
-    const open = openOf(r.questions).length
+    const open = r.questions.length
     if (open) meta.push(plural(open, 'open question'))
     say('')
     say(`#${r.id} ${r.title}  (${rel(r.file)})`)

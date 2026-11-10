@@ -3,7 +3,7 @@ import { queryPreviews, externalGoalSession, cloudGoal, cloudGoalWorkflows } fro
 //
 //   declareRuns  onto `akb` (./akb.ts): Cloud tasks and goals, the account, generation, guides
 //   declareRaw   onto `akb raw` (./board.ts): the local board and in-run commands —
-//                card, delivery, run, triage, memory, previews, agent, workflow rename|diagram
+//                card, delivery, run, triage, memory, previews, agent, workflow validate|rename|diagram
 //
 // The flow commands come from ../agent/flows.ts, so a new flow is a command and a help entry at once.
 
@@ -35,6 +35,7 @@ import {
   projectList,
   runnerList,
   taskApprove,
+  taskUpdateQuestions,
   taskChat,
   taskComment,
   taskCreate,
@@ -46,7 +47,7 @@ import {
   workspaceList,
 } from '../../commands/task'
 import { cmdGuide } from '../../commands/guide'
-import { cmdWorkflowDiagram, cmdWorkflowInstructions, cmdWorkflowList, cmdWorkflowRule, cmdWorkflowPull, cmdWorkflowPush, cmdWorkflowRename } from '../../commands/workflow'
+import { cmdWorkflowDiagram, cmdWorkflowInstructions, cmdWorkflowList, cmdWorkflowRule, cmdWorkflowPull, cmdWorkflowPush, cmdWorkflowRename, cmdWorkflowValidate } from '../../commands/workflow'
 import {
   cmdAnswered,
   cmdCancel,
@@ -66,7 +67,10 @@ import { cmdTriageAdd, cmdTriageCheck } from '../../commands/triage'
 import { cmdGoalWorkflows, cmdGoalPreviews, goalsFile } from '../../commands/goal'
 import { cmdSpec } from '../../commands/spec'
 import { cmdTelemetry } from '../../commands/telemetry'
-import { cardId, ctxOf, intInRange, oneOf, runAction, withShared, type Command } from './shared'
+import { cmdAgentCheck } from '../../commands/agent-check'
+import { HARNESSES } from '../agent/harnesses'
+import { movedTo } from './moved'
+import { cardId, ctxOf, intInRange, oneOf, ordered, runAction, withShared, type Command, type Typed } from './shared'
 import type { AkbCliOptions } from './akb'
 
 /** What the door hands in — see `runAgent`. */
@@ -253,7 +257,13 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
       await boardless(this, cli, () => cmdComponents(this.opts()))
     })
 
-  const workflow = noun('workflow', "rename a workflow draft, or draw a workflow's diagram, inside a run")
+  const workflow = noun('workflow', "check a workflow folder, or rename a draft or draw a diagram inside a run")
+  withShared(workflow.command('validate'))
+    .argument('<folder>', 'a workflow folder: WORKFLOW.md and agents/')
+    .summary('report every problem in a workflow folder; agents it names but lacks are read from the board')
+    .action(async function (this: Command, folder: string) {
+      await onBoard(this, cli, () => cmdWorkflowValidate(folder))
+    })
   withShared(workflow.command('rename'))
     .argument('<id>', 'the draft, from `workflow list`')
     .argument('<name...>', 'what to call it now')
@@ -276,7 +286,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
 
   const ON_WEB = 'Reads and writes WildCrane Cloud as the signed-in account; changes show on the web at once.'
   const task = withShared(program.command('task'))
-    .summary('list, create, approve, change and remove WildCrane tasks')
+    .summary('see where WildCrane tasks stand; list, create, approve, stop, resume and remove them')
     .description(`${ON_WEB} <task> is WC-12, task_…, or just 12 in a linked folder.`)
     .action(function (this: Command) {
       this.help()
@@ -309,6 +319,23 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .option('--comment <text>', 'a note with the approval')
     .action(async function (this: Command, id: string) {
       await boardless(this, cli, () => taskApprove(id, this.opts().comment))
+    })
+  const questionOps: Typed[] = []
+  const opInOrder = ordered(questionOps)
+  withShared(task.command('update-questions'))
+    .argument('<task>')
+    .summary("edit the task's open questions, like `raw update-questions`")
+    .description('Positions are 1-based, in the order of the card’s `questions:` (`akb task show`). --option, --recommended-option, --mode and --agent attach to the --append or --update before them.')
+    .option('--append <text>', 'add one question to the end', opInOrder('append'))
+    .option('--update <n> <text...>', 'rewrite question <n> whole', opInOrder('update'))
+    .option('--drop <positions>', 'remove questions, e.g. 1 or 1,3', opInOrder('drop'))
+    .option('--clear', 'remove every open question', opInOrder('clear'))
+    .option('--option <text>', 'a choice for the op before it', opInOrder('option'))
+    .option('--recommended-option <text>', 'a choice for the op before it, ticked to start', opInOrder('recommended-option'))
+    .option('--mode <mode>', 'how many choices the op before it takes: single | multi', opInOrder('mode'))
+    .option('--agent <name>', 'the preview agent whose section the op before it is about', opInOrder('agent'))
+    .action(async function (this: Command, id: string) {
+      await boardless(this, cli, () => taskUpdateQuestions(id, questionOps))
     })
   withShared(task.command('chat'))
     .argument('<task>')
@@ -508,6 +535,19 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .summary('take a template out of the catalog (maintainers only)')
     .action(async function (this: Command, name: string) {
       await boardless(this, cli, () => templateDelete(name))
+    })
+
+  const tools = withShared(program.command('agent')).summary('the AI tools on this MACHINE')
+  // `check` is the only word here; the rest of `agent` moved under `raw` (#551).
+  tools.allowExcessArguments().allowUnknownOption().action(function (this: Command) {
+    if (!this.args.length) this.help()
+    this.error(movedTo('agent', cli.program), { code: 'commander.unknownCommand' })
+  })
+  withShared(tools.command('check'))
+    .summary('whether WildCrane can run an agent here, and what is missing; exits 1 until it can')
+    .argument('<agent>', HARNESSES.map((h) => h.name).join(', '))
+    .action(async function (this: Command, agent: string) {
+      await boardless(this, cli, () => cmdAgentCheck(agent))
     })
 
   // ---- optional usage reporting ---------------------------------------------

@@ -109,7 +109,7 @@ describe("the Codex status's next line", () => {
   const current = { version: '0.1.5', latest: null, source: 'git' as const }
   const ready = { label: 'Codex', state: 'ready' as const, command: null }
   const out = { label: 'Codex', state: 'signedOut' as const, command: 'codex login' }
-  const missing = { label: 'Claude Code', state: 'notInstalled' as const, command: 'npm install -g @anthropic-ai/claude-code' }
+  const missing = { label: 'Claude Code', state: 'notInstalled' as const, command: null }
   const seen = (over: Partial<Seen> = {}): Seen => ({ connections: [ready], folder: { project: 'p1' }, refused: null, web: 'https://app.wildcrane.ai', ...over })
 
   it('tells Codex about a newer release, the outdated Runner first, and leaves Claude Code to its panel', () => {
@@ -152,7 +152,7 @@ describe("the Codex status's next line", () => {
 
   it('names every tool not ready with its command, and the web, when none is', () => {
     const next = String(nextOf('codex', 'running', current, seen({ connections: [out, missing] })))
-    assert.equal(next, 'No AI tool is ready on this computer: Codex is signed out (run `codex login`), Claude Code is not installed (run `npm install -g @anthropic-ai/claude-code`). Tell the user, with the command for the tool they use, and that they can finish setup at https://app.wildcrane.ai.')
+    assert.equal(next, 'No AI tool is ready on this computer: Codex is signed out (run `codex login`), Claude Code is not installed. Tell the user, with the sign-in command for the tool they use; a missing one installs from local settings (wildcrane_open_settings). They can finish setup at https://app.wildcrane.ai.')
     assert.equal(nextOf('codex', 'running', current, seen({ connections: [out, ready] })), null)
     assert.equal(nextOf('claude-code', 'running', current, seen({ connections: [out] })), null)
   })

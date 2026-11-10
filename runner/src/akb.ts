@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { SCHEDULED_AGENTS_ENV } from '../../cli/src/lib/agent/env'
+import { SCHEDULED_AGENTS_ENV, SESSION_COST_ENV } from '../../cli/src/lib/agent/env'
 import { LANGUAGE_ENV, LANGUAGE_LINE_ENV } from '../../cli/src/lib/agent/language'
 import { runnerHome } from './home'
 import { HOST_PROXY_ENV, hostProxy, proxyEnv } from './proxy'
@@ -69,7 +69,7 @@ export function shimDir(akb: Akb): string {
 /** 清除上游运行标记，并向子 CLI 传递 Cloud 语言代码；空值禁止本机回退。 */
 export function akbEnv(akb: Akb, board?: string, task?: string, language?: 'zh' | 'en' | null, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
-  const dropped = ['AI4KANBAN_BOARD', 'AI4KANBAN_TASK', 'AI4KANBAN_EXECUTION', LANGUAGE_ENV, LANGUAGE_LINE_ENV, SCHEDULED_AGENTS_ENV]
+  const dropped = ['AI4KANBAN_BOARD', 'AI4KANBAN_TASK', 'AI4KANBAN_EXECUTION', LANGUAGE_ENV, LANGUAGE_LINE_ENV, SCHEDULED_AGENTS_ENV, SESSION_COST_ENV]
   for (const [k, v] of Object.entries({ ...proxyEnv(), ...base })) if (!k.startsWith('KANBAN_') && !dropped.includes(k)) env[k] = v
   const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
   env[key] = [shimDir(akb), env[key]].filter(Boolean).join(path.delimiter)

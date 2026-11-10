@@ -47,7 +47,7 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
     const problems = specAgentProblems()
     say([
       ...(agents.length
-        ? agents.map((agent) => `${agent.name}\n  ${agent.when ?? 'Not configured'}`)
+        ? agents.map((agent) => `${agent.name}\n  ${agent.when ?? 'Always'}`)
         : ['This board has no preview agent. Ask for none.']),
       ...(problems.length ? ['', 'Problems on this board:', ...problems.map((problem) => `  ${problem}`)] : []),
     ].join('\n'))

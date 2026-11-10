@@ -35,6 +35,23 @@ const readsStdin = (argv: string[]): boolean =>
 const userMessage = (prompt: string): string =>
   `${JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } })}\n`
 
+/** Claude Desktop's downloaded CLI on Windows: `claude-code\<version>\[<build>\]claude.exe` in
+ *  its data folder, the MSIX packages' first. The `claude.exe` it is installed as is the app. */
+export function claudeOnWindows(): string[] {
+  const [local, roaming] = [process.env.LOCALAPPDATA?.trim(), process.env.APPDATA?.trim()]
+  const packages = local ? path.join(local, 'Packages') : ''
+  const data = [
+    ...folders(packages).filter((name) => /^(\w+\.)?Claude_/i.test(name)).sort().map((name) => path.join(packages, name, 'LocalCache', 'Roaming', 'Claude')),
+    ...(roaming ? [path.join(roaming, 'Claude')] : []),
+  ]
+  return data.flatMap((dir) =>
+    latestIn(path.join(dir, 'claude-code')).flatMap((version) => [
+      path.join(version, 'claude.exe'),
+      ...folders(version).map((build) => path.join(version, build, 'claude.exe')),
+    ]),
+  )
+}
+
 export const CLAUDE_CODE: Harness = {
   name: 'claude-code',
   label: 'Claude Code',
@@ -309,9 +326,11 @@ export const CLAUDE_CODE: Harness = {
     // The native installer's versions, each one a file.
     ...latestIn(home('.local', 'share', 'claude', 'versions')),
     // The copy Claude Desktop carries.
-    ...latestIn(home('Library', 'Application Support', 'Claude', 'claude-code')).flatMap((version) =>
-      folders(version).map((build) => path.join(version, build, 'claude.app', 'Contents', 'MacOS', 'claude')),
-    ),
+    ...(process.platform === 'win32'
+      ? claudeOnWindows()
+      : latestIn(home('Library', 'Application Support', 'Claude', 'claude-code')).flatMap((version) =>
+          folders(version).map((build) => path.join(version, build, 'claude.app', 'Contents', 'MacOS', 'claude')),
+        )),
   ],
   install: 'npm install -g @anthropic-ai/claude-code',
 }

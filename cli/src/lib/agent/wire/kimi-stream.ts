@@ -19,6 +19,7 @@
 // out of the session Kimi wrote — the one `session.resume_hint` names, or, for a run that
 // died before printing it, the newest one opened in this folder since (./kimi-session).
 
+import { createEventCollector, type ToolKind } from './events'
 import { argHint, num, obj, str } from './json'
 import { createLineReader, frame, type StreamRenderer } from './stream'
 import { findKimiSession, readKimiRunFacts, type KimiRunFacts } from './kimi-session'
@@ -38,6 +39,11 @@ function callArgs(raw: unknown): unknown {
     return {}
   }
 }
+
+const TOOL_KINDS: [RegExp, ToolKind][] = [
+  [/read/i, 'read'], [/grep|glob|search/i, 'search'], [/fetch|web/i, 'fetch'], [/bash|shell/i, 'execute'], [/write|edit|replace/i, 'edit'],
+]
+const kindOf = (name: string): ToolKind => TOOL_KINDS.find(([re]) => re.test(name))?.[1] ?? 'other'
 
 // One `⏺ name(hint)` line per call the agent made.
 function toolCalls(row: Record<string, unknown>): string {
@@ -75,6 +81,9 @@ export function createKimiStreamRenderer(cwd: string): StreamRenderer {
   let sessionId: string | undefined
   let facts: KimiRunFacts | undefined
   let lookedAt = 0
+  const events = createEventCollector()
+  // `Agent` calls still running; Kimi reports how each ended on its result's `status:` line.
+  const subagents = new Set<string>()
 
   // Look beside the stream for what the stream doesn't say. Kept up the whole run rather
   // than stopped once the model is known: the context reading moves with every model call
@@ -100,6 +109,18 @@ export function createKimiStreamRenderer(cwd: string): StreamRenderer {
         // The last thing the agent said is the run's result. The UI leads with it and folds
         // the events away.
         if (said) final = said
+        if (said) events.message(said)
+        for (const raw of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
+          const call = obj(raw)
+          const name = str(obj(call.function).name) || 'tool'
+          const args = obj(callArgs(obj(call.function).arguments))
+          if (name === 'Agent') {
+            subagents.add(str(call.id))
+            events.subagent(str(call.id), str(args.description) || name)
+          } else {
+            events.toolCall(str(call.id), name, kindOf(name), ARG_KEYS.map((k) => str(args[k])).find((v) => v.trim()))
+          }
+        }
         return `${said ? `${said}\n\n` : ''}${toolCalls(row)}`
       }
       case 'meta':
@@ -107,8 +128,15 @@ export function createKimiStreamRenderer(cwd: string): StreamRenderer {
         // this far is resumable and no folder has to be searched for it.
         if (row.type === 'session.resume_hint') sessionId ??= str(row.session_id).trim() || undefined
         return row.type === 'turn.step.retrying' ? retry(row) : ''
+      case 'tool': {
+        const id = str(row.tool_call_id)
+        const text = str(row.content)
+        if (subagents.delete(id)) events.toolResult(id, /^status: completed$/m.test(text) ? 'completed' : 'failed', '')
+        else events.toolResult(id, 'completed', text)
+        return ''
+      }
       default:
-        // `tool` rows, and anything a newer Kimi adds: noise in a tail.
+        // Anything a newer Kimi adds: noise in a tail.
         return ''
     }
   }
@@ -124,6 +152,7 @@ export function createKimiStreamRenderer(cwd: string): StreamRenderer {
       return out
     },
     result: () => final,
+    events: events.events,
     usage: () => facts?.usage,
     context: () => {
       look(false)

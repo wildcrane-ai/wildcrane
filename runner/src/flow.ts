@@ -8,14 +8,13 @@ import type { ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { SCHEDULED_AGENTS_ENV } from '../../cli/src/lib/agent/env'
+import { SCHEDULED_AGENTS_ENV, SESSION_COST_ENV } from '../../cli/src/lib/agent/env'
 import { NOT_COMPLETED } from '../../cli/src/lib/agent/types'
 import { parseFrontmatter } from '../../cli/src/lib/frontmatter'
 import { asEvent, type RunEvent } from '../../cli/src/lib/agent/wire'
 import { reviewOf as cardReviewOf } from '../../cli/src/lib/card-review'
-import { openOf } from '../../cli/src/lib/view/rules'
 import type * as api from './api'
-import type { AgentJob, Flow, Job, JobReport, RuntimeReport } from './api'
+import { RUNTIMES, type AgentJob, type AgentRuntime, type Flow, type Job, type JobReport, type RuntimeReport } from './api'
 import { answerOf, runAkb, type Akb, type Ran } from './akb'
 import { quoteArg } from '../../cli/src/lib/agent/argv'
 import { RAW_ARGS_KEY } from '../../cli/src/lib/agent/harnesses/types'
@@ -66,11 +65,13 @@ interface Run {
   usage?: api.Usage
   costUsd?: number
   context?: { used?: number; limit?: number }
+  /** The board runtime it ran on: a step's pick by its Cloud id, otherwise the board's own. */
+  runtime?: string
 }
 
-/** What the runs this job started spent, summed, and the context window the latest one counting it
- *  left (#52); each part left out when none reported it. */
-export function spentBy(runs: Run[]): Pick<JobReport, 'usage' | 'costUsd' | 'context'> {
+/** What the runs this job started spent, summed and split by runtime (#629), and the context window
+ *  the latest one counting it left (#52); each part left out when none reported it. */
+export function spentBy(runs: Run[], job: Pick<Job, 'runtime' | 'runtimeId' | 'agentRuntimes'>): Pick<JobReport, 'usage' | 'costUsd' | 'context' | 'runtimeCosts'> {
   const used = runs.filter((r) => r.usage)
   const costed = runs.filter((r) => typeof r.costUsd === 'number')
   const sum = (key: keyof api.Usage) => used.reduce((n, r) => n + (r.usage![key] || 0), 0)
@@ -79,9 +80,23 @@ export function spentBy(runs: Run[]): Pick<JobReport, 'usage' | 'costUsd' | 'con
     .reduce<Run | undefined>((last, r) => (!last || (r.startedAt ?? 0) >= (last.startedAt ?? 0) ? r : last), undefined)?.context
   return {
     ...(used.length ? { usage: { input: sum('input'), cacheCreation: sum('cacheCreation'), cacheRead: sum('cacheRead'), output: sum('output') } } : {}),
-    ...(costed.length ? { costUsd: costed.reduce((n, r) => n + r.costUsd!, 0) } : {}),
+    ...(costed.length ? { costUsd: costed.reduce((n, r) => n + r.costUsd!, 0), runtimeCosts: runtimeCosts(costed, job) } : {}),
     ...(context ? { context: { used: context.used!, limit: context.limit! } } : {}),
   }
+}
+
+/** Each run's cost on the runtime it ran: a step's pick, or the job's own for every other run. */
+function runtimeCosts(runs: Run[], job: Pick<Job, 'runtime' | 'runtimeId' | 'agentRuntimes'>): NonNullable<JobReport['runtimeCosts']> {
+  const picks = Object.values(job.agentRuntimes ?? {})
+  const out = new Map<string | null, { runtimeId: string | null; runtime: string; costUsd: number }>()
+  for (const r of runs) {
+    const pick = picks.find((p) => p.id === r.runtime)
+    const runtimeId = pick ? pick.id : job.runtimeId ?? null
+    const row = out.get(runtimeId) ?? { runtimeId, runtime: pick?.runtime ?? job.runtime, costUsd: 0 }
+    row.costUsd += r.costUsd!
+    out.set(runtimeId, row)
+  }
+  return [...out.values()]
 }
 
 /** 卡片当前是否待审，以及首个带选项的问题。 */
@@ -97,7 +112,7 @@ function reviewOf(file: string): ReturnType<typeof cardReviewOf> {
 /** Whether the card holds a question for the user. */
 function asks(file: string): boolean {
   try {
-    return openOf(parseFrontmatter(fs.readFileSync(file, 'utf8')).meta?.questions ?? []).length > 0
+    return (parseFrontmatter(fs.readFileSync(file, 'utf8')).meta?.questions ?? []).length > 0
   } catch {
     return false
   }
@@ -299,9 +314,7 @@ async function setUp(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Prom
   const mcpFile = path.join(ws.board, '.sync', `${ws.task}.mcp.json`)
   const takes = new Set(settingKeys(runtime))
   const given = job.settings ?? {}
-  const values: Record<string, string> = { ...given, model: job.model ?? '' }
-  if (takes.has(MCP_KEY)) values[MCP_KEY] = mcpConfig(servers, mcpFile) ?? given[MCP_KEY] ?? ''
-  else values[RAW_ARGS_KEY] = [given[RAW_ARGS_KEY], mcpArgs(runtime, servers, mcpFile)].filter(Boolean).join(' ')
+  const values = valuesOf(runtime, job.model, given, servers, mcpFile)
   const secrets = secretsOf(job.runtimeId)
   const valueOf = (key: string) => (secretKeys(runtime).includes(key) ? secrets[key] : values[key]) ?? ''
   const set = async (key: string, value: string) => {
@@ -324,7 +337,38 @@ async function setUp(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Prom
     const failed = await set(key, '')
     if (failed) return failed
   }
+  if (job.agentRuntimes) {
+    const reports = await deps.runtimes()
+    const rows = Object.fromEntries(Object.entries(job.agentRuntimes).map(([agent, r]) => [agent, pickRow(job, r, deps.machineId, reports, servers, mcpFile)]))
+    const picked = await akb(['raw', 'agent', 'picks', JSON.stringify(rows)])
+    if (picked.code !== 0) return refusal(picked)
+  }
   return null
+}
+
+/** A runtime's settings with the model and the workflow's MCP servers. */
+function valuesOf(runtime: Job['runtime'], model: string | null | undefined, given: Record<string, string>, servers: McpServers, mcpFile: string): Record<string, string> {
+  const values: Record<string, string> = { ...given, model: model ?? '' }
+  if (settingKeys(runtime).includes(MCP_KEY)) values[MCP_KEY] = mcpConfig(servers, mcpFile) ?? given[MCP_KEY] ?? ''
+  else values[RAW_ARGS_KEY] = [given[RAW_ARGS_KEY], mcpArgs(runtime, servers, mcpFile)].filter(Boolean).join(' ')
+  return values
+}
+
+/** One step's runtime as the board takes it (#625); one this computer cannot run says why. */
+export function pickRow(job: Job, r: AgentRuntime, machine: string, reports: RuntimeReport[], servers: McpServers, mcpFile: string) {
+  const zh = cloudLanguage(job) === 'zh'
+  const known = (RUNTIMES as readonly string[]).includes(r.runtime)
+  const runtime = (known ? r.runtime : 'claude-code') as Job['runtime']
+  const away = !known || r.runner !== machine
+    ? (zh ? `所选运行时「${r.name}」不在这台电脑上。` : `The runtime "${r.name}" picked for this step is not on this computer.`)
+    : unavailable(runtime, reports)
+  if (away) return { id: r.id, name: r.name, harness: runtime, settings: {}, away }
+  const secrets = secretsOf(r.id)
+  const values = valuesOf(runtime, r.model, r.settings, servers, mcpFile)
+  const provider = providerKey(runtime)
+  if (provider) values[provider] = providerOf(runtime, r.model, { settings: r.settings, secrets }) ?? ''
+  const settings = Object.fromEntries(Object.entries(values).filter(([k, v]) => v && !secretKeys(runtime).includes(k)))
+  return { id: r.id, name: r.name, harness: runtime, settings, secrets: Object.fromEntries(secretKeys(runtime).flatMap((k) => (secrets[k] ? [[k, secrets[k]]] : []))) }
 }
 
 /** A review of these archived tasks, each `<task>:<card>` (#2065, #165), on the project's board. */
@@ -338,7 +382,7 @@ export async function runReview(job: Job, ws: TaskFolder, tasks: string[], deps:
   const answer = answerOf<{ result?: string; error?: { message?: string } }>(ran)
   if (ran.code !== 0) return { ok: false, reason: reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran) }
   const runs = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--all', '--json']))?.runs ?? []
-  return { ok: true, report: { ...(answer?.result?.trim() ? { reply: answer.result.trim() } : {}), ...spentBy(runs.filter((r) => (r.startedAt ?? 0) >= since)) } }
+  return { ok: true, report: { ...(answer?.result?.trim() ? { reply: answer.result.trim() } : {}), ...spentBy(runs.filter((r) => (r.startedAt ?? 0) >= since), job) } }
 }
 
 /** What the workspace's rejection review has not learned (#2067), laid out on the board,
@@ -394,7 +438,7 @@ export async function runAgent(job: Job & { agent: AgentJob }, ws: TaskFolder, d
   if (name === 'review-dismissals') {
     const { runs, failure } = await reviewRejections(job, ws, deps, io)
     if (io.lost()) return { ok: false, reason: '' }
-    return failure ? { ok: false, reason: failure } : { ok: true, report: spentBy(runs) }
+    return failure ? { ok: false, reason: failure } : { ok: true, report: spentBy(runs, job) }
   }
   if (name === 'reflect' && !tasks?.length) return { ok: true, report: {} }
   const args = workflow ? ['raw', 'agent', 'run', workflowName(workflow), name]
@@ -409,7 +453,7 @@ export async function runAgent(job: Job & { agent: AgentJob }, ws: TaskFolder, d
   const answer = answerOf<{ result?: string; error?: { message?: string } }>(ran)
   if (ran.code !== 0) return { ok: false, reason: reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran) }
   const runs = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--all', '--json']))?.runs ?? []
-  return { ok: true, report: { ...(answer?.result?.trim() ? { reply: answer.result.trim() } : {}), ...spentBy(runs.filter((r) => (r.startedAt ?? 0) >= since)) } }
+  return { ok: true, report: { ...(answer?.result?.trim() ? { reply: answer.result.trim() } : {}), ...spentBy(runs.filter((r) => (r.startedAt ?? 0) >= since), job) } }
 }
 
 /** The discussion a task came from (#2146), written in `dir` for the agent to read; its path. */
@@ -575,7 +619,11 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       else if (resolved.code !== 0) note = text
     }
     // `implement` returns once the delivery landed and the card is archived.
-    const fresh = () => akb(['raw', 'card', verb, String(id), '--follow', '--events', '--json', ...carryArgs(verb), ...(note ? ['--', note] : [])], true)
+    const fresh = () => {
+      const carry = carryArgs(verb)
+      const costFrom = carry.includes('--session') && job.resumeCostUsd ? { [SESSION_COST_ENV]: String(job.resumeCostUsd) } : undefined
+      return akb(['raw', 'card', verb, String(id), '--follow', '--events', '--json', ...carry, ...(note ? ['--', note] : [])], true, costFrom)
+    }
     ran ??= await (continuation ? akb([...continuation, '--follow', '--events', '--json'], true) : fresh())
     // A conversation that cannot be picked up again: a fresh build run carries the delivery on.
     if (continuation && ran.code !== 0 && answerOf<{ error?: { reason?: string } }>(ran)?.error?.reason === 'runNoSession') ran = await fresh()
@@ -606,7 +654,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     const last = answer?.lastSessionId ?? answer?.error?.lastSessionId
     const runs = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--card', String(id), '--all', '--json']))?.runs ?? []
     const said = ((last ? runs.find((r) => r.sessionId === last)?.result : undefined) ?? answer?.result ?? answer?.error?.result)?.trim()
-    const spent = spentBy([...learned, ...runs.filter((r) => (r.startedAt ?? 0) >= since)])
+    const spent = spentBy([...learned, ...runs.filter((r) => (r.startedAt ?? 0) >= since)], job)
     const commit = !rejected && ran.code === 0 ? answer?.delivery?.commit : undefined
     const landing = commit ? { landing: { commit, branch: answer?.delivery?.branch ?? '' } } : {}
     const session = answer?.agentSession ?? answer?.error?.agentSession

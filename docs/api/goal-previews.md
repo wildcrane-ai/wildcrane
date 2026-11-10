@@ -22,7 +22,7 @@ akb raw previews --triggers --workflow coding --json
 
 `akb raw previews --triggers` 新增 `--workflow <id>` 与 `--workspace <id>`。带 `--workflow` 时只列该工作流已启用的 agent，按工作流顺序；目标讨论中省略 `--workspace` 即用讨论所属工作空间。不带 `--workflow` 时保持 #397 的全目录输出。
 
-输出沿用 #397：agent 名称与完整原始 `when`，未配置显示 `Not configured`；JSON 为标准响应外层及 `agents: {name,when}[]`、`problems`、`output`。工作流没有启用的 agent 时 `agents: []`。查询只读。
+输出沿用 #397：agent 名称与完整原始 `when`，未配置显示 `Always`，表示每次都选上（JSON 中 `when` 为 `null`）；JSON 为标准响应外层及 `agents: {name,when}[]`、`problems`、`output`。工作流没有启用的 agent 时 `agents: []`。查询只读。
 
 未知工作流或工作空间、讨论外省略 `--workspace`、讨论元数据缺少预览目录时非零退出，后者提示 `Preview agents are unavailable; update Runner and try again.`。非法参数组合沿用 #397 的 `invalid-usage`。
 

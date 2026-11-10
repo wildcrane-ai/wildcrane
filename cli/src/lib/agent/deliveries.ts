@@ -12,7 +12,6 @@ import { insideRun } from './env'
 import { DELIVERY_FLOWS } from './flows'
 import { deliveryState, type DeliveryState } from './pause'
 import { deliveryRules, readRule } from './rules'
-import { openOf } from '../view/rules'
 import { cardWorkflowId, frozenWorkflow } from './workflows'
 import { logPathOf, readDeliveryRow, readStore, runIsLive, withStore, type Store } from './store'
 import {
@@ -473,7 +472,7 @@ export const cardStatus = (cardId: number): string => cardMeta(cardId)?.status |
 /** How many questions this card still has open — the count landing holds on (#307), and the
  *  one the Implement dialog and `akb raw card implement` warn about. A card nobody can read has
  *  none: a missing card holds nothing up. */
-export const openQuestions = (cardId: number): number => openOf(cardMeta(cardId)?.questions ?? []).length
+export const openQuestions = (cardId: number): number => (cardMeta(cardId)?.questions.length ?? 0)
 
 // ---- the live row -------------------------------------------------------------
 

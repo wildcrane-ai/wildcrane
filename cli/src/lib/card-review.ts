@@ -1,7 +1,6 @@
 // What a card on the board asks of the user, read off its frontmatter: Cloud puts a card on
 // review with it when the card reaches the board, and the import does the same.
 
-import { openOf } from './view/rules.ts'
 import type { Meta } from './types.ts'
 
 export interface CardQuestion {
@@ -15,11 +14,8 @@ export interface CardQuestion {
  *  refine comes first. */
 export function reviewOf(meta: Meta): true | CardQuestion | null {
   const questions = meta.questions ?? []
-  let open = false
   for (const [i, q] of questions.entries()) {
-    if (!openOf([q]).length) continue
-    open = true
     if (q.options?.length) return { question: q.text, options: q.options.slice(0, 8), position: i + 1 }
   }
-  return open || meta.status === 'ready' || meta.status === 'implementing' ? true : null
+  return questions.length || meta.status === 'ready' || meta.status === 'implementing' ? true : null
 }

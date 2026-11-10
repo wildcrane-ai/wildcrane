@@ -17,7 +17,6 @@ import { taskChatsToReview, type ChatToReview } from './memory-review'
 import { dismissalsToReview, rejectionsToReview, withdrawnSources } from './dismissal-review'
 import { buildAsk, frozenRules, landBlock, reflectedCards, settingsBlock, workflowRulesBlock } from './prompts'
 import { ruleFor, ruleOwner, ruleOwnerSays } from './rules'
-import { openOf } from '../view/rules'
 import { cardStage, cardStages, workflowFor } from './workflows'
 import { isRetired, type AgentRequest, type DeliveryRecord, type StartableAction } from './types'
 
@@ -271,16 +270,15 @@ function notesField(card: CardFacts): string[] {
 
 // The open questions, numbered as the board numbers them — the numbers are what
 // `update-questions` and `tag` take, so a flow that lists them differently is a flow that
-// gets the wrong question answered. A skipped one keeps its number and says so (#831).
+// gets the wrong question answered.
 function questionsField(meta: Meta): string[] {
-  const open = openOf(meta.questions).length
   if (!meta.questions.length) return field('questions', 'none open')
   const lines = meta.questions.map(
     (q, i) =>
-      `${i + 1}. ${q.skipped ? '(skipped by the user — leave it) ' : ''}${q.text}` +
+      `${i + 1}. ${q.text}` +
       `${q.options?.length ? ` (${q.options.length} options)` : ''}`,
   )
-  return field('questions', [`${open} open:`, ...lines.map((s) => `  ${s}`)])
+  return field('questions', [`${meta.questions.length} open:`, ...lines.map((s) => `  ${s}`)])
 }
 
 // The approval a card is on, when its previews make several (#2154).
@@ -424,7 +422,7 @@ function buildFlow(req: AgentRequest, program: string): Flow {
           ? `${self} raw delivery complete ${delivery.deliveryId} — finish your step and follow its handoff; software steps in a git project supply --commit <full-sha> --branch <target>`
           : `${raw} archive ${req.id} — once every box is ticked and the card's goal is met`,
       )
-      if (openOf(card.meta.questions).length) {
+      if (card.meta.questions.length) {
         next.push(
           `${self} raw card resolve ${req.id} --print — first: the card has open questions, and building on a guess is what they are there to stop`,
         )

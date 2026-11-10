@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { buildPrompt } from '../src/lib/agent/prompts.ts'
 import { openRun } from '../src/lib/agent/sessions.ts'
+import { replaceAgentRuntimes } from '../src/lib/agent/runtimes.ts'
 import { readRuns } from '../src/lib/agent/store.ts'
 import type { AgentRequest } from '../src/lib/agent/types.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
@@ -123,5 +124,29 @@ describe('the pick reaching the run', () => {
     const opened = create('nonesuch')
     assert.ok('error' in opened && /no runtime called "nonesuch"/.test(opened.error))
     assert.equal(readRuns().length, 0)
+  })
+})
+
+// A Runner's picks per workflow step (#625): each agent runs its own, and one bound to another
+// computer fails the step rather than running something else.
+describe('a step’s own runtime', () => {
+  const spec = (specAgent: string) => openRun({ action: 'spec', id: 1, specAgent }, 'prompt')
+
+  it('runs the agent’s pick, and refuses one not on this computer', () => {
+    assert.ok(replaceAgentRuntimes({
+      'ui-designer': runtime('rt_codex', 'codex', { model: 'gpt-5.5' }),
+      writer: { ...runtime('rt_far', 'codex', {}), away: 'The runtime "Far" is not on this computer.' },
+    }).ok)
+    const here = spec('ui-designer')
+    assert.ok('run' in here)
+    assert.equal(here.run.runtime, 'rt_codex')
+    assert.ok(here.spec.plan.argv.includes('gpt-5.5'))
+    const far = spec('writer')
+    assert.ok('error' in far)
+    assert.equal(far.reason, 'runtimeAway')
+    assert.equal(far.error, 'The runtime "Far" is not on this computer.')
+    const other = spec('critic')
+    assert.ok('run' in other)
+    assert.equal(other.run.runtime, 'global')
   })
 })

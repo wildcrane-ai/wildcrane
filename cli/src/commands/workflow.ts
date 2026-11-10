@@ -28,7 +28,8 @@ import {
 } from '../lib/agent/workflows'
 import type { MoveResult } from '../lib/types'
 import { readWorkflowFolder } from '../lib/agent/workflow-folder'
-import { checkWorkflowFiles, isAboutFile, VERSION_FILE, versionText } from '../lib/shared/workflow-files'
+import { checkWorkflowFiles, isAboutFile, VERSION_FILE, versionText, WORKFLOW_FILE, workflowFilesProblems } from '../lib/shared/workflow-files'
+import { parseWorkflowFile } from '../lib/agent/workflow-def'
 import { workflowName } from '../lib/shared/board-files'
 import { call, type CloudCall } from '../lib/cloud/tasks'
 
@@ -103,6 +104,29 @@ export function cmdWorkflowDiagram(id: string, card: string): MoveResult {
   return { file, tag, diagram }
 }
 
+/** `akb raw workflow validate <folder>` (#622): every problem in a workflow folder, the agents it
+ *  names but does not hold read from the board. */
+export function cmdWorkflowValidate(folder: string): MoveResult {
+  const dir = path.resolve(folder)
+  if (!fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory()) die(`${folder} is not a folder`, 'bad-args')
+  const files = readWorkflowFolder(dir)
+  const read = parseWorkflowFile('workflow', files[WORKFLOW_FILE] ?? '', WORKFLOW_FILE)
+  const def = 'def' in read ? read.def : null
+  const named = def ? new Set([...def.previews, ...def.land, ...def.scheduled].map((h) => h.agent)) : []
+  for (const name of named) {
+    if (Object.keys(files).some((f) => f.startsWith(`agents/${name}/`))) continue
+    const agent = findSpecAgent(name)
+    for (const file of agent ? ['AGENT.md', ...agent.files] : []) {
+      const text = agent!.file(file)
+      if (text !== null) files[`agents/${name}/${file}`] = text
+    }
+  }
+  const problems = workflowFilesProblems(files).map((p) => `${p.file} ${p.reason}`)
+  if (problems.length) die(problems.map((p) => `! ${p}`).join('\n'), { kind: 'workflow-problems', bare: true, problems })
+  say(`${folder}: no problems`)
+  return { folder: dir, problems }
+}
+
 const cloudIdOf = (id: string): string | undefined => cloudFlows().find((f) => workflowName(f.cloudId) === id)?.cloudId
 
 /** `akb workflow pull <id> [folder]` (#544): the workflow's current version as a folder. */
@@ -137,8 +161,10 @@ export async function cmdWorkflowPush(folder: string, opts: { dryRun?: boolean }
   const id = workflowName(cloudId)
   const readOnly = () => die(`${id} is not this workspace's own; copy it on the web first.`, 'workflow-read-only')
   if (cloudId.startsWith('wf_builtin_')) readOnly()
-  const checked = checkWorkflowFiles(readWorkflowFolder(dir))
-  if (!checked.ok) die(`${checked.file} ${checked.reason}`, 'bad-workflow')
+  const read = readWorkflowFolder(dir)
+  const problems = workflowFilesProblems(read).map((p) => `${p.file} ${p.reason}`)
+  if (problems.length) die(problems.map((p) => `! ${p}`).join('\n'), { kind: 'bad-workflow', bare: true, problems })
+  const checked = checkWorkflowFiles(read)
   const { files } = checked as { files: WorkflowFiles }
   const now = await call<{ version: number; files: WorkflowFiles }>('GET', `/v1/workflows/${encodeURIComponent(cloudId)}`)
   if (!now.ok) die(now.error, now.code === 'not_found' ? 'no-such-workflow' : 'cloud-refused')

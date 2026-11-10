@@ -25,8 +25,9 @@ import {
   type HarnessAsk,
 } from '../lib/agent/resolve'
 import { agentNames, agentRoster } from '../lib/agent/roles'
-import { readRuntimes, setHarness, setRuntimeSecret, setRuntimeSetting } from '../lib/agent/runtimes'
-import { HARNESSES, RAW_ARGS_KEY } from '../lib/agent/harnesses'
+import { readRuntimes, replaceAgentRuntimes, secretVar, setHarness, setRuntimeSecret, setRuntimeSetting, type Runtime } from '../lib/agent/runtimes'
+import { setSecret } from '../lib/agent/settings'
+import { HARNESSES, RAW_ARGS_KEY, harnessByName } from '../lib/agent/harnesses'
 import type { HarnessSetting } from '../lib/agent/types'
 import { say } from '../lib/io'
 import { die } from '../lib/paths'
@@ -44,8 +45,10 @@ export function cmdAgent(args: string[]): MoveResult {
       return useAgent(rest)
     case 'set':
       return setSetting(rest)
+    case 'picks':
+      return setPicks(rest)
     default:
-      die(`unknown agent command "${word}" — try \`akb raw agent\`, or one of use, set`, {
+      die(`unknown agent command "${word}" — try \`akb raw agent\`, or one of use, set, picks`, {
         kind: 'unknown-move',
         move: word,
       })
@@ -138,6 +141,30 @@ function useAgent(args: string[]): MoveResult {
   if (!res.ok) die(res.error ?? 'the setting could not be saved', { kind: 'save-failed' })
   say(`Global default runs ${harness.label} — every agent that named no runtime runs it.`)
   return showAgent()
+}
+
+// A Runner's agent picks (#625), as one JSON argument: `{ <agent>: { id, harness, settings,
+// secrets?, away? } }`. Replaces every runtime but Global default, and saves each one's keys.
+function setPicks(args: string[]): MoveResult {
+  let given: Record<string, Runtime & { secrets?: Record<string, string> }>
+  try {
+    given = JSON.parse(args[0] ?? '')
+  } catch {
+    die('give the picks as one JSON argument', { kind: 'needs-input' })
+  }
+  const picks: Record<string, Runtime> = {}
+  for (const [agent, { secrets, ...row }] of Object.entries(given)) {
+    if (!row.id || !harnessByName(row.harness)) die(`"${agent}" names no runtime this version runs`, { kind: 'bad-value' })
+    picks[agent] = { ...row, name: row.name || row.id, settings: row.settings ?? {} }
+    for (const setting of harnessByName(row.harness)!.settings) {
+      if (setting.kind !== 'secret' || !setting.env) continue
+      const res = setSecret(secretVar(setting.env, row.id), secrets?.[setting.key] ?? '')
+      if (!res.ok) die(res.error ?? 'the key could not be saved', { kind: 'save-failed' })
+    }
+  }
+  const res = replaceAgentRuntimes(picks)
+  if (!res.ok) die(res.error ?? 'the picks could not be saved', { kind: 'save-failed' })
+  return { picks: Object.fromEntries(Object.entries(picks).map(([agent, r]) => [agent, r.id])) }
 }
 
 // The runtime a `--runtime <id>` flag names, checked against this board's list. With none it is

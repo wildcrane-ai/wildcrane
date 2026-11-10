@@ -72,7 +72,7 @@ export interface StreamRenderer {
   /** Every turn closed so far, in order, for a CLI that takes more than one per process
    *  (#1540). Only Claude Code implements it. */
   turns?(): StreamTurn[]
-  /** The structured events since the last call (#2059). Only Claude Code and Codex implement it. */
+  /** The structured events since the last call (#2059). Claude Code, Codex and Kimi implement it. */
   events?(): RunEvent[]
 }
 

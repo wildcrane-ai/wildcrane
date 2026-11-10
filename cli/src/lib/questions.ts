@@ -13,11 +13,9 @@
 //         - GitHub Projects — syncs with issues
 //       recommend: [1]
 //       agent: ui-designer
-//       skipped: true
 //
 // `agent` names the spec agent whose section the question is about (#782); a plain question
-// that carries one is written as a block too. `skipped: true` marks one the user chose not to
-// answer (#831) — it stays as a record and is no longer open.
+// that carries one is written as a block too.
 //
 // `mode: single` lets the user tick one option, `mode: multi` as many as they
 // want. `recommend` holds 1-based positions into `options` — the ones the resolve
@@ -38,7 +36,7 @@ export { normalizeQuestion, parseQuestionsBlock } from './question-block'
 // Reading a question is something a front end does too, so that lives with the rules a
 // reader shares (./view/rules.ts) and is re-exported here for the writers below.
 export type { OptionsQuestion } from './view/types'
-export { hasOptions, openOf } from './view/rules'
+export { hasOptions } from './view/rules'
 
 // A draft is one question under construction while its flags are still being read:
 // the text plus the options collected so far. `finalizeDraft` validates the whole
@@ -117,15 +115,8 @@ function missingChoices(text: string): never {
   )
 }
 
-// One op of `update-questions`, as read off argv. `--agent` claims the question for a spec
-// agent; left off an `--update`, the question keeps the agent it had.
-export interface QuestionOp {
-  kind: 'append' | 'update' | 'drop' | 'clear' | 'skip' | 'unskip'
-  ns?: string
-  n?: number
-  draft?: QuestionDraft
-  question?: Question
-}
+export type { QuestionOp } from './question-ops'
+import type { QuestionOp } from './question-ops'
 
 /** What `update-questions` was asked for: its ops, in the order they were typed. */
 export interface QuestionOpsInput {
@@ -145,7 +136,7 @@ export function readQuestionOps(typed: Typed[]): QuestionOp[] {
     const [key, value] = typed[i]!
     if (key === 'clear') {
       ops.push({ kind: 'clear' })
-    } else if (key === 'drop' || key === 'skip' || key === 'unskip') {
+    } else if (key === 'drop') {
       ops.push({ kind: key, ns: value })
     } else if (key === 'append') {
       ops.push({ kind: 'append', draft: newDraft('append', value) })
@@ -163,7 +154,7 @@ export function readQuestionOps(typed: Typed[]): QuestionOp[] {
     }
   }
   if (!ops.length) {
-    die('update-questions needs at least one op: --append ".." | --update <n> ".." | --drop n[,n...] | --skip n[,n...] | --unskip n[,n...] | --clear')
+    die('update-questions needs at least one op: --append ".." | --update <n> ".." | --drop n[,n...] | --clear')
   }
   for (const op of ops) {
     if (op.draft) {
@@ -172,20 +163,4 @@ export function readQuestionOps(typed: Typed[]): QuestionOp[] {
     }
   }
   return ops
-}
-
-// One or more 1-based question positions (`1` or `1,3`), validated against the
-// card's open-question count.
-export function parseQuestionPositions(raw: unknown, count: number, flagName: string): number[] {
-  const ns = String(raw)
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-    .map(Number)
-  if (ns.length === 0 || ns.some((n) => !Number.isInteger(n) || n < 1)) {
-    die(`--${flagName} needs one or more 1-based question numbers (e.g. 1 or 1,3)`)
-  }
-  const over = ns.find((n) => n > count)
-  if (over !== undefined) die(`the card has ${count} open question(s) — there's no question ${over}`)
-  return ns
 }

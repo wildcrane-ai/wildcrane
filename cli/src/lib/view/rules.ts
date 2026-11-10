@@ -27,11 +27,6 @@ export function hasOptions(q: Question): q is OptionsQuestion {
   return Array.isArray(q.options) && q.options.length > 0
 }
 
-/** The questions still waiting on an answer — every one but those the user skipped (#831).
- *  Anything that asks "does this card still have an open question" reads this, never the
- *  raw list. */
-export const openOf = <Q extends Question>(questions: readonly Q[]): Q[] => questions.filter((q) => !q.skipped)
-
 // ---- a card that finishes in planning (#1057) -------------------------------
 //
 // A product video, slide deck (#1075), carousel post (#1117) or blog post (#1126) is made while
@@ -49,7 +44,7 @@ const PAGES_STORYBOARD = /(^|\/)pages-[^/]*\.json$/i
  *  is done: nothing left to answer, a deliverable in its body, a ticked todo recording where
  *  it went or the command that rebuilds it, and every todo ticked. */
 export function planDeliveryGap(card: Pick<Card, 'questions' | 'todos' | 'body'>): 'questions' | 'deliverable' | 'command' | 'todos' | null {
-  if (openOf(card.questions).length > 0) return 'questions'
+  if (card.questions.length > 0) return 'questions'
   if (!planDeliverables(card.body).length) return 'deliverable'
   if (!/^[ \t]*[-*]\s+\[[xX]\].*`[^`]+`/m.test(card.body)) return 'command'
   const { total, done } = card.todos
@@ -69,7 +64,7 @@ export const planDeliverables = (body: string): string[] => [
 export function awaitingApproval(card: Pick<Card, 'stages' | 'stage' | 'questions' | 'status'>): number | null {
   const { stages, stage } = card
   if (!stages || !stage || stage >= stages || card.status !== 'ready') return null
-  return openOf(card.questions).length ? null : stage
+  return card.questions.length ? null : stage
 }
 
 /** A card finishing in planning with more to do before it is archived. */
@@ -128,8 +123,7 @@ export function canRefine(card: Card): boolean {
   if (card.status !== 'todo' && !planUnfinished(card)) return false
   const { total, done } = card.todos
   if (total > 0 && done === total && !planUnfinished(card)) return false
-  const open = openOf(card.questions)
-  if (open.length > 0 && open.every(hasOptions)) return false
+  if (card.questions.length > 0 && card.questions.every(hasOptions)) return false
   return true
 }
 

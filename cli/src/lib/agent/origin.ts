@@ -5,6 +5,7 @@ import path from 'node:path'
 import { insideRun, SESSION_VARS } from './env'
 import { OPENCODE } from './harnesses/opencode'
 import { chooseCopy, copyEnv, spawnName } from './locate'
+import { spawnable } from './spawnable'
 import type { ChatHandoff } from './types'
 
 // The agent CLIs a process can be recognised as, by the name it was started under.
@@ -54,12 +55,9 @@ function processChain(): string[] {
 /** OpenCode's latest session in this folder. */
 function recentOpencode(cwd: string): string | undefined {
   const copy = chooseCopy(OPENCODE)
-  const out = spawnSync(spawnName(copy, 'opencode'), ['session', 'list', '-n', '1', '--format', 'json'], {
-    cwd,
-    env: copyEnv(spawnName(copy, 'opencode')),
-    encoding: 'utf8',
-    timeout: 10_000,
-  })
+  const name = spawnName(copy, 'opencode')
+  const start = spawnable(name, ['session', 'list', '-n', '1', '--format', 'json'], { cwd, env: copyEnv(name), timeout: 10_000 })
+  const out = spawnSync(start.command, start.args, { ...start.options, encoding: 'utf8' })
   return out.status === 0 ? opencodeSessionOf(out.stdout) : undefined
 }
 

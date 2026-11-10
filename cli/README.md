@@ -107,7 +107,7 @@ akb guide discuss-goal
 Add `--print` to work in the current session, or `--follow` to watch a separate run.
 
 `akb raw previews --triggers [--json]` lists names and original `akb.when` conditions in catalog order,
-including disabled and unassigned agents. Missing conditions display `Not configured`.
+including disabled and unassigned agents. Agents without a condition display `Always` and are always selected; JSON keeps `when: null`.
 JSON returns `agents: { name: string, when: string | null }[]`, `problems` and `output` in the standard response.
 An empty catalog returns `agents: []` with a message. Catalog diagnostics match the regular listing.
 This read-only query accepts `--board` and `--dir`. Combining it with positional arguments,
@@ -134,4 +134,4 @@ Builder 自行创建分支和 worktree、处理冲突、检查并合入，登记
 `cancel` 停止运行并结束交付，保留磁盘成果。`resume` 返回交付与运行编号，继续原会话或从既有成果恢复。
 交付外仍可使用 `akb raw archive <id>` 手动归档。`delivery conflict`、`delivery blocked`、`delivery discard` 和 `workflow worktree` 已移除。
 
-工作流只存于云端（#409）：`akb workflow list` 列出当前工作区可用的工作流，各版本缓存在本机 `workflows/`；`akb raw workflow rename` 只在「搭建工作流」任务里写草稿，`delete`、`agent` 已移除，改在网页上管理。
+工作流只存于云端（#409）：`akb workflow list` 列出当前工作区可用的工作流，各版本缓存在本机 `workflows/`；`akb raw workflow validate <文件夹>` 检查一个工作流文件夹，`akb raw workflow rename` 只在「搭建工作流」任务里写草稿，`delete`、`agent` 已移除，改在网页上管理。

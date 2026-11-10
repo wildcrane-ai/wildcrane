@@ -11,7 +11,7 @@
 import { createHash } from 'node:crypto'
 
 import { allCards, findCard } from '../view/read'
-import { awaitingApproval, byDispatchOrder, canRefine, openOf, planDeliveryGap } from '../view/rules'
+import { awaitingApproval, byDispatchOrder, canRefine, planDeliveryGap } from '../view/rules'
 import type { Card } from '../view/types'
 import { startRun } from './start'
 import { endOfStage, shortLine, stageOfAction, type StageShort } from './stage-end'
@@ -149,7 +149,7 @@ export function refinementRequest(req: CommandRequest): AgentRequest | { error: 
   const step = refinementStep(card)
   if (step === 'done') {
     // Only the user's answers are in the way (#1366).
-    const waiting = openOf(card.questions).length > 0 && canRefine({ ...card, questions: [] })
+    const waiting = card.questions.length > 0 && canRefine({ ...card, questions: [] })
     return {
       error: waiting
         ? `#${card.id} is waiting for the user to answer its open questions, so there is nothing to refine yet — the board refines it on its own once they are answered.`
@@ -176,7 +176,7 @@ export function refinementAfter(
 ): AgentRequest | null {
   const card = currentCard(cardId)
   if (!card || card.openBlockers.length > 0) return null
-  if (openOf(card.questions).length > 0 || action === 'clarify' || card.deliversIn !== 'plan') return null
+  if (card.questions.length > 0 || action === 'clarify' || card.deliversIn !== 'plan') return null
   if (planDeliveryGap(card) === null) return null
   // A stage before the last waits on the user's Approve (#1790).
   if (awaitingApproval(card)) return null
@@ -254,7 +254,7 @@ export interface RefinementFollowUp {
 function planStageEnd(run: RunRecord): ReturnType<typeof endOfStage> | null {
   if (run.cardId === null || stageOfAction(run.action) !== 'plan') return null
   const card = currentCard(run.cardId)
-  if (!card || card.openBlockers.length > 0 || openOf(card.questions).length > 0) return null
+  if (!card || card.openBlockers.length > 0 || card.questions.length > 0) return null
   if (refinementStep(card) !== 'done') return null
   return endOfStage(stageContract('plan'), card)
 }

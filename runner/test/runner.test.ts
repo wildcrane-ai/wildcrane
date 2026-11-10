@@ -13,7 +13,7 @@ import { startRunner, type Runner } from '../src/connect'
 import { holdMachine } from '../src/lock'
 import { keepPresence } from '../src/presence'
 import { runnerHome, useRunnerHome } from '../src/home'
-import { mcpArgs } from '../src/flow'
+import { mcpArgs, spentBy } from '../src/flow'
 import { createAcpClient, createStreamRenderer, createCodexStreamRenderer } from '../../cli/src/lib/agent/wire'
 import { CLAUDE_REPLY } from '../../cli/test/claude-reply'
 import { stopMark } from '../../cli/src/lib/agent/stop'
@@ -2572,6 +2572,21 @@ describe('flow jobs (#2020)', () => {
     assert.equal(job.report?.costUsd, 0.5)
   })
 
+  it('splits a step\'s cost by the runtime each agent ran on (#629)', () => {
+    const pick = { id: 'rt_cx', name: 'Codex', runtime: 'codex', model: null, settings: {}, runner: 'm' }
+    const job = { runtime: 'claude-code' as const, runtimeId: 'rt_cc', agentRuntimes: { reviewer: pick } }
+    const spent = spentBy([
+      { sessionId: 'a', runtime: 'global', costUsd: 0.5 },
+      { sessionId: 'b', runtime: 'rt_cx', costUsd: 0.25 },
+      { sessionId: 'c', costUsd: 0.25 },
+    ], job)
+    assert.equal(spent.costUsd, 1)
+    assert.deepEqual(spent.runtimeCosts, [
+      { runtimeId: 'rt_cc', runtime: 'claude-code', costUsd: 0.75 },
+      { runtimeId: 'rt_cx', runtime: 'codex', costUsd: 0.25 },
+    ])
+  })
+
   it('reports the context window the latest run counting one left (#52)', async () => {
     process.env.FAKE_AKB = JSON.stringify({ refine: { spent: { context: { used: 90000, limit: 200000 } } } })
     assert.deepEqual((await flowJob('j1', { verb: 'create' })).report?.context, { used: 90000, limit: 200000 })
@@ -2720,7 +2735,7 @@ describe('flow jobs (#2020)', () => {
     } })
     const job = await flowJob('j1', { verb: 'create' })
     assert.equal(job.outcome, 'done', job.reason)
-    assert.deepEqual(flowReport(job), { card: 2, reply: '计划已完成。', costUsd: 0.25 })
+    assert.deepEqual(flowReport(job), { card: 2, reply: '计划已完成。', costUsd: 0.25, runtimeCosts: [{ runtimeId: null, runtime: 'claude-code', costUsd: 0.25 }] })
     assert.match(cloud.file('todo/2-pricing-page.md')!, /status: ready/)
   })
 
@@ -2794,7 +2809,7 @@ describe('flow jobs (#2020)', () => {
       } })
       const job = await flowJob('j2', { verb: 'implement', card: 2, text: 'Discard this card.' })
       assert.equal(job.outcome, 'done', job.reason)
-      assert.deepEqual(flowReport(job), { card: 2, reply: 'Discarded it.', ...spent })
+      assert.deepEqual(flowReport(job), { card: 2, reply: 'Discarded it.', ...spent, runtimeCosts: [{ runtimeId: null, runtime: 'claude-code', costUsd: spent.costUsd }] })
       assert.ok(!cardCalls().some((c) => c.startsWith('card implement')))
       assert.match(cloud.file('.archive/2-pricing-page.md')!, /rejected: true/)
       assert.equal(cloud.file('todo/2-pricing-page.md'), null)
@@ -3263,12 +3278,11 @@ describe('flow jobs (#2020)', () => {
       assert.match(fs.readFileSync(path.join(board(), 'agents', 'writer', 'AGENT.md'), 'utf8'), /Write it short\./)
     })
 
-    it('fails the job with what akb found, and sends nothing back', async () => {
+    it('sends the draft back as written, whatever akb finds in it (#622)', async () => {
       process.env.FAKE_AKB = JSON.stringify({ refine: { writes: written }, specProblems: ['.akb/kanban/agents/writer/AGENT.md: no description'] })
       const job = await flowJob('j1', { verb: 'create', workflow: BUILDER })
-      assert.equal(job.outcome, 'failed')
-      assert.match(job.reason!, /^The workflow has a problem: .*agents\/writer\/AGENT\.md: no description/)
-      assert.equal(cloud.file(`${DRAFT}WORKFLOW.md`), null)
+      assert.equal(job.outcome, 'done', job.reason)
+      assert.ok((job.report?.workflow as { files: Record<string, string> }).files['WORKFLOW.md'])
     })
 
     it('sends its card to Cloud before planning, without the draft (#577)', async () => {

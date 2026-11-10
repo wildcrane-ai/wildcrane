@@ -1,14 +1,14 @@
 // A Workflow builder task (#2004): the workflow it writes is `workflows/<draft>/` on the task's
 // board, with its agents inside, and a job finds the agents in the board's `agents/`, where akb
 // reads them. The card's first job places the draft — a new one with a name and no agents,
-// a change as the workflow is now. After every job its agents go back into the folder, akb's
-// checks run, and the files go to Cloud with the report, which the approval saves.
+// a change as the workflow is now. After every job its agents go back into the folder and the
+// files go to Cloud as written (#622), which the approval saves.
 
 import fs from 'node:fs'
 import path from 'node:path'
 
 import { BUILDER, draftFolder } from '../../cli/src/lib/shared/board-files.ts'
-import { WORKFLOW_FILE, checkWorkflowFiles, type WorkflowFiles } from '../../cli/src/lib/shared/workflow-files.ts'
+import { VERSION_FILE, WORKFLOW_FILE, type WorkflowFiles } from '../../cli/src/lib/shared/workflow-files.ts'
 import { parseWorkflowFile, type WorkflowDef } from '../../cli/src/lib/agent/workflow-def'
 import { yamlScalar } from '../../cli/src/lib/yaml'
 import type * as api from './api'
@@ -50,31 +50,25 @@ export async function placeDraft(ws: TaskFolder, read: Pick<typeof api, 'readTas
 /** Everyone the workflow names. */
 const named = (def: WorkflowDef) => [...new Set([...def.previews, ...def.land, ...def.scheduled].map((h) => h.agent))]
 
-export type Built = { ok: true; files: WorkflowFiles } | { ok: false; reason: string }
-
-/** The draft as it stands, with its agents, once akb finds nothing wrong with it; null for any
- *  other task. */
-export async function builtWorkflow(ws: TaskFolder, akb: Akb): Promise<Built | null> {
+/** The draft as it stands, with its agents; null for any other task. Whether it is right is the
+ *  agent's to check (#622). */
+export async function builtWorkflow(ws: TaskFolder, akb: Akb): Promise<WorkflowFiles | null> {
   if (!isBuilder(ws)) return null
-  const fail = (problem: string): Built => ({ ok: false, reason: `The workflow has a problem: ${problem}` })
   const id = draftFolder(ws.task)
   const dir = draftDir(ws)
-  let source: string
+  let source = ''
   try {
     source = fs.readFileSync(path.join(dir, WORKFLOW_FILE), 'utf8')
-  } catch {
-    return fail(`workflows/${id}/${WORKFLOW_FILE} is missing.`)
-  }
+  } catch {}
   const read = parseWorkflowFile(id, source, `workflows/${id}/${WORKFLOW_FILE}`)
-  if ('problem' in read) return fail(read.problem)
-  const names = named(read.def)
-  const run = async <T>(args: string[]) =>
-    answerOf<T>(await runAkb(akb, [...args, '--json', '--board', ws.board], { cwd: ws.cwd, board: ws.board }))
+  const names = 'def' in read ? named(read.def) : []
   // Each agent from the board's `agents/`, else the copy the draft came with, else the board's
   // built-in one (an official agent such as `builder`).
   const agents = path.join(dir, 'agents')
-  for (const old of fs.existsSync(agents) ? fs.readdirSync(agents) : []) {
-    if (!names.includes(old)) fs.rmSync(path.join(agents, old), { recursive: true, force: true })
+  if ('def' in read) {
+    for (const old of fs.existsSync(agents) ? fs.readdirSync(agents) : []) {
+      if (!names.includes(old)) fs.rmSync(path.join(agents, old), { recursive: true, force: true })
+    }
   }
   for (const name of names) {
     const from = path.join(ws.board, 'agents', name)
@@ -83,24 +77,14 @@ export async function builtWorkflow(ws: TaskFolder, akb: Akb): Promise<Built | n
       fs.rmSync(to, { recursive: true, force: true })
       fs.cpSync(from, to, { recursive: true })
     } else if (!fs.existsSync(path.join(to, 'AGENT.md'))) {
-      const own = await run<{ text?: string }>(['raw', 'agent-file', name, 'AGENT.md'])
+      const own = answerOf<{ text?: string }>(
+        await runAkb(akb, ['raw', 'agent-file', name, 'AGENT.md', '--json', '--board', ws.board], { cwd: ws.cwd, board: ws.board }),
+      )
       if (own?.text) {
         fs.mkdirSync(to, { recursive: true })
         fs.writeFileSync(path.join(to, 'AGENT.md'), own.text)
       }
     }
   }
-  const files = Object.fromEntries(filesUnder(dir).map((f) => [f, fs.readFileSync(path.join(dir, f), 'utf8')]))
-  const checked = checkWorkflowFiles(files)
-  if (!checked.ok) return fail(`${checked.file} ${checked.reason}.`)
-
-  const list = await run<{ workflows?: { id: string; problems?: string[] }[]; problems?: string[] }>(['workflow', 'list'])
-  const spec = await run<{ problems?: string[] }>(['raw', 'previews'])
-  if (!list?.workflows || !spec) return fail('akb could not check it.')
-  const problems = [
-    ...(list.workflows.find((w) => w.id === id)?.problems ?? []),
-    ...(list.problems ?? []).filter((p) => p.includes(`workflows/${id}/`)),
-    ...(spec.problems ?? []).filter((p) => names.some((n) => p.includes(`agents/${n}/`))),
-  ]
-  return problems.length ? fail(problems.join(' ')) : { ok: true, files: checked.files }
+  return Object.fromEntries(filesUnder(dir).filter((f) => f !== VERSION_FILE).map((f) => [f, fs.readFileSync(path.join(dir, f), 'utf8')]))
 }

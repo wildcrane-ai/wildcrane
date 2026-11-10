@@ -96,3 +96,37 @@ describe('the tool calls a run was refused', () => {
     assert.ok(!log.includes('[refused]'), log)
   })
 })
+
+describe('subagents run in parallel', () => {
+  // Shape of a real `claude -p` 2.1 run: two `Agent` calls, each subagent's own turns tagged
+  // with `parent_tool_use_id`, interleaved.
+  const call = (id: string, description: string) => ({ type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id, name: 'Agent', input: { description, prompt: 'long task text' } }] } })
+  const inside = (parent: string) => [
+    { type: 'assistant', parent_tool_use_id: parent, message: { usage: { input_tokens: 99999 }, content: [{ type: 'tool_use', id: `${parent}-bash`, name: 'Bash', input: { command: 'ls' } }] } },
+    { type: 'user', parent_tool_use_id: parent, message: { content: [{ type: 'tool_result', tool_use_id: `${parent}-bash`, content: 'x' }] } },
+  ]
+  const back = (id: string, error = false) => ({ type: 'user', parent_tool_use_id: null, message: { content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'report' }], is_error: error }] } })
+
+  it('reports each as its own subagent, keeping their steps out of the main agent', () => {
+    const { renderer } = render([
+      { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'Splitting this in two.' }] } },
+      call('a', 'Count files'),
+      call('b', 'Say hi'),
+      ...inside('a'),
+      { type: 'system', subtype: 'task_notification', tool_use_id: 'b', status: 'completed' },
+      back('b'),
+      ...inside('b'),
+      back('a', true),
+      { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'done' }] } },
+    ])
+    assert.deepEqual(renderer.events!().map((e) => [e.kind, e.data]), [
+      ['message', { text: 'Splitting this in two.' }],
+      ['tool_call', { toolCallId: 'a', title: 'Count files', kind: 'other', status: 'in_progress', subagent: true }],
+      ['tool_call', { toolCallId: 'b', title: 'Say hi', kind: 'other', status: 'in_progress', subagent: true }],
+      ['tool_call_update', { toolCallId: 'b', status: 'completed' }],
+      ['tool_call_update', { toolCallId: 'a', status: 'failed' }],
+      ['message', { text: 'done' }],
+    ])
+    assert.equal(renderer.context?.(), undefined)
+  })
+})

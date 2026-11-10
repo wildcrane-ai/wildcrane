@@ -11,9 +11,9 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { machineHome } from '../machine/home'
-import { quoteArg } from './argv'
 import type { Harness } from './harnesses/types'
 import { commandBinary } from './installed'
+import { spawnable } from './spawnable'
 
 const WINDOWS = process.platform === 'win32'
 const PROBE_MS = 3_000
@@ -172,8 +172,9 @@ function commonDirs(): string[] {
 
 /** Every file the PATH answers `binary` with, in its order. */
 function onPath(binary: string): string[] {
+  // On Windows an extensionless file beside `claude.cmd` is npm's sh script, which cannot start.
   const names = WINDOWS
-    ? [binary, ...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((ext) => `${binary}${ext.toLowerCase()}`)]
+    ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((ext) => `${binary}${ext.toLowerCase()}`)
     : [binary]
   return (process.env.PATH ?? '').split(path.delimiter).filter(Boolean).flatMap((dir) => names.map((name) => path.join(dir, name)))
 }
@@ -192,11 +193,11 @@ function copyFiles(harness: Harness): { file: string; entry: boolean }[] {
   const pinned = harness.pinned?.()
   if (pinned && isFile(pinned)) return [{ file: pinned, entry: false }]
   const binary = commandBinary(harness.command)
-  const exe = (file: string) => (WINDOWS && !path.extname(file) ? `${file}.exe` : file)
+  const exe = (file: string) => (WINDOWS && !path.extname(file) ? [`${file}.exe`, `${file}.cmd`] : [file])
   const path_ = onPath(binary).filter(isFile)
   // The test scripts' fake PATH has to be the whole machine.
   const elsewhere = process.env.AI4KANBAN_PATH_ONLY ? [] : [...(harness.installs?.() ?? []), ...commonDirs().map((dir) => path.join(dir, binary))]
-  const others = elsewhere.map(exe).filter(isFile)
+  const others = elsewhere.flatMap(exe).filter(isFile)
   const seen = new Set<string>()
   return [...path_, ...others].flatMap((file, i) => {
     const real = fs.realpathSync.native(file)
@@ -270,7 +271,8 @@ const probeOptions = (file: string) => ({ cwd: os.tmpdir(), env: copyEnv(file), 
 
 function probe(file: string): Answer {
   const key = keyOf(file)
-  const run = spawnSync(file, ['--version'], { ...probeOptions(file), stdio: ['ignore', 'pipe', 'pipe'], timeout: PROBE_MS, encoding: 'utf8' })
+  const start = spawnable(file, ['--version'], { ...probeOptions(file), stdio: ['ignore', 'pipe', 'pipe'], timeout: PROBE_MS })
+  const run = spawnSync(start.command, start.args, { ...start.options, encoding: 'utf8' })
   const code = (run.error as NodeJS.ErrnoException | undefined)?.code
   const answer = { key, at: Date.now(), ...judge(code, run.status, run.stdout ?? '', run.stderr ?? '') }
   keep(file, answer)
@@ -281,13 +283,14 @@ function probeAsync(file: string): Promise<void> {
   const key = keyOf(file)
   return new Promise((resolve) => {
     let [stdout, stderr] = ['', '']
-    const child = spawn(file, ['--version'], { ...probeOptions(file), stdio: ['ignore', 'pipe', 'pipe'], timeout: PROBE_MS })
+    const start = spawnable(file, ['--version'], { ...probeOptions(file), stdio: ['ignore', 'pipe', 'pipe'], timeout: PROBE_MS })
+    const child = spawn(start.command, start.args, start.options)
     const done = (code: string | undefined, status: number | null) => {
       keep(file, { key, at: Date.now(), ...judge(code, status, stdout, stderr) })
       resolve()
     }
-    child.stdout.on('data', (d) => (stdout += d))
-    child.stderr.on('data', (d) => (stderr += d))
+    child.stdout!.on('data', (d) => (stdout += d))
+    child.stderr!.on('data', (d) => (stderr += d))
     child.on('error', (e: NodeJS.ErrnoException) => done(e.code, null))
     child.on('close', (status) => done(undefined, status))
   })
@@ -322,11 +325,10 @@ export function chooseCopy(harness: Harness, maxAge = KEEP_MS): Copy | null {
   return files.length === 1 ? { ...files[0]!, starts: true, version: null } : locate(harness, maxAge)
 }
 
-/** What to spawn for `copy`: the bare name when the PATH would find it anyway. */
-export const spawnName = (copy: Copy | null, binary: string): string => (copy && !copy.entry ? copy.file : binary)
-
-/** A shell's spelling of `spawnName` (Windows runs these through one). */
-export const shellName = (name: string): string => (WINDOWS && name.includes(' ') ? quoteArg(name) : name)
+/** What to spawn for `copy`: the bare name when the PATH would find it anyway, except a Windows
+ *  batch file, which only starts by its path (agent/spawnable.ts). */
+export const spawnName = (copy: Copy | null, binary: string): string =>
+  copy && (!copy.entry || /\.(cmd|bat)$/i.test(copy.file)) ? copy.file : binary
 
 /** The line a run owes its log when the PATH's copy couldn't start and another took over. */
 export function brokenEntryNote(copy: Copy, binary: string, harness: Harness): string | undefined {

@@ -18,6 +18,9 @@ const TOOL_KINDS: Record<string, ToolKind> = {
   Grep: 'search', Glob: 'search', WebFetch: 'fetch', WebSearch: 'fetch',
 }
 
+/** The tools that start a subagent: `Agent`, named `Task` before Claude Code 2.1. */
+const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
+
 function targetOf(input: unknown): string {
   const args = obj(input)
   for (const key of ARG_KEYS) if (str(args[key]).trim()) return str(args[key])
@@ -113,6 +116,14 @@ export function createStreamRenderer(): StreamRenderer {
   const backgrounded = new Set<string>()
   const events = createEventCollector()
   const plans = new Set<string>()
+  // Subagents by call id, true once ended. A background one ends on its `task_notification`.
+  const subagents = new Map<string, boolean>()
+  const detached = new Set<string>()
+  const endSubagent = (id: string, status: 'completed' | 'failed') => {
+    if (subagents.get(id) !== false) return
+    subagents.set(id, true)
+    events.toolResult(id, status, '')
+  }
 
   const renderLine = (line: string): string => {
     if (!line.trim()) return ''
@@ -128,6 +139,8 @@ export function createStreamRenderer(): StreamRenderer {
     // First one wins, so this settles on the opening banner's id and never drifts
     // to whatever a later turn happens to say.
     if (model === undefined) model = eventModel(ev)
+    // A subagent's own turns: neither the main agent's steps nor its context.
+    if (str(ev.parent_tool_use_id)) return ''
     switch (ev.type) {
       case 'assistant': {
         const msg = ev.message as { content?: unknown; usage?: unknown } | undefined
@@ -144,7 +157,12 @@ export function createStreamRenderer(): StreamRenderer {
             events.message(b.text)
           } else if (b?.type === 'tool_use' && typeof b.name === 'string') {
             out.push(`⏺ ${b.name}${argHint(b.input, ARG_KEYS)}\n`)
-            if (b.name === 'TodoWrite') {
+            if (SUBAGENT_TOOLS.has(b.name)) {
+              const input = obj(b.input)
+              subagents.set(str(b.id), false)
+              if (input.run_in_background === true) detached.add(str(b.id))
+              events.subagent(str(b.id), str(input.description) || str(input.subagent_type) || b.name)
+            } else if (b.name === 'TodoWrite') {
               plans.add(str(b.id))
               events.plan(obj(b.input).todos)
             } else {
@@ -159,6 +177,10 @@ export function createStreamRenderer(): StreamRenderer {
         for (const raw of Array.isArray(content) ? content : []) {
           const b = obj(raw)
           if (b.type !== 'tool_result' || plans.has(str(b.tool_use_id))) continue
+          if (subagents.has(str(b.tool_use_id))) {
+            if (!detached.has(str(b.tool_use_id))) endSubagent(str(b.tool_use_id), b.is_error === true ? 'failed' : 'completed')
+            continue
+          }
           events.toolResult(str(b.tool_use_id), b.is_error === true ? 'failed' : 'completed', resultText(b.content))
         }
         return ''
@@ -200,6 +222,9 @@ export function createStreamRenderer(): StreamRenderer {
         // The whole list every time, so its length is the count (#1540).
         if (ev.subtype === 'background_tasks_changed' && Array.isArray(ev.tasks)) background = ev.tasks.length
         if (ev.subtype === 'task_started' && ev.is_backgrounded === true) backgrounded.add(str(ev.task_id))
+        if (ev.subtype === 'task_notification' && subagents.has(str(ev.tool_use_id))) {
+          endSubagent(str(ev.tool_use_id), str(ev.status) === 'completed' ? 'completed' : 'failed')
+        }
         // A foreground command reports one too; only a background one is news.
         if (ev.subtype === 'task_notification' && backgrounded.has(str(ev.task_id)) && str(ev.summary)) {
           return `⏺ ${str(ev.summary)}\n`

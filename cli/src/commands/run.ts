@@ -18,6 +18,7 @@ import {
 } from '../lib/agent/deliveries'
 import { deliveryState } from '../lib/agent/pause'
 import { insideRun, printFlow } from '../lib/agent/flow'
+import { SESSION_COST_ENV } from '../lib/agent/env'
 import { taskChatsToReview } from '../lib/agent/memory-review'
 import { readLogTail, splitLog } from '../lib/agent/log'
 import { advancePhase, approvalRequest } from '../lib/agent/approve'
@@ -51,7 +52,7 @@ import { pidAlive } from '../lib/lock'
 import { die, BOARD_FLAG, KANBAN } from '../lib/paths'
 import { approveTask, runnerProject, workspaceTask } from '../lib/cloud/tasks'
 import { findCard } from '../lib/view/read'
-import { awaitingApproval, creationRefusal, openOf } from '../lib/view/rules'
+import { awaitingApproval, creationRefusal } from '../lib/view/rules'
 import type { MoveResult } from '../lib/types'
 import {
   cancelBoardDelivery as cancelDelivery,
@@ -238,7 +239,7 @@ function sayBeforeStart(req: CommandRequest, program: string): void {
   if (blockers.length) {
     say(`#${req.id} is blocked by ${blockers.map((b) => `#${b.id} ${b.title}`).join(', ')} — starting anyway.`)
   }
-  const asked = openOf(card?.questions ?? []).length
+  const asked = (card?.questions.length ?? 0)
   if (req.action === 'implement' && asked) {
     say(
       `#${req.id} has ${asked} open question${asked === 1 ? '' : 's'} — it is built, then holds at landing ` +
@@ -310,7 +311,14 @@ function readRequest(
   // nothing else can be given one.
   if (action === 'implement') req.runtime = opts.runtime
   if (opts.session || opts.transcript) {
-    req.carry = { resumeId: opts.session, fork: opts.session ? opts.fork === true : undefined, transcript: opts.transcript }
+    // Set by the Runner (#627): an env var, so an older akb ignores it.
+    const costFrom = Number(process.env[SESSION_COST_ENV])
+    req.carry = {
+      resumeId: opts.session,
+      fork: opts.session ? opts.fork === true : undefined,
+      transcript: opts.transcript,
+      ...(opts.session && costFrom > 0 ? { costFrom } : {}),
+    }
   }
   return { req, follow, print }
 }

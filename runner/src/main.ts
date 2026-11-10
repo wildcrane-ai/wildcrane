@@ -8,6 +8,9 @@ import { EXIT_OUTDATED, EXIT_REFUSED, EXIT_UPDATE, VERSION } from './protocol'
 import { detectRuntimes } from './runtimes'
 import { startRunner } from './connect'
 import { signIn } from './signin'
+import { settingsAction } from './settings'
+import { openSettings } from './settings-server'
+import { serveSettingsLink } from './settings-link'
 
 const tell = (message: unknown) => process.send?.(message)
 
@@ -22,6 +25,7 @@ async function main(): Promise<void> {
     status(t.signedIn())
   }
   tell({ type: 'started' })
+  serveSettingsLink(() => openSettings(settingsAction, {}, false))
 
   const id = machineId()
   const runner = startRunner({

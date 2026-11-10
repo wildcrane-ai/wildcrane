@@ -8,6 +8,8 @@ import { adoptLegacy, allow, disallow, refusal } from './folders'
 import { installKanbanSkill } from './kanban-skill'
 import { runnerHome, machineId, machineName } from './home'
 import { LABELS, detectRuntimes, hints } from './runtimes'
+import { bundledAkb, shimDir } from './akb'
+import { RUNTIMES } from './api'
 import { runnerSettingsSupport } from './lock'
 import { signIn } from './signin'
 import { acceptAlphaUpdates, saveAlphaUpdates } from './preferences'
@@ -99,13 +101,18 @@ export async function removeFolder(project: string) {
   return { removed: true }
 }
 
-export async function connections() {
-  const found = await detectRuntimes(true)
-  notify()
-  return { connections: found.map((r) => {
-    const hint = hints(r.name)
+/** The `akb` an install prompt names by full path: Windows has no shim on the PATH. */
+function akbFile(): string | null {
+  try { return path.join(shimDir(bundledAkb()), process.platform === 'win32' ? 'akb.cmd' : 'akb') } catch { return null }
+}
+
+export async function connections(only?: unknown) {
+  const one = RUNTIMES.find((name) => name === only)
+  const found = await detectRuntimes(true, one)
+  if (!one) notify()
+  return { akb: akbFile(), connections: found.map((r) => {
     const state: 'notInstalled' | 'signedOut' | 'ready' = !r.installed ? 'notInstalled' : r.loggedIn === false ? 'signedOut' : 'ready'
-    return { name: r.name, label: LABELS[r.name], state, version: r.version ?? null, command: (state === 'notInstalled' ? hint.install : state === 'signedOut' ? hint.login : null) ?? null }
+    return { name: r.name, label: LABELS[r.name], state, version: r.version ?? null, command: state === 'signedOut' ? hints(r.name).login ?? null : null }
   }) }
 }
 
@@ -163,7 +170,7 @@ export async function settingsAction(action: string, body: Record<string, unknow
   }
   if (action === 'signIn') { startSignIn(); return { signing } }
   if (action === 'signOut') return signOut()
-  if (action === 'connections') return connections()
+  if (action === 'connections') return connections(body.name)
   if (!readSession()) return { error: 'signed_out' }
   if (action === 'pick') {
     try {

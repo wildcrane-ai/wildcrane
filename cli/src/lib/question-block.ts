@@ -18,7 +18,6 @@ export function normalizeQuestion(raw: unknown): Question {
     const text = withoutTag(String(source.question ?? source.text ?? ''))
     const extra = {
       ...(typeof source.agent === 'string' && source.agent.trim() ? { agent: source.agent.trim() } : {}),
-      ...(source.skipped === true || source.skipped === 'true' ? { skipped: true } : {}),
     }
     const options = (Array.isArray(source.options) ? source.options : [])
       .map((o) => String(o).trim())
@@ -35,6 +34,7 @@ export function normalizeQuestion(raw: unknown): Question {
 
 // Read the indented block under `questions:`. An item is either `- <text>` (plain)
 // or `- question: <text>` followed by its `mode:`, `options:` and `recommend:` lines.
+// One an old akb marked `skipped: true` is dropped; the next write leaves it out.
 export function parseQuestionsBlock(lines: string[]): Question[] {
   const out: Question[] = []
   for (let i = 0; i < lines.length; i++) {
@@ -46,6 +46,7 @@ export function parseQuestionsBlock(lines: string[]): Question[] {
       out.push(normalizeQuestion(unquote(head)))
       continue
     }
+    let skipped = false
     const q: Record<string, unknown> & { options: string[]; recommend: number[] } = {
       question: unquote(opened[1]!),
       options: [],
@@ -74,10 +75,10 @@ export function parseQuestionsBlock(lines: string[]): Question[] {
       } else if (key === 'agent') {
         q.agent = unquote(val)
       } else if (key === 'skipped') {
-        q.skipped = unquote(val) === 'true'
+        skipped = unquote(val) === 'true'
       }
     }
-    out.push(normalizeQuestion(q))
+    if (!skipped) out.push(normalizeQuestion(q))
   }
   return out
 }

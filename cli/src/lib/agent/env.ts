@@ -17,6 +17,9 @@ export const RUN_ENV = 'KANBAN_RUN'
  *  comma-separated. Even empty, it stands over what the workflows list. */
 export const SCHEDULED_AGENTS_ENV = 'AI4KANBAN_SCHEDULED_AGENTS'
 
+/** Set by the Runner beside `--session` (#627): that session's last recorded cost total. */
+export const SESSION_COST_ENV = 'AI4KANBAN_SESSION_COST'
+
 /** The run this process is working inside, when the board started it — otherwise null. */
 export function insideRun(): string | null {
   const id = process.env[RUN_ENV]

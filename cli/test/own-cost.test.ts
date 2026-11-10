@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { splitLog } from '../src/lib/agent/log.ts'
 import { ownCost } from '../src/lib/agent/own-cost.ts'
-import { closeRun, openResume, openRun, patch, peekRun } from '../src/lib/agent/sessions.ts'
+import { carriedSession, closeRun, openResume, openRun, patch, peekRun } from '../src/lib/agent/sessions.ts'
 import { readRuns } from '../src/lib/agent/store.ts'
 import type { RunRecord } from '../src/lib/agent/types.ts'
 import { watchRun } from '../src/lib/agent/watch.ts'
@@ -113,6 +113,14 @@ describe("a run's cost", () => {
     patch(run.sessionId, (r) => { r.status = 'error' })
     const again = await resumed(run, 3)
     near(again.costUsd, 0.5)
+  })
+
+  it("carrying a discussion's session on, records only what this step spent (#627)", async () => {
+    const req = { action: 'clarify', id: 1, carry: { resumeId: 'disc-1', fork: true, costFrom: 2 } } as const
+    const opened = openRun(req, 'prompt', [], undefined, carriedSession(req)?.carried)
+    if ('error' in opened) throw new Error(opened.error)
+    assert.deepEqual(opened.run.continues, { resumeId: 'disc-1', fork: true })
+    near((await watch(opened.run, 3)).costUsd, 1)
   })
 
   it('leaves a resumed run on a connector that reports its own cost alone', async () => {

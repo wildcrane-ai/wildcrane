@@ -117,20 +117,41 @@ function mcpProblem(text: string): string | null {
   return null
 }
 
+export type FilesProblem = { file: string; reason: string; tooLarge?: boolean }
+
 /** `official` lets the files carry skills and MCP servers. */
 export function checkWorkflowFiles(value: unknown, official = false): Checked {
-  const fail = (file: string, reason: string, tooLarge = false): Checked => ({ ok: false, file, reason, ...(tooLarge ? { tooLarge } : {}) })
+  const read = inspect(value, official)
+  const first = read.problems[0]
+  return first ? { ok: false, ...first } : { ok: true, def: read.def!, files: read.files! }
+}
+
+/** Every problem `checkWorkflowFiles` would refuse the files for. */
+export const workflowFilesProblems = (value: unknown, official = false): FilesProblem[] => inspect(value, official).problems
+
+function inspect(value: unknown, official: boolean): { problems: FilesProblem[]; def?: WorkflowDef; files?: WorkflowFiles } {
+  const problems: FilesProblem[] = []
+  const fail = (file: string, reason: string, tooLarge = false) => {
+    problems.push({ file, reason, ...(tooLarge ? { tooLarge } : {}) })
+    return { problems }
+  }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fail('files', 'must be an object of path → text')
-  value = Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([file]) => file !== VERSION_FILE))
-  const entries = Object.entries(value as Record<string, unknown>)
+  const files = Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([file]) => file !== VERSION_FILE))
+  const entries = Object.entries(files)
   if (entries.length > FILE_LIMITS.count) return fail('files', `holds at most ${FILE_LIMITS.count} files`, true)
 
   let total = 0
   const folders = new Map<string, Map<string, string>>()
   const skills = new Set<string>()
   for (const [file, text] of entries) {
-    if (typeof text !== 'string' || text.includes('\u0000')) return fail(file, 'is not a text file')
-    if (file.length > FILE_LIMITS.path) return fail(file, `the path is longer than ${FILE_LIMITS.path} characters`)
+    if (typeof text !== 'string' || text.includes('\u0000')) {
+      fail(file, 'is not a text file')
+      continue
+    }
+    if (file.length > FILE_LIMITS.path) {
+      fail(file, `the path is longer than ${FILE_LIMITS.path} characters`)
+      continue
+    }
     const size = bytes(text)
     if (size > FILE_LIMITS.file) return fail(file, `is larger than ${FILE_LIMITS.file / KB} KB`, true)
     total += size
@@ -138,51 +159,58 @@ export function checkWorkflowFiles(value: unknown, official = false): Checked {
     if (file === WORKFLOW_FILE) continue
     if (official && file === MCP_FILE) {
       const problem = mcpProblem(text)
-      if (problem) return fail(file, problem)
+      if (problem) fail(file, problem)
       continue
     }
     if (official && isAboutFile(file)) continue
     if (official && file.startsWith('skills/')) {
-      if (!folderPath(file, 'skills')) return fail(file, 'is not inside skills/<name>/')
-      skills.add(file.split('/')[1] as string)
+      if (!folderPath(file, 'skills')) fail(file, 'is not inside skills/<name>/')
+      else skills.add(file.split('/')[1] as string)
       continue
     }
     const at = folderPath(file, 'agents')
-    if (!at) return fail(file, `is neither ${WORKFLOW_FILE} nor inside agents/<name>/`)
+    if (!at) {
+      fail(file, `is neither ${WORKFLOW_FILE} nor inside agents/<name>/`)
+      continue
+    }
     if (!folders.has(at[0])) folders.set(at[0], new Map())
     folders.get(at[0])!.set(at[1], text)
   }
 
   for (const name of skills) {
-    if ((value as WorkflowFiles)[`skills/${name}/SKILL.md`] === undefined) return fail(`skills/${name}/SKILL.md`, 'is missing')
+    if (files[`skills/${name}/SKILL.md`] === undefined) fail(`skills/${name}/SKILL.md`, 'is missing')
   }
 
-  const source = (value as WorkflowFiles)[WORKFLOW_FILE]
-  if (source === undefined) return fail(WORKFLOW_FILE, 'is missing')
-  const read = parseWorkflowFile('workflow', source, WORKFLOW_FILE)
-  if ('problem' in read) return fail(WORKFLOW_FILE, read.problem.replace(`${WORKFLOW_FILE}: `, ''))
-  const def = read.def
+  const source = files[WORKFLOW_FILE]
+  const read = typeof source === 'string' ? parseWorkflowFile('workflow', source, WORKFLOW_FILE) : null
+  if (!read) fail(WORKFLOW_FILE, 'is missing')
+  else if ('problem' in read) fail(WORKFLOW_FILE, read.problem.replace(`${WORKFLOW_FILE}: `, ''))
 
   const agents = new Map<string, SpecAgent>()
   for (const [name, own] of folders) {
     const from = `agents/${name}/AGENT.md`
     const text = own.get('AGENT.md')
-    if (text === undefined) return fail(from, 'is missing')
+    if (text === undefined) {
+      fail(from, 'is missing')
+      continue
+    }
     const parsed = parseSpecAgent(text, from, (p) => own.get(p) ?? null, false, () => [...own.keys()].filter((p) => p !== 'AGENT.md'))
-    if ('problem' in parsed) return fail(from, parsed.problem.replace(`${from}: `, ''))
-    if (parsed.agent.name !== name) return fail(from, `calls itself \`${parsed.agent.name}\`; it must match its folder`)
-    agents.set(name, parsed.agent)
+    if ('problem' in parsed) fail(from, parsed.problem.replace(`${from}: `, ''))
+    else if (parsed.agent.name !== name) fail(from, `calls itself \`${parsed.agent.name}\`; it must match its folder`)
+    else agents.set(name, parsed.agent)
   }
 
+  if (!read || 'problem' in read) return { problems }
+  const def = read.def
   const named: [string, string][] = [
     ...def.previews.map((h): [string, string] => [h.agent, 'it previews with']),
     ...def.land.map((h): [string, string] => [h.agent, 'it lands with']),
     ...def.scheduled.map((s): [string, string] => [s.agent, 'it schedules']),
   ]
   for (const [name, why] of named) {
-    if (!agents.has(name)) return fail(WORKFLOW_FILE, `${why} \`${name}\`, which has no agents/${name}/AGENT.md`)
+    if (!agents.has(name) && !folders.has(name)) fail(WORKFLOW_FILE, `${why} \`${name}\`, which has no agents/${name}/AGENT.md`)
   }
-  return { ok: true, def, files: value as WorkflowFiles }
+  return { problems, def, files: files as WorkflowFiles }
 }
 
 /** An official workflow's files as a new own workflow (#444): `WORKFLOW.md` and `agents/`, its

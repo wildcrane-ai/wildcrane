@@ -27,6 +27,7 @@ import { contextLimit, refreshCatalog } from './catalog'
 import { boardCommand } from './command'
 import { BACKGROUND_WAIT, silenceMinutes } from './settings'
 import { runEnv } from './flow'
+import { spawnable } from './spawnable'
 import { endAgent, killMarked, runMark } from './stop'
 import { refineRunsAfter, specRunsAfter } from './follow'
 import { queueCompleted } from './propose'
@@ -233,7 +234,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
   // stdout and stderr are pipes whichever shape this is; only stdin differs.
   let child: ChildProcessByStdio<Writable | null, Readable, Readable>
   try {
-    child = spawn(cmd!, client || stdinPrompt ? args : [...args, prompt], {
+    const start = spawnable(cmd!, client || stdinPrompt ? args : [...args, prompt], {
       // Where this run works: the project, or — inside a delivery with a worktree of its
       // own (#303) — that worktree. Settled when the run was planned and written down with
       // it, so the spawn, the connector's own folder flag and `PWD` are one answer.
@@ -248,7 +249,8 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       // `claude -p` waits ~3s on a piped stdin, then logs a "no stdin data" warning into
       // our log. Close stdin so the log is only agent output.
       stdio,
-    }) as ChildProcessByStdio<Writable | null, Readable, Readable>
+    })
+    child = spawn(start.command, start.args, start.options) as ChildProcessByStdio<Writable | null, Readable, Readable>
   } catch (e) {
     log.end()
     patch(sessionId, (r) => {
@@ -497,7 +499,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
         : record.resumedFrom
           ? record.sessionCostFrom
           : carriedId
-            ? lastSessionTotal(carriedId, readRuns())
+            ? record.sessionCostFrom ?? lastSessionTotal(carriedId, readRuns())
             : undefined
       const totalCost = sessionTotal === undefined ? reported : ownCost(sessionTotal, totalFrom)
       const usage = spoken ? spoken.usage : renderer?.usage?.()

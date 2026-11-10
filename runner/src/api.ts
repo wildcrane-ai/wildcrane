@@ -24,6 +24,8 @@ export interface Job {
   model?: string | null
   /** The runtime's own settings beside the model (#2135), by the harness's keys. Never a key. */
   settings?: Record<string, string> | null
+  /** The workspace's runtime per workflow step (#625), by agent; absent from a Cloud before it. */
+  agentRuntimes?: Record<string, AgentRuntime> | null
   /** A runtime's connection test: the prompt is sent as it is, and nothing else happens. */
   test?: boolean
   /** A job handing over the runtime's keys (#2135): `secrets` on its claim, null to clear one. */
@@ -48,6 +50,8 @@ export interface Job {
   resume?: string | null
   /** `resume` is a discussion's session, copied rather than continued (#2146). */
   fork?: boolean
+  /** The last cost total recorded for `resume` (#627). */
+  resumeCostUsd?: number | null
   /** The discussion a task came from, as the agent reads it when no session is carried (#2146). */
   transcript?: string | null
   /** A board verb to run with akb (#2020); null for every other job. Its `prompt` is ignored. */
@@ -66,6 +70,16 @@ export interface Job {
   languageLine?: string
   attachments: { name: string; content: string }[]
   state: 'waiting' | 'claimed' | 'interrupted' | 'finished'
+}
+
+export interface AgentRuntime {
+  id: string
+  name: string
+  runtime: string
+  model: string | null
+  settings: Record<string, string>
+  /** The computer it runs on. */
+  runner: string | null
 }
 
 export interface AgentJob {
@@ -270,6 +284,12 @@ export interface Usage {
   output: number
 }
 
+/** A reply's subagents (#628): what the agent said before the first, then one row each. */
+export interface Subagents {
+  before: string
+  items: { title: string; state: 'done' | 'failed' | 'stopped'; duration_ms: number }[]
+}
+
 export interface JobReport {
   recovery?: { safe: boolean; stopped: boolean; resumable: boolean }
   processesStopped?: boolean
@@ -280,6 +300,8 @@ export interface JobReport {
   context?: { used: number; limit: number }
   usage?: Usage
   costUsd?: number
+  /** `costUsd` by the runtime each part ran on (#629); a null id is the job's own. */
+  runtimeCosts?: { runtimeId: string | null; runtime: string; costUsd: number }[]
   /** Claude session totals for each attempt, in execution order. */
   attemptCosts?: { resume?: string | null; session?: string; costUsd?: number }[]
   /** A flow job's akb card id on this Runner's board. */
@@ -295,6 +317,7 @@ export interface JobReport {
   workflow?: { files: Record<string, string> }
   /** The commit a build landed as, on the branch checked out in the project (#2109). */
   landing?: { commit: string; branch: string }
+  subagents?: Subagents
   /** A chat reply the user stopped part way (#2133). */
   stopped?: boolean
 }

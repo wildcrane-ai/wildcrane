@@ -340,8 +340,7 @@ describe("a board's own counts", () => {
     const ask = (q: string): string[] => ['--append', q, '--option', 'yes', '--option', 'no']
     await akb('update-questions', '1', ...ask('Ship it?'), ...ask('Which file?'), ...ask('Rename it?'))
     await akb('update-questions', '1', '--drop', '2')
-    await akb('update-questions', '1', '--skip', '2')
-    await akb('update-questions', '1', '--skip', '2', '--unskip', '2', '--clear')
+    await akb('update-questions', '1', '--clear')
     await akb('update-questions', '2', ...ask('Keep the old one?'))
     withStore((store) => {
       store.deliveries.push({ deliveryId: 'd2', cardId: 2, title: 'proposed', status: 'active', startedAt: 1, sessions: [], approved: '', steps: [] } as never)
@@ -354,7 +353,7 @@ describe("a board's own counts", () => {
     assert.deepEqual(board().counts, {
       cards_created_asked: 2,
       cards_created_proposed: 1,
-      questions_closed_user: 4,
+      questions_closed_user: 3,
       questions_closed_verify: 1,
       cards_completed: 1,
       decisions_stood: 2,
@@ -373,8 +372,8 @@ describe("a board's own counts", () => {
       cards_created_proposed: 1,
       cards_completed: 1,
       cards_rejected: 1,
-      questions_closed: 5,
-      questions_closed_user: 4,
+      questions_closed: 4,
+      questions_closed_user: 3,
       questions_closed_verify: 1,
       decisions_stood: 2,
       decisions_overruled: 1,

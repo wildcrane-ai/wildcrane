@@ -149,49 +149,16 @@ describe('a question handed to the user carries choices', () => {
   })
 })
 
-describe('a question the user skipped', () => {
-  const user = ['--append', 'Which region?', '--recommended-option', 'a — why', '--option', 'b — why']
-
-  it('stays on the card as a record, keeps its recommendation unpicked, and counts as not open', async () => {
-    await questions(user)
-    const res = await questions(['--skip', '1'])
-    assert.equal(res.open, 0)
-    assert.match(card(), /- question: Which region\?\n    mode: single\n    options:\n      - a — why\n      - b — why\n    recommend: \[1\]\n    skipped: true/)
+// `--skip` is retired (#626): a question an old akb marked skipped drops out on read.
+describe('a question an old akb marked skipped', () => {
+  it('is not open, and is gone from the card on the next write', async () => {
+    await questions(['--append', 'Which region?', '--option', 'a — why', '--option', 'b — why'])
+    const file = path.join(todo, fs.readdirSync(todo).find((f) => f.endsWith('.md'))!)
+    fs.writeFileSync(file, card().replace('recommend: []', 'recommend: []\n    skipped: true'))
     await move(root, ['update', '1', '--status', 'ready'])
     assert.match(card(), /status: ready/)
-  })
-
-  it('refuses rewriting or dropping it until it is reopened', async () => {
-    await questions(user)
-    await questions(['--skip', '1'])
-    await refuses(root, ['update-questions', '1', '--drop', '1'], /--unskip 1/)
-    await refuses(root, ['update-questions', '1', '--update', '1', 'Other?', '--option', 'a', '--option', 'b'], /--unskip 1/)
-    await questions(['--clear'])
-    assert.match(card(), /skipped: true/)
-    await questions(['--unskip', '1'])
-    assert.doesNotMatch(card(), /skipped/)
-    await questions(['--drop', '1'])
     assert.match(card(), /questions: \[\]/)
-  })
-
-  it('is the user\'s call alone: a run cannot skip or reopen one', async () => {
-    await questions(user)
-    process.env.KANBAN_RUN = 'a-run'
-    try {
-      await refuses(root, ['update-questions', '1', '--skip', '1'], /only the user skips/)
-    } finally {
-      delete process.env.KANBAN_RUN
-    }
-    await questions(['--skip', '1'])
-    const again = await questions(['--skip', '1'])
-    assert.equal(again.open, 0)
-  })
-
-  it('sends a ready card back once reopened', async () => {
-    await questions([...user, '--skip', '1'])
-    await move(root, ['update', '1', '--status', 'ready'])
-    await questions(['--unskip', '1'])
-    assert.match(card(), /status: todo/)
+    await refuses(root, ['update-questions', '1', '--skip', '1'], /unknown option/)
   })
 })
 

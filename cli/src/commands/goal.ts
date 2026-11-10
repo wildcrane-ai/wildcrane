@@ -178,6 +178,6 @@ export function cmdGoalPreviews(workflow: string): MoveResult {
   const catalog = held.workflows.find((w) => w.id === id)?.previews
   if (!catalog) die('Preview agents are unavailable; update Runner and try again.')
   const agents = catalog.map((p) => ({ name: p.agent, when: p.when || null }))
-  say(agents.length ? agents.map((p) => `${p.name}\n  ${p.when ?? 'Not configured'}`).join('\n') : 'This workflow has no preview agent. Ask for none.')
+  say(agents.length ? agents.map((p) => `${p.name}\n  ${p.when ?? 'Always'}`).join('\n') : 'This workflow has no preview agent. Ask for none.')
   return { agents, problems: [] }
 }

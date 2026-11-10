@@ -102,9 +102,8 @@ describe('the akb the Runner carries (#171)', () => {
     fs.writeFileSync(path.join(dir, 'WORKFLOW.md'), '---\nname: Site\nneedsArtifact: false\nland: [builder]\n---\n')
     fs.writeFileSync(path.join(dir, 'version.json'), '{"id":"wf_1","version":2}\n')
     const built = await builtWorkflow(ws, akb)
-    assert.ok(built?.ok, built && !built.ok ? built.reason : '')
-    assert.match(built.files['agents/builder/AGENT.md']!, /^name: builder$/m)
-    assert.equal(built.files['version.json'], undefined)
+    assert.match(built?.['agents/builder/AGENT.md'] ?? '', /^name: builder$/m)
+    assert.equal(built?.['version.json'], undefined)
   })
 
   it('makes a card with the task’s number, keeps a retry to that card, and names what it refuses', async () => {

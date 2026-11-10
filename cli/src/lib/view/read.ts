@@ -13,7 +13,6 @@ import path from 'node:path'
 
 import { activeDelivery, isResumable, listDeliveries } from '../agent/deliveries'
 import { deliveryState } from '../agent/pause'
-import { openOf } from './rules'
 import { readRuns } from '../agent/sessions'
 import { cardsBeingCreated } from '../agent/store'
 import type { DeliveryLanding, DeliveryRecord } from '../agent/types'
@@ -222,7 +221,7 @@ function attachDelivery(card: Card): void {
   card.delivery = {
     id: live.deliveryId,
     startedAt: live.startedAt,
-    state: deliveryState(live, openOf(card.questions).length),
+    state: deliveryState(live, card.questions.length),
     commitMode: live.commitMode === 'auto' || live.commitMode === 'files' ? live.commitMode : 'manual',
     supersedes: supersededBy(card.id, live),
     sessionId: session?.sessionId,

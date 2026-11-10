@@ -32,7 +32,7 @@ You write or change a workflow, one of its preview agents, or a scheduled agent.
 
 ## Check it
 
-Run `akb workflow list` and fix every problem it reports for this workflow.
+Run `akb raw workflow validate <workflow folder>` and fix every problem it reports.
 
 ## Try it
 

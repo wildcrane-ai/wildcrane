@@ -12,7 +12,8 @@ import { countBoardEvent, type BoardCount } from '../lib/machine/usage'
 import { slugify, validModules, parseIdList, dependencyCycle } from '../lib/validate'
 import { cardStages, knownWorkflow, noWorkflowMessage, previewAgents, workflowById, workflowFor, workflows } from '../lib/agent/workflows'
 import { readAllDismissed, readArchived, readInbox } from '../lib/signals/inbox'
-import { collectQuestions, readQuestionOps, parseQuestionPositions, openOf, type QuestionOp, type QuestionOpsInput } from '../lib/questions'
+import { collectQuestions, readQuestionOps, type QuestionOpsInput } from '../lib/questions'
+import { applyQuestionOps, QuestionOpError, type QuestionOpsResult } from '../lib/question-ops'
 import { serializeFrontmatter, parseFrontmatter } from '../lib/frontmatter'
 import { locate, locateArchived, enclosingGroupRoot } from '../lib/cards'
 import { sourceRefFrom } from '../lib/source'
@@ -22,7 +23,6 @@ import { canonicalSpecAgent } from '../lib/spec-agent-names'
 import { insideRun } from '../lib/agent/env'
 import { workspaceTask } from '../lib/cloud/tasks'
 import { activeDelivery } from '../lib/agent/deliveries'
-import { recordAnswer, takeUnchanged } from '../lib/agent/answers'
 import { findSpecAgent } from '../lib/agents'
 import { findCard } from '../lib/view/read'
 import { creationRefusal } from '../lib/view/rules'
@@ -345,7 +345,7 @@ export function cmdUpdate(id: number, flags: UpdateOptions): MoveResult {
   // A `ready` card has no open questions by definition (see STATUSES). Open questions
   // mean the plan is not settled, so a `--status ready` with them pending lands as
   // `todo`. This holds the invariant no matter who set the status.
-  if (openOf(meta.questions).length > 0 && meta.status === 'ready') {
+  if (meta.questions.length > 0 && meta.status === 'ready') {
     meta.status = 'todo'
     changes.push('status→todo (open questions)')
   }
@@ -394,103 +394,32 @@ export function cmdUpdateQuestions(id: number, input: QuestionOpsInput): MoveRes
   const { meta, body } = parseFrontmatter(fs.readFileSync(file, 'utf8'))
   if (!meta) die(`${rel(file)} has no frontmatter — recreate it with \`akb raw create\``)
 
-  // Skipping is the user's own call (#831): a run that skipped would be granting itself leave.
-  if (insideRun() && ops.some((op) => op.kind === 'skip' || op.kind === 'unskip')) {
-    die('only the user skips or reopens a question — a run leaves questions for them to answer')
-  }
-
-  const changes: string[] = []
-  let skipped = 0
-  let unskipped = 0
-  const asker = specRunAgent()
-  // How each question closed (#1472), counted once the write lands.
-  const closed: BoardCount[] = []
-  const verifying = !!activeDelivery(id)
-  const close = (qs: Question[]): void => {
-    for (const q of qs) {
-      closed.push(verifying ? 'questions_closed_verify' : 'questions_closed_user')
-    }
-  }
-  // A skipped question is the user's record (#831): no run answers, rewrites or drops it.
-  const positions = (op: QuestionOp, flag: string): number[] => {
-    const ns = parseQuestionPositions(op.ns ?? String(op.n), meta.questions.length, flag)
-    const held = ns.find((n) => meta.questions[n - 1]!.skipped)
-    if (held !== undefined && flag !== 'unskip' && flag !== 'skip') {
-      die(`question ${held} on #${id} was skipped by the user — \`update-questions ${id} --unskip ${held}\` reopens it first`)
-    }
-    return ns
-  }
   for (const op of ops) {
-    if (op.question?.agent) {
-      const agent = findSpecAgent(op.question.agent)
-      if (!agent) die(`--agent "${op.question.agent}" is not an agent on this board`, { kind: 'no-such-spec-agent', specAgent: op.question.agent })
-      op.question.agent = agent.name
-    }
-    if (op.kind === 'clear') {
-      close(meta.questions.filter((q) => !q.skipped))
-      meta.questions = meta.questions.filter((q) => q.skipped)
-      changes.push('cleared')
-    } else if (op.kind === 'drop') {
-      const ns = positions(op, 'drop')
-      close(ns.map((n) => meta.questions[n - 1]!))
-      meta.questions = meta.questions.filter((_, i) => !ns.includes(i + 1))
-      changes.push(`dropped ${ns.join(',')}`)
-    } else if (op.kind === 'skip') {
-      const ns = positions(op, 'skip')
-      close(ns.map((n) => meta.questions[n - 1]!).filter((q) => !q.skipped))
-      for (const n of ns) meta.questions[n - 1] = { ...meta.questions[n - 1]!, skipped: true }
-      skipped += ns.length
-      changes.push(`skipped ${ns.join(',')}`)
-    } else if (op.kind === 'unskip') {
-      const ns = positions(op, 'unskip')
-      const open = ns.find((n) => !meta.questions[n - 1]!.skipped)
-      if (open !== undefined) die(`question ${open} on #${id} is not skipped`)
-      for (const n of ns) {
-        const { skipped: _, ...q } = meta.questions[n - 1]!
-        meta.questions[n - 1] = q
-      }
-      unskipped += ns.length
-      changes.push(`reopened ${ns.join(',')}`)
-    } else if (op.kind === 'append') {
-      const agent = op.question!.agent ?? asker
-      const q = agent ? { ...op.question!, agent } : op.question!
-      meta.questions.push(q)
-      changes.push('appended')
-    } else {
-      const [n] = positions(op, 'update')
-      // parseQuestionPositions refused anything out of range, so the slot is there.
-      const was = meta.questions[n! - 1]!
-      const agent = op.question!.agent ?? was.agent
-      meta.questions[n! - 1] = { ...op.question!, ...(agent ? { agent } : {}) }
-      changes.push(`rewrote ${n}`)
-    }
+    if (!op.question?.agent) continue
+    const agent = findSpecAgent(op.question.agent)
+    if (!agent) die(`--agent "${op.question.agent}" is not an agent on this board`, { kind: 'no-such-spec-agent', specAgent: op.question.agent })
+    op.question.agent = agent.name
   }
-  const open = openOf(meta.questions).length
+  let done: QuestionOpsResult
+  try {
+    done = applyQuestionOps(meta.questions, ops, specRunAgent())
+  } catch (e) {
+    if (e instanceof QuestionOpError) die(`#${id}: ${e.message}`)
+    throw e
+  }
+  const { changes } = done
+  meta.questions = done.questions
+  const open = meta.questions.length
   // The same invariant cmdUpdate holds: a `ready` card has no open questions.
   if (open > 0 && meta.status === 'ready') {
     meta.status = 'todo'
     changes.push('status→todo (open questions)')
   }
   fs.writeFileSync(file, serializeFrontmatter(meta) + '\n' + body)
-  for (const kind of closed) countBoardEvent(kind)
-  settleDelivery(id, skipped, unskipped)
-  say(
-    `updated #${id} questions: ${changes.join(', ')} (${open} open` +
-      (meta.questions.length > open ? `, ${meta.questions.length - open} skipped` : '') +
-      ')',
-  )
+  const closed: BoardCount = activeDelivery(id) ? 'questions_closed_verify' : 'questions_closed_user'
+  for (const _ of done.closed) countBoardEvent(closed)
+  say(`updated #${id} questions: ${changes.join(', ')} (${open} open)`)
   return { id, changes, open, file: rel(file) }
-}
-
-// A skip is an answer that changed nothing (#831), so the delivery in flight carries on once
-// nothing else is open. A reopened question is a fresh round: what the last one concluded is
-// spent, the way a newly appended question spends it at landing.
-function settleDelivery(id: number, skipped: number, unskipped: number): void {
-  if (!skipped && !unskipped) return
-  const delivery = activeDelivery(id)
-  if (!delivery) return
-  if (unskipped) takeUnchanged(delivery)
-  else recordAnswer(delivery.deliveryId, 'unchanged', `the user skipped ${skipped === 1 ? 'a question' : `${skipped} questions`}, keeping the card as it is`)
 }
 
 // A question a spec agent's own run appends is about that agent's section (#782).

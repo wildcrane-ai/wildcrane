@@ -43,7 +43,7 @@ import { dropReflected, stampMemoryPrune, stampMemoryReview, stampProjectDescrip
 import { scheduledAgent, stampScheduledRun, workflowById } from './workflows'
 import { creationOf, eventsPathOf, logPathOf, noteRefineTried, readRuns, runIsLive, withRuns, withStore } from './store'
 import { withCreationLock } from './creation-lock'
-import { creationRefusal, openOf } from '../view/rules'
+import { creationRefusal } from '../view/rules'
 import { holdsCard, isRetired, refusal, SPECIALIST_ACTIONS } from './types'
 import type {
   AgentAction,
@@ -212,7 +212,7 @@ function cardNow(cardId: number): { status: string; questions: number; title: st
     if (!file) return null
     const { meta } = parseFrontmatter(fs.readFileSync(file, 'utf8'))
     if (!meta) return null
-    return { status: meta.status || 'todo', questions: openOf(meta.questions).length, title: meta.title }
+    return { status: meta.status || 'todo', questions: meta.questions.length, title: meta.title }
   } catch {
     return null
   }
@@ -671,6 +671,8 @@ export function openRun(
   const plan = said
     ? { ...said.plan(cwd, sessionId), note: null }
     : planRun(sessionId, cwd, agentForRun(req), req.runtime ? { pin: req.runtime } : {})
+  const away = plan.runtime ? runtimeById(plan.runtime)?.away : undefined
+  if (away) return refusal('runtimeAway', away, { id: plan.runtime! })
   // What that agent resolved to, when the board names a connector this version can't run. It
   // goes in the log rather than being swallowed: a run on another tool than the one asked
   // for is the first thing to check when its output looks wrong.
@@ -701,6 +703,7 @@ export function openRun(
     // a fork is a fresh session of its own.
     ...(said && !said.fork ? { resumeId: plan.resumeId ?? undefined } : {}),
     ...(said?.continues ? { continues: { resumeId: said.continues, ...(said.fork ? { fork: true } : {}) } } : {}),
+    ...(said?.continues && said.continues === req.carry?.resumeId && req.carry.costFrom ? { sessionCostFrom: req.carry.costFrom } : {}),
     logPath: logPathOf(sessionId),
     // Which agent this is, on the action that is one — so the run list can name it, and so
     // a resume starts the same agent rather than a different one.

@@ -138,8 +138,9 @@ export interface AgentRequest {
    *  asks for a new one: the rerun after that session turned out to be gone. */
   session?: 'resume' | 'fork' | 'new'
   /** clarify, resolve, edit, implement: the session Cloud's task carries (#2146), over the board's
-   *  own — resumed, or copied with `fork` — and the discussion the task came from, read when none is. */
-  carry?: { resumeId?: string; fork?: boolean; transcript?: string }
+   *  own — resumed, or copied with `fork` — and the discussion the task came from, read when none is.
+   *  `costFrom` is the session's last recorded total (#627), taken off this run's. */
+  carry?: { resumeId?: string; fork?: boolean; transcript?: string; costFrom?: number }
   /** The flow this run belongs to. Absent on the run that opens one — it is given an id
    *  when it is written down, and every session it goes on to start inherits that id. A
    *  run that joins a delivery takes the delivery's id instead, whatever is asked for
@@ -266,6 +267,7 @@ export type RunRefusalKind =
   | 'runtimeUnnamed'
   | 'runtimeTaken'
   | 'runtimeNotFound'
+  | 'runtimeAway'
   | 'runtimeKey'
   | 'harnessNotFound'
   | 'harnessUnused'

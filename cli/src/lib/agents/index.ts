@@ -224,8 +224,8 @@ export function specAgentSelector(id: number | string, workflow: string | undefi
     return [
       '<preview-agents>',
       "This card has not chosen its previews yet. Choose them first: the agents from",
-      `\`akb raw previews --triggers --workflow ${flow.id}\` whose conditions the card meets. Save them with`,
-      `\`akb raw update ${id} --previews <agents>\` (\`""\` when none applies); its stages follow from them.`,
+      `\`akb raw previews --triggers --workflow ${flow.id}\` whose conditions the card meets, always including those marked \`Always\`. Save them with`,
+      `\`akb raw update ${id} --previews <agents>\` (\`""\` when that leaves none); its stages follow from them.`,
       'Then run only the chosen agents whose `After` is empty — the first stage; the rest run after its approval.',
       `Command: \`akb raw previews <agent> ${id} <short note>\` — add \`--print\` to run it in this session, as \`akb guide refine\` says.`,
       '</preview-agents>',
@@ -239,7 +239,7 @@ export function specAgentSelector(id: number | string, workflow: string | undefi
     // own job.
     '<preview-agents>',
     "The preview agents of this card's current stage, each writing one part of the card.",
-    ...agents.map((a) => `- \`${a.name}\` — ${a.description}${a.session ? ' · runs in a session of its own: leave out `--print`' : ''}`),
+    ...agents.map((a) => `- \`${a.name}\` — ${a.description}${a.session || agentRun(a.name).own ? ' · runs in a session of its own: leave out `--print`' : ''}`),
     `Command: \`akb raw previews <agent> ${id} <short note>\` — add \`--print\` to run it in this session, as \`akb guide refine\` says.`,
     '</preview-agents>',
   ].join('\n')

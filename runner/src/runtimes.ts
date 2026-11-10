@@ -14,7 +14,8 @@ import { splitCommand } from '../../cli/src/lib/agent/argv'
 import { HARNESSES as ALL } from '../../cli/src/lib/agent/harnesses'
 import { withSystemProxy } from '../../cli/src/lib/agent/proxy'
 import { MODEL_KEY, type Harness } from '../../cli/src/lib/agent/harnesses/types'
-import { chooseCopy, copyEnv, locate, shellName, spawnName, SPAWN_MS, warm } from '../../cli/src/lib/agent/locate'
+import { chooseCopy, copyEnv, locate, spawnName, SPAWN_MS, warm } from '../../cli/src/lib/agent/locate'
+import { spawnable } from '../../cli/src/lib/agent/spawnable'
 import { effectiveValues, providerFor, settingArgs, settingEnv, withSystemLanguage, type SettingValues } from '../../cli/src/lib/agent/run-settings'
 import type { HarnessSetting } from '../../cli/src/lib/agent/types'
 import type { RunEvent, StreamRenderer, TurnEnd } from '../../cli/src/lib/agent/wire'
@@ -79,8 +80,8 @@ function held(runtime: Job['runtime'], model: string | null | undefined, given: 
 export const settingsArgs = (runtime: Job['runtime'], model?: string | null, given: Settings = {}): string[] =>
   settingArgs(HARNESSES[runtime], held(runtime, model, given))
 
-/** What a person runs to install the runtime's CLI, and to sign it in. */
-export const hints = (runtime: Job['runtime']) => ({ install: HARNESSES[runtime].install, login: HARNESSES[runtime].login?.login })
+/** What a person runs to sign the runtime's CLI in. */
+export const hints = (runtime: Job['runtime']) => ({ login: HARNESSES[runtime].login?.login })
 
 /** True when the runtime can open a copy of an earlier session (#2146). */
 export const forks = (runtime: Job['runtime']) => !!HARNESSES[runtime].forkArgs
@@ -164,9 +165,9 @@ export function declOf(setting: HarnessSetting): SettingDecl {
 
 /** Whether each runtime is installed here and, where its CLI says, logged in. `quick` leaves out
  *  the model lists that take a CLI's own start-up to read (OpenCode, Cursor). */
-export async function detectRuntimes(quick = false): Promise<RuntimeReport[]> {
+export async function detectRuntimes(quick = false, only?: Job['runtime']): Promise<RuntimeReport[]> {
   return Promise.all(
-    (Object.keys(HARNESSES) as Job['runtime'][]).map(async (name) => {
+    (Object.keys(HARNESSES) as Job['runtime'][]).filter((name) => !only || name === only).map(async (name) => {
       const harness = HARNESSES[name]
       const settings = harness.settings.map(declOf)
       await warm(harness)
@@ -228,7 +229,8 @@ function cursorModels(): Promise<Model[]> {
   return new Promise((resolve) => {
     let child: ChildProcess
     try {
-      child = spawn(argv[0]!, argv.slice(1), { cwd: os.tmpdir(), stdio: ['pipe', 'pipe', 'ignore'], env: copyEnv(argv[0], withSystemProxy({ ...process.env, ...HARNESSES.cursor.env() })) })
+      const start = spawnable(argv[0]!, argv.slice(1), { cwd: os.tmpdir(), stdio: ['pipe', 'pipe', 'ignore'], env: copyEnv(argv[0], withSystemProxy({ ...process.env, ...HARNESSES.cursor.env() })) })
+      child = spawn(start.command, start.args, start.options)
     } catch {
       return resolve([])
     }
@@ -263,7 +265,8 @@ function output(command: string, args: string[]): Promise<string> {
     let out = ''
     let child: ChildProcess
     try {
-      child = spawn(shellName(command), args, { stdio: ['ignore', 'pipe', 'ignore'], env: copyEnv(command), shell: process.platform === 'win32' })
+      const start = spawnable(command, args, { stdio: ['ignore', 'pipe', 'ignore'], env: copyEnv(command) })
+      child = spawn(start.command, start.args, start.options)
     } catch {
       return resolve('')
     }
@@ -331,7 +334,8 @@ function probeLogin(binary: string, harness: Harness): Promise<boolean | undefin
     let output = ''
     let child
     try {
-      child = spawn(shellName(binary), probe.args, { stdio: ['ignore', 'pipe', 'pipe'], env: copyEnv(binary), shell: process.platform === 'win32' })
+      const start = spawnable(binary, probe.args, { stdio: ['ignore', 'pipe', 'pipe'], env: copyEnv(binary) })
+      child = spawn(start.command, start.args, start.options)
     } catch {
       return resolve(undefined)
     }

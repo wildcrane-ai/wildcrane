@@ -10,6 +10,10 @@ import { accessToken } from '../lib/cloud/session'
 import { cloudWorkflow, linkedProject } from '../lib/cloud/tasks'
 import { say } from '../lib/io'
 import { die } from '../lib/paths'
+import { parseFrontmatter } from '../lib/frontmatter'
+import { readQuestionOps } from '../lib/questions'
+import { applyQuestionOps, questionPositions, QuestionOpError } from '../lib/question-ops'
+import type { Typed } from '../lib/cli/shared'
 import type { MoveResult } from '../lib/types'
 import { SAID } from './cloud'
 
@@ -147,6 +151,35 @@ export async function taskApprove(id: string, comment?: string): Promise<MoveRes
     ...(comment?.trim() ? { comment: comment.trim() } : {}),
     ...(task.review ? { review_revision: task.review.revision } : {}),
   }, (k) => `Approved ${k}.`)
+}
+
+/** `raw update-questions` on a Cloud task's card (#620), checked here first against the card read. */
+export async function taskUpdateQuestions(id: string, typed: Typed[]): Promise<MoveResult> {
+  const ops = readQuestionOps(typed)
+  const ref = await taskRef(id)
+  const card = await cloud<{ version: number; body: string }>('GET', `/v1/tasks/${enc(ref)}/card`)
+  const questions = parseFrontmatter(card.body).meta?.questions ?? []
+  let changes: string[]
+  let open: number
+  try {
+    const done = applyQuestionOps(questions, ops)
+    changes = done.changes
+    open = done.questions.length
+  } catch (e) {
+    if (e instanceof QuestionOpError) die(`${ref}: ${e.message}`)
+    throw e
+  }
+  const body = ops.map((op) => {
+    const q = op.question && { text: op.question.text, options: op.question.options, recommend: op.question.recommend, mode: op.question.mode, agent: op.question.agent }
+    if (op.kind === 'append') return { append: q }
+    if (op.kind === 'update') return { update: op.n, question: q }
+    if (op.kind === 'drop') return { drop: questionPositions(op.ns, Infinity, 'drop') }
+    if (op.kind === 'clear') return { clear: true }
+    return die(`akb task update-questions has no --${op.kind}; --drop removes a question`)
+  })
+  const task = await cloud<Task>('PATCH', `/v1/tasks/${enc(ref)}/questions`, { base_version: card.version, ops: body })
+  say(`updated ${task.key} questions: ${changes.join(', ')} (${open} open)`)
+  return { ...task, changes, open }
 }
 
 export const taskChat = (id: string, message: string) => act(id, 'chat', { body: message }, (k) => `Sent to ${k}.`)

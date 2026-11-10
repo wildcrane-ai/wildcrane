@@ -2,7 +2,7 @@
 // /settings-client.js. Its controls are the web app's shadcn components.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { FiChevronDown, FiCopy, FiFolder, FiInfo, FiMonitor, FiRefreshCw } from 'react-icons/fi'
+import { FiCheck, FiChevronDown, FiCopy, FiFolder, FiInfo, FiMonitor, FiRefreshCw } from 'react-icons/fi'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogTitle, AlertDialogTrigger } from './ui/alert-dialog'
 import { Button } from './ui/button'
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogTitle } from './ui/dialog'
@@ -18,8 +18,8 @@ import { BRAND, MARKS } from './settings-marks'
 import css from './settings.css'
 
 const words = {
-  zh: { updates: '版本更新', alpha: '接受 Alpha 版本更新', hint: 'Alpha 版本风险较高，不建议日常使用。', saving: '保存中…', saved: '已保存', saveFailed: '未能保存，更改未生效。', title: '本机设置', upgrade: '请重新打开插件', upgradeHow: '关闭这台电脑上仍在使用旧版本的 WildCrane 插件，再重新打开设置。', projects: '项目目录', add: '添加项目', new: '＋ 新建项目…', tools: 'AI 工具', recheck: '重新检测', out: '退出登录', connected: '已连接', offline: '云端暂时不可用，请重试。', empty: '还没有项目目录', remove: '解除绑定', removeAsk: '解除后，该项目的新任务将不再使用此文件夹。项目、任务和源文件保留。', cancel: '取消', confirm: '确认解除', bindTitle: '绑定已有项目', newTitle: '新建项目', project: '项目', workspace: '所属空间', chooseWorkspace: '选择空间', name: '项目名称', folder: '项目文件夹', folderHint: '绑定仅指定任务目录，不限制 AI 工具访问其他文件。', choose: '选择文件夹', current: '使用当前会话文件夹', change: '更换', create: '创建项目', bind: '绑定文件夹', signIn: '登录 WildCrane', signing: '等待浏览器完成登录…', signFailed: '登录未完成，请重试。', outTitle: '退出账号？', outAsk: '退出后，这台运行电脑上的任务将停止。', closed: '设置已断开', reopen: '请从 Claude Code、Codex、Cursor、ZCode、Kimi Code 或终端重新打开 WildCrane 设置。', ready: '可用', notInstalled: '未安装', signedOut: '未登录', detecting: '检测中…', retry: '重试', noComputer: '未连接', copy: '复制位置', close: '关闭', errors: { missing: '文件夹不存在，请重新选择。', home: '不能选择主目录或包含主目录的文件夹。', disk: '不能选择整盘。', system: '不能选择系统目录。', folder_taken: '该文件夹已绑定其他项目，请更换。', picker_unavailable: '无法打开系统文件夹选择窗口。可重试或使用当前会话文件夹。', busy: '任务、未同步内容或暂停交付正在占用目录，请稍后重试。', authorization_write: '本机授权保存失败，请重试。', authorization_busy: '其他会话正在保存授权，请重试。', not_found: '项目不可访问，请重新打开设置。', forbidden: '你没有此空间的创建权限。', offline: '云端暂时不可用，请重试。', signed_out: '账号已退出，请重新登录。', stopping: '任务仍在停止，请稍后重试。', failed: '操作失败，请重试。' } as Record<string, string> },
-  en: { updates: 'Updates', alpha: 'Receive Alpha updates', hint: 'Alpha versions carry higher risk. Not recommended for everyday use.', saving: 'Saving…', saved: 'Saved', saveFailed: 'Could not save. Your setting has not changed.', title: 'Local settings', upgrade: 'Reopen the plugin', upgradeHow: 'Close the older WildCrane plugins on this computer, then reopen settings.', projects: 'Project folders', add: 'Add project', new: '+ New project…', tools: 'AI tools', recheck: 'Check again', out: 'Sign out', connected: 'Connected', offline: 'Cloud unavailable. Try again.', empty: 'No project folders yet', remove: 'Unbind', removeAsk: 'New tasks will stop using this folder. The project, tasks and source files stay.', cancel: 'Cancel', confirm: 'Unbind folder', bindTitle: 'Bind existing project', newTitle: 'New project', project: 'Project', workspace: 'Workspace', chooseWorkspace: 'Choose workspace', name: 'Project name', folder: 'Project folder', folderHint: 'Binding selects a task folder; it does not restrict AI tools from accessing other files.', choose: 'Choose folder', current: 'Use current session folder', change: 'Change', create: 'Create project', bind: 'Bind folder', signIn: 'Sign in to WildCrane', signing: 'Waiting for browser sign-in…', signFailed: 'Sign-in did not finish. Try again.', outTitle: 'Sign out?', outAsk: 'Tasks on this computer will stop.', closed: 'Settings disconnected', reopen: 'Reopen WildCrane settings from Claude Code, Codex, Cursor, ZCode, Kimi Code or the terminal.', ready: 'Ready', notInstalled: 'Not installed', signedOut: 'Signed out', detecting: 'Checking…', retry: 'Try again', noComputer: 'Disconnected', copy: 'Copy path', close: 'Close', errors: { missing: 'Folder not found. Choose again.', home: 'Choose a folder outside your home directory root.', disk: 'A whole disk cannot be a project.', system: 'Choose a folder outside system directories.', folder_taken: 'This folder belongs to another project. Choose another.', picker_unavailable: 'The system folder picker is unavailable. Try again or use the current session folder.', busy: 'A task, unsent work or paused delivery holds this folder. Try again later.', authorization_write: 'Could not save local permission. Try again.', authorization_busy: 'Another session is saving permissions. Try again.', not_found: 'Project unavailable. Reopen settings.', forbidden: 'You cannot create projects in this workspace.', offline: 'Cloud unavailable. Try again.', signed_out: 'Signed out. Sign in again.', stopping: 'Tasks are still stopping. Try again shortly.', failed: 'Something went wrong. Try again.' } as Record<string, string> },
+  zh: { updates: '版本更新', alpha: '接受 Alpha 版本更新', hint: 'Alpha 版本风险较高，不建议日常使用。', saving: '保存中…', saved: '已保存', saveFailed: '未能保存，更改未生效。', title: '本机设置', upgrade: '请重新打开插件', upgradeHow: '关闭这台电脑上仍在使用旧版本的 WildCrane 插件，再重新打开设置。', projects: '项目目录', add: '添加项目', new: '＋ 新建项目…', tools: 'AI 工具', recheck: '重新检测', out: '退出登录', connected: '已连接', offline: '云端暂时不可用，请重试。', empty: '还没有项目目录', remove: '解除绑定', removeAsk: '解除后，该项目的新任务将不再使用此文件夹。项目、任务和源文件保留。', cancel: '取消', confirm: '确认解除', bindTitle: '绑定已有项目', newTitle: '新建项目', project: '项目', workspace: '所属空间', chooseWorkspace: '选择空间', name: '项目名称', folder: '项目文件夹', folderHint: '绑定仅指定任务目录，不限制 AI 工具访问其他文件。', choose: '选择文件夹', current: '使用当前会话文件夹', change: '更换', create: '创建项目', bind: '绑定文件夹', signIn: '登录 WildCrane', signing: '等待浏览器完成登录…', signFailed: '登录未完成，请重试。', outTitle: '退出账号？', outAsk: '退出后，这台运行电脑上的任务将停止。', closed: '设置已断开', reopen: '请从 Claude Code、Codex、Cursor、ZCode、Kimi Code 或终端重新打开 WildCrane 设置。', ready: '可用', notInstalled: '未安装', signedOut: '未登录', copyPrompt: '复制安装提示词', copied: '已复制到剪贴板', detecting: '检测中…', retry: '重试', noComputer: '未连接', copy: '复制位置', close: '关闭', errors: { missing: '文件夹不存在，请重新选择。', home: '不能选择主目录或包含主目录的文件夹。', disk: '不能选择整盘。', system: '不能选择系统目录。', folder_taken: '该文件夹已绑定其他项目，请更换。', picker_unavailable: '无法打开系统文件夹选择窗口。可重试或使用当前会话文件夹。', busy: '任务、未同步内容或暂停交付正在占用目录，请稍后重试。', authorization_write: '本机授权保存失败，请重试。', authorization_busy: '其他会话正在保存授权，请重试。', not_found: '项目不可访问，请重新打开设置。', forbidden: '你没有此空间的创建权限。', offline: '云端暂时不可用，请重试。', signed_out: '账号已退出，请重新登录。', stopping: '任务仍在停止，请稍后重试。', failed: '操作失败，请重试。' } as Record<string, string> },
+  en: { updates: 'Updates', alpha: 'Receive Alpha updates', hint: 'Alpha versions carry higher risk. Not recommended for everyday use.', saving: 'Saving…', saved: 'Saved', saveFailed: 'Could not save. Your setting has not changed.', title: 'Local settings', upgrade: 'Reopen the plugin', upgradeHow: 'Close the older WildCrane plugins on this computer, then reopen settings.', projects: 'Project folders', add: 'Add project', new: '+ New project…', tools: 'AI tools', recheck: 'Check again', out: 'Sign out', connected: 'Connected', offline: 'Cloud unavailable. Try again.', empty: 'No project folders yet', remove: 'Unbind', removeAsk: 'New tasks will stop using this folder. The project, tasks and source files stay.', cancel: 'Cancel', confirm: 'Unbind folder', bindTitle: 'Bind existing project', newTitle: 'New project', project: 'Project', workspace: 'Workspace', chooseWorkspace: 'Choose workspace', name: 'Project name', folder: 'Project folder', folderHint: 'Binding selects a task folder; it does not restrict AI tools from accessing other files.', choose: 'Choose folder', current: 'Use current session folder', change: 'Change', create: 'Create project', bind: 'Bind folder', signIn: 'Sign in to WildCrane', signing: 'Waiting for browser sign-in…', signFailed: 'Sign-in did not finish. Try again.', outTitle: 'Sign out?', outAsk: 'Tasks on this computer will stop.', closed: 'Settings disconnected', reopen: 'Reopen WildCrane settings from Claude Code, Codex, Cursor, ZCode, Kimi Code or the terminal.', ready: 'Ready', notInstalled: 'Not installed', signedOut: 'Signed out', copyPrompt: 'Copy install prompt', copied: 'Copied to clipboard', detecting: 'Checking…', retry: 'Try again', noComputer: 'Disconnected', copy: 'Copy path', close: 'Close', errors: { missing: 'Folder not found. Choose again.', home: 'Choose a folder outside your home directory root.', disk: 'A whole disk cannot be a project.', system: 'Choose a folder outside system directories.', folder_taken: 'This folder belongs to another project. Choose another.', picker_unavailable: 'The system folder picker is unavailable. Try again or use the current session folder.', busy: 'A task, unsent work or paused delivery holds this folder. Try again later.', authorization_write: 'Could not save local permission. Try again.', authorization_busy: 'Another session is saving permissions. Try again.', not_found: 'Project unavailable. Reopen settings.', forbidden: 'You cannot create projects in this workspace.', offline: 'Cloud unavailable. Try again.', signed_out: 'Signed out. Sign in again.', stopping: 'Tasks are still stopping. Try again shortly.', failed: 'Something went wrong. Try again.' } as Record<string, string> },
 }
 type Lang = keyof typeof words
 type Words = (typeof words)[Lang]
@@ -32,6 +32,19 @@ interface State {
   context?: { project?: string; path?: string }; acceptAlphaUpdates?: boolean
 }
 interface Tool { name: string; label: string; state: string }
+
+const ABOUT: Record<string, Record<Lang, string>> = { dsh: { zh: '（DeepSeek 的编程 Agent）', en: " (DeepSeek's coding agent)" } }
+/** What an AI tool on this computer is asked to do: which agent, and the check that proves it. */
+function installPrompt(lang: Lang, tool: Tool, akb: string): string {
+  const check = `${/\s/.test(akb) ? `"${akb}"` : akb} agent check ${tool.name}`
+  const about = ABOUT[tool.name]?.[lang] ?? ''
+  return lang === 'zh'
+    ? `在这台电脑上安装 ${tool.label}${about}，让 WildCrane 能调用它。按官方文档安装，装好后运行 \`${check}\`，按输出修正直到显示可用。`
+    : `Install ${tool.label}${about} on this computer so WildCrane can run it. Follow its official docs, then run \`${check}\` and fix what it reports until it says ready.`
+}
+/** After a prompt is copied, its agent is checked this often, for this long. */
+const WAIT_EVERY_MS = 5_000
+const WAIT_FOR_MS = 15 * 60_000
 type Result = Record<string, any> & { error?: string }
 
 let csrf = ''
@@ -62,6 +75,9 @@ function App() {
   const message = (code?: string) => t.errors[code ?? ''] ?? t.errors.failed
   const [state, setState] = useState<State>({})
   const [tools, setTools] = useState<Tool[] | null>(null)
+  const [akb, setAkb] = useState('akb')
+  const [copied, setCopied] = useState('')
+  const waits = useRef(new Map<string, ReturnType<typeof setInterval>>())
   const [disconnected, setDisconnected] = useState(false)
   const [pageError, setPageError] = useState('')
   const [updateStatus, setUpdateStatus] = useState('')
@@ -80,7 +96,7 @@ function App() {
     try {
       const found = await api('connections')
       if (found.error) setPageError(message(found.error))
-      else setTools(found.connections)
+      else { setTools(found.connections); if (found.akb) setAkb(found.akb) }
     } catch { setPageError(t.offline) }
   }, [t])
 
@@ -139,6 +155,28 @@ function App() {
   }, [])
 
   useEffect(() => { document.documentElement.lang = lang }, [lang])
+  useEffect(() => () => { for (const timer of waits.current.values()) clearInterval(timer) }, [])
+
+  /** Copies the prompt, then checks that agent quietly until it is installed or the wait runs out. */
+  async function copyPrompt(tool: Tool) {
+    try { await navigator.clipboard.writeText(installPrompt(lang, tool, akb)) } catch { setPageError(t.errors.failed); return }
+    setCopied(tool.name)
+    setTimeout(() => setCopied((name) => (name === tool.name ? '' : name)), 2000)
+    if (waits.current.has(tool.name)) return
+    const until = Date.now() + WAIT_FOR_MS
+    const timer = setInterval(async () => {
+      if (Date.now() > until) { clearInterval(timer); waits.current.delete(tool.name); return }
+      try {
+        const found = await api('connections', { name: tool.name })
+        const now = (found.connections as Tool[] | undefined)?.[0]
+        if (!now || now.state === 'notInstalled') return
+        clearInterval(timer)
+        waits.current.delete(tool.name)
+        setTools((list) => list?.map((one) => (one.name === now.name ? now : one)) ?? list)
+      } catch {}
+    }, WAIT_EVERY_MS)
+    waits.current.set(tool.name, timer)
+  }
 
   async function saveUpdates(value: boolean) {
     if (updateStatus === 'saving') return
@@ -287,11 +325,15 @@ function App() {
       </div>
       <div className={cn(SECTION, 'px-4')}>
         {!tools && <p className="py-3 text-nb-ink-soft">{t.detecting}</p>}
-        {tools?.filter((tool) => ['claude-code', 'codex', 'opencode'].includes(tool.name) || tool.state !== 'notInstalled').map((tool, i) => (
+        {tools?.map((tool, i) => (
           <div key={tool.name} className={cn('flex items-center gap-3 py-3', i > 0 && 'border-t border-nb-ink/10')}>
             <span className="inline-flex size-5 [&>svg]:size-full" dangerouslySetInnerHTML={{ __html: MARKS[tool.name] ?? '' }} />
             <span className="flex-1 text-[13px] font-[700]">{tool.label}</span>
-            <span className={cn('text-[12px]', tool.state === 'ready' ? 'text-nb-mint-ink' : 'text-nb-ink-soft')}>{(t as Record<string, unknown>)[tool.state] as string ?? tool.state}</span>
+            {tool.state !== 'notInstalled'
+              ? <span className={cn('text-[12px]', tool.state === 'ready' ? 'text-nb-mint-ink' : 'text-nb-ink-soft')}>{(t as Record<string, unknown>)[tool.state] as string ?? tool.state}</span>
+              : copied === tool.name
+                ? <span role="status" className="inline-flex items-center gap-1 text-[12px] text-nb-mint-ink"><FiCheck size={12} /> {t.copied}</span>
+                : <Button variant="link" size="inline" className="text-[12.5px]" onClick={() => void copyPrompt(tool)}>{t.copyPrompt}</Button>}
           </div>
         ))}
       </div>

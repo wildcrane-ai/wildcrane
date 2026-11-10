@@ -194,7 +194,7 @@ const NOT_READY = (found: Connection[], web: string) => {
   const each = found
     .filter((c) => c.state !== 'ready')
     .map((c) => `${c.label} is ${c.state === 'signedOut' ? 'signed out' : 'not installed'}${c.command ? ` (run \`${c.command}\`)` : ''}`)
-  return `No AI tool is ready on this computer: ${each.join(', ')}. Tell the user, with the command for the tool they use, and that they can finish setup at ${web}.`
+  return `No AI tool is ready on this computer: ${each.join(', ')}. Tell the user, with the sign-in command for the tool they use; a missing one installs from local settings (wildcrane_open_settings). They can finish setup at ${web}.`
 }
 const NOT_ADDED = 'This folder is not a WildCrane project yet. Call wildcrane_open_settings to let the user choose its project folder.'
 
