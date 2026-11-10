@@ -173,7 +173,9 @@ describe('the akb the Runner carries (#171)', () => {
     assert.doesNotMatch(await printed({ AI4KANBAN_SCHEDULED_AGENTS: '' }), /<scheduled-agents>\n/)
   })
 
-  it('builds a card, and leaves the delivery the Runner reads', async () => {
+  it('builds a card on its picked runtime, and leaves the delivery the Runner reads', async () => {
+    const builder = { id: 'rt_builder', name: 'Builder', harness: 'claude-code', settings: { model: 'opus' } }
+    ok(await onBoard(['raw', 'agent', 'picks', JSON.stringify({ builder })]))
     const ran = await onBoard(['raw', 'card', 'implement', '2', ...follow])
     assert.notEqual(ran.code, 0, 'an unregistered result must remain unfinished')
     const answer = answerOf<{ error?: { delivery?: { id?: string } } }>(ran)
@@ -184,6 +186,11 @@ describe('the akb the Runner carries (#171)', () => {
     assert.equal(held.cardId, 2)
     assert.equal(typeof held.status, 'string')
     assert.ok(held.steps?.every((s) => typeof s.step === 'string'))
+    const runs = await onBoard(['raw', 'run', 'list', '--card', '2', '--all', '--json'])
+    ok(runs)
+    assert.ok(answerOf<{ runs: { runtime?: string; result?: string }[] }>(runs)?.runs.some(
+      (run) => run.runtime === builder.id && run.result === 'Done.',
+    ))
   })
 
   it('takes every other verb a job sends', async () => {

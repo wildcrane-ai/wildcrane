@@ -941,6 +941,12 @@ function declareAgent(program: Command, cli: AgentCliOptions): void {
       )
     })
 
+  withShared(agent.command('picks', { hidden: true }))
+    .argument('<json>', 'runtime picks by workflow agent')
+    .action(async function (this: Command, json: string) {
+      await onBoard(this, cli, () => cmdAgent(['picks', json]))
+    })
+
   // What a Runner starts once the agent is due by its own clock (#2068).
   word('run')
     .argument('<workflow>', 'a workflow id, e.g. coding')
