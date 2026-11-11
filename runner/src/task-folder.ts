@@ -994,11 +994,11 @@ function proposeItems(ws: TaskFolder, base: Base): void {
   }
 }
 
-/** A file both sides changed, merged line by line against the base. It always merges, or the
- *  board would stay stuck: lines both changed keep both, mine first, for a later clean-up. Front
- *  matter cannot hold a key twice, so Cloud's wins there. A delete against an edit keeps the edit. */
+/** Keep edits against deletes; conflicting lines keep both sides, except front matter uses Cloud's. */
 export function mergeFile(base: string | null, mine: string | null, theirs: string | null): { content: string | null } {
   if (mine === null || theirs === null || mine === theirs) return { content: mine ?? theirs }
+  if (mine === base) return { content: theirs }
+  if (theirs === base) return { content: mine }
   const lines: string[] = []
   for (const block of diff3Merge(mine.split('\n'), (base ?? '').split('\n'), theirs.split('\n'), { excludeFalseConflicts: true })) {
     if (block.ok) lines.push(...block.ok)

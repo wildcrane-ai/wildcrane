@@ -2495,6 +2495,17 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(cloud.file('memory/readme.md'), 'Edited elsewhere')
   })
 
+  it('merges one-sided changes to repetitive files without expensive diffing', () => {
+    const base = `head\n${'  },\n'.repeat(2000)}tail\n`
+    const changed = `${base}added\n`
+    const started = performance.now()
+    assert.deepEqual(mergeFile(base, base, changed), { content: changed })
+    assert.deepEqual(mergeFile(base, changed, base), { content: changed })
+    assert.ok(performance.now() - started < 1000, 'one-sided changes entered the expensive diff')
+    assert.deepEqual(mergeFile(base, base, null), { content: base })
+    assert.deepEqual(mergeFile(base, null, base), { content: base })
+  })
+
   it('merges front matter both sides changed without a key twice', () => {
     const card = (status: string) => `---\ntitle: A\nstatus: ${status}\n---\n\nBody\n`
     assert.deepEqual(mergeFile(card('ready'), card('planning'), card('done')), { content: card('done') })
