@@ -1,6 +1,7 @@
 // What a plugin runs (#529): the component of the newest Runner on this computer, downloaded on
 // first start. Everything else ships with the Runner.
 
+import './startup'
 import { pathToFileURL } from 'node:url'
 
 // Windows starts this with whatever node the PATH has (server/bin/wildcrane.cmd).

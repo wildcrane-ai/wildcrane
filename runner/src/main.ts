@@ -1,6 +1,7 @@
 // The Runner itself: sign in once, then stay connected and run what Cloud sends.
 // Started by the launcher (launcher.ts), which tells it apart from a crash by its exit code.
 
+import './startup'
 import { readSession } from '../../cli/src/lib/cloud/session'
 import { machineId, machineName, useRunnerHome } from './home'
 import { status, t } from './i18n'

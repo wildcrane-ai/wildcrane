@@ -1,4 +1,4 @@
-// wildcrane-runner 0.6.47 — built by runner/scripts/build.mjs. Do not edit.
+// wildcrane-runner 0.6.48 — built by runner/scripts/build.mjs. Do not edit.
 import { createRequire as __ai4kanbanRequire } from 'node:module'
 const require = __ai4kanbanRequire(import.meta.url)
 var __create = Object.create;
@@ -26773,11 +26773,11 @@ __export(home_exports, {
 });
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
+import os2 from "node:os";
 import path from "node:path";
 import { parseEnv } from "node:util";
 function runnerHome() {
-  return process.env.WILDCRANE_HOME || path.join(os.homedir(), ".wildcrane");
+  return process.env.WILDCRANE_HOME || path.join(os2.homedir(), ".wildcrane");
 }
 function useRunnerHome() {
   process.env.AI4KANBAN_HOME = runnerHome();
@@ -26815,7 +26815,7 @@ var init_home = __esm({
   "src/home.ts"() {
     "use strict";
     init_proxy2();
-    machineName = () => os.hostname().replace(/\.local$/, "");
+    machineName = () => os2.hostname().replace(/\.local$/, "");
   }
 });
 
@@ -27191,6 +27191,7 @@ async function pluginEntry(min) {
 function runOnce(candidate, options) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [candidate.entry], {
+      cwd: path4.dirname(candidate.entry),
       stdio: ["ignore", options.quiet ? 2 : "inherit", "inherit", "ipc"],
       env: { ...process.env, WILDCRANE_RUNNER_VERSION: candidate.version, WILDCRANE_RUNNER_KIND: options.kind ?? "terminal" }
     });
@@ -27320,6 +27321,15 @@ var init_launcher = __esm({
     pluginOf = (dir) => path4.join(dir, "dist", "plugin.mjs");
   }
 });
+
+// src/startup.ts
+import os from "node:os";
+try {
+  process.cwd();
+} catch (error) {
+  if (error.code !== "ENOENT") throw error;
+  process.chdir(os.homedir());
+}
 
 // src/plugin-start.ts
 import { pathToFileURL } from "node:url";

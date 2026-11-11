@@ -158,6 +158,7 @@ export interface LaunchOptions {
 function runOnce(candidate: Candidate, options: LaunchOptions): Promise<Outcome> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [candidate.entry], {
+      cwd: path.dirname(candidate.entry),
       stdio: ['ignore', options.quiet ? 2 : 'inherit', 'inherit', 'ipc'],
       env: { ...process.env, WILDCRANE_RUNNER_VERSION: candidate.version, WILDCRANE_RUNNER_KIND: options.kind ?? 'terminal' },
     })
