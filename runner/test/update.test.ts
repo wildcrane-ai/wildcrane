@@ -91,7 +91,7 @@ before(async () => {
       if (!pkg) return void res.writeHead(404).end()
       const tar = tarball({
         'package/package.json': JSON.stringify({ version, akbContract: pkg.contract ?? AKB_CONTRACT }),
-        'package/bin/ai4kanban.mjs': `console.log(${JSON.stringify(`wildcrane ${pkg.says ?? version}`)}); process.exit(${pkg.exit ?? 0})`,
+        'package/bin/ai4kanban.mjs': `process.cwd(); console.log(${JSON.stringify(`wildcrane ${pkg.says ?? version}`)}); process.exit(${pkg.exit ?? 0})`,
       })
       if (akbTgz) return void res.end(tar)
       akbAsked++
@@ -145,6 +145,75 @@ beforeEach(() => {
 const ran = () => fs.readFileSync(path.join(runnerHome(), 'ran'), 'utf8').trim().split('\n')
 
 describe('the launcher', () => {
+  for (const kind of ['claude-code', 'codex', 'cursor', 'zcode', 'dsh', 'kimi', 'grok', 'terminal']) {
+    for (const replace of [false, true]) {
+      it(`${kind}: starts, updates and rolls back with a ${replace ? 'replaced' : 'deleted'} host cwd`, { skip: process.platform === 'win32' }, async () => {
+        const original = process.cwd()
+        const host = fs.mkdtempSync(path.join(os.tmpdir(), 'removed-host-'))
+        const behaviour = `
+          require('assert').equal(process.cwd(), require('fs').realpathSync(process.env.WILDCRANE_HOME));
+          require('assert').equal(process.env.WILDCRANE_RUNNER_KIND, ${JSON.stringify(kind)});
+          process.send({ type: 'connected' });
+          const saved = require('path').join(process.env.WILDCRANE_HOME, 'saved-' + process.env.WILDCRANE_RUNNER_VERSION);
+          if (require('fs').existsSync(saved)) {
+            const task = require('child_process').spawnSync(process.execPath, ['-e', 'process.stdout.write("task ran")'], { encoding: 'utf8' });
+            require('assert').equal(task.status, 0);
+            require('fs').writeFileSync(require('path').join(process.env.WILDCRANE_HOME, 'task'), task.stdout);
+            process.exit(0);
+          }
+          process.on('message', (m) => {
+            if (m.type === 'update') { require('fs').writeFileSync(saved, 'yes'); process.exit(12) }
+          });
+        `
+        fs.writeFileSync(own.entry, runnerScript(behaviour))
+        published['1.1.0'] = { script: behaviour }
+        published['1.2.0'] = { script: CRASHES }
+        let connections = 0
+        try {
+          process.chdir(host)
+          fs.rmdirSync(host)
+          if (replace) fs.mkdirSync(host)
+          assert.equal(await launch(own, {
+            kind,
+            onMessage: m => { if (m.type === 'connected') target = ++connections === 1 ? '1.1.0' : '1.2.0' },
+          }), 0)
+          assert.deepEqual(ran(), ['1.0.0', '1.1.0', '1.2.0', '1.1.0'])
+          assert.deepEqual(readState().good, ['1.1.0'])
+          assert.deepEqual(readState().bad, ['1.2.0'])
+          assert.equal(fs.readFileSync(path.join(runnerHome(), 'task'), 'utf8'), 'task ran')
+        } finally {
+          process.chdir(original)
+          fs.rmSync(host, { recursive: true, force: true })
+        }
+      })
+    }
+  }
+
+  it('keeps child processes working after its version directory is cleaned', async () => {
+    published['1.1.0'] = { script: `
+      require('fs').rmSync(require('path').dirname(require('url').fileURLToPath(import.meta.url)), { recursive: true });
+      const task = require('child_process').spawnSync(process.execPath, ['-e', 'process.cwd()']);
+      require('assert').equal(task.status, 0, String(task.stderr));
+      ${CONNECTS}
+    ` }
+    target = '1.1.0'
+    assert.equal(await launch(own), 0)
+    assert.deepEqual(ran(), ['1.1.0'])
+    assert.deepEqual(readState().bad, [])
+  })
+
+  it('does not blacklist a version when the process could not be spawned', async () => {
+    target = '1.1.0'; published['1.1.0'] = { script: CONNECTS }
+    const node = process.execPath
+    try {
+      process.execPath = path.join(runnerHome(), 'missing-node')
+      assert.equal(await launch(own), 1)
+      assert.deepEqual(readState().bad, [])
+    } finally { process.execPath = node }
+    assert.equal(await launch(own), 0)
+    assert.deepEqual(ran(), ['1.1.0'])
+  })
+
   it('Alpha defaults off, persists opt-in and follows subsequent Alphas, with default fallback', async () => {
     target = '1.0.0'; alphaTarget = '1.1.0'
     published['1.1.0'] = { script: CONNECTS }; published['1.2.0'] = { script: CONNECTS }
@@ -376,6 +445,18 @@ describe("the plugins' component (#529)", () => {
 })
 
 describe('following the akb Cloud names (#171)', () => {
+  it('does not reject a healthy AKB because the inherited cwd was removed', { skip: process.platform === 'win32' }, async () => {
+    const original = process.cwd()
+    const host = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-host-'))
+    try {
+      process.chdir(host)
+      fs.rmdirSync(host)
+      akbs['1.1.0'] = {}
+      await followAkb({ version: '1.1.0' })
+      assert.deepEqual(readAkbState(), { current: '1.1.0', bad: [] })
+    } finally { process.chdir(original) }
+  })
+
   const bundled = () => bundledAkb().args.at(-1)
   const on = async (version: string) => {
     akbs[version] = {}

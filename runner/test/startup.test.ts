@@ -14,7 +14,12 @@ it('starts the published Runner and plugin after the host directory was removed'
       accessToken: 'test', refreshToken: 'test', subject: 'test', expiresAt: Date.now() + 60_000,
       supabaseUrl: 'http://127.0.0.1:1',
     }))
-    for (const entry of ['runner.mjs', 'plugin.mjs']) {
+    const dist = process.env.RUNNER_DIST!
+    const entries = ['runner.mjs', 'launcher.mjs', 'plugin.mjs', 'settings.mjs'].map(entry => path.join(dist, entry))
+    for (const host of ['claude-code', 'codex', 'cursor', 'dsh', 'kimi-code', 'grok']) {
+      entries.push(path.resolve(dist, '../../plugins', host, 'server/dist/start.mjs'))
+    }
+    for (const entry of entries) {
       for (const removed of [false, true]) {
         const cwd = fs.mkdtempSync(path.join(root, 'cwd-'))
         const expected = removed ? os.homedir() : fs.realpathSync(cwd)
@@ -30,7 +35,8 @@ it('starts the published Runner and plugin after the host directory was removed'
           cwd, encoding: 'utf8', timeout: 15_000,
           env: { ...process.env, WILDCRANE_HOME: home, AI4KANBAN_HOME: home,
             AI4KANBAN_SUPABASE_URL: 'http://127.0.0.1:1',
-            STARTUP_CWD: cwd, STARTUP_ENTRY: path.join(process.env.RUNNER_DIST!, entry),
+            WILDCRANE_RUNNER_DIR: path.dirname(dist),
+            STARTUP_CWD: cwd, STARTUP_ENTRY: entry,
             STARTUP_RESULT: path.join(root, 'result') },
         })
         assert.equal(run.status, 0, `${entry}: ${run.stderr || run.error}`)

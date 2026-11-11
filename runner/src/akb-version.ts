@@ -9,6 +9,7 @@ import path from 'node:path'
 
 import { BUNDLED_SHIM, akbArgs, akbHome, bundledAkb, type Akb } from './akb'
 import { IDLE_MS } from './cache'
+import { runnerCwd } from './home'
 import { AKB_CONTRACT, AKB_VERSION } from './protocol'
 import { installPackage, type Package } from './update'
 
@@ -72,7 +73,7 @@ export function currentAkb(): Akb {
 
 const answers = (dir: string, version: string) =>
   new Promise<boolean>((resolve) => {
-    execFile(process.execPath, [entryOf(dir), '--version'], { timeout: CHECK_MS, killSignal: 'SIGKILL' }, (error, stdout) =>
+    execFile(process.execPath, [entryOf(dir), '--version'], { cwd: runnerCwd(), timeout: CHECK_MS, killSignal: 'SIGKILL' }, (error, stdout) =>
       resolve(!error && stdout.trim().split(/\s+/).at(-1) === version))
   })
 

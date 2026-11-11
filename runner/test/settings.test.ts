@@ -135,7 +135,16 @@ describe('本机设置服务', () => {
       assert.equal(owner(), process.pid)
       // A newer Runner takes the open page over on the same address, keeping its session.
       install('9.9.9', true)
-      await followNewest()
+      const original = process.cwd()
+      const host = fs.mkdtempSync(path.join(os.tmpdir(), 'settings-host-'))
+      try {
+        process.chdir(host)
+        if (process.platform !== 'win32') fs.rmdirSync(host)
+        await followNewest()
+      } finally {
+        process.chdir(original)
+        fs.rmSync(host, { recursive: true, force: true })
+      }
       assert.notEqual(owner(), process.pid)
       const kept = await old.call()
       assert.equal(kept.status, 200)

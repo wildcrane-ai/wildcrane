@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { cloudEndpoints } from '../../cli/src/lib/cloud/config'
-import { machineId } from './home'
+import { machineId, runnerCwd } from './home'
 import { status, t } from './i18n'
 import { acceptAlphaUpdates } from './preferences'
 import { EXIT_OUTDATED, EXIT_REFUSED, EXIT_UPDATE } from './protocol'
@@ -158,7 +158,7 @@ export interface LaunchOptions {
 function runOnce(candidate: Candidate, options: LaunchOptions): Promise<Outcome> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [candidate.entry], {
-      cwd: path.dirname(candidate.entry),
+      cwd: runnerCwd(),
       stdio: ['ignore', options.quiet ? 2 : 'inherit', 'inherit', 'ipc'],
       env: { ...process.env, WILDCRANE_RUNNER_VERSION: candidate.version, WILDCRANE_RUNNER_KIND: options.kind ?? 'terminal' },
     })
@@ -225,13 +225,19 @@ function runOnce(candidate: Candidate, options: LaunchOptions): Promise<Outcome>
         if (candidate.fresh) status(t.updated(candidate.version))
       }
     })
-    child.on('exit', (code, signal) => {
+    let spawnError: Error | undefined
+    child.once('error', (error) => { spawnError = error })
+    child.once('close', (code, signal) => {
       clearInterval(poll)
       clearTimeout(forceKill)
       if (timer) clearTimeout(timer)
       process.off('SIGINT', onInt)
       process.off('SIGTERM', onTerm)
       options.signal?.removeEventListener('abort', onTerm)
+      if (spawnError) {
+        status(`Runner 无法启动：${spawnError.message}`)
+        return resolve({ exit: 1 })
+      }
       if (code === EXIT_UPDATE && update && !stopping) return resolve({ update })
       if (connected || !candidate.fresh || stopping) return resolve({ exit: code ?? (signal ? 1 : 0) })
       if (timedOut) return resolve({ failed: 'timeout' })

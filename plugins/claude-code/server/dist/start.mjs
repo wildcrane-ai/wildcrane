@@ -26768,6 +26768,7 @@ var home_exports = {};
 __export(home_exports, {
   machineId: () => machineId,
   machineName: () => machineName,
+  runnerCwd: () => runnerCwd,
   runnerHome: () => runnerHome,
   useRunnerHome: () => useRunnerHome
 });
@@ -26778,6 +26779,11 @@ import path from "node:path";
 import { parseEnv } from "node:util";
 function runnerHome() {
   return process.env.WILDCRANE_HOME || path.join(os2.homedir(), ".wildcrane");
+}
+function runnerCwd() {
+  const dir = runnerHome();
+  fs.mkdirSync(dir, { recursive: true, mode: 448 });
+  return dir;
 }
 function useRunnerHome() {
   process.env.AI4KANBAN_HOME = runnerHome();
@@ -27191,7 +27197,7 @@ async function pluginEntry(min) {
 function runOnce(candidate, options) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [candidate.entry], {
-      cwd: path4.dirname(candidate.entry),
+      cwd: runnerCwd(),
       stdio: ["ignore", options.quiet ? 2 : "inherit", "inherit", "ipc"],
       env: { ...process.env, WILDCRANE_RUNNER_VERSION: candidate.version, WILDCRANE_RUNNER_KIND: options.kind ?? "terminal" }
     });
@@ -27267,13 +27273,21 @@ function runOnce(candidate, options) {
         if (candidate.fresh) status(t.updated(candidate.version));
       }
     });
-    child.on("exit", (code, signal) => {
+    let spawnError;
+    child.once("error", (error) => {
+      spawnError = error;
+    });
+    child.once("close", (code, signal) => {
       clearInterval(poll);
       clearTimeout(forceKill);
       if (timer) clearTimeout(timer);
       process.off("SIGINT", onInt);
       process.off("SIGTERM", onTerm);
       options.signal?.removeEventListener("abort", onTerm);
+      if (spawnError) {
+        status(`Runner \u65E0\u6CD5\u542F\u52A8\uFF1A${spawnError.message}`);
+        return resolve({ exit: 1 });
+      }
       if (code === EXIT_UPDATE && update && !stopping) return resolve({ update });
       if (connected || !candidate.fresh || stopping) return resolve({ exit: code ?? (signal ? 1 : 0) });
       if (timedOut) return resolve({ failed: "timeout" });
