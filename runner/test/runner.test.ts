@@ -1049,6 +1049,35 @@ describe('the Runner', () => {
     assert.equal(readCheckpoint(job.id), null)
   })
 
+  it('更新时 agent 已退出但协议未结束，仍在截止时间内交接并保留恢复记录', async () => {
+    const job = cloud.dispatch({ id: 'update-hung-conversation', chat: { message: 'm1', body: '继续' } })
+    let childClosed = false
+    let endTurn!: (value: { ok: true }) => void
+    const current = start('', { stopMs: 100, plan: (...args) => ({
+      ...fakeRuntime('setInterval(() => {}, 20)')(...args),
+      converse: (child) => {
+        child.once('close', () => { childClosed = true })
+        return new Promise((resolve) => { endTurn = resolve })
+      },
+    }) })
+    await until(() => !!readCheckpoint(job.id)?.process)
+    try {
+      await Promise.race([
+        current.update(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('update stuck after child exit')), 3_000).unref()),
+      ])
+      assert.equal(childClosed, true)
+      assert.equal(job.state, 'claimed')
+      assert.equal(readCheckpoint(job.id)?.updating, true)
+      let tookOver = false
+      const next = holdMachine('terminal', () => { tookOver = true })
+      try { await until(() => tookOver) } finally { next.release() }
+    } finally {
+      endTurn({ ok: true })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+  })
+
   it('无法确认云端交接时暂缓更新并继续原任务', async () => {
     const job = cloud.dispatch({ id: 'deferred-update' })
     const current = start('setInterval(() => {}, 20)')

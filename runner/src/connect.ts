@@ -369,11 +369,15 @@ export function startRunner(options: Options): Runner {
     live?.close()
     presence?.close()
     boards?.close()
-    // Each job's own stop is bounded; this bounds them all, should one hang.
+    // A stalled protocol or upload must not block the update handoff forever.
     const stops = Promise.all([readDone, ...jobs, ...[...running.values()].map((halt) => halt?.())])
     let timeout: ReturnType<typeof setTimeout> | undefined
-    if (updating) await stops
-    else await Promise.race([stops, new Promise((resolve) => (timeout = setTimeout(resolve, (options.deps?.stopMs ?? STOP_MS) + 1_000)))])
+    await Promise.race([stops, new Promise<void>((resolve) => {
+      timeout = setTimeout(() => {
+        if (updating) console.error(`runner: update cleanup timed out; checkpoints retained for jobs: ${[...running.keys()].join(', ')}`)
+        resolve()
+      }, (options.deps?.stopMs ?? STOP_MS) + 1_000)
+    })])
     clearTimeout(timeout)
     if (release && !lock.waited() && registration) await api.release(registration.machineId)
     clearInterval(accountWatch)

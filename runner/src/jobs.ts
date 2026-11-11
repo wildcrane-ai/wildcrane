@@ -226,6 +226,7 @@ function streamOut(deps: Shared, id: string, lease: Lease) {
     if (lost) return stopping
     lost = true
     lease.lost = true
+    onAsked()
     for (const child of children) kill(child)
     stopping = Promise.all([halt?.(), ...killed]).then(() => {}).catch(() => { stopConfirmed = false })
     return stopping
