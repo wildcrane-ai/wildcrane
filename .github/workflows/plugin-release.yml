@@ -29,7 +29,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Check the tag matches every plugin's version
         run: |
-          for file in plugins/claude-code/.claude-plugin/plugin.json plugins/codex/plugin.json plugins/cursor/.cursor-plugin/plugin.json plugins/dsh/package.json plugins/kimi-code/kimi.plugin.json; do
+          for file in plugins/claude-code/.claude-plugin/plugin.json plugins/codex/plugin.json plugins/cursor/.cursor-plugin/plugin.json plugins/dsh/package.json plugins/kimi-code/kimi.plugin.json plugins/grok/plugin.json; do
             version=$(node -p "require('./$file').version")
             [ "plugin-v$version" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME, $file $version"; exit 1; }
           done
@@ -44,7 +44,7 @@ jobs:
         run: |
           zip -qr "$GITHUB_WORKSPACE/wildcrane-codex.zip" .agents codex -x 'codex/node_modules/*'
           echo "codex sha256: $(sha256sum "$GITHUB_WORKSPACE/wildcrane-codex.zip" | cut -d' ' -f1)" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Publish the Codex marketplace and the Cursor and Kimi Code plugins to their branches
+      - name: Publish the Codex marketplace and the Cursor, Kimi Code and Grok plugins to their branches
         run: |
           publish() { # <branch> <folder> <name>
             parent=$(git ls-remote origin "refs/heads/$1" | cut -f1)
@@ -67,6 +67,10 @@ jobs:
           mkdir -p "$kimi"
           tar -C plugins/kimi-code --exclude=./node_modules --exclude=./.gitignore -cf - . | tar -C "$kimi" -xf -
           publish kimi-plugin "$kimi" "Kimi Code"
+          grok="$RUNNER_TEMP/grok-plugin"
+          mkdir -p "$grok"
+          tar -C plugins/grok --exclude=./node_modules --exclude=./.gitignore -cf - . | tar -C "$grok" -xf -
+          publish grok-plugin "$grok" "Grok Build"
       - name: Publish the dsh plugin to npm
         working-directory: plugins/dsh
         run: |
@@ -77,4 +81,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          gh release create "$GITHUB_REF_NAME" wildcrane-codex.zip --title "WildCrane plugins ${GITHUB_REF_NAME#plugin-v}" --notes "Claude Code: \`claude plugin marketplace add wildcrane-ai/wildcrane\`, then \`claude plugin install wildcrane@wildcrane\`. ZCode: Settings → Plugin Management → Discover → +, enter \`wildcrane-ai/wildcrane\`, then Get wildcrane. Codex: \`codex plugin marketplace add wildcrane-ai/wildcrane --ref codex-plugin\`, then \`codex plugin add wildcrane@wildcrane\`. Cursor: the \`cursor-plugin\` branch. dsh: \`dsh plugin --profile web add wildcrane-dsh\`. Kimi Code: \`/plugins install https://github.com/wildcrane-ai/wildcrane/tree/kimi-plugin\`." --latest=false
+          gh release create "$GITHUB_REF_NAME" wildcrane-codex.zip --title "WildCrane plugins ${GITHUB_REF_NAME#plugin-v}" --notes "Claude Code: \`claude plugin marketplace add wildcrane-ai/wildcrane\`, then \`claude plugin install wildcrane@wildcrane\`. ZCode: Settings → Plugin Management → Discover → +, enter \`wildcrane-ai/wildcrane\`, then Get wildcrane. Codex: \`codex plugin marketplace add wildcrane-ai/wildcrane --ref codex-plugin\`, then \`codex plugin add wildcrane@wildcrane\`. Cursor: the \`cursor-plugin\` branch. dsh: \`dsh plugin --profile web add wildcrane-dsh\`. Grok Build: \`grok plugin install wildcrane-ai/wildcrane@grok-plugin --trust\`. Kimi Code: \`/plugins install https://github.com/wildcrane-ai/wildcrane/tree/kimi-plugin\`." --latest=false

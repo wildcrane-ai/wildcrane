@@ -1,2 +1,4 @@
 .claude-plugin/types/
 server/dist/
+skills/discuss-goal/
+skills/tasks/

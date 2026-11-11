@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 import * as esbuild from 'esbuild'
 
 import { REQUIRE_SHIM } from '../../cli/scripts/shim.mjs'
+import { copySkills } from './plugin-skills.mjs'
 import { settingsClientPlugin } from './settings-client.mjs'
 
 const PKG_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -26,12 +27,9 @@ const PACKAGE_JSON = {
   },
 }
 const PLUGINS_DIR = path.join(PKG_DIR, '..', 'plugins')
-const PLUGIN_DISTS = ['claude-code', 'codex', 'cursor', 'dsh', 'kimi-code'].map((host) => path.join(PLUGINS_DIR, host, 'server', 'dist'))
+const PLUGIN_DISTS = ['claude-code', 'codex', 'cursor', 'dsh', 'kimi-code', 'grok'].map((host) => path.join(PLUGINS_DIR, host, 'server', 'dist'))
 for (const dir of PLUGIN_DISTS) fs.rmSync(dir, { recursive: true, force: true })
-// One `wildcrane` settings skill for the hosts without a panel.
-for (const host of ['codex', 'cursor', 'dsh', 'kimi-code']) {
-  fs.cpSync(path.join(PLUGINS_DIR, 'shared', 'skills', 'wildcrane'), path.join(PLUGINS_DIR, host, 'skills', 'wildcrane'), { recursive: true })
-}
+copySkills(PLUGINS_DIR)
 
 for (const [entry, outfile] of [
   ['launcher-main.ts', path.join(PKG_DIR, 'dist', 'launcher.mjs')],

@@ -72,7 +72,7 @@ describe('one Runner per computer', () => {
 })
 
 /** The built component of `host`'s plugin, spoken to over stdio. */
-function component(host: 'claude-code' | 'codex' | 'dsh', cloud = 'http://127.0.0.1:9', env: Record<string, string> = {}) {
+function component(host: 'claude-code' | 'codex' | 'dsh' | 'grok', cloud = 'http://127.0.0.1:9', env: Record<string, string> = {}) {
   const server = path.join(process.env.RUNNER_DIST!, '..', '..', 'plugins', host, 'server', 'dist', 'start.mjs')
   const child = spawn(process.execPath, [server, ...(host === 'claude-code' ? [] : [host])], {
     stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CLAUDE_PLUGIN_ROOT: path.resolve(path.dirname(server), '..', '..'), WILDCRANE_RUNNER_DIR: path.resolve(process.env.RUNNER_DIST!, '..'), AI4KANBAN_CLOUD_URL: cloud, HTTPS_PROXY: 'http://127.0.0.1:9', CODEX_HOME: path.join(os.tmpdir(), 'wildcrane-no-codex-home'), ...env },
@@ -100,6 +100,7 @@ describe('the host the Claude Code plugin runs in (#532)', () => {
     assert.equal(hostOf(undefined, { CLAUDE_PLUGIN_ROOT: '/z', ZCODE_PLUGIN_ROOT: '/z' }), 'zcode')
     assert.equal(hostOf(undefined, { CLAUDE_PLUGIN_ROOT: '/c', ZCODE_PLUGIN_ROOT: '/z' }), 'claude-code')
     assert.equal(hostOf(undefined, { CLAUDE_PLUGIN_ROOT: '/c' }), 'claude-code')
+    assert.equal(hostOf('grok', { CLAUDE_PLUGIN_ROOT: '/c' }), 'grok')
     assert.equal(hostOf('codex', { CLAUDE_PLUGIN_ROOT: '/z', ZCODE_PLUGIN_ROOT: '/z' }), 'codex')
   })
 })
@@ -125,6 +126,12 @@ describe("the Codex status's next line", () => {
     assert.equal(nextOf('cursor', 'running', newer, seen()), null)
     assert.match(String(nextOf('cursor', 'running', newer, seen({ folder: null }))), /^This folder is not a WildCrane project/)
     assert.match(String(nextOf('cursor', 'outdated', newer)), /restart Cursor/)
+  })
+
+  it('routes Grok updates and failures to Grok (#675)', () => {
+    assert.match(String(nextOf('grok', 'running', newer, seen())), /`grok plugin update wildcrane`/)
+    assert.match(String(nextOf('grok', 'outdated', newer)), /restart Grok Build/)
+    assert.doesNotMatch(String(nextOf('grok', 'running', newer, seen())), /codex|Claude/)
   })
 
   it('tells dsh its own update steps (#531)', () => {
@@ -529,13 +536,13 @@ describe('the plugin component', () => {
     }
   })
 
-  it('opens a new discussion for each dsh chat and keeps it by id (#531)', async () => {
+  for (const sharedHost of ['dsh', 'grok'] as const) it(`opens a new discussion for each ${sharedHost} chat and keeps it by id (#675)`, async () => {
     useRunnerHome()
     fs.rmSync(runnerHome(), { recursive: true, force: true })
     writeFakeSession(runnerHome())
     const cloud = new FakeCloud()
     await cloud.start()
-    const { child, answers, send, ready } = component('dsh', `http://127.0.0.1:${cloud.port}`)
+    const { child, answers, send, ready } = component(sharedHost, `http://127.0.0.1:${cloud.port}`)
     let id = 10
     const read = async (args: Record<string, unknown>) => {
       const n = id++

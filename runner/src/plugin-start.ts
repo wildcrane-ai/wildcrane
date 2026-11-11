@@ -13,7 +13,7 @@ const { useRunnerHome } = await import('./home')
 const { pluginEntry } = await import('./launcher')
 
 /** The first Runner whose component knows each host; an older one would run it as Claude Code. */
-const FIRST: Record<string, string> = { kimi: '0.6.35' }
+const FIRST: Record<string, string> = { kimi: '0.6.35', grok: '0.6.51' }
 
 useRunnerHome()
 const entry = await pluginEntry(FIRST[process.argv[2] ?? ''])

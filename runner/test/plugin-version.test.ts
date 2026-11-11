@@ -43,6 +43,8 @@ describe('plugin version', () => {
     assert.equal(pluginVersion('cursor', root), '0.1.4')
     fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'wildcrane-dsh', version: '0.1.5' }))
     assert.equal(pluginVersion('dsh', root), '0.1.5')
+    fs.writeFileSync(path.join(root, 'plugin.json'), JSON.stringify({ version: '0.1.20' }))
+    assert.equal(pluginVersion('grok', root), '0.1.20')
   })
 })
 

@@ -99,5 +99,11 @@ akb goal new --studio coding --previews ui,api --title "Review goal previews" --
 
 不在网页讨论中时，akb 读取 `CLAUDE_CODE_SESSION_ID` 或 `CODEX_THREAD_ID`，找到本会话的讨论，首次使用时在当前目录所属项目中新建；目录不属于任何项目时目标归入 General。未登录时非零退出并提示登录。成功结果附讨论网页链接。
 
-`wildcrane_draft_read`、`wildcrane_draft_save` 保持现状，技能不再调用。
+上述宿主的技能不再调用 `wildcrane_draft_read`、`wildcrane_draft_save`。
+
+## Grok Build、DSH 中的讨论
+
+`POST /v1/discussions/external` 的 `host` 支持 `grok` 与 `dsh`。插件首次调用
+`wildcrane_draft_read` 建立讨论，后续读取显式传回 `discussionId`；所有 `akb` 命令携带
+`WILDCRANE_DISCUSSION=<discussion>`。共享 MCP 进程不提供默认聊天绑定，保存目标不会启动任务。
 

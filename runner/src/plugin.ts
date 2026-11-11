@@ -24,11 +24,11 @@ import { versionDir } from './update'
 import * as settings from './settings'
 import { closeSettings, openSettings } from './settings-server'
 
-export type Host = 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'zcode' | 'kimi'
+export type Host = 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'zcode' | 'kimi' | 'grok'
 
 /** ZCode runs the Claude Code plugin and sets both roots; a ZCode root alone was inherited from a ZCode shell. */
 export function hostOf(arg: string | undefined, env: NodeJS.ProcessEnv): Host {
-  if (arg === 'codex' || arg === 'cursor' || arg === 'dsh' || arg === 'kimi') return arg
+  if (arg === 'codex' || arg === 'cursor' || arg === 'dsh' || arg === 'kimi' || arg === 'grok') return arg
   return env.ZCODE_PLUGIN_ROOT && env.ZCODE_PLUGIN_ROOT === env.CLAUDE_PLUGIN_ROOT ? 'zcode' : 'claude-code'
 }
 
@@ -169,7 +169,8 @@ const CODEX_UPGRADE = 'run `codex plugin marketplace upgrade wildcrane` in a ter
 const CODEX_SWITCH = 'run `codex plugin marketplace add wildcrane-ai/wildcrane --ref codex-plugin` and `codex plugin add wildcrane@wildcrane` in a terminal, then restart Codex'
 const DSH_UPDATE = 'run `dsh plugin --profile web add wildcrane-dsh@latest` in a terminal, then restart dsh'
 const KIMI_UPDATE = 'run `/plugins` in Kimi Code, update WildCrane, then restart Kimi Code'
-const updateSteps = (as: Host, plugin: PluginInfo) => (as === 'dsh' ? DSH_UPDATE : as === 'kimi' ? KIMI_UPDATE : plugin.source === 'git' ? CODEX_UPGRADE : CODEX_SWITCH)
+const GROK_UPDATE = 'run `grok plugin update wildcrane` in a terminal, then reopen the Grok Build session'
+const updateSteps = (as: Host, plugin: PluginInfo) => (as === 'grok' ? GROK_UPDATE : as === 'dsh' ? DSH_UPDATE : as === 'kimi' ? KIMI_UPDATE : plugin.source === 'git' ? CODEX_UPGRADE : CODEX_SWITCH)
 
 /** Cloud refused the Runner and it could not update itself; a restart downloads it again. */
 const OUTDATED = {
@@ -178,6 +179,7 @@ const OUTDATED = {
   cursor: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Cursor.",
   zcode: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart ZCode.",
   dsh: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart dsh.",
+  grok: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Grok Build.",
   kimi: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Kimi Code.",
 }
 
@@ -210,7 +212,7 @@ export function nextOf(as: Host, state: typeof runnerState, plugin: PluginInfo, 
   if (as === 'codex' && plugin.source === 'local') return LOCAL
   if (seen && !seen.connections.some((c) => c.state === 'ready')) return NOT_READY(seen.connections, seen.web)
   if (seen && seen.folder === null && seen.refused === null) return NOT_ADDED
-  return (as === 'codex' || as === 'dsh' || as === 'kimi') && plugin.version && plugin.latest ? NEWER(as, plugin) : null
+  return (as === 'codex' || as === 'dsh' || as === 'kimi' || as === 'grok') && plugin.version && plugin.latest ? NEWER(as, plugin) : null
 }
 
 async function state(cwd: string) {
@@ -382,12 +384,11 @@ const GoalInput = z.object({
 const linked = (d: { id: string }, goals: ReturnType<typeof goalOf>[]) =>
   goals.map((i) => ({ ...i, url: i.task?.url ?? discussionUrl(d.id) }))
 
-/** The Codex thread a call comes from, else this process: one Codex session runs one component. One dsh
- *  process serves all its chats and names none, so each read without `discussionId` opens a new one. */
+/** Shared MCP hosts bind explicitly; every first read opens a separate discussion. */
 const PROCESS = `process-${crypto.randomUUID()}`
 type Meta = { threadId?: unknown; 'x-codex-turn-metadata'?: { workspaces?: Record<string, unknown> } } | undefined
 const threadOf = (meta: Meta) =>
-  `${host}:${typeof meta?.threadId === 'string' && meta.threadId ? meta.threadId : host === 'dsh' ? crypto.randomUUID() : PROCESS}`
+  `${host}:${(host === 'dsh' || host === 'grok') ? crypto.randomUUID() : typeof meta?.threadId === 'string' && meta.threadId ? meta.threadId : PROCESS}`
 const pathOf = (given: string | undefined, meta: Meta) => given || Object.keys(meta?.['x-codex-turn-metadata']?.workspaces ?? {})[0] || ''
 
 const SIGNED_OUT = { error: 'signed_out', message: 'Not signed in to WildCrane. Call wildcrane_open_settings to open settings and sign in, then try again.' }
@@ -422,12 +423,12 @@ export function server(): McpServer {
 
   if (host !== 'claude-code') {
     mcp.registerTool('wildcrane_draft_read', {
-      description: host === 'dsh'
+      description: (host === 'dsh' || host === 'grok')
         ? "Read a WildCrane discussion: its goals, their version, the studios a goal can use, and its web page. Without `discussionId` it opens a new one in the project of `path`; pass the returned `discussion` on every later call in this chat."
         : "Read this session's WildCrane discussion: its goals, their version, the studios a goal can use, and its web page. Opens one on first use, in the project of `path`.",
       inputSchema: {
         path: z.string().optional().describe('The current working directory. The component runs elsewhere and cannot see it.'),
-        discussionId: z.string().optional().describe(host === 'dsh' ? 'Leave out only on the first call in this chat.' : "Leave out for this session's discussion."),
+        discussionId: z.string().optional().describe((host === 'dsh' || host === 'grok') ? 'Leave out only on the first call in this chat.' : "Leave out for this session's discussion."),
       },
     }, async ({ path: given, discussionId }, extra) => {
       if (!readSession()) return { ...text(SIGNED_OUT), isError: true }
