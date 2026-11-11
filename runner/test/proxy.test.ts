@@ -9,7 +9,7 @@ import { it } from 'node:test'
 // #415: the Runner's own fetch follows the macOS proxy on every supported Node, from 22.0, and
 // drops it once the proxy is turned off, without a restart.
 
-for (const key of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy']) delete process.env[key]
+for (const key of ['WILDCRANE_HOST_PROXY', 'HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy']) delete process.env[key]
 const { followProxy } = await import('../src/proxy')
 
 it('routes fetch through the system proxy and drops it when turned off', { skip: process.platform !== 'darwin' }, async (t) => {

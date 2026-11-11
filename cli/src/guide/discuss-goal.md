@@ -3,7 +3,8 @@
 This flow only helps the user settle goals; refining, previewing, and running them come later.
 
 - **Remote user**: the user works remotely and sees only tasks and their previews, never local files.
-- **Software failures**: read `akb guide troubleshoot` when root cause analysis is needed.
+- **Investigate here**: complete checks, diagnosis, audits, and similar investigations in this session, using `akb guide troubleshoot` for software failures; never create investigation or “investigate then fix” goals.
+- **Concrete goals**: when a change needs investigation, save a goal only after the findings establish the concrete change; if verification is blocked, report what remains unverified instead of deferring it to a goal.
 
 ## Goals
 

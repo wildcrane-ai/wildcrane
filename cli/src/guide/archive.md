@@ -24,6 +24,12 @@ Outside an active delivery, use `akb raw archive <id>` or `akb raw reject <id>`.
 finds those, and nothing else will. A run that does this is reported as having broken the
 board.
 
-After completing the approved step and required outputs, run `akb raw delivery complete <id>`
-and follow its handoff. Software steps in a git project supply `--commit <full-sha> --branch <target>`.
+Before completing a step, verify its approved requirements and required outputs; before the
+last step, verify every delivery condition, including any required publication and live checks.
+Record the verification results on the card, leave unmet work unchecked, and handle user-action
+blockers through `akb guide implement`. Preparation, a merged commit or a handoff in the final
+reply does not establish delivery.
+
+Once those checks pass, run `akb raw delivery complete <id>` and follow its handoff. Software
+steps in a git project supply `--commit <full-sha> --branch <target>`.
 If completion was interrupted, inspect the recorded result and retry the same completion.

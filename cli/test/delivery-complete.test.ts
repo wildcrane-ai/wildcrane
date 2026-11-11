@@ -98,6 +98,14 @@ it('keeps a failed archive retryable and lets a resumed run finish the receipt',
   process.env[RUN_ENV] = 'resumed'
   assert.equal(completeDelivery(deliveryId, { commit: sha, branch: 'main' }).finished, true)
 })
+it('keeps a delivery active when landing needs a user answer', async () => {
+  await move(root, ['update-questions', '1', '--append', 'Grant deployment access?',
+    '--recommended-option', 'Grant this account access', '--option', 'Use another account'])
+  assert.throws(() => completeDelivery(deliveryId, { commit: sha, branch: 'main' }), /open questions/)
+  assert.equal(findDelivery(deliveryId)?.status, 'active')
+  assert.equal(findDelivery(deliveryId)?.completions?.length ?? 0, 0)
+  assert.ok(fs.existsSync(card))
+})
 it('records studio steps in order and retains the earlier code result', async () => {
   patch((d) => { d.studio!.land = [{ agent: 'builder', extra: '' }, { agent: 'blog-writer', extra: '' }]; d.rules = { builder: 'Builder rule', 'blog-writer': 'Writer rule' } })
   assert.equal(completeDelivery(deliveryId, { commit: sha, branch: 'main' }).finished, false)

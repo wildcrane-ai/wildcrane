@@ -515,7 +515,9 @@ export const createArtifact = (task: string, name: string, type: string) =>
   request<{ id: string }>('POST', `/v1/tasks/${q(task)}/artifacts`, { type, name })
 
 export const createUpload = (artifact: string, contentType: string, size: number) =>
-  request<{ id: string }>('POST', `/v1/artifacts/${q(artifact)}/uploads`, { content_type: contentType, size })
+  request<{ id: string; url?: string; parts?: { count: number; size: number; url: string } }>('POST', `/v1/artifacts/${q(artifact)}/uploads`, { content_type: contentType, size })
+
+export const completeUpload = (url: string) => request<unknown>('POST', url)
 
 export const createVersion = (artifact: string, upload: string) =>
   request<{ version: number }>('POST', `/v1/artifacts/${q(artifact)}/versions`, { upload })

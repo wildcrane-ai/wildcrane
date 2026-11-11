@@ -93,6 +93,8 @@ export interface FakeTriage {
 }
 
 export class FakeCloud {
+  multipartSize: number | null = null
+  multipartUploads = new Map<string, Buffer[]>()
   task: FakeTask = { artifacts: new Map() }
   /** A task's status as `GET /v1/tasks/{id}` answers it; `gone` is no such task, `down` a failing read. */
   taskStatus: Record<string, string> = {}
@@ -115,6 +117,7 @@ export class FakeCloud {
   uploadFailure: { after: number; code: string } | null = null
   beforeNextUpload: (() => void) | null = null
   closedArtifacts = new Set<string>()
+  refusedUploads = new Map<string, string>()
   unreachableArtifacts = new Set<string>()
   /** The type each artifact was made with. */
   types = new Map<string, string>()
@@ -215,6 +218,9 @@ export class FakeCloud {
   }
 
   private upgrade(req: http.IncomingMessage, socket: Socket): void {
+    socket.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ECONNRESET' && error.code !== 'EPIPE') throw error
+    })
     const url = new URL(req.url!, 'http://x')
     if (url.pathname === '/v1/runner/presence') return this.presenceUpgrade(req, url, socket)
     const id = /^\/v1\/runner\/jobs\/([^/]+)\/stream$/.exec(url.pathname)?.[1]
@@ -285,7 +291,8 @@ export class FakeCloud {
     const chunks: Buffer[] = []
     for await (const chunk of req) chunks.push(chunk as Buffer)
     const raw = Buffer.concat(chunks)
-    const body = raw.length && req.headers['content-type'] === 'application/json' ? JSON.parse(raw.toString()) : {}
+    const fileUpload = req.method === 'PUT' && req.url?.startsWith('/v1/uploads/')
+    const body = raw.length && !fileUpload && req.headers['content-type'] === 'application/json' ? JSON.parse(raw.toString()) : {}
     const url = new URL(req.url!, 'http://x')
     const send = (status: number, value: unknown) => {
       const bytes = value && typeof value === 'object' ? (value as { [BYTES]?: Buffer })[BYTES] : undefined
@@ -530,12 +537,29 @@ export class FakeCloud {
     m = /^\/v1\/artifacts\/([^/]+)\/uploads$/.exec(route)
     if (m) {
       if (this.closedArtifacts.has(m[1]!)) return refuse(409, 'conflict', 'This task has finished.')
+      const refusal = this.refusedUploads.get(m[1]!)
+      if (refusal) return refuse(402, refusal, '上传被拒绝')
       if (this.uploadFailure && this.uploadFailure.after-- === 0) {
         const { code } = this.uploadFailure
         this.uploadFailure = null
         return refuse(code === 'storage_limit' ? 402 : 503, code, '上传被中断')
       }
+      if (this.multipartSize && body.size > this.multipartSize) {
+        this.multipartUploads.set(m[1]!, [])
+        return send(201, { id: `upl_${m[1]}`, url: `/v1/uploads/upl_${m[1]}/complete`,
+          parts: { count: Math.ceil(body.size / this.multipartSize), size: this.multipartSize, url: `/v1/uploads/upl_${m[1]}/parts/{part}` } })
+      }
       return send(201, { id: `upl_${m[1]}` })
+    }
+    m = /^\/v1\/uploads\/upl_([^/]+)\/parts\/(\d+)$/.exec(route)
+    if (m) {
+      this.multipartUploads.get(m[1]!)![Number(m[2]) - 1] = raw
+      return send(200, { part: Number(m[2]) })
+    }
+    m = /^\/v1\/uploads\/upl_([^/]+)\/complete$/.exec(route)
+    if (m) {
+      this.uploads.set(m[1]!, Buffer.concat(this.multipartUploads.get(m[1]!)!))
+      return send(200, { uploaded: true })
     }
     m = /^\/v1\/uploads\/upl_(.+)$/.exec(route)
     if (m) {

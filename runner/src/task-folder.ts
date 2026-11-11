@@ -4,6 +4,8 @@ import { collect } from '../../artifact-sdk/src/internal/collect'
 import { kindOf, TYPES, type Kind } from '../../artifact-sdk/src/internal/references'
 import { manifestOf, mapReferences } from '../../artifact-sdk/src/internal/manifest'
 
+import { ASSET_FILE_LIMIT } from '../../cli/src/lib/shared/file-limits.ts'
+
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -52,6 +54,9 @@ interface Record_ {
   task?: string
   number?: number
 
+  /** Failed automatic uploads retained across pulls and restarts. */
+  pendingAssets?: string[]
+
   /** `kind` is the artifact's type (#2003); an `html` one is the page a mockup draws, and its
    *  hash is the page's. */
   assets: { [path: string]: Entry & { artifact: string; kind?: Kind; dependencies?: string[] } }
@@ -79,7 +84,7 @@ interface Base {
 
 export type Pushed =
   | { ok: true; changed: boolean }
-  | { ok: false; conflict: boolean; error: string; offline?: boolean; tasks?: Record<string, { error: string; offline?: boolean }> }
+  | { ok: false; conflict: boolean; error: string; offline?: boolean; tasks?: Record<string, { error: string; offline?: boolean; blocking?: boolean }> }
 
 const TASK_ID = /^[\w-]{1,100}$/
 export const NO_FOLDER = 'This project has no folder on this computer. Link one, then try again.'
@@ -457,6 +462,17 @@ function assetsOf(text: string | null | undefined): Assets {
   }
 }
 
+/** Unreferenced files in the task's asset folders still belong to the task. */
+function taskAssetFiles(ws: TaskFolder): string[] {
+  if (!ws.number) return []
+  const state = stateDir(ws)
+  const roots = [path.join(ws.board, 'assets', String(ws.number)),
+    ...(state ? ['assets', 'mockups'].map(folder => path.join(state, folder, String(ws.number))) : [])]
+  return roots.filter(root => fs.lstatSync(root, { throwIfNoEntry: false })?.isDirectory()).flatMap(root => filesUnder(root).filter(p =>
+    !p.split('/').some(part => part.startsWith('.') || part === 'node_modules'))
+    .map(p => path.join(root, p)))
+}
+
 const assetsText = (assets: Assets) => `${JSON.stringify(assets, null, 2)}\n`
 
 /** Bring the folder up to Cloud: what changed here goes first, then what changed since the base,
@@ -466,8 +482,8 @@ export function pull(ws: TaskFolder, machineId: string): Promise<api.Call<void>>
   return inFolder(ws.cwd, async () => {
     const sent = await sendBoard(boardFolder(ws), machineId)
     if (!sent.ok) {
-      const refused = sent.tasks ? sent.tasks[ws.cloudTask ?? ''] : sent
-      if (refused) return { ok: false, error: `This computer's board changes could not be sent: ${refused.error}`, ...(refused.offline ? {} : { code: 'version_conflict' }) }
+      const refused = sent.tasks ? sent.tasks[ws.cloudTask ?? ''] : { ...sent, blocking: true }
+      if (refused && refused.blocking !== false) return { ok: false, error: `This computer's board changes could not be sent: ${refused.error}`, ...(refused.offline ? {} : { code: 'version_conflict' }) }
     }
     return readCloud(ws)
   })
@@ -586,9 +602,10 @@ export const workspaceOf = (ws: TaskFolder): string | null => readBase(ws).works
 async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets): Promise<api.Call<void>> {
   if (ws.cloudTask && ws.number) { record.task = ws.cloudTask; record.number = ws.number }
   const file = cardFile(ws)
-  const out: Record_['assets'] = {}
+  const out: Record_['assets'] = Object.fromEntries((record.pendingAssets ?? []).flatMap(key => record.assets[key] ? [[key, record.assets[key]!]] : []))
   for (const [name, ref] of Object.entries(assets)) {
     const held = record.assets[name]
+    if (record.pendingAssets?.includes(name) && held) { out[name] = held; continue }
     // Never drawn: nothing to read, and the source here stays.
     if (ref.error && !ref.version) {
       if (held?.artifact === ref.artifact) out[name] = held
@@ -708,18 +725,29 @@ function undrawn(ws: TaskFolder, reason: string): string {
 async function uploadAsset(artifact: string, { bytes, type }: Sent): Promise<api.Call<number>> {
   const upload = await api.createUpload(artifact, type, Math.max(bytes.length, 1))
   if (!upload.ok) return upload
-  const put = await api.upload(`/v1/uploads/${encodeURIComponent(upload.value.id)}`, bytes, type)
-  if (!put.ok) return put
+  const { id, url, parts } = upload.value
+  if (parts) {
+    for (let part = 1; part <= parts.count; part++) {
+      const put = await api.upload(parts.url.replace('{part}', String(part)), bytes.subarray((part - 1) * parts.size, part * parts.size), type)
+      if (!put.ok) return put
+    }
+    const done = await api.completeUpload(url ?? `/v1/uploads/${encodeURIComponent(id)}/complete`)
+    if (!done.ok) return done
+  } else {
+    const put = await api.upload(url ?? `/v1/uploads/${encodeURIComponent(id)}`, bytes, type)
+    if (!put.ok) return put
+  }
   const version = await api.createVersion(artifact, upload.value.id)
   return version.ok ? { ok: true, value: version.value.version } : version
 }
 
 /** 每次成功上传即记账，失败重试可复用。任一预览处理失败都不阻塞推送：沿用旧版本或建空记录，并在清单里记下原因（#456, #457）。 */
-async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Promise<api.Call<void>> {
+async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Promise<api.Call<{ errors: { error: string; offline?: boolean }[] }>> {
+  const errors: { error: string; offline?: boolean }[] = []
   if (ws.cloudTask && ws.number) { record.task = ws.cloudTask; record.number = ws.number; writeRecord(ws, record) }
   const file = cardFile(ws)
   const body = readText(file)
-  if (body === null) return { ok: true, value: undefined }
+  if (body === null) return { ok: true, value: { errors } }
   const refs: Assets = {}
   const canonical = (target: string) => {
     // 本机已删除的文件按最近的现存上级解析符号链接，键与删除前一致。
@@ -761,7 +789,10 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
       let out: Sent | undefined
       let why = node.error ?? [...node.dependencies.values()].map(key => refs[key]?.error).find(Boolean)
       if (!why && node.file) {
-        try { out = await sentOf(node.file, kind) }
+        try {
+          if (fs.statSync(node.file).size > ASSET_FILE_LIMIT) throw new Error('This asset is over 100 MiB.')
+          out = await sentOf(node.file, kind)
+        }
         catch (error) { why = renderError(error) }
       }
       if (why) {
@@ -834,9 +865,82 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
       entry = { ...entry, localHash: localHash ?? undefined, dependencies: [...node.dependencies.values()] }
       for (const alias of node.aliases) {
         record.assets[alias] = entry
+        record.pendingAssets = record.pendingAssets?.filter(key => key !== alias)
         refs[alias] = { artifact: entry.artifact, version: entry.version }
       }
       writeRecord(ws, record)
+    }
+    for (const file of taskAssetFiles(ws)) {
+      const key = canonical(file)
+      if (refs[key]) continue
+      // Apply the same real-path boundary as an explicit card reference.
+      assetPath(ws, key, cardFile(ws))
+      const sendFile = async (): Promise<api.Call<void>> => {
+        const previous = record.assets[key]
+        const size = fs.statSync(file).size
+        if (size > ASSET_FILE_LIMIT) return { ok: false, code: 'too_large', error: `${key}: This asset is over 100 MiB.` }
+        const digest = crypto.createHash('sha256')
+        for await (const chunk of fs.createReadStream(file)) digest.update(chunk)
+        const hash = digest.digest('hex')
+        let entry = previous
+        if (!entry?.version || entry.kind !== 'asset' || entry.hash !== hash) {
+          if (!ws.cloudTask) return { ok: true, value: undefined }
+          let artifact = entry?.kind === 'asset' ? entry.artifact : undefined
+          if (!artifact) {
+            const made = await api.createArtifact(ws.cloudTask, key.slice(0, 200), 'asset')
+            if (!made.ok) return { ...made, error: `${key}: ${made.error}` }
+            artifact = made.value.id
+            record.assets[key] = { artifact, kind: 'asset', version: 0, hash: '' }
+            writeRecord(ws, record)
+          }
+          // Authorize the size and quota before reading the file into memory.
+          const type = TYPES[path.extname(file).toLowerCase()] ?? 'application/octet-stream'
+          const upload = await api.createUpload(artifact, type, Math.max(size, 1))
+          if (!upload.ok) return { ...upload, error: `${key}: ${upload.error}` }
+          const route = `/v1/uploads/${encodeURIComponent(upload.value.id)}`
+          if (upload.value.parts) {
+            const { count, size: partSize, url: partUrl } = upload.value.parts
+            const source = await fs.promises.open(file, 'r')
+            try {
+              for (let part = 1; part <= count; part++) {
+                const bytes = Buffer.alloc(Math.min(partSize, size - (part - 1) * partSize))
+                let offset = 0
+                while (offset < bytes.length) {
+                  const read = await source.read(bytes, offset, bytes.length - offset, (part - 1) * partSize + offset)
+                  if (!read.bytesRead) throw new Error(`${key}: file changed during upload`)
+                  offset += read.bytesRead
+                }
+                const put = await api.upload(partUrl.replace('{part}', String(part)), bytes, type)
+                if (!put.ok) return { ...put, error: `${key}: ${put.error}` }
+              }
+            } finally { await source.close() }
+            const completed = await api.completeUpload(upload.value.url ?? `${route}/complete`)
+            if (!completed.ok) return { ...completed, error: `${key}: ${completed.error}` }
+          } else {
+            const put = await api.upload(upload.value.url ?? route, fs.readFileSync(file), type)
+            if (!put.ok) return { ...put, error: `${key}: ${put.error}` }
+          }
+          const sent = await api.createVersion(artifact, upload.value.id)
+          if (!sent.ok) return { ...sent, error: `${key}: ${sent.error}` }
+          entry = { artifact, version: sent.value.version, hash, localHash: hash, kind: 'asset' }
+        }
+        record.assets[key] = entry
+        refs[key] = { artifact: entry.artifact, version: entry.version }
+        record.pendingAssets = record.pendingAssets?.filter(p => p !== key)
+        writeRecord(ws, record)
+        return { ok: true, value: undefined }
+      }
+      let sent: api.Call<void>
+      try { sent = await sendFile() }
+      catch (error) { sent = { ok: false, error: `${key}: ${renderError(error)}` } }
+      if (!sent.ok) {
+        if (sent.code && !['too_large', 'payload_too_large', 'storage_limit', 'storage_limit_reached'].includes(sent.code)) return sent
+        record.pendingAssets = [...new Set([...(record.pendingAssets ?? []), key])]
+        writeRecord(ws, record)
+        errors.push({ error: sent.error, ...(sent.code ? {} : { offline: true }) })
+        console.error(`runner: asset upload pending: ${sent.error}`)
+        if (before[key]) refs[key] = before[key]!
+      }
     }
   } catch (error) {
     return { ok: false, code: 'bad_request', error: error instanceof Error ? error.message : String(error) }
@@ -845,7 +949,7 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
   if (Object.keys(refs).length || fs.existsSync(list)) {
     if (JSON.stringify(assetsOf(readText(list))) !== JSON.stringify(refs)) write(list, assetsText(refs))
   }
-  return { ok: true, value: undefined }
+  return { ok: true, value: { errors } }
 }
 
 /** `triage/dismissed/` and `triage/archived/` as Cloud holds them, after the rejection review laid
@@ -935,13 +1039,17 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
   const boardSync = !job.id && !ws.cloudTask
   const deferredCards = new Set<number>()
   const deferredLists = new Set<string>()
-  const assetErrors: Record<string, { error: string; offline?: boolean }> = {}
+  const assetErrors: Record<string, { error: string; offline?: boolean; blocking?: boolean }> = {}
+  const processed = new Set<string>()
   for (const item of tasks) {
+    processed.add(item.folder.task)
     const card = path.relative(ws.board, cardFile(item.folder)).split(path.sep).join('/')
     const archived = boardSync && card.startsWith('.archive/') && base.files[rootOf(ws) + card]
     if (!archived) {
       const assets = await pushAssets(item.folder, item.record, assetsOf(assetsListOf(item.folder, base)))
       if (assets.ok) {
+        const error = assets.value.errors[0]
+        if (error) assetErrors[item.folder.task] = { ...error, blocking: false }
         writeRecord(item.folder, item.record)
         continue
       }
@@ -956,7 +1064,9 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
   proposeItems(ws, base)
 
   const shared = sharedMemory(ws.board)
-  const deferred = new Set(boardSync ? [] : base.deferred)
+  const deferred = new Set((base.deferred ?? []).filter(p => !boardSync && !tasks.some(item =>
+    processed.has(item.folder.task) && !deferredCards.has(item.folder.number!) &&
+    (p === assetsFile(item.folder.task) || numberOfCard(p) === item.folder.number))))
   const defer = (p: string) => {
     if (!boardSync) return deferred.has(p)
     if (!deferredLists.has(p) && !deferredCards.has(numberOfCard(p) ?? 0)) return false
@@ -964,14 +1074,14 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
     return true
   }
   const success = (changed: boolean): Pushed => {
-    const refreshDeferred = boardSync && (deferred.size !== (base.deferred?.length ?? 0) || base.deferred?.some(p => !deferred.has(p)))
-    const pendingAssets = Object.keys(assetErrors)
-    const refreshPending = boardSync && JSON.stringify(pendingAssets) !== JSON.stringify(base.pendingAssets ?? [])
+    const refreshDeferred = deferred.size !== (base.deferred?.length ?? 0) || base.deferred?.some(p => !deferred.has(p))
+    const pendingAssets = [...new Set([...(base.pendingAssets ?? []).filter(task => !processed.has(task)), ...Object.keys(assetErrors)])]
+    const refreshPending = JSON.stringify(pendingAssets) !== JSON.stringify(base.pendingAssets ?? [])
     if (refreshDeferred) base.deferred = [...deferred]
     if (refreshPending) base.pendingAssets = pendingAssets
     if (changed || refreshDeferred || refreshPending) writeBase(ws, base)
     const firstError = Object.values(assetErrors)[0]
-    if (firstError) return { ok: false, conflict: false, ...firstError, tasks: assetErrors }
+    if (firstError && boardSync) return { ok: false, conflict: false, ...firstError, tasks: assetErrors }
     return { ok: true, changed }
   }
   const local = localFiles(ws, base)

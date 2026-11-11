@@ -9,9 +9,12 @@ requirement and create no card.
   inapplicable. Explain any inapplicable check and its alternative verification; never report
   an unrun or failing check as passed. Do not bypass checks with empty configuration, disabled
   checks or lower standards.
-- **User-action blockers**: ask only when this build needs a decision, permission or material
-  only the user can supply. On a card, append it as a question per `akb guide update-questions`;
-  a question only in your reply never reaches the user. Continue independent work.
+- **Authorization**: approval covers the necessary operations within the agreed scope and
+  constraints; carry it across commands, tools and stages without repeated confirmation.
+- **User-action blockers**: resolve routine choices and problems yourself; ask only when
+  reasonable investigation leaves a blocker requiring user action or a decision beyond the
+  approved scope. On a card, use `akb guide update-questions`, stating what you tried, what
+  is blocked and your recommendation; continue independent work.
 - **Defer what can wait**: follow `akb guide follow-up` for work this build does not require;
   never ask about it or let it block this build.
 - **Decisions made while building**: record an answered material decision the user could

@@ -1546,6 +1546,35 @@ describe('a task’s folder (#2037)', () => {
     assert.ok(!cloud.board.has('projects/prj_1/todo/README.md'), 'a generated file went up')
   })
 
+  it('syncs 10 MiB board documents and preserves the remote copy when over the limit (#667)', async () => {
+    await prepareBoard()
+    const target = path.join(board(), 'memory/readme.md')
+    const content = 'x'.repeat(10 * 1024 * 1024)
+    fs.writeFileSync(target, content)
+    assert.equal((await pushBoard(keptBoard(cached())!, MACHINE)).ok, true)
+    assert.equal(cloud.file('memory/readme.md'), content)
+    fs.appendFileSync(target, 'x')
+    const refused = await pushBoard(keptBoard(cached())!, MACHINE)
+    assert.equal(refused.ok, false)
+    assert.equal(cloud.file('memory/readme.md'), content)
+    assert.equal(fs.statSync(target).size, content.length + 1)
+  })
+
+  it('uploads multipart assets before publishing their version (#667)', async () => {
+    await prepareBoard()
+    cloud.multipartSize = 1024 * 1024
+    const bytes = Buffer.alloc(2 * 1024 * 1024 + 3, 7)
+    fs.writeFileSync(path.join(board(), 'todo/large.png'), bytes)
+    fs.appendFileSync(path.join(board(), CARD), '\n<Asset src="large.png" />\n')
+    const sent = await pushBoard(keptBoard(cached())!, MACHINE)
+    assert.equal(sent.ok, true, JSON.stringify(sent))
+    const ref = JSON.parse(cloud.file('assets/task_1.json')!)['large.png']
+    assert.deepEqual(cloud.task.artifacts.get(ref.artifact)![ref.version - 1], bytes)
+    const complete = cloud.log.findIndex((line) => line.endsWith('/complete'))
+    const version = cloud.log.findIndex((line) => line === `POST /v1/artifacts/${ref.artifact}/versions`)
+    assert.ok(complete >= 0 && version > complete)
+  })
+
   it('takes a folder’s writes in turn: the same change goes once (#59)', async () => {
     await prepareBoard()
     fs.writeFileSync(path.join(board(), 'memory', 'readme.md'), 'once')
@@ -1621,6 +1650,190 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(cloud.task.artifacts.get('art_1')!.at(-1)!.toString(), 'pending image')
     assert.equal(unsent(cached()), false)
   })
+
+  it('syncs captures and ordinary nested files with byte-preserving recovery (#666)', async () => {
+    await prepareBoard()
+    cloud.multipartSize = 200_000
+    const files = new Map<string, Buffer>()
+    for (let i = 0; i < 38; i++) files.set(`assets/1/snap/${i}/snapshot.json`,
+      Buffer.from(JSON.stringify({ tree: ['capture'.repeat(i === 0 ? 350_000 : 40_000)] })))
+    for (const [name, bytes] of Object.entries({
+      'notes.txt': Buffer.from('notes'), 'README.md': Buffer.from('# Notes'),
+      'image.png': Buffer.from([0, 255, 128]), 'opaque.unknown': Buffer.from([255, 0, 254]),
+      'broken.json': Buffer.from('{unfinished'), 'page.html': Buffer.from('<html>original</html>'),
+    })) files.set(`assets/1/nested/${name}`, bytes)
+    for (const [name, bytes] of files) {
+      fs.mkdirSync(path.dirname(path.join(board(), name)), { recursive: true })
+      fs.writeFileSync(path.join(board(), name), bytes)
+    }
+    const extra = path.join(projectStateDir(board()), 'assets/1/deep/data.bin')
+    fs.mkdirSync(path.dirname(extra), { recursive: true })
+    fs.writeFileSync(extra, Buffer.from([3, 2, 1, 0]))
+    fs.writeFileSync(path.join(board(), 'assets/1/.env'), 'private')
+    fs.mkdirSync(path.join(board(), 'assets/1/.sync'), { recursive: true })
+    fs.writeFileSync(path.join(board(), 'assets/1/.sync/private.json'), '{}')
+    fs.symlinkSync(extra, path.join(board(), 'assets/1/linked.bin'))
+    const privateDir = fs.mkdtempSync(path.join(runnerHome(), 'private-'))
+    fs.writeFileSync(path.join(privateDir, 'secret.json'), '{}')
+    fs.mkdirSync(path.join(projectStateDir(board()), 'mockups'), { recursive: true })
+    fs.symlinkSync(privateDir, path.join(projectStateDir(board()), 'mockups/1'))
+    const sent = await pushBoard(keptBoard(cached())!, MACHINE)
+    assert.ok(sent.ok, JSON.stringify(sent))
+    const refs = JSON.parse(cloud.file('assets/task_1.json')!)
+    for (const [name, bytes] of files) {
+      const ref = refs[`../${name}`]
+      assert.ok(ref, name)
+      assert.equal(cloud.types.get(ref.artifact), 'asset', name)
+      assert.deepEqual(cloud.task.artifacts.get(ref.artifact)!.at(-1), bytes, name)
+      assert.equal(cloud.file(name), null, 'an asset went into board data')
+    }
+    assert.ok(refs['.assets/1/deep/data.bin'])
+    assert.ok(!Object.keys(refs).some(key => /\.env|private|linked/.test(key)))
+    const count = cloud.log.filter(line => line.endsWith('/uploads')).length
+    assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
+    assert.equal(cloud.log.filter(line => line.endsWith('/uploads')).length, count)
+    const generated = await runTask('generated', `
+      const fs = require('fs')
+      fs.writeFileSync('assets/1/generated.dat', 'generated in task')
+      fs.writeFileSync('assets/1/generated.png', Buffer.alloc(300_000, 127))
+      fs.appendFileSync('${CARD}', '\\n![](../assets/1/generated.png)\\n')
+    `)
+    assert.equal(generated.outcome, 'done', generated.reason)
+    files.set('assets/1/generated.dat', Buffer.from('generated in task'))
+    files.set('assets/1/generated.png', Buffer.alloc(300_000, 127))
+    const restored = fs.mkdtempSync(path.join(runnerHome(), 'restored-'))
+    const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, restored)
+    const pulled = await pull(ws, MACHINE)
+    assert.ok(pulled.ok, JSON.stringify(pulled))
+    for (const [name, bytes] of files) assert.deepEqual(fs.readFileSync(path.join(ws.board, name)), bytes, name)
+    assert.deepEqual(fs.readFileSync(path.join(projectStateDir(ws.board), 'assets/1/deep/data.bin')), Buffer.from([3, 2, 1, 0]))
+  })
+
+  it('keeps an ordinary asset pending while a discussion replies, then retries (#666)', async () => {
+    await prepareBoard()
+    const file = path.join(board(), 'assets/1/snap/data.json')
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify({ tree: 'x'.repeat(300_000) }))
+    fs.appendFileSync(path.join(board(), CARD), '\nUnsynced draft.\n')
+    cloud.uploadFailure = { after: 0, code: 'storage_limit' }
+    const sent = await pushBoard(keptBoard(cached())!, MACHINE)
+    assert.equal(sent.ok, false)
+    assert.ok(unsent(cached()))
+    const failed = [...cloud.task.artifacts.keys()].at(-1)!
+    cloud.unreachableArtifacts.add(failed)
+    const result = await runTask('discussion', '', { task: null, projectDir: cached(), discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
+    assert.equal(result.outcome, 'done', result.reason)
+    assert.match(read(CARD), /Unsynced draft/)
+    assert.ok(fs.existsSync(file))
+    assert.ok(unsent(cached()))
+    const required = await pull(openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cached()), MACHINE)
+    assert.equal(required.ok, true)
+    cloud.unreachableArtifacts.clear()
+    assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
+    assert.match(cloud.file(CARD)!, /Unsynced draft/)
+    assert.ok(!unsent(cached()))
+    fs.truncateSync(file, 2 * 1024 ** 3)
+    const count = cloud.log.filter(line => line.endsWith('/uploads')).length
+    const oversized = await pushBoard(keptBoard(cached())!, MACHINE)
+    assert.equal(oversized.ok, false)
+    if (!oversized.ok) assert.match(oversized.error, /100 MiB/)
+    assert.equal(cloud.log.filter(line => line.endsWith('/uploads')).length, count)
+    assert.equal(fs.statSync(file).size, 2 * 1024 ** 3)
+  })
+
+  it('replies when the task itself creates an oversized unrelated file (#670)', async () => {
+    const job = await runTask('new-asset', `
+      const fs = require('fs')
+      fs.mkdirSync('assets/1', { recursive: true })
+      fs.writeFileSync('assets/1/large.bin', '')
+      fs.truncateSync('assets/1/large.bin', 101 * 1024 ** 2)
+      fs.appendFileSync('${CARD}', '\\nSafe new edit.\\n')
+    `)
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.match(cloud.file(CARD)!, /Safe new edit/)
+    assert.ok(!JSON.parse(cloud.file('assets/task_1.json')!)['../assets/1/large.bin'])
+    assert.ok(unsent(cached()))
+  })
+
+  it('keeps file read failures pending without blocking a task reply (#670)', async (t) => {
+    await prepareBoard()
+    const file = path.join(board(), 'assets/1/unreadable.bin')
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, 'local bytes')
+    const original = fs.createReadStream
+    t.mock.method(fs, 'createReadStream', (...args: Parameters<typeof fs.createReadStream>) => {
+      if (args[0] === file) throw new Error('local read failed')
+      return original(...args)
+    })
+    const job = await runTask('read-failure')
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(fs.readFileSync(file, 'utf8'), 'local bytes')
+    assert.ok(unsent(cached()))
+    t.mock.restoreAll()
+    assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
+    assert.equal(unsent(cached()), false)
+  })
+
+  for (const required of [false, true]) {
+    it(`preserves ${required ? 'referenced upload' : 'authorization'} failures (#670)`, async () => {
+      await prepareBoard()
+      if (required) {
+        cloud.refusedUploads.set('art_1', 'storage_limit_reached')
+        fs.writeFileSync(path.join(board(), 'todo/hero.png'), 'required edit')
+      } else {
+        const file = path.join(board(), 'assets/1/data.bin')
+        fs.mkdirSync(path.dirname(file), { recursive: true })
+        fs.writeFileSync(file, 'old')
+        assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
+        const ref = JSON.parse(cloud.file('assets/task_1.json')!)['../assets/1/data.bin']
+        cloud.refusedUploads.set(ref.artifact, 'unauthenticated')
+        fs.writeFileSync(file, 'new')
+      }
+      const job = await runTask('strict')
+      assert.equal(job.outcome, 'failed')
+      assert.match(job.reason!, /上传被拒绝/)
+    })
+  }
+
+  for (const failure of ['too_large', 'storage_limit_reached', 'offline']) {
+    it(`completes task replies with safe edits while an unrelated asset is ${failure} (#670)`, async () => {
+      assert.equal((await runTask('seed')).outcome, 'done')
+      const dir = path.join(board(), 'assets/1')
+      fs.mkdirSync(dir, { recursive: true })
+      const file = path.join(dir, 'a.bin')
+      fs.writeFileSync(file, 'original')
+      assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
+      const key = '../assets/1/a.bin'
+      const old = JSON.parse(cloud.file('assets/task_1.json')!)[key]
+      if (failure === 'too_large') fs.truncateSync(file, 101 * 1024 ** 2)
+      else fs.writeFileSync(file, 'pending edit')
+      if (failure === 'offline') cloud.unreachableArtifacts.add(old.artifact)
+      else if (failure !== 'too_large') cloud.refusedUploads.set(old.artifact, failure)
+      // Establish pending state before a reply, as a watcher would.
+      assert.equal((await pushBoard(keptBoard(cached())!, MACHINE)).ok, false)
+      await runner?.close()
+      runner = null
+      const job = await runTask('reply', `
+        const fs = require('fs')
+        fs.writeFileSync('assets/1/z.bin', 'another asset')
+        fs.appendFileSync('${CARD}', '\\nSafe card edit.\\n')
+      `)
+      assert.equal(job.outcome, 'done', job.reason)
+      assert.match(cloud.file(CARD)!, /Safe card edit/)
+      const refs = JSON.parse(cloud.file('assets/task_1.json')!)
+      assert.deepEqual(refs[key], old, 'a failed update published a new version')
+      assert.ok(refs['../assets/1/z.bin'], 'another asset was blocked')
+      assert.equal(fs.statSync(file).size, failure === 'too_large' ? 101 * 1024 ** 2 : 12)
+      assert.ok(unsent(cached()))
+      cloud.unreachableArtifacts.clear()
+      cloud.refusedUploads.clear()
+      fs.writeFileSync(file, 'recovered')
+      assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
+      const updated = JSON.parse(cloud.file('assets/task_1.json')!)[key]
+      assert.ok(updated.version > old.version)
+      assert.equal(unsent(cached()), false)
+    })
+  }
 
   describe('a board change while a job runs (#300)', () => {
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))

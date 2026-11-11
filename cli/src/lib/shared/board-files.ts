@@ -11,7 +11,7 @@ export const SETTINGS = ['modules.md', 'config.md']
 export const isSettingsPath = (path: string) => SETTINGS.includes(path) || /^rules\/(?:studios\/)?[^/]+\.md$/.test(path)
 
 /** A file over this goes up as an asset, not on the board. */
-export const BOARD_FILE_LIMIT = 256 * 1024
+export { BOARD_FILE_LIMIT } from './file-limits.ts'
 
 /** A board path Cloud keeps: relative, inside one of its folders, not a generated file. */
 export function isBoardPath(path: string): boolean {
@@ -24,7 +24,7 @@ export function isBoardPath(path: string): boolean {
   if (SETTINGS.includes(path)) return true
   if (path.startsWith('rules/')) return isSettingsPath(path)
   // An asset a card names sits beside it as an artifact's file, never a board file.
-  if (path.startsWith('assets/')) return path.endsWith('.json')
+  if (path.startsWith('assets/')) return taskOfAssets(path) !== null
   return ROOTS.some((root) => path.startsWith(root)) && path.endsWith('.md')
 }
 
