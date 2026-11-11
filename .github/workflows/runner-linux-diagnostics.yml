@@ -1,0 +1,34 @@
+name: runner-linux-diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  processes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Inspect unreadable process metadata
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs'
+          import { execFileSync } from 'node:child_process'
+          console.log({ uid: process.getuid(), node: process.version })
+          for (const pid of fs.readdirSync('/proc').filter(p => /^\d+$/.test(p))) {
+            try { fs.readFileSync(`/proc/${pid}/environ`) } catch (error) {
+              if (['ENOENT', 'ESRCH'].includes(error.code)) continue
+              const owner = fs.statSync(`/proc/${pid}`, { throwIfNoEntry: false })?.uid
+              if (owner !== process.getuid()) continue
+              let command, state, started
+              try { command = fs.readFileSync(`/proc/${pid}/comm`, 'utf8').trim() } catch {}
+              try { state = fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]?.split(' ')[0] } catch {}
+              try { started = execFileSync('ps', ['-p', pid, '-o', 'lstart='], { encoding: 'utf8' }).trim() } catch {}
+              console.log({ pid, owner, error: error.code, command, state, started })
+            }
+          }
+          JS
