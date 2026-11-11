@@ -130,10 +130,11 @@ async function refresh(): Promise<TokenResult> {
     const now = readSession()
     if (!now) return { ok: false, reason: 'signed-out' }
     if (!expiringSoon(now)) return { ok: true, token: now.accessToken, session: now }
-    const { supabaseUrl, anonKey } = cloudEndpoints()
+    const { api, anonKey } = cloudEndpoints()
     let response: Response
     try {
-      response = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=refresh_token`, {
+      // Through Cloud's relay, so a refresh works where supabase.co is blocked (#632).
+      response = await fetch(`${api}/auth/v1/token?grant_type=refresh_token`, {
         method: 'POST',
         headers: { apikey: anonKey, 'content-type': 'application/json' },
         body: JSON.stringify({ refresh_token: now.refreshToken }),

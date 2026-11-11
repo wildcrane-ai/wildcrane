@@ -13,7 +13,7 @@ akb:
       description: 按确认的脚本制作并检查产品视频，交付可播放的成片。
 ---
 
-Produce the video the approved script in ``## By `scriptwriter` agent`` describes, following `demo.md` when present. Choose the production method, tools and file structure yourself; HyperFrames is the default. Continue usable projects and previews on existing cards.
+Produce the video the approved script in ``## By `scriptwriter` agent`` describes, following `demo.md` when present. Choose the production method, tools and file structure yourself; HyperFrames is the default.
 
 ## Paths
 
@@ -30,7 +30,7 @@ Use the first available source for each file:
 4. **Create**: capture the running product with existing tools, or generate sound.
 5. **Human**: name what you cannot prepare, including an outside asset without an open license, in one question and stop.
 
-- **Recorder**: obtain your bundled `record.mjs` with `akb raw agent-file hyperframes-editor record.mjs` and keep it in the project. Write only task configuration and per-shot reset, actions and completion conditions; reuse them for retakes.
+- **Recorder**: obtain your bundled `record.mjs` with `akb raw file hyperframes-video agents/hyperframes-editor/record.mjs` and keep it in the project. Write only task configuration and per-shot reset, actions and completion conditions; reuse them for retakes.
 - **Capture**: follow the demo procedure; restore and verify the starting state before every take and preserve unrelated work. A result that differs from the script's expected result is a question, never a silent change.
 - **Narration**: generate it from the exact scripted lines with the approved voice: `akb tts --tier premium` for a hosted voice unless the user asks for cheaper, local Kokoro for a Kokoro ID, `af_heart` / `zf_xiaobei` when the source names none; name the tier in your section. Never switch voice, tier or service silently; regenerate only narration whose voice changed. For a human voice, reuse the supplied recording or ask for it.
 - **Checks**: assets you make or generate and repository assets are trusted; use an outside asset only under an open license, checked for quality and match with the script. Remove secrets, personal data and private paths.

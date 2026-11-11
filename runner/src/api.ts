@@ -24,7 +24,7 @@ export interface Job {
   model?: string | null
   /** The runtime's own settings beside the model (#2135), by the harness's keys. Never a key. */
   settings?: Record<string, string> | null
-  /** The workspace's runtime per workflow step (#625), by agent; absent from a Cloud before it. */
+  /** The workspace's runtime per studio step (#625), by agent; absent from a Cloud before it. */
   agentRuntimes?: Record<string, AgentRuntime> | null
   /** A runtime's connection test: the prompt is sent as it is, and nothing else happens. */
   test?: boolean
@@ -37,8 +37,8 @@ export interface Job {
   task?: string | null
   /** The task's short number, which its card file starts with (#2081). */
   number?: number | null
-  /** The task's workflow id, whose files its project's board holds under `workflows/` (#2081). */
-  workflow?: string | null
+  /** The task's studio id, whose files its project's board holds under `studios/` (#2081). */
+  studio?: string | null
   /** A task's `plan` job, finished, submits its draft for review (#2040). */
   stage?: 'plan' | 'execute' | null
   attempt?: number
@@ -84,16 +84,16 @@ export interface AgentRuntime {
 
 export interface AgentJob {
   name: string
-  /** A workflow's scheduled agent names its workflow. */
-  workflow?: string
+  /** A studio's scheduled agent names its studio. */
+  studio?: string
   /** A reflect's finished tasks, fixed as it was claimed. */
   tasks?: { id: string; number: number }[]
 }
 
 export interface Flow {
   verb: 'create' | 'resolve' | 'revise' | 'approve' | 'implement' | 'refine' | 'discard'
-  /** The task's workflow id, e.g. `wf_builtin_coding`. */
-  workflow: string
+  /** The task's studio id, e.g. `wf_builtin_coding`. */
+  studio: string
   /** The akb card id this Runner reported before. */
   card?: number
   text?: string
@@ -120,7 +120,7 @@ export interface Goal {
   outcome: string
   acceptance: string[]
   previews?: string[]
-  workflow: string
+  studio: string
   task?: string | null
   start?: boolean
   dropped?: boolean
@@ -151,8 +151,8 @@ export interface SettingDecl {
 }
 
 /** Raised by Cloud when it no longer takes this Runner's protocol. 9 keeps keys (#2135); 10 stops
- *  a flow job, pausing its board runs (#2128); 11 holds the computer's lock (#2161); 14 shares local settings and account revocation. */
-export const PROTOCOL = 17
+ *  a flow job, pausing its board runs (#2128); 11 holds the computer's lock (#2161); 14 shares local settings and account revocation; 18 says Studio (#645). */
+export const PROTOCOL = 18
 
 const TIMEOUT_MS = 20_000
 
@@ -313,8 +313,8 @@ export interface JobReport {
   /** 讨论结束时的目标；写入只选择 goals 或兼容 ideas。 */
   goals?: Goal[]
   ideas?: Goal[]
-  /** A Workflow builder task's workflow, checked (#2004). */
-  workflow?: { files: Record<string, string> }
+  /** A Studio builder task's studio, checked (#2004). */
+  studio?: { files: Record<string, string>; base?: number }
   /** The commit a build landed as, on the branch checked out in the project (#2109). */
   landing?: { commit: string; branch: string }
   subagents?: Subagents
@@ -365,7 +365,7 @@ export const dispatchReview = (machineId: string, project: string, tasks: string
 /** A project's periodic agents and what Cloud knows of each, to judge them due here (#2068). */
 export interface PeriodicAgent {
   name: string
-  workflow?: string
+  studio?: string
   cadence: string
   fallback: string
   reads?: 'archived-cards' | 'chats' | 'dismissals'
@@ -379,8 +379,8 @@ export const readAgents = (machineId: string, project: string) =>
   request<{ agents: PeriodicAgent[] }>('GET', `/v1/runner/agents?machine=${encodeURIComponent(machineId)}&project=${encodeURIComponent(project)}`)
 
 /** A job for an agent judged due; null when one is open, or a pass passed after `seen`. */
-export const requestAgent = (machineId: string, project: string, agent: string, workflow: string | null, seen: string | null) =>
-  request<{ job: Job | null }>('POST', '/v1/runner/jobs', { machineId, project, agent, workflow, seen })
+export const requestAgent = (machineId: string, project: string, agent: string, studio: string | null, seen: string | null) =>
+  request<{ job: Job | null }>('POST', '/v1/runner/jobs', { machineId, project, agent, studio, seen })
 
 export const targetVersion = (machineId: string) =>
   request<{ version: string | null }>('GET', `/v1/runner/version?machine=${encodeURIComponent(machineId)}`, undefined, false)
@@ -473,19 +473,19 @@ export async function commitBoard(project: string, job: string | null, machine: 
   return { ok: false, error: answer?.error?.message ?? 'Cloud answered 409', code: answer?.error?.code ?? 'refused', ...(answer?.files ? { files: answer.files } : {}) }
 }
 
-/** The workflow version a task runs on: `WORKFLOW.md` and its agents' folders (#2040). */
-export interface TaskWorkflow {
-  workflow: string
+/** The studio version a task runs on: `STUDIO.md` and its agents' folders (#2040). */
+export interface TaskStudio {
+  studio: string
   version: number
   name?: string
   files: Record<string, string>
-  /** A built-in: akb ships its workflow and agents, so only its skills are written. */
+  /** A built-in: akb ships its studio and agents, so only its skills are written. */
   builtin?: boolean
 }
 
-export const readTaskWorkflow = (task: string) => request<TaskWorkflow>('GET', `/v1/tasks/${q(task)}/workflow`)
+export const readTaskStudio = (task: string) => request<TaskStudio>('GET', `/v1/tasks/${q(task)}/studio`)
 
-export interface Workflow {
+export interface Studio {
   previews?: { agent: string; title: { en?: string; zh?: string }; when: string }[]
   id: string
   name: string
@@ -494,14 +494,14 @@ export interface Workflow {
   when?: string
 }
 
-export const listWorkflows = (workspace: string, after?: string | null) =>
-  request<{ data: Workflow[]; next: string | null }>('GET', `/v1/workflows?workspace=${q(workspace)}&limit=100${after ? `&after=${q(after)}` : ''}`)
+export const listStudios = (workspace: string, after?: string | null) =>
+  request<{ data: Studio[]; next: string | null }>('GET', `/v1/studios?workspace=${q(workspace)}&limit=100${after ? `&after=${q(after)}` : ''}`)
 
-/** `context.workflow`: the own workflow a Workflow builder task changes (#2004). */
+/** `context.studio`: the own studio a Studio builder task changes (#2004). */
 export const readTask = (task: string) =>
-  request<{ title: string; request: string; context?: { workflow?: string } }>('GET', `/v1/tasks/${q(task)}`)
+  request<{ title: string; request: string; status?: string; context?: { studio?: string } }>('GET', `/v1/tasks/${q(task)}`)
 
-export const readWorkflow = (id: string) => request<{ version: number; name?: string; files: Record<string, string> }>('GET', `/v1/workflows/${q(id)}`)
+export const readStudio = (id: string) => request<{ version: number; name?: string; files: Record<string, string> }>('GET', `/v1/studios/${q(id)}`)
 
 export const readProject = (project: string) => request<{ workspace?: string }>('GET', `/v1/projects/${q(project)}`)
 
@@ -528,8 +528,8 @@ export interface Triage {
   title: string
   text: string
   source_task: string | null
-  /** The Cloud workflow that does its work; null on an item filed before #2139. */
-  workflow: string | null
+  /** The Cloud studio that does its work; null on an item filed before #2139. */
+  studio: string | null
   state: 'open' | 'dismissed' | 'carded'
   dismissed_reason: string | null
   dismissed_at: string | null
@@ -561,7 +561,7 @@ export interface DraftGoal {
   outcome: string
   acceptance: string[]
   previews?: string[]
-  workflow: string
+  studio: string
   task: { id: string; key: string } | null
 }
 
@@ -608,8 +608,8 @@ export async function saveDraft(id: string, expectedVersion: number, goals: unkn
   return { ok: false, error: answer?.error?.message ?? 'Cloud answered 409', code: answer?.error?.code ?? 'refused', ...(answer?.discussion ? { discussion: answer.discussion } : {}) }
 }
 
-export const setGoalWorkflow = (id: string, idea: string, workflow: string) =>
-  request<Discussion>('PATCH', `/v1/discussions/${q(id)}/${goalDiscussions.has(id) ? 'goals' : 'ideas'}/${q(idea)}`, { workflow })
+export const setGoalStudio = (id: string, idea: string, studio: string) =>
+  request<Discussion>('PATCH', `/v1/discussions/${q(id)}/${goalDiscussions.has(id) ? 'goals' : 'ideas'}/${q(idea)}`, { studio })
 
 export const dropGoal = (id: string, idea: string) => request<Discussion>('DELETE', `/v1/discussions/${q(id)}/${goalDiscussions.has(id) ? 'goals' : 'ideas'}/${q(idea)}`)
 
@@ -621,4 +621,4 @@ export const startGoal = (id: string, idea: string, expectedVersion: number, pro
 export type Idea = Goal
 export type DraftIdea = DraftGoal
 
-export { setGoalWorkflow as setIdeaWorkflow, dropGoal as dropIdea, startGoal as startIdea }
+export { setGoalStudio as setIdeaStudio, dropGoal as dropIdea, startGoal as startIdea }

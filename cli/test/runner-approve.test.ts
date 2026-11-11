@@ -89,7 +89,7 @@ describe('card approve on a Runner board', () => {
 
   const staged = (phase: number, status: string, questions = '[]') => {
     process.env.AI4KANBAN_TASK = 'task_3'
-    fs.writeFileSync(path.join(board, 'todo', '3-pricing.md'), `---\ntitle: Pricing\nworkflow: blog-post\npreviews: [blog-planner, blog-illustrator, blog-writer]\nphase: ${phase}\nstatus: ${status}\nquestions: ${questions}\n---\n\nPlan.\n`)
+    fs.writeFileSync(path.join(board, 'todo', '3-pricing.md'), `---\ntitle: Pricing\nstudio: blog-post\npreviews: [blog-planner, blog-illustrator, blog-writer]\nphase: ${phase}\nstatus: ${status}\nquestions: ${questions}\n---\n\nPlan.\n`)
   }
 
   const approve = async () => {

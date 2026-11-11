@@ -30,10 +30,10 @@ export interface Meta {
   blocked_by: number[]
   related: number[]
   modules: string[]
-  /** The workflow this card runs on (#715) — a workflow's stable id, never its name, so
+  /** The studio this card runs on (#715) — a studio's stable id, never its name, so
    *  renaming one leaves every card pointing at it. Empty on a card written before the field
-   *  and on a board that picks no workflows, and both read as the default workflow. */
-  workflow: string
+   *  and on a board that picks no studios, and both read as the default studio. */
+  studio: string
   /** The source id of the triage item this card was made of — only `raw create --triage`
    *  writes it. */
   triage: string

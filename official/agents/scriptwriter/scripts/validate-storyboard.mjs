@@ -4,7 +4,7 @@
 //   node scripts/validate-storyboard.mjs <card asset folder>/storyboard.json [--json]
 //
 // Runtime: Node 18 or later, nothing else. Save it from a built-in agent with
-// `akb raw agent-file scriptwriter scripts/validate-storyboard.mjs > validate-storyboard.mjs`.
+// `akb raw file hyperframes-video agents/scriptwriter/scripts/validate-storyboard.mjs > validate-storyboard.mjs`.
 // Frames are `.assets/<card id>/<file>` paths, read from the JSON's own folder, which is named
 // after the card. Exits 0 when the file passes; otherwise prints one line per problem (or a
 // JSON array with --json) and exits 1. Exit 2 is a usage error.

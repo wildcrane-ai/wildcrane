@@ -22,7 +22,7 @@ import addTask from '../guide/add-task.md'
 import archive from '../guide/archive.md'
 import board from '../guide/board.md'
 import cardChat from '../guide/card-chat.md'
-import updateWorkflow from '../guide/update-workflow.md'
+import updateStudio from '../guide/update-studio.md'
 import describeProject from '../guide/describe-project.md'
 import discussGoal from '../guide/discuss-goal.md'
 import followUp from '../guide/follow-up.md'
@@ -39,6 +39,7 @@ import previewAgent from '../guide/preview-agent.md'
 import updateQuestions from '../guide/update-questions.md'
 import troubleshoot from '../guide/troubleshoot.md'
 import writeAgent from '../guide/write-agent.md'
+import writePrompt from '../guide/write-prompt.md'
 import writing from '../guide/writing.md'
 
 import { boardText } from './paths'
@@ -59,7 +60,7 @@ export const GUIDES: Guide[] = [
   { name: 'discuss-goal', when: 'help decide what is worth building, and shape it into goals to start as tasks', text: discussGoal },
   { name: 'troubleshoot', when: '定位软件故障的根因与修复方向', text: troubleshoot },
   { name: 'card-chat', when: "answer a card's conversation, and act on what each turn settles", text: cardChat },
-  { name: 'update-workflow', when: "change one of this workspace's workflows so new tasks run the new version", text: updateWorkflow },
+  { name: 'update-studio', when: "change one of this workspace's studios so new tasks run the new version", text: updateStudio },
   { name: 'implement', when: 'build a settled card and stop cleanly on an execution blocker', text: implement },
   { name: 'archive', when: 'finish a task — write its shipped line, then take it off the board', text: archive },
   { name: 'update-questions', when: 'decide what to ask the user, and write the question', text: updateQuestions },
@@ -73,6 +74,7 @@ export const GUIDES: Guide[] = [
   { name: 'reflect', when: 'propose the work just-completed cards leave behind', text: reflect },
   { name: 'preview-agent', when: 'be a preview agent: write your one section of a card', text: previewAgent },
   { name: 'write-agent', when: 'create or change an agent, including one built from a skill — its AGENT.md, files, memory, and how to check it', text: writeAgent },
+  { name: 'write-prompt', when: "write or change any prompt's text — an agent, a skill, a guide, or a prompt in code", text: writePrompt },
   { name: 'module-map', when: 'write or rebuild docs/kanban/modules.md', text: moduleMap },
 ]
 

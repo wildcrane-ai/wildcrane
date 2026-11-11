@@ -167,7 +167,7 @@ export async function startRefinement(
 }
 
 /** What follows one planning pass (#1203). Planning is one session, so a coding card is done
- *  here either way. A card whose workflow lands nothing (#1057) is the one exception: until its
+ *  here either way. A card whose studio lands nothing (#1057) is the one exception: until its
  *  last stage's deliverable is made, the user's answer goes back to planning. */
 export function refinementAfter(
   action: AgentAction,

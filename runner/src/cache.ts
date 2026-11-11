@@ -8,6 +8,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { sweepVersions } from '../../cli/src/lib/agent/cloud-studios'
 import { readSession } from '../../cli/src/lib/cloud/session'
 import { SESSIONS_FILE, projectStateDir } from '../../cli/src/lib/machine/project'
 import * as api from './api'
@@ -177,6 +178,15 @@ export async function sweepCache(machineId: string, now = Date.now()): Promise<s
   }
   return swept
 }
+
+/** Drop the studio versions no unfinished task runs on (#651). A task Cloud cannot be asked
+ *  about keeps its version. */
+export const sweepStudios = (): Promise<string[]> =>
+  sweepVersions(async (task) => {
+    const read = await api.readTask(task)
+    if (read.ok) return read.value.status === 'done' || read.value.status === 'cancelled'
+    return read.code === 'not_found' ? true : null
+  })
 
 /** The folders before #2147, not moved: their projects are rebuilt from Cloud. */
 export function removeLegacy(): void {

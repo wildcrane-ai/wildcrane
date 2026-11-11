@@ -45,7 +45,7 @@ describe('archiving a carousel post', () => {
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
 
   it('is refused until the pages are on the card and on this machine', async () => {
-    const id = (await move(root, ['create', '--title', 'Launch post', '--workflow', 'carousel-post'])).id as number
+    const id = (await move(root, ['create', '--title', 'Launch post', '--studio', 'carousel-post'])).id as number
     const file = path.join(kanban(), 'todo', fs.readdirSync(path.join(kanban(), 'todo')).find((f) => f.startsWith(`${id}-`))!)
     const head = fs.readFileSync(file, 'utf8').split('\n---\n')[0]
     const write = (body: string) => fs.writeFileSync(file, `${head}\n---\n\nA post.\n\n${body}\n`)
@@ -78,7 +78,7 @@ describe('archiving a blog post', () => {
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
 
   it('is refused with only its images, and archived once the article is on the card', async () => {
-    const id = (await move(root, ['create', '--title', 'Launch post', '--workflow', 'blog-post'])).id as number
+    const id = (await move(root, ['create', '--title', 'Launch post', '--studio', 'blog-post'])).id as number
     const file = path.join(kanban(), 'todo', fs.readdirSync(path.join(kanban(), 'todo')).find((f) => f.startsWith(`${id}-`))!)
     const head = fs.readFileSync(file, 'utf8').split('\n---\n')[0]
     const write = (body: string) => fs.writeFileSync(file, `${head}\n---\n\nA post.\n\n${body}\n`)
@@ -114,7 +114,7 @@ describe('archiving a video clone', () => {
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
 
   it('is refused with only the recipe keyframes, and archived once the template render is on the card', async () => {
-    const id = (await move(root, ['create', '--title', 'Clone the launch film', '--workflow', 'video-clone'])).id as number
+    const id = (await move(root, ['create', '--title', 'Clone the launch film', '--studio', 'video-clone'])).id as number
     const file = path.join(kanban(), 'todo', fs.readdirSync(path.join(kanban(), 'todo')).find((f) => f.startsWith(`${id}-`))!)
     const head = fs.readFileSync(file, 'utf8').split('\n---\n')[0]
     const write = (body: string) => fs.writeFileSync(file, `${head}\n---\n\nA clone.\n\n${body}\n`)

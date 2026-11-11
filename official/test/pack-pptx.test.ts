@@ -1,6 +1,6 @@
 // deck-builder's `scripts/pack-pptx.mjs` (#1743): a storyboard's rendered pages become a
 // .pptx holding one full-slide image per slide. Run the way a session runs it — saved out of
-// the workflow and run with Node.
+// the studio and run with Node.
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'

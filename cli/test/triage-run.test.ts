@@ -26,7 +26,7 @@ const archived = (): string => path.join(kanban(), 'triage', 'archived')
 async function waiting(title: string, slug?: string): Promise<string> {
   startCollecting()
   try {
-    await cmdTriageAdd({ title, text: `https://example.test/${title.replace(/\s+/g, '-')}`, slug, workflow: 'coding' })
+    await cmdTriageAdd({ title, text: `https://example.test/${title.replace(/\s+/g, '-')}`, slug, studio: 'coding' })
   } finally {
     stopCollecting()
   }
@@ -58,7 +58,7 @@ describe('a card written in one call', () => {
   it('writes the body with the card, so Cloud never reads a scaffold', () => {
     const body = path.join(root, 'body.md')
     fs.writeFileSync(body, '\nWhat it does.\n\n## Worth noting\n\n<!-- agent -->\n\n## Scope\nBuild it.\n\n## Todo\n- [ ] Build it.\n\n## Decided by the agent\n\n### Overruled by the user\n')
-    const { value } = quiet(() => cmdCreate({ title: 'Share conventions', bodyFile: body, asked: [], id: 1, workflow: 'coding' }))
+    const { value } = quiet(() => cmdCreate({ title: 'Share conventions', bodyFile: body, asked: [], id: 1, studio: 'coding' }))
     const written = fs.readFileSync(path.join(root, String(value.file)), 'utf8')
     assert.match(written, /What it does\./)
     assert.match(written, /- \[ \] Build it\./)
@@ -66,14 +66,14 @@ describe('a card written in one call', () => {
   })
 
   it('refuses a body file that is not there, and writes no card for it', () => {
-    assert.throws(() => cmdCreate({ title: 'Nope', bodyFile: path.join(root, 'gone.md'), asked: [], id: 1, workflow: 'coding' }), /write the body to a file/)
+    assert.throws(() => cmdCreate({ title: 'Nope', bodyFile: path.join(root, 'gone.md'), asked: [], id: 1, studio: 'coding' }), /write the body to a file/)
     assert.deepEqual(fs.readdirSync(todo()), ['README.md'])
   })
 
   it('refuses --body-file and --no-body together', () => {
     const body = path.join(root, 'body.md')
     fs.writeFileSync(body, 'Words.\n')
-    assert.throws(() => cmdCreate({ title: 'Nope', bodyFile: body, body: false, asked: [], id: 1, workflow: 'coding' }), /not both/)
+    assert.throws(() => cmdCreate({ title: 'Nope', bodyFile: body, body: false, asked: [], id: 1, studio: 'coding' }), /not both/)
   })
 })
 
@@ -118,8 +118,8 @@ describe("a new item's file name", () => {
     await waiting('Dark mode')
     startCollecting()
     try {
-      await cmdTriageAdd({ title: 'Dark mode', text: 'Another one entirely.', workflow: 'coding' })
-      await cmdTriageAdd({ title: 'Dark mode', text: 'And a third.', workflow: 'coding' })
+      await cmdTriageAdd({ title: 'Dark mode', text: 'Another one entirely.', studio: 'coding' })
+      await cmdTriageAdd({ title: 'Dark mode', text: 'And a third.', studio: 'coding' })
     } finally {
       stopCollecting()
     }

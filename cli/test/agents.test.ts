@@ -28,7 +28,7 @@ import { runAgent } from '../src/lib/agent-cli.ts'
 import { readRuns } from '../src/lib/agent/sessions.ts'
 import { parseSpecAgent } from '../src/lib/agents/parse.ts'
 import { parseYamlBlock } from '../src/lib/agents/yaml.ts'
-import { previewStages, workflowById } from '../src/lib/agent/workflows.ts'
+import { previewStages, studioById } from '../src/lib/agent/studios.ts'
 import { findGuide } from '../src/lib/guide.ts'
 import { roleNamed } from '../src/lib/agent/roles.ts'
 import { writeConfig } from '../src/lib/agent/settings.ts'
@@ -81,7 +81,7 @@ const card = (id: number): string => {
       'blocked_by: []',
       'related: []',
       'modules: [skill]',
-      'workflow: coding',
+      'studio: coding',
       'questions: []',
       '---',
       '',
@@ -183,7 +183,7 @@ describe('the agents this command ships', () => {
     assert.deepEqual(problems, [])
     assert.deepEqual(
       agents.map((a) => a.name),
-      ['api-designer', 'blog-illustrator', 'blog-planner', 'blog-writer', 'builder', 'carousel-planner', 'carousel-renderer', 'competitor-research', 'copywriting', 'cover-designer', 'deck-builder', 'deck-planner', 'demo-rehearser', 'email-planner', 'hyperframes-editor', 'illustrator', 'prompt-writer', 'qa-manager', 'schema-designer', 'scriptwriter', 'social-illustrator', 'tech-stack-advisor', 'ui-designer', 'video-cloner', 'video-template-builder', 'workflow-writer'],
+      ['api-designer', 'blog-illustrator', 'blog-planner', 'blog-writer', 'builder', 'carousel-planner', 'carousel-renderer', 'competitor-research', 'copywriting', 'cover-designer', 'deck-builder', 'deck-planner', 'demo-rehearser', 'email-planner', 'hyperframes-editor', 'illustrator', 'prompt-writer', 'qa-manager', 'schema-designer', 'scriptwriter', 'social-illustrator', 'studio-writer', 'tech-stack-advisor', 'ui-designer', 'video-cloner', 'video-template-builder'],
     )
     const ui = findSpecAgent('ui-designer')!
     assert.match(ui.description, /^Draws the screens/)
@@ -315,7 +315,7 @@ describe('an agent nobody can read', () => {
     )
   })
 
-  // Its workflow says its role (#2152): a file still saying it is refused, naming the keys.
+  // Its studio says its role (#2152): a file still saying it is refused, naming the keys.
   describe('the role it used to declare', () => {
     const read = (...akb: string[]) =>
       parseSpecAgent(['---', 'name: x', 'description: d', ...(akb.length ? ['akb:', ...akb.map((l) => `  ${l}`)] : []), '---', '', 'Body.'].join('\n'), 'x', () => null)
@@ -325,7 +325,7 @@ describe('an agent nobody can read', () => {
         const got = read(...keys)
         assert.ok('problem' in got, keys.join(' + '))
         for (const key of keys.filter((k) => !k.startsWith('when'))) assert.ok(got.problem.includes(`\`akb.${key.split(':')[0]}\``), key)
-        assert.match(got.problem, /list the agent in its workflow's `WORKFLOW.md` under `previews`, `land` or `scheduled`/)
+        assert.match(got.problem, /list the agent in its studio's `STUDIO.md` under `previews`, `land` or `scheduled`/)
       }
     })
 
@@ -377,14 +377,14 @@ describe('what a session is shown', () => {
   // A card created without a choice once listed all nine previews at once (#422).
   it('has an unchosen card choose and save its previews, listing no agent', () => {
     const ask = specAgentSelector(12, 'coding', null)
-    assert.match(ask, /akb raw previews --triggers --workflow coding/)
+    assert.match(ask, /akb raw previews --triggers --studio coding/)
     assert.match(ask, /akb raw update 12 --previews/)
     assert.match(ask, /Always/)
     assert.doesNotMatch(ask, /^- `/m)
     assert.match(specAgentSelector(12, 'coding', { previews: [], phase: 1 }), /^$/)
   })
 
-  it('says nothing at all when the card\'s workflow runs no one', () => {
+  it('says nothing at all when the card\'s studio runs no one', () => {
     for (const name of ['copywriting', 'tech-stack-advisor', 'email-planner', 'ui-designer', 'api-designer', 'schema-designer', 'prompt-writer', 'competitor-research', 'illustrator']) {
       assert.equal(switchAgent('coding', name, false).ok, true)
     }
@@ -392,8 +392,8 @@ describe('what a session is shown', () => {
   })
 
   // The list is printed with no card in hand, so it names every agent on the board; which of
-  // them a card may ask for is its own workflow's answer, and the ask is where that is read.
-  it('lists every agent on the board, whatever a workflow runs', () => {
+  // them a card may ask for is its own studio's answer, and the ask is where that is read.
+  it('lists every agent on the board, whatever a studio runs', () => {
     assert.equal(switchAgent('coding', 'ui-designer', false).ok, true)
     assert.doesNotMatch(specAgentSelector(12, 'coding', { previews: ['ui-designer'], phase: 1 }), /`ui-designer` — /)
     const listed = specAgentList('akb')
@@ -401,13 +401,13 @@ describe('what a session is shown', () => {
     assert.doesNotMatch(listed, /Switched off/)
   })
 
-  it('refuses an ask for an agent the card\'s workflow does not assign', async () => {
+  it('refuses an ask for an agent the card\'s studio does not assign', async () => {
     card(12)
     board()
     assert.equal(switchAgent('coding', 'ui-designer', false).ok, true)
     await assert.rejects(
       () => run(root, ['raw', 'previews', 'ui-designer', '12', 'a note']),
-      /is off or no preview of the workflow of #12/,
+      /is off or no preview of the studio of #12/,
     )
   })
 
@@ -450,7 +450,7 @@ describe('`akb.after`', () => {
     project('first', { 'AGENT.md': preview('first', ['  after: [second]']) })
     project('second', { 'AGENT.md': preview('second', ['  after: [first, nobody]']) })
     for (const name of ['first', 'second']) assert.equal(switchAgent('coding', name, true).ok, true)
-    const { agentKeyProblems, agentAfter } = await import('../src/lib/agent/workflows.ts')
+    const { agentKeyProblems, agentAfter } = await import('../src/lib/agent/studios.ts')
     const said = agentKeyProblems().filter((p) => p.includes('akb.after'))
     assert.equal(said.length, 2, said.join('\n'))
     assert.ok(said.some((p) => p.includes('`nobody`, which is not an agent on this board')))
@@ -460,13 +460,13 @@ describe('`akb.after`', () => {
     assert.deepEqual(problems(), [])
   })
 
-  it('stages by the longest `after` chain among the chosen, workflow order within a stage', () => {
+  it('stages by the longest `after` chain among the chosen, studio order within a stage', () => {
     project('a-one', { 'AGENT.md': preview('a-one', ['  after: [c-three]']) })
     project('b-two', { 'AGENT.md': preview('b-two') })
     project('c-three', { 'AGENT.md': preview('c-three', ['  after: [b-two]']) })
     project('d-four', { 'AGENT.md': preview('d-four', ['  after: [b-two]']) })
     for (const name of ['a-one', 'b-two', 'c-three', 'd-four']) assert.equal(switchAgent('coding', name, true).ok, true)
-    const coding = workflowById('coding')!
+    const coding = studioById('coding')!
     assert.deepEqual(previewStages(coding, ['a-one', 'b-two', 'c-three', 'd-four']), [['b-two'], ['c-three', 'd-four'], ['a-one']])
     // An agent the card leaves out does not hold the others back.
     assert.deepEqual(previewStages(coding, ['a-one', 'c-three', 'd-four']), [['c-three', 'd-four'], ['a-one']])
@@ -681,7 +681,7 @@ describe("where a spec agent's section goes", () => {
     assert.match(findGuide('preview-agent')!.text, /edit your section in place above `<!-- agent -->`/)
   })
 
-  // #226: `workflow-writer` writes `WORKFLOW.md` and agents, not only its section.
+  // #226: `studio-writer` writes `STUDIO.md` and agents, not only its section.
   it('lets an agent write any file its instructions name', () => {
     assert.match(findGuide('preview-agent')!.text.replace(/\s+/g, ' '), /any file your instructions tell you to write/)
   })
@@ -814,8 +814,8 @@ describe('preview command queries (#397)', () => {
 
   it('makes an empty catalog explicit', async () => {
     try {
-      fs.rmSync(path.join(editableOfficial(), 'workflows'), { recursive: true })
-      fs.mkdirSync(path.join(editableOfficial(), 'workflows'))
+      fs.rmSync(path.join(editableOfficial(), 'studios'), { recursive: true })
+      fs.mkdirSync(path.join(editableOfficial(), 'studios'))
       const result = await query(['raw', 'previews', '--triggers'])
       assert.equal(result.code, 0)
       assert.deepEqual(result.data.agents, [])

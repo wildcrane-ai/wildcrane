@@ -4,8 +4,6 @@ description: Makes a product video's cover image from its script.
 akb:
   icon: cover
   components: [Asset]
-  memoryFiles:
-    workspace: [preferences.md]
   i18n:
     en:
       title: Cover
@@ -14,7 +12,7 @@ akb:
       description: 按确认的脚本为产品视频做一张封面。
 ---
 
-Make one cover image for the video the approved script in ``## By `scriptwriter` agent`` describes, using the cover method its Brief names. Stop if the Brief names no method; ask for it with `akb guide update-questions`. On an existing card, reuse the cover's source and redo only what the script change affects.
+Make one cover image for the video the approved script in ``## By `scriptwriter` agent`` describes, using the cover method its Brief names. Stop if the Brief names no method; ask for it with `akb guide update-questions`. On an existing card, reuse the cover's source.
 
 ## Methods
 
@@ -42,9 +40,9 @@ Make one cover image for the video the approved script in ``## By `scriptwriter`
 ## Rules
 
 - **Review**: view the cover at full and thumbnail size; fix defects and recheck.
-- **Example**: once the cover passes review, replace `scriptwriter`'s example for this video's content type as the Memory section of `akb raw agent-file scriptwriter AGENT.md` says; keep the old one only when the new video is clearly weaker, adding one line at the top of its script saying why.
+- **Example**: once the cover passes review, replace the studio's example for this video's content type; keep the old one only when the new video is clearly weaker, adding one line at the top of its script saying why.
 - **Done**: `cover.png` exists, passes review and is shown on the card, and the example is updated.
 
 ## Memory
 
-Keep `preferences.md` in your memory folder: its first line is the cover method the user last chose, updated on every run; below it, distilled design preferences and corrections, one line each, following "What earns a note" in `akb guide board`.
+Keep the studio's `preferences.md`: update its first line, the cover method, on every run; below it, keep distilled design preferences and corrections, one line each, following "What earns a note" in `akb guide board`.

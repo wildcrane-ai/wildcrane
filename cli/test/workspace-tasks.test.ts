@@ -34,7 +34,7 @@ function serve(refuse?: { status: number; code: string; message: string }): void
     sent.push({ route, method: init?.method ?? 'GET', body, key: headers['idempotency-key'] ?? null })
     if (route === '/v1/projects/prj_1') return Response.json({ id: 'prj_1' })
     if (route === '/v1/tasks/task_src') {
-      return Response.json({ id: 'task_src', key: 'WC-3', project: 'prj_1', workflow: { id: 'wf_builtin_coding' } })
+      return Response.json({ id: 'task_src', key: 'WC-3', project: 'prj_1', studio: { id: 'wf_builtin_coding' } })
     }
     if (route === '/v1/tasks' && init?.method === 'POST') {
       if (refuse) return Response.json({ error: { code: refuse.code, message: refuse.message } }, { status: refuse.status })
@@ -42,7 +42,7 @@ function serve(refuse?: { status: number; code: string; message: string }): void
       const replayed = key in made
       made[key] ??= `task_${(Object.keys(made).length + 0xa1).toString(16)}`
       const id = made[key]!
-      return Response.json({ id, key: `WC-${12 + Object.values(made).indexOf(id)}`, project: 'prj_1', workflow: { id: 'wf_builtin_coding' } }, {
+      return Response.json({ id, key: `WC-${12 + Object.values(made).indexOf(id)}`, project: 'prj_1', studio: { id: 'wf_builtin_coding' } }, {
         status: 201,
         headers: replayed ? { 'idempotent-replayed': 'true' } : {},
       })
@@ -113,7 +113,7 @@ describe('in a Runner workspace', () => {
     assert.deepEqual(post.body, {
       title: 'Annual plan',
       project: 'prj_1',
-      workflow: 'wf_builtin_coding',
+      studio: 'wf_builtin_coding',
       request: 'Offer yearly billing.',
       source: 'api',
       source_context: { task: 'task_src' },

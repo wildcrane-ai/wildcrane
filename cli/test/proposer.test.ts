@@ -200,7 +200,7 @@ describe('a reflection run', () => {
     assert.ok(!('error' in opened))
     process.env.KANBAN_RUN = opened.run.sessionId
     try {
-      await cmdTriageAdd({ title: 'Follow it up', text: 'More.', source: '#1', workflow: 'coding' })
+      await cmdTriageAdd({ title: 'Follow it up', text: 'More.', source: '#1', studio: 'coding' })
     } finally {
       delete process.env.KANBAN_RUN
     }
@@ -287,7 +287,7 @@ describe('the flow', () => {
     assert.match(await reflect(), /git log --grep "\(#1\)"/)
   })
 
-  it('names the scheduled agents the Runner passes, or else every one the workflows list', async () => {
+  it('names the scheduled agents the Runner passes, or else every one the studios list', async () => {
     open(1)
     complete(1)
     const home = path.join(kanban(), 'agents', 'night-auditor')
@@ -326,7 +326,7 @@ describe('the flow', () => {
 })
 
 describe('a proposal in the inbox', () => {
-  const add = (opts: TriageAddOptions) => cmdTriageAdd({ workflow: 'coding', ...opts })
+  const add = (opts: TriageAddOptions) => cmdTriageAdd({ studio: 'coding', ...opts })
 
   it('lands as an ordinary item carrying the card that prompted it', async () => {
     await said(() =>
@@ -352,14 +352,14 @@ describe('a proposal in the inbox', () => {
     assert.equal(readSignals().signals.length, 1)
   })
 
-  it('carries the workflow that does it (#2139)', async () => {
-    await said(() => add({ title: 'Cut the video shorter', source: '#1', text: 'It runs long.', workflow: 'hyperframes-video' }))
-    assert.equal(readSignals().signals[0]!.workflow, 'hyperframes-video')
+  it('carries the studio that does it (#2139)', async () => {
+    await said(() => add({ title: 'Cut the video shorter', source: '#1', text: 'It runs long.', studio: 'hyperframes-video' }))
+    assert.equal(readSignals().signals[0]!.studio, 'hyperframes-video')
   })
 
-  it('refuses one with no workflow, or one this board has not got (#2139)', async () => {
-    await assert.rejects(() => cmdTriageAdd({ title: 'An idea', text: 'Words.' }), /--workflow/)
-    await assert.rejects(() => add({ title: 'An idea', text: 'Words.', workflow: 'nope' }), /no workflow called "nope"/)
+  it('refuses one with no studio, or one this board has not got (#2139)', async () => {
+    await assert.rejects(() => cmdTriageAdd({ title: 'An idea', text: 'Words.' }), /--studio/)
+    await assert.rejects(() => add({ title: 'An idea', text: 'Words.', studio: 'nope' }), /no studio called "nope"/)
     assert.equal(readSignals().signals.length, 0)
   })
 

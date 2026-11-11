@@ -6,7 +6,8 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { SESSIONS_FILE, projectStateDir } from '../../cli/src/lib/machine/project'
-import { IDLE_MS, cacheDir, clearAkb, hold, markUnsent, markUsed, removeLegacy, sweepCache } from '../src/cache'
+import { savePin, saveVersion } from '../../cli/src/lib/agent/cloud-studios'
+import { IDLE_MS, cacheDir, clearAkb, hold, markUnsent, markUsed, removeLegacy, sweepCache, sweepStudios } from '../src/cache'
 import { keepOnly } from '../src/folders'
 import { runnerHome, useRunnerHome } from '../src/home'
 import { FakeCloud, writeFakeSession } from './fake-cloud'
@@ -141,5 +142,26 @@ describe('the cache (#2147)', () => {
     removeLegacy()
     for (const gone of ['boards', 'akb-bin', 'acct', 'other/unfiled']) assert.equal(fs.existsSync(path.join(home, gone)), false, gone)
     for (const kept of ['other/keep.json', 'work/j1', 'session.json']) assert.ok(fs.existsSync(path.join(home, kept)), kept)
+  })
+})
+
+describe('studio versions (#651)', () => {
+  const version = (id: string, n: number) => ({ id, version: n, name: id, files: {} })
+  const held = () => fs.readdirSync(path.join(runnerHome(), 'studios', 'versions')).sort()
+
+  it('keeps the newest of each studio and what an unfinished or unreachable task runs on', async () => {
+    for (const n of [1, 2, 3, 4, 5, 6]) saveVersion(version('wf_blog', n))
+    savePin('task_live', version('wf_blog', 1))
+    savePin('task_done', version('wf_blog', 2))
+    savePin('task_gone', version('wf_blog', 3))
+    savePin('task_down', version('wf_blog', 4))
+    cloud.taskStatus = { task_done: 'done', task_gone: 'gone', task_down: 'down' }
+
+    await sweepStudios()
+    assert.deepEqual(held(), ['wf_blog@1.json', 'wf_blog@4.json', 'wf_blog@6.json'])
+
+    cloud.taskStatus = { task_live: 'cancelled', task_down: 'down' }
+    await sweepStudios()
+    assert.deepEqual(held(), ['wf_blog@4.json', 'wf_blog@6.json'])
   })
 })

@@ -12,13 +12,13 @@ Write the fields with flags, never by editing frontmatter. Only `--title` is req
 
 ```text
 akb raw create --title "..." --modules <names> --priority <high|med|low> \
-  --workflow <id> [--previews <agents>] [--blocked-by <ids>] [--related <ids>] [--source <ref>]... \
+  --studio <id> [--previews <agents>] [--blocked-by <ids>] [--related <ids>] [--source <ref>]... \
   [--slug <short-english-slug>] \
   [--question "..." --recommended-option "..." --option "..." [--mode multi]]...
 ```
 
-- **Workflow**: the request's own, else the id from `akb workflow list` that fits the work.
-- **Previews**: the agents from `akb raw previews --triggers --workflow <id>` whose conditions the
+- **Studio**: the request's own, else the id from `akb studio list` that fits the work.
+- **Previews**: the agents from `akb raw previews --triggers --studio <id>` whose conditions the
   card meets, always including those marked `Always`, or `--previews ""` when that leaves none.
 - **Dependencies**: `--blocked-by` for cards this one waits on, `--related` for cards that only
   relate; an existing card that needs this one's output gets
@@ -31,7 +31,7 @@ For example:
 
 ```text
 akb raw create --title "Document the export format" --modules docs --priority low \
-  --workflow coding --blocked-by 42 --related 41 --source "#41"
+  --studio coding --blocked-by 42 --related 41 --source "#41"
 ```
 
 ### Group tasks

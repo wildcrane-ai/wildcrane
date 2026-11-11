@@ -24,7 +24,7 @@ beforeEach(() => {
   fs.writeFileSync(path.join(dir, 'delivery.json'), JSON.stringify({ deliveryId: 'delivery', cardId: 333, base: git('rev-parse', 'HEAD'),
     commitMode: 'auto', branch: 'card/333/delivery', worktree: '.akb/worktrees/333/delivery', startedAt: 1 }))
   job = { id: 'new-execution', runtime: 'codex', projectDir: root, task: 'task_333', number: 333, project: 'prj_333',
-    flow: { verb: 'implement', workflow: 'wf_builtin_coding' }, attachments: [], prompt: '', state: 'claimed' }
+    flow: { verb: 'implement', studio: 'wf_builtin_coding' }, attachments: [], prompt: '', state: 'claimed' }
   allow(root)
 })
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }))

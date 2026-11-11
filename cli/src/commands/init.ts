@@ -147,7 +147,7 @@ export function cmdInit(): MoveResult {
     // prune schedules; the repair takes the card off and keeps its cadence beside the agent,
     // switched off. Once, because after it there is no such card to find.
     //
-    // Every other recurring card becomes a scheduled agent of its workflow (#1414).
+    // Every other recurring card becomes a scheduled agent of its studio (#1414).
     const added: string[] = [
       ...writeSkeletonIfMissing(),
       writeConfigIfMissing() && rel(CONFIG),

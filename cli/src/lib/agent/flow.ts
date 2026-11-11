@@ -8,16 +8,16 @@ import { say } from '../io'
 import { findGuide } from '../guide'
 import { PLANNER, agentMemoryDir, memoryFile } from '../memory'
 import { die, rel, AGENT_MEMORY, ARCHIVE, BOARD_FLAG, MEMORY, PROJECT_MD, REPO_ROOT } from '../paths'
-import { workflowRefusal } from './start'
+import { studioRefusal } from './start'
 import type { Meta, MoveResult } from '../types'
 import { boardCommandFor } from './command'
-import { activeDelivery, deliveryFor, withWorkflow } from './deliveries'
+import { activeDelivery, deliveryFor, withStudio } from './deliveries'
 import { field, metaLine, numbered } from './facts'
 import { taskChatsToReview, type ChatToReview } from './memory-review'
 import { dismissalsToReview, rejectionsToReview, withdrawnSources } from './dismissal-review'
-import { buildAsk, frozenRules, landBlock, reflectedCards, settingsBlock, workflowRulesBlock } from './prompts'
+import { buildAsk, frozenRules, landBlock, reflectedCards, settingsBlock, studioRulesBlock } from './prompts'
 import { ruleFor, ruleOwner, ruleOwnerSays } from './rules'
-import { cardStage, cardStages, workflowFor } from './workflows'
+import { cardStage, cardStages, studioFor } from './studios'
 import { isRetired, type AgentRequest, type DeliveryRecord, type StartableAction } from './types'
 
 // The run id an agent works under. It lives in agent/env.ts, which imports nothing, so
@@ -283,14 +283,14 @@ function questionsField(meta: Meta): string[] {
 
 // The approval a card is on, when its previews make several (#2154).
 function stageField(meta: Meta): string[] {
-  const flow = workflowFor(meta.workflow)
+  const flow = studioFor(meta.studio)
   const stages = cardStages(meta, flow).length
   return stages > 1 ? field('stage', `${cardStage(meta, flow)} of ${stages}`) : []
 }
 
 // A stage before the last ends on the board's Approve, never on a question (#1790).
 const stageClose = (meta: Meta): string[] => {
-  const flow = workflowFor(meta.workflow)
+  const flow = studioFor(meta.studio)
   return cardStage(meta, flow) < cardStages(meta, flow).length
     ? ["end the stage with its previews; ask no question about approving it — the board's Approve moves the card on"]
     : []
@@ -300,7 +300,7 @@ function committingClose(delivery: DeliveryRecord | undefined): string[] {
   if (!delivery) return []
   return [
     'Keep board files at the board path and out of task commits.',
-    ...(delivery.workflow?.needsArtifact ? ['Record each delivered file or folder in a new ticked `Output:` todo.'] : []),
+    ...(delivery.studio?.needsArtifact ? ['Record each delivered file or folder in a new ticked `Output:` todo.'] : []),
   ]
 }
 
@@ -485,7 +485,7 @@ function buildFlow(req: AgentRequest, program: string): Flow {
       break
     }
     case 'spec': {
-      next.push('Return to the workflow that requested this preview and continue it in this session. No background follow-up is scheduled.')
+      next.push('Return to the studio that requested this preview and continue it in this session. No background follow-up is scheduled.')
       break
     }
     // Squeezing the memory back down (#514). The facts are the files, because the files
@@ -568,7 +568,7 @@ function buildFlow(req: AgentRequest, program: string): Flow {
     case 'reflect': {
       for (const id of reflectedCards(req)) readCard(id, 'archive')
       close.push(
-        `${self} raw triage add --title ".." --slug <short-english-slug> --source "#<id>" --workflow <that card's workflow> --text ".." — one call per proposal, each naming the archived file of the card it traces to`,
+        `${self} raw triage add --title ".." --slug <short-english-slug> --source "#<id>" --studio <that card's studio> --text ".." — one call per proposal, each naming the archived file of the card it traces to`,
         'propose nothing at all when nothing follows: that is a complete result, and most batches are it',
         'change nothing else — no card is created, edited or archived, and no memory file is written',
       )
@@ -600,9 +600,9 @@ function leadLine(req: AgentRequest, program: string): string {
  *  a caller reading `--json` gets what the terminal was shown. */
 export function printFlow(rawReq: AgentRequest, program = 'akb'): MoveResult {
   // A card finishing in planning is archived, never built (#1057) — printed or not.
-  const unbuilt = rawReq.action === 'implement' ? workflowRefusal(rawReq) : null
+  const unbuilt = rawReq.action === 'implement' ? studioRefusal(rawReq) : null
   if (unbuilt?.reason === 'planDelivered') die(unbuilt.error, { kind: 'plan-delivered' })
-  const req = withWorkflow(rawReq)
+  const req = withStudio(rawReq)
   const flow = buildFlow(req, program)
   // The ask WITHOUT this board's own rule for the action (#306). A printed flow gets the
   // same rule a started run does, but at the very end — see below.
@@ -649,7 +649,7 @@ export function printFlow(rawReq: AgentRequest, program = 'akb'): MoveResult {
       say(guide.text.trimEnd())
     }
   }
-  for (const block of [workflowRulesBlock(req), landBlock(req), settingsBlock(req)].filter(Boolean)) {
+  for (const block of [studioRulesBlock(req), landBlock(req), settingsBlock(req)].filter(Boolean)) {
     say('')
     say(block)
   }

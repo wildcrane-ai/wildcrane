@@ -1,7 +1,7 @@
 // Every spec agent this board can run, from wherever it comes.
 //
 // Two sources, one list:
-//   - the agents the board's Cloud workflows bring (./bundled.ts, #409),
+//   - the agents the board's Cloud studios bring (./bundled.ts, #409),
 //   - the agents the project adds, under `docs/kanban/agents/<name>/AGENT.md`.
 //
 // Built-ins come first, so a board reads the same list whether or not it has added any of
@@ -19,7 +19,7 @@ import path from 'node:path'
 import { ROLE_NAMES } from '../agent/roles'
 import { AGENTS, LEGACY_AGENTS, rel } from '../paths'
 import { officialAgent, shippedAgentFiles } from './bundled'
-import { cloudWorkflowSources } from '../agent/cloud-workflows'
+import { cloudStudioSources } from '../agent/cloud-studios'
 import { memoByFiles } from '../file-memo'
 import { parseSpecAgent } from './parse'
 import type { AgentProblem, SpecAgent } from './parse'
@@ -51,7 +51,7 @@ type ReadProblem = AgentProblem & { file?: string; missing?: boolean }
 
 /** Read the catalog — again whenever an agent file changes, so an agent added, edited or
  *  switched off takes effect on the next read. */
-export const specAgentCatalog = memoByFiles(() => [AGENTS, LEGACY_AGENTS, ...cloudWorkflowSources()], readCatalog)
+export const specAgentCatalog = memoByFiles(() => [AGENTS, LEGACY_AGENTS, ...cloudStudioSources()], readCatalog)
 
 function readCatalog(): SpecAgentCatalog {
   const agents: SpecAgent[] = []
@@ -60,7 +60,7 @@ function readCatalog(): SpecAgentCatalog {
   const take = (read: { agent: SpecAgent } | ReadProblem, folder: string): void => {
     if ('problem' in read) {
       // A folder with no agent file is somebody's working folder (#1414), not a broken agent:
-      // it is said only where a workflow names it.
+      // it is said only where a studio names it.
       if (!read.missing) problems.push(read.problem)
       if (!read.file) return
       const { file, name, old } = read
@@ -118,12 +118,12 @@ function readCatalog(): SpecAgentCatalog {
   return { agents, problems, refused }
 }
 
-/** Where each agent sits in this board's workflows (#2152): `<workflow>#preview`, `land` or
- *  `scheduled`. Agents in no workflow are absent. */
+/** Where each agent sits in this board's studios (#2152): `<studio>#preview`, `land` or
+ *  `scheduled`. Agents in no studio are absent. */
 export type AgentPlaces = Map<string, string>
 
 /** Check what only one group reads (#2152): `when`, `after` and `session` belong to a
- *  preview, `reads` to a scheduled agent, and `after` names a preview of the same workflow and
+ *  preview, `reads` to a scheduled agent, and `after` names a preview of the same studio and
  *  never loops back (#2154). One line per key ignored, and each preview's `after` as it is used. */
 export function checkAgentKeys(agents: SpecAgent[], places: AgentPlaces): { problems: string[]; after: Map<string, string[]> } {
   const problems: string[] = []
@@ -146,7 +146,7 @@ export function checkAgentKeys(agents: SpecAgent[], places: AgentPlaces): { prob
       agent.name,
       agent.after.filter((other) => {
         if (places.get(other) === places.get(agent.name)) return true
-        const what = byName.has(other) ? 'is not a preview of the same workflow' : 'is not an agent on this board'
+        const what = byName.has(other) ? 'is not a preview of the same studio' : 'is not an agent on this board'
         problems.push(`${agent.from}: \`akb.after\` names \`${other}\`, which ${what} — ignoring it`)
         return false
       }),
@@ -182,7 +182,7 @@ const bundledFolders = (): string[] =>
 function readBundled(folder: string): { agent: SpecAgent } | { problem: string } {
   const shipped = shippedAgentFiles()
   const official = officialAgent(folder)
-  const label = official ? `the built-in \`${folder}\` agent` : `the workflow agent \`${folder}\``
+  const label = official ? `the built-in \`${folder}\` agent` : `the studio agent \`${folder}\``
   const file = (relative: string): string | null => shipped[`${folder}/${relative}`] ?? null
   const text = file('AGENT.md')
   if (text === null) return { problem: `${label} has no AGENT.md` }

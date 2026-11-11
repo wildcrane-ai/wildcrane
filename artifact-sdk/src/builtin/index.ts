@@ -7,9 +7,9 @@ import spritesheet from './spritesheet.json';
 import storyboard from './storyboard.json';
 import tiled from './tiled.json';
 import video from './video.json';
-import workflow from './workflow.json';
+import studio from './studio.json';
 
 // akb 的打包把 JSON 当文本读入。
 const read = (m: unknown): unknown => (typeof m === 'string' ? JSON.parse(m) : m);
 
-export default [html, image, video, markdown, storyboard, compare, workflow, tiled, spritesheet].map(read);
+export default [html, image, video, markdown, storyboard, compare, studio, tiled, spritesheet].map(read);

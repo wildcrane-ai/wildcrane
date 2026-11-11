@@ -14,7 +14,7 @@ npm install -g wildcrane@latest
 
 Still on the old `ai4kanban` package? Run `npm uninstall -g ai4kanban` first; both install `akb`.
 
-Run `akb help` for commands and `akb guide` for workflows.
+Run `akb help` for commands and `akb guide` for studios.
 
 通过插件连接云端项目。`akb install` 和整个 `akb skill` 命令树已移除；kanban 技能由 Runner 在绑定目录时写入项目。
 `akb update` 只修复已有看板并检查 CLI 新版本，不安装技能或钩子。
@@ -26,7 +26,7 @@ Run `akb help` for commands and `akb guide` for workflows.
 ```sh
 akb task list [--project <id>] [--status <status>]
 akb task show <task>
-akb task create <request...> [--project <id>] [--workflow <id>]
+akb task create <request...> [--project <id>] [--studio <id>]
 akb task approve <task> [--comment <text>]
 akb task chat <task> <message...>
 akb task remove <task> [reason...]
@@ -54,7 +54,7 @@ akb runner list [--workspace <id>]
 
 - **`<task>`**：`WC-12`、`task_…`，或在已关联项目的文件夹里只写 `12`。
 - **`--status`**：`queued`、`running`、`waiting_review`、`done`、`failed`、`cancelled`、`stopped`。
-- **`--workflow`**：`akb workflow list` 显示的名字。
+- **`--studio`**：`akb studio list` 显示的名字。
 - **默认项目**：`--project` 优先，否则用当前文件夹 `.akb/base.json` 关联的项目；`task list` 也可改用 `--workspace`；`runner list` 的工作区默认取该项目所在工作区。都没有时报错并列出可选项。
 - **`--json`**：成功为 `{"ok":true, …云端返回}`；失败为 `{"ok":false,"error":{"kind":"<code>","code":"<code>","message":"…"}}`。
 
@@ -72,7 +72,7 @@ akb runner list [--workspace <id>]
 参数缺失按现有用法错误处理。未登录时不读写任何本地文件。
 
 ```sh
-akb task create "Add a dark mode toggle" --workflow coding
+akb task create "Add a dark mode toggle" --studio coding
 akb task approve WC-13 --comment "Looks right"
 akb task chat WC-13 "Keep the toggle in Settings only"
 akb task remove WC-13 "Not needed this quarter"
@@ -83,16 +83,16 @@ akb task remove WC-13 "Not needed this quarter"
 目标包含结果和 `## Done when` 验收清单：
 
 ```sh
-akb goal new --title <title> --body-file <file> [--workflow <id>] [--previews <agents>]
-akb goal save --id <goal> [--title <title>] [--body-file <file>] [--workflow <id>] [--previews <agents>]
+akb goal new --title <title> --body-file <file> [--studio <id>] [--previews <agents>]
+akb goal save --id <goal> [--title <title>] [--body-file <file>] [--studio <id>] [--previews <agents>]
 akb goal drop --id <goal>
 akb goal start --id <goal>
 akb guide discuss-goal
 ```
 
-保存不会开始任务；网页讨论的 start 标记本轮结束后开始，外部会话立即发起。`--previews ui,api` 选择审阅要点，空字符串清空，省略保留同一工作流的选择。Codex 与 Claude Code 会话使用同一命令；成功结果附讨论链接。10 个目标上限不变。未登录时报下节的 `signed_out`。`akb raw goal` 与 `akb raw idea` 已删除；`guide discuss-idea` 保留兼容。
+保存不会开始任务；网页讨论的 start 标记本轮结束后开始，外部会话立即发起。`--previews ui,api` 选择审阅要点，空字符串清空，省略保留同一工作台的选择。Codex 与 Claude Code 会话使用同一命令；成功结果附讨论链接。10 个目标上限不变。未登录时报下节的 `signed_out`。`akb raw goal` 与 `akb raw idea` 已删除；`guide discuss-idea` 保留兼容。
 
-`akb raw previews --triggers --workflow <id> [--workspace <id>] [--json]` 只列该工作流启用的要点；讨论中可省略工作空间。详见 [目标审阅接口](../docs/api/goal-previews.md)。
+`akb raw previews --triggers --studio <id> [--workspace <id>] [--json]` 只列该工作台启用的要点；讨论中可省略工作空间。详见 [目标审阅接口](../docs/api/goal-previews.md)。
 
 ## 软件故障根因定位
 
@@ -115,7 +115,7 @@ This read-only query accepts `--board` and `--dir`. Combining it with positional
 
 ## 完成交付
 
-所属交付的当前运行登记自己的工作流步骤。最后一步同时结束交付并归档，返回既有归档交接。
+所属交付的当前运行登记自己的工作台步骤。最后一步同时结束交付并归档，返回既有归档交接。
 
 ```sh
 akb raw delivery complete <id> [--commit <sha> --branch <name>] --json
@@ -125,13 +125,13 @@ akb raw delivery resume <id> --json
 
 `id` 接受卡片或交付编号。软件步骤提供已合入的完整 40 或 64 位提交号和目标分支，两项必须同时提供。
 Builder 自行创建分支和 worktree、处理冲突、检查并合入，登记接口校验参数和归属。
-文件步骤沿用工作流的成果清单与文件存在性校验，无需 Git。
+文件步骤沿用工作台的成果清单与文件存在性校验，无需 Git。
 
 完成返回 `{ "ok": true, "deliveryId": "...", "finished": false }`，最后一步的 `finished` 为 `true`，并附上归档交接。
 同一运行重复登记相同结果返回原结果。结果不同、参数错误、运行不拥有当前步骤或成果不齐时非零退出，交付保留供恢复。
 成功退出的运行仍须完成登记。归档中断后可重试同一结果。
 
 `cancel` 停止运行并结束交付，保留磁盘成果。`resume` 返回交付与运行编号，继续原会话或从既有成果恢复。
-交付外仍可使用 `akb raw archive <id>` 手动归档。`delivery conflict`、`delivery blocked`、`delivery discard` 和 `workflow worktree` 已移除。
+交付外仍可使用 `akb raw archive <id>` 手动归档。`delivery conflict`、`delivery blocked` 和 `delivery discard` 已移除。
 
-工作流只存于云端（#409）：`akb workflow list` 列出当前工作区可用的工作流，各版本缓存在本机 `workflows/`；`akb raw workflow validate <文件夹>` 检查一个工作流文件夹，`akb raw workflow rename` 只在「搭建工作流」任务里写草稿，`delete`、`agent` 已移除，改在网页上管理。
+工作台只存于云端（#409）：`akb studio list` 列出当前工作区可用的工作台，各版本缓存在本机 `studios/`；`akb raw studio validate <文件夹>` 检查一个工作台文件夹，`akb raw studio rename` 只在「搭建工作台」任务里写草稿，`delete`、`agent` 已移除，改在网页上管理。

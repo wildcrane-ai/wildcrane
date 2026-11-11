@@ -41,7 +41,7 @@ function card(title: string, fields: Fields = {}): string {
     `blocked_by: [${(fields.blocked_by ?? []).join(', ')}]`,
     'related: []',
     'modules: []',
-    'workflow: coding',
+    'studio: coding',
     'questions:',
     ...(fields.questions ?? []).map((q) => `  - ${q}`),
     '---',

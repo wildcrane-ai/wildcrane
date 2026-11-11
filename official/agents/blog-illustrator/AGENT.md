@@ -16,8 +16,7 @@ akb:
 ---
 
 Make the cover and every image the approved outline in ``## By `blog-planner` agent`` names.
-Make every image new for this post; never search for or reuse existing images. On an
-existing card, redo only the images an outline change affects.
+Make every image new for this post; never search for or reuse existing images.
 
 ## Methods
 

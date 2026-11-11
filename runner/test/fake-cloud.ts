@@ -24,18 +24,18 @@ export interface FakeJob {
   project?: string | null
   task?: string | null
   number?: number | null
-  workflow?: string | null
+  studio?: string | null
   recoveryOf?: string | null
   manualRecovery?: boolean
   retryReplay?: boolean
   resume?: string | null
   fork?: boolean
   transcript?: string | null
-  flow?: { verb: string; workflow: string; card?: number; text?: string; title?: string; resume?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null
+  flow?: { verb: string; studio: string; card?: number; text?: string; title?: string; resume?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null
   discussion?: { id: string; workspace: string; goals?: Record<string, unknown>[]; ideas: Record<string, unknown>[] } | null
   chat?: { message: string; body: string } | null
   review?: { tasks: string[] } | null
-  agent?: { name: string; workflow?: string; tasks?: { id: string; number: number }[] } | null
+  agent?: { name: string; studio?: string; tasks?: { id: string; number: number }[] } | null
   prompt: string
   language?: 'zh' | 'en' | null
   languageLine?: string
@@ -72,11 +72,11 @@ const BYTES = Symbol('bytes')
 
 export interface FakeTask {
   artifacts: Map<string, Buffer[]>
-  /** The workflow version the task runs on (#2040); none for a task made before. */
-  workflow?: { workflow: string; version: number; files: Record<string, string>; builtin?: boolean }
+  /** The studio version the task runs on (#2040); none for a task made before. */
+  studio?: { studio: string; version: number; files: Record<string, string>; builtin?: boolean }
   title?: string
   request?: string
-  context?: { workflow?: string }
+  context?: { studio?: string }
 }
 
 export interface FakeTriage {
@@ -85,7 +85,7 @@ export interface FakeTriage {
   title: string
   text: string
   source_task: string | null
-  workflow?: string | null
+  studio?: string | null
   state: 'open' | 'dismissed' | 'carded'
   dismissed_reason: string | null
   dismissed_at: string | null
@@ -94,8 +94,10 @@ export interface FakeTriage {
 
 export class FakeCloud {
   task: FakeTask = { artifacts: new Map() }
-  /** The workspace's own workflows' files, by id (#2004). */
-  workflows: Record<string, Record<string, string>> = {}
+  /** A task's status as `GET /v1/tasks/{id}` answers it; `gone` is no such task, `down` a failing read. */
+  taskStatus: Record<string, string> = {}
+  /** The workspace's own studios' files, by id (#2004). */
+  studios: Record<string, Record<string, string>> = {}
   /** What the workspace's rejection review has not learned, and each batch marked learned. */
   rejections: { tasks: Record<string, unknown>[]; triage: FakeTriage[] } = { tasks: [], triage: [] }
   reviewed: { tasks: string[]; triage: string[] }[] = []
@@ -147,7 +149,7 @@ export class FakeCloud {
   reviews: { project: string; tasks: string[]; runtime: string; model: string | null }[] = []
   /** The project's periodic agents as Cloud answers them (#2068), and every one asked for. */
   periodic: Record<string, unknown>[] = []
-  asked: { project: string; agent: string; workflow: string | null; seen: string | null }[] = []
+  asked: { project: string; agent: string; studio: string | null; seen: string | null }[] = []
   registrations = 0
   /** Which keys the Runner said it holds, on its last register. */
   secrets: unknown
@@ -304,14 +306,14 @@ export class FakeCloud {
       this.stops.push(`${stop[2]} ${stop[1]}`)
       return send(200, {})
     }
-    if (/^\/v1\/(tasks|projects|artifacts|uploads)\b|^\/v1\/workflows\/[^/]+$/.test(route)) return this.handleTask(req.method!, url, body, raw, send, refuse)
+    if (/^\/v1\/(tasks|projects|artifacts|uploads)\b|^\/v1\/studios\/[^/]+$/.test(route)) return this.handleTask(req.method!, url, body, raw, send, refuse)
     if (route === '/v1/rejections') return send(200, this.rejections)
     if (route === '/v1/rejections/reviewed') {
       this.reviewed.push(body)
       return send(200, { tasks: body.tasks.length, triage: body.triage.length })
     }
-    if (route === '/v1/workflows') {
-      const own = Object.keys(this.workflows).map((id) => ({ id, name: id }))
+    if (route === '/v1/studios') {
+      const own = Object.keys(this.studios).map((id) => ({ id, name: id }))
       return send(200, { data: [{ id: 'wf_builtin_coding', name: 'Coding', names: { en: 'Coding', zh: '软件开发' }, description: 'Build software.', when: 'Software changes.' }, ...own], next: null })
     }
     if (route === '/v1/runner/version') return send(200, { version: this.version })
@@ -402,12 +404,12 @@ export class FakeCloud {
     if (route === '/v1/runner/agents' && this.failAgents) return refuse(500, 'internal', 'Down.')
     if (route === '/v1/runner/agents') return send(200, { agents: mine(url.searchParams.get('machine')!) ? this.periodic : [] })
     if (route === '/v1/runner/jobs' && req.method === 'POST' && body.agent) {
-      this.asked.push({ project: body.project, agent: body.agent, workflow: body.workflow, seen: body.seen })
+      this.asked.push({ project: body.project, agent: body.agent, studio: body.studio, seen: body.seen })
       const open = [...this.jobs.values()].some((j) => j.agent?.name === body.agent && j.state !== 'finished')
       if (open) return send(200, { job: null })
       const dir = this.folders.find((f) => f.project === body.project && f.machine === body.machineId)?.path ?? null
       const job = this.dispatch({ id: `agent-${this.asked.length}`, project: body.project, projectDir: dir, machine: body.machineId,
-        agent: { name: body.agent, ...(body.workflow ? { workflow: body.workflow } : {}) } })
+        agent: { name: body.agent, ...(body.studio ? { studio: body.studio } : {}) } })
       return send(200, { job })
     }
     if (route === '/v1/runner/jobs') {
@@ -479,9 +481,9 @@ export class FakeCloud {
       for (const w of changed) this.board.set(w.path, { content: w.content, seq: this.head })
       return send(200, { head_seq: this.head, files: writes.map((w) => ({ path: w.path, seq: now(w.path)?.seq ?? 0 })) })
     }
-    if (/^\/v1\/tasks\/[^/]+\/workflow$/.test(route)) {
-      if (!task.workflow) return refuse(404, 'not_found', 'No workflow version.')
-      return send(200, { object: 'workflow_version', ...task.workflow })
+    if (/^\/v1\/tasks\/[^/]+\/studio$/.test(route)) {
+      if (!task.studio) return refuse(404, 'not_found', 'No studio version.')
+      return send(200, { object: 'studio_version', ...task.studio })
     }
     const chat = /^\/v1\/tasks\/([^/]+)\/chat$/.exec(route)
     if (chat && method === 'GET') {
@@ -497,11 +499,14 @@ export class FakeCloud {
       return send(200, { data, next: from + 2 < all.length ? data.at(-1)!.id : null })
     }
     if (/^\/v1\/tasks\/[^/]+$/.test(route)) {
-      return send(200, { id: route.split('/')[3], title: task.title ?? 'Pricing', request: task.request ?? 'Two tiers.', context: task.context ?? {} })
+      const status = this.taskStatus[route.split('/')[3]!] ?? 'running'
+      if (status === 'gone') return refuse(404, 'not_found', 'No task has this id.')
+      if (status === 'down') return refuse(500, 'internal', 'Down.')
+      return send(200, { status, id: route.split('/')[3], title: task.title ?? 'Pricing', request: task.request ?? 'Two tiers.', context: task.context ?? {} })
     }
-    if (/^\/v1\/workflows\/[^/]+$/.test(route)) {
-      const files = this.workflows[route.split('/')[3]!]
-      return files ? send(200, { id: route.split('/')[3], version: 1, files }) : refuse(404, 'not_found', 'No workflow has this id.')
+    if (/^\/v1\/studios\/[^/]+$/.test(route)) {
+      const files = this.studios[route.split('/')[3]!]
+      return files ? send(200, { id: route.split('/')[3], version: 1, files }) : refuse(404, 'not_found', 'No studio has this id.')
     }
     if (/^\/v1\/projects\/[^/]+$/.test(route)) return send(200, { id: route.split('/')[3], unfiled: false, workspace: 'ws_1' })
     let m = /^\/v1\/artifacts\/([^/]+)$/.exec(route)

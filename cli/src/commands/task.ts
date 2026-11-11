@@ -7,7 +7,7 @@ import path from 'node:path'
 
 import { cloudEndpoints } from '../lib/cloud/config'
 import { accessToken } from '../lib/cloud/session'
-import { cloudWorkflow, linkedProject } from '../lib/cloud/tasks'
+import { cloudStudio, linkedProject } from '../lib/cloud/tasks'
 import { say } from '../lib/io'
 import { die } from '../lib/paths'
 import { parseFrontmatter } from '../lib/frontmatter'
@@ -53,7 +53,7 @@ interface Task {
   key: string
   title: string
   status: string
-  workflow: { id: string; name: string } | null
+  studio: { id: string; name: string } | null
   review?: { status: string | null; revision: number } | null
 }
 
@@ -113,14 +113,14 @@ export async function taskList(opts: { project?: string; workspace?: string; sta
 
 export async function taskShow(id: string): Promise<MoveResult> {
   const task = await cloud<Task>('GET', `/v1/tasks/${enc(await taskRef(id))}`)
-  const card = task.workflow ? await cloud<{ body: string }>('GET', `/v1/tasks/${enc(task.id)}/card`).catch(() => null) : null
+  const card = task.studio ? await cloud<{ body: string }>('GET', `/v1/tasks/${enc(task.id)}/card`).catch(() => null) : null
   say(`${task.key}  ${task.title}`)
-  say(`${task.status}${task.workflow ? `  ${task.workflow.name}` : ''}  ${taskUrl(task.key)}`)
+  say(`${task.status}${task.studio ? `  ${task.studio.name}` : ''}  ${taskUrl(task.key)}`)
   if (card?.body) say(`\n${card.body.trim()}`)
   return { ...task, card }
 }
 
-export async function taskCreate(request: string, opts: { project?: string; workflow?: string }): Promise<MoveResult> {
+export async function taskCreate(request: string, opts: { project?: string; studio?: string }): Promise<MoveResult> {
   const text = request.trim()
   if (!text) die('Say what the task is.', { kind: 'bad-args', exitCode: 2 })
   const line = text.split('\n')[0]!.trim()
@@ -129,7 +129,7 @@ export async function taskCreate(request: string, opts: { project?: string; work
     title,
     request: text,
     project: await project(opts.project),
-    ...(opts.workflow ? { workflow: cloudWorkflow(opts.workflow) } : {}),
+    ...(opts.studio ? { studio: cloudStudio(opts.studio) } : {}),
     source: 'api',
   })
   say(`Created ${task.key}: ${task.title}  ${taskUrl(task.key)}`)

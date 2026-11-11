@@ -18,7 +18,7 @@ import { creationReceipt, readCreation, saveCreation, archiveCreation, creationE
 import { peekRun } from '../agent/sessions'
 import { KANBAN, REPO_ROOT } from '../paths'
 import { resolveBoard, sayIfRetiredPointer, useBoard } from '../board-cli'
-import { syncWorkflows } from '../agent/cloud-workflows'
+import { syncStudios } from '../agent/cloud-studios'
 import { LEVELS, STATUSES } from '../validate'
 import {
   cardId,
@@ -68,7 +68,7 @@ async function dispatch(
   const data = await runAction(ctx, {}, async () => {
     const found = resolveBoard(move, { board: ctx.board, dir: ctx.dir, cwd: cli.cwd, installHint: cli.installHint })
     useBoard(found, ctx.dir !== null)
-    await syncWorkflows()
+    await syncStudios()
     const root = found.root
     sayIfRetiredPointer(root)
     const creating = move === 'create' && insideRun() ? peekRun(insideRun()!) : undefined
@@ -83,8 +83,8 @@ async function dispatch(
     const inRun = move === 'create' && insideRun() !== null
     const task = move === 'create' && opts.id === undefined ? workspaceTask() : null
     if (move === 'create' && opts.id === undefined) {
-      const { workflow } = validateCreate(opts as unknown as CreateOptions)
-      input.opts = (await cloudCard(task, task ? opts : { ...opts, workflow })).opts
+      const { studio } = validateCreate(opts as unknown as CreateOptions)
+      input.opts = (await cloudCard(task, task ? opts : { ...opts, studio })).opts
     }
     const data = READ_ONLY_MOVES.has(move)
       ? await board().readMove(move, input)
@@ -121,7 +121,7 @@ async function cloudCard(task: string | null, opts: Record<string, unknown>): Pr
   const said = {
     title: String(opts.title ?? '').trim(),
     request,
-    workflow: typeof opts.workflow === 'string' && opts.workflow.trim() ? opts.workflow.trim() : undefined,
+    studio: typeof opts.studio === 'string' && opts.studio.trim() ? opts.studio.trim() : undefined,
     slug: typeof opts.slug === 'string' ? opts.slug : undefined,
     triage: sourceFile,
     agent: runAgent() ?? undefined,
@@ -207,7 +207,7 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
         'Missing or invalid project links and denied access exit with code 1 using the existing error envelope. ' +
         '--body-file accepts a short draft or full card body. Invalid bodies fail before allocating a task or writing a card, with repair instructions. Cloud moves the card on by itself once ' +
         'it reaches the board: do not refine it here. ' +
-        'Example: akb raw create --title "Add a delete command" --workflow coding --body-file /tmp/delete-command.md',
+        'Example: akb raw create --title "Add a delete command" --studio coding --body-file /tmp/delete-command.md',
     )
     .requiredOption('--title <title>', 'what the card is called')
     .addOption(new Option('--recurring').hideHelp())
@@ -224,8 +224,8 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
     .option('--no-body', 'write the frontmatter and no body template')
     .option('--body-file <path>', 'a short draft or full card body, written to a file first')
     .addOption(new Option('--cadence <cadence>').hideHelp())
-    .option('--workflow <id>', "the workflow it runs through (`akb workflow list`). Required when the board has more than one, except inside a task run, which uses the task's own")
-    .option('--previews <agents>', 'the preview agents it chose, from its workflow\'s; "" chooses none', collectList)
+    .option('--studio <id>', "the studio it runs through (`akb studio list`). Required when the board has more than one, except inside a task run, which uses the task's own")
+    .option('--previews <agents>', 'the preview agents it chose, from its studio\'s; "" chooses none', collectList)
     .addOption(new Option('--id <n>', "the number Cloud gave this card's task; for the Runner").argParser(cardId).hideHelp())
     .option('--triage <source-id>', 'the triage item this card is made of, so the item is never carded twice')
     .option('--source <ref>', "where it came from: a plan's path, plan:<id>, #<id> or a URL. Repeatable", collect)
@@ -251,10 +251,10 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
     .option('--modules <names>', 'the parts of the project it touches', collectList)
     .option('--source <ref>', "where it came from: a plan's path, plan:<id>, #<id> or a URL. Repeatable; \"\" clears the list", collect)
     .option('--add-source <ref>', 'append one source, keeping the ones already there. Repeatable', collect)
-    .option('--previews <agents>', 'the preview agents it chose, from its workflow\'s; "" chooses none', collectList)
+    .option('--previews <agents>', 'the preview agents it chose, from its studio\'s; "" chooses none', collectList)
     .option('--phase <n>', 'the approval it is on, 1-based')
     .option('--slug <slug>', 'rename the file')
-    .option('--workflow <id>', 'the workflow it runs through. The card goes back to todo and is re-planned')
+    .option('--studio <id>', 'the studio it runs through. The card goes back to todo and is re-planned')
     .addOption(new Option('--cadence <cadence>').hideHelp())
     .action(async function (this: Command, id: number) {
       refuseRecurring(this)
@@ -295,15 +295,19 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
       await dispatch('validate', this, id === undefined ? [] : [String(id)], this.opts(), cli)
     })
 
-  move('agent-file')
-    .argument('<agent>', 'the agent whose folder the file is in')
-    .argument('<path>', "the file, as the run's own list spells it")
-    .summary("print one file from an agent's own folder")
-    .description(
-      "Every run is told which files its agent's folder holds, and reads one when the work calls for it. " +
-        "`AGENT.md` prints the agent's own rules. A built-in agent ships its files inside the command, so " +
-        'this is the only way to open one; a path the agent does not offer is refused.',
-    )
+  move('file')
+    .argument('<studio>', 'the studio, e.g. blog-post')
+    .argument('<path>', 'the file as `akb studio pull` lays it out: shared/… or agents/<name>/…')
+    .summary('print one file of a studio')
+    .description("In a task's run, reads the version the task is pinned to; otherwise the current one.")
+    .action(async function (this: Command, studio: string, file: string) {
+      await dispatch('file', this, [studio, file], this.opts(), cli)
+    })
+
+  // Before #656; a project agent's files are still read through it.
+  withShared(program.command('agent-file', { hidden: true }))
+    .argument('<agent>')
+    .argument('<path>')
     .action(async function (this: Command, agent: string, file: string) {
       await dispatch('agent-file', this, [agent, file], this.opts(), cli)
     })
@@ -329,10 +333,10 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
         'holding it — a blocker, an unanswered question, or a build. Age is the date git last saw ' +
         "the card's file; group roots and cards git cannot date are left out.\n\n" +
         '`--archived` answers "which cards landed in this period": one block per landing, oldest first, with ' +
-        'the card id, title, workflow, landing time, landed commit and the archived card file (blank when ' +
+        'the card id, title, studio, landing time, landed commit and the archived card file (blank when ' +
         "the file is no longer in .archive/, e.g. deleted by hand; a card the daily cleanup deletes goes " +
         'with its finished delivery and is not listed). Only cards the board landed are listed — a card archived by hand, ' +
-        'committed by hand, or built by a workflow that leaves files instead of a commit is not among them.',
+        'committed by hand, or built by a studio that leaves files instead of a commit is not among them.',
     )
     .option('-m, --module <name>', 'only the cards tagged with that module, validated against modules.md')
     .option('--stale', 'only the cards untouched past the threshold, stalest first, with the days each has sat')
@@ -342,7 +346,7 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
       'with --archived: only landings after this time, written "YYYY-MM-DD HH:MM"; inside a scheduled ' +
         "agent's run, `last-run` is when its last run began",
     )
-    .option('--workflow <id>', 'with --archived: only the cards of that workflow')
+    .option('--studio <id>', 'with --archived: only the cards of that studio')
     .action(async function (this: Command) {
       await dispatch('list', this, [], this.opts(), cli)
     })

@@ -19,12 +19,9 @@ you are done, with no further question, when the checked article is delivered.
 
 ## Rules
 
-- **The outline**: keep its title, metadata, sections, keywords and links, following The
-  source in `akb raw agent-file blog-planner AGENT.md`.
+- **The outline**: keep its title, metadata, sections, keywords and links.
 - **Facts**: state only what the outline, `research.md`, the card or the user supports;
   narrow, qualify or drop a point the evidence does not support.
-- **Validation**: run `akb raw validate <card id> --json` after every change; fix every
-  diagnostic.
 
 ## Delivery
 
@@ -43,12 +40,6 @@ you are done, with no further question, when the checked article is delivered.
 
 ## Memory
 
-Your memory folder is `docs/kanban/memory/agents/blog-planner/`, whose files the Memory
-section of `akb raw agent-file blog-planner AGENT.md` describes. Read it before writing; the
-current card wins.
-
 - **Destinations**: record a destination's location and format in `destination.md` after its
   first publication, and update only that destination's record when the user changes it.
 - **Keywords**: add one line per delivered copy to `keywords.md`, `<URL> → <keywords>`.
-- **Corrections**: record each user correction that changes your next article as that
-  section says.

@@ -4,7 +4,7 @@
 //   node render.mjs <board-state>/assets/<card id>/<email>.tsx
 //
 // Writes <email>.html and <email>.txt beside it. Runtime: Node 18 or later and npm. Save it
-// from the built-in agent with `akb raw agent-file email-planner scripts/render.mjs > render.mjs`.
+// from the built-in agent with `akb raw file coding agents/email-planner/scripts/render.mjs > render.mjs`.
 // The first run installs React Email into `<board-state>/assets/email/`, beside the templates,
 // so the TSX resolves its imports from there. Exit 1 is a failure, 2 a usage error.
 

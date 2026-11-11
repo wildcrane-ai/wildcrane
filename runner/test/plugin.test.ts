@@ -421,11 +421,11 @@ describe('the plugin component', () => {
       assert.equal(read.discussion, 'dsc_1')
       assert.equal((await call('wildcrane_draft_read', { sessionId: 'sess-1' })).discussion, 'dsc_1')
       assert.deepEqual(read.goals, read.ideas)
-      assert.equal((read.workflows as { when: string }[])[0]!.when, 'Software changes.')
+      assert.equal((read.studios as { when: string }[])[0]!.when, 'Software changes.')
       assert.match(String(read.url), /discussions\/dsc_1$/)
       assert.equal(cloud.discussions.length, 1)
 
-      const goals = [{ title: '目标', outcome: '结果', acceptance: ['验收'], workflow: 'wf_builtin_coding' }]
+      const goals = [{ title: '目标', outcome: '结果', acceptance: ['验收'], studio: 'wf_builtin_coding' }]
       const saved = await call('wildcrane_draft_save', { discussionId: 'dsc_1', expectedVersion: 1, goals })
       assert.equal(saved.saved, true)
       assert.deepEqual(saved.goals, saved.ideas)

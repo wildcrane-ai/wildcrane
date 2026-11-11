@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
-import { agentComponents, componentDocsText, workflowComponents } from '../src/lib/components.ts'
+import { agentComponents, componentDocsText, studioComponents } from '../src/lib/components.ts'
 import { parseSpecAgent } from '../src/lib/agents/parse.ts'
 import { printFlow } from '../src/lib/agent/flow.ts'
 import { startCollecting, stopCollecting } from '../src/lib/io.ts'
@@ -72,21 +72,21 @@ describe('preview component context', () => {
     }
   })
 
-  it('uses the same deduplicated workflow union for commands and every planning phase', async () => {
+  it('uses the same deduplicated studio union for commands and every planning phase', async () => {
     ownAgent('first', '[Storyboard, Asset]')
     ownAgent('second', '[Asset]')
     ownAgent('scheduled-example', '[Compare]')
-    writeOfficial('workflows/example/WORKFLOW.md', '---\nname: Example\npreviews: [first]\nland: [second, builder]\nscheduled:\n  - agent: scheduled-example\n---\nWrite a card.\n')
-    const docs = workflowComponents('example')
+    writeOfficial('studios/example/STUDIO.md', '---\nname: Example\npreviews: [first]\nland: [second, builder]\nscheduled:\n  - agent: scheduled-example\n---\nWrite a card.\n')
+    const docs = studioComponents('example')
     assert.deepEqual(names(docs), ['Storyboard', 'Asset', 'Compare'])
-    const command = await outputOf(['raw', 'components', '--workflow', 'example', '--docs'])
+    const command = await outputOf(['raw', 'components', '--studio', 'example', '--docs'])
     assert.ok(command.includes(componentDocsText(docs)))
     for (const action of ['clarify', 'edit', 'resolve', 'approve'] as const) {
-      const prompt = buildPrompt({ action, workflow: 'example', id: 1 })
+      const prompt = buildPrompt({ action, studio: 'example', id: 1 })
       assert.ok(prompt.includes(componentDocsText(docs)))
       for (const component of names(docs)) assert.equal(prompt.split(`# ${component}\n`).length - 1, 1)
     }
-    assert.deepEqual(names(workflowComponents('coding')), ['Asset', 'Set', 'Compare', 'Storyboard'])
+    assert.deepEqual(names(studioComponents('coding')), ['Asset', 'Set', 'Compare', 'Storyboard'])
   })
 
   it('reports missing component docs', () => {
@@ -101,8 +101,8 @@ describe('preview component context', () => {
     const result = await outputOf(['raw', 'components', '--agent', 'prompt-writer', '--docs'])
     assert.match(result, /^Asset\nSet\n\nTags draw only in the card body;.*\n\n# Asset[^]*\n\n# Set\n/)
     await assert.rejects(run(root, ['raw', 'components']), /exactly one/)
-    await assert.rejects(run(root, ['raw', 'components', '--agent', 'prompt-writer', '--workflow', 'coding']), /exactly one/)
+    await assert.rejects(run(root, ['raw', 'components', '--agent', 'prompt-writer', '--studio', 'coding']), /exactly one/)
     await assert.rejects(run(root, ['raw', 'components', '--agent', 'absent']), /absent/)
-    await assert.rejects(run(root, ['raw', 'components', '--workflow', 'absent']), /absent/)
+    await assert.rejects(run(root, ['raw', 'components', '--studio', 'absent']), /absent/)
   })
 })

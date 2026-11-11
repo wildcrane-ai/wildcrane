@@ -45,7 +45,7 @@ const card = (id: number, title: string): string =>
     'blocked_by: []',
     'related: []',
     'modules: []',
-    'workflow: coding',
+    'studio: coding',
     'questions: []',
     '---',
     '',
@@ -76,10 +76,10 @@ afterEach(() => {
 })
 
 // One session, opened and closed the way the command and the watcher do.
-// The user's rule for the Coding workflow's cards (#2152).
-const workflowRule = (text: string): void => {
-  fs.mkdirSync(path.join(RULES, 'workflows'), { recursive: true })
-  fs.writeFileSync(path.join(RULES, 'workflows', 'coding.md'), `${text}\n`)
+// The user's rule for the Coding studio's cards (#2152).
+const studioRule = (text: string): void => {
+  fs.mkdirSync(path.join(RULES, 'studios'), { recursive: true })
+  fs.writeFileSync(path.join(RULES, 'studios', 'coding.md'), `${text}\n`)
 }
 
 function run(action: 'implement', id: number): string {
@@ -156,11 +156,11 @@ describe('in-session spec work', () => {
 })
 
 describe('the files', () => {
-  it('gives planning no rule of its own: what it is asked is its workflow\'s (#2152)', async () => {
-    workflowRule('Say what changed.')
+  it('gives planning no rule of its own: what it is asked is its studio\'s (#2152)', async () => {
+    studioRule('Say what changed.')
     for (const action of ['edit', 'resolve'] as const) {
       assert.equal(ruleFor({ action, id: 1 }), '', action)
-      assert.match(buildPrompt({ action, id: 1 }), /<workflow name="Coding">[\s\S]*Say what changed\./, action)
+      assert.match(buildPrompt({ action, id: 1 }), /<studio name="Coding">[\s\S]*Say what changed\./, action)
     }
   })
 
@@ -272,7 +272,7 @@ describe('the prompt', () => {
       const prompt = buildPrompt({ action, id: 1 })
       assert.match(prompt, /<preview-agents>/)
       // A card with no `previews` is asked to choose them, never shown a skill's own instructions.
-      assert.match(prompt, /akb raw previews --triggers --workflow/)
+      assert.match(prompt, /akb raw previews --triggers --studio/)
       assert.doesNotMatch(prompt, /You draw the screen a card needs/)
     }
     assert.doesNotMatch(buildPrompt({ action: 'implement', id: 1 }), /<preview-agents>/)
@@ -349,7 +349,7 @@ describe('the prompt', () => {
   })
 
   it('reaches every flow its agent runs, the refinement passes included', async () => {
-    workflowRule('Ask about the data model.')
+    studioRule('Ask about the data model.')
     setRule('builder', 'Install dependencies first.')
     // One planner, so the composite refine and the standalone resolve read the same words.
     for (const req of [
@@ -364,7 +364,7 @@ describe('the prompt', () => {
   })
 
   it("puts a spec agent's own rule after its instructions, and no role's", async () => {
-    workflowRule('Ask about the data model.')
+    studioRule('Ask about the data model.')
     setRule('ui-designer', 'Keep to the existing palette.')
     const prompt = buildPrompt({ action: 'spec', id: 1, specAgent: 'ui-designer' })
     assert.ok(prompt.trimEnd().endsWith('Keep to the existing palette.'))
@@ -392,7 +392,7 @@ describe('the prompt', () => {
 describe('a delivery', () => {
   it('freezes the rules of the agents it is built by, keyed by agent', async () => {
     setRule('builder', 'Install dependencies first.')
-    workflowRule('Stay small.')
+    studioRule('Stay small.')
     const built = run('implement', 1)
     const delivery = activeDelivery(1)!
     assert.deepEqual(delivery.rules, { builder: 'Install dependencies first.' })
@@ -420,7 +420,7 @@ describe('a delivery', () => {
 
   it('leaves a flow that is not one of its own reading the file', async () => {
     const built = run('implement', 1)
-    workflowRule('Ask about the data model.')
+    studioRule('Ask about the data model.')
     assert.match(buildPrompt({ action: 'clarify', id: 1, refineRound: 1 }), /data model/)
     await end(built)
   })

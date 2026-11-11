@@ -15,7 +15,7 @@ import { readSession } from '../../cli/src/lib/cloud/session'
 import { askDueAgents, nextHour } from './agents'
 import { followAkb, sweepAkb } from './akb-version'
 import * as api from './api'
-import { SWEEP_MS, removeLegacy, sweepCache } from './cache'
+import { SWEEP_MS, removeLegacy, sweepCache, sweepStudios } from './cache'
 import { pruneChats, reviewChats } from './chats'
 import { watchBoards, type BoardWatch } from './board-watch'
 import { answerHint } from './diff'
@@ -156,6 +156,7 @@ export function startRunner(options: Options): Runner {
     try {
       sweepAkb()
       await sweepCache(registration.machineId)
+      await sweepStudios()
     } catch (e) {
       console.error(`runner: the cache was not cleaned: ${e instanceof Error ? e.message : String(e)}`)
     } finally {

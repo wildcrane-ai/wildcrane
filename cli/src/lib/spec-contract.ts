@@ -5,7 +5,7 @@ import { enclosingGroupRoot, idPrefix, isLegacyRecurring, walkMd } from './cards
 import { parseFrontmatter } from './frontmatter'
 import { ASSETS, rel, TODO } from './paths'
 import { compareAttrs, compareKind, shotsProblem, storyboardProblem, type Shot } from './compare'
-import { assetName, storyboardMarkers, storyboardTag, workflowTag } from './storyboard'
+import { assetName, storyboardMarkers, storyboardTag, studioTag } from './storyboard'
 import { validatePreviewFiles } from './preview-files'
 import { dependencyCycle, LEVELS, STATUSES } from './validate'
 
@@ -177,8 +177,8 @@ export function validateSpec(file: string, text: string, id?: number): ContractE
     if (/^\s*<Storyboard\b/.test(line) && (storyboardTag(line) === null || lines[i - 1]?.trim() || lines[i + 1]?.trim())) {
       add(i + 1, 'storyboard-block', 'Put one self-closing <Storyboard src=".assets/<card id>/storyboard.json" /> tag on its own line, with blank lines around it.')
     }
-    if (/^\s*<Workflow\b/.test(line) && (workflowTag(line) === null || !/\blabel="[^"]+"/.test(line) || lines[i - 1]?.trim() || lines[i + 1]?.trim())) {
-      add(i + 1, 'workflow-block', 'Put one self-closing <Workflow src=".assets/<card id>/workflow.json" label="..." /> tag on its own line, with blank lines around it.')
+    if (/^\s*<Studio\b/.test(line) && (studioTag(line) === null || !/\blabel="[^"]+"/.test(line) || lines[i - 1]?.trim() || lines[i + 1]?.trim())) {
+      add(i + 1, 'studio-block', 'Put one self-closing <Studio src=".assets/<card id>/studio.json" label="..." /> tag on its own line, with blank lines around it.')
     }
     if (/^\s*<Compare\b/.test(line)) {
       const attrs = compareAttrs(line)
@@ -230,12 +230,13 @@ export function validateSpec(file: string, text: string, id?: number): ContractE
 const ASSET_LINE = /^\s*<(?:Asset|Mockup)\b[^<>]*\/>\s*$/
 const BLOCK_LINE = /^\s*<(?:Asset\b|Mockup\b|Set\b|\/Set>)/
 
-/** The line closing the `<Set>` opened at `at` (#587), or -1 when it is not one well-formed paragraph. */
+/** The line closing the `<Set>` opened at `at` (#587), or -1 when it holds anything but Asset and blank lines. */
 function setEnd(lines: string[], at: number): number {
   if (!/^\s*<Set\b[^<>]*>\s*$/.test(lines[at]!) || lines[at - 1]?.trim()) return -1
   let i = at + 1
-  while (i < lines.length && ASSET_LINE.test(lines[i]!)) i++
-  if (i === at + 1 || !/^\s*<\/Set>\s*$/.test(lines[i] ?? '') || lines[i + 1]?.trim()) return -1
+  let assets = 0
+  for (; i < lines.length && (ASSET_LINE.test(lines[i]!) || !lines[i]!.trim()); i++) if (lines[i]!.trim()) assets++
+  if (!assets || !/^\s*<\/Set>\s*$/.test(lines[i] ?? '') || lines[i + 1]?.trim()) return -1
   return i
 }
 
@@ -333,7 +334,7 @@ export function validateStoryboards(file: string, id: number, text: string): Con
   const dir = path.join(ASSETS, String(id))
   for (const [tag, tagOf, rule, fix] of [
     ['Storyboard', storyboardTag, 'storyboard-src', 'Write the JSON there or fix the path.'],
-    ['Workflow', workflowTag, 'workflow-src', 'Write it with `akb raw workflow diagram <workflow id> <card id>` or fix the path.'],
+    ['Studio', studioTag, 'studio-src', 'Write it with `akb raw studio diagram <studio id> <card id>` or fix the path.'],
   ] as const) {
     for (const marker of storyboardMarkers(text, tagOf)) {
       const named = assetName(marker.src, id, ['json'])

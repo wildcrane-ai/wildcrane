@@ -7,9 +7,9 @@ import type { YamlValue } from './yaml.ts'
 export const ICON_NAMES = [
   'file', 'text', 'article', 'outline', 'script', 'prompt', 'email', 'image', 'post-image', 'social-image', 'cover',
   'carousel', 'carousel-outline', 'slides', 'wireframe', 'screen', 'video', 'storyboard', 'template', 'shots', 'api',
-  'schema', 'compare', 'stack', 'workflow', 'code', 'checklist', 'card', 'plan', 'proposal', 'dismissed', 'inbox',
+  'schema', 'compare', 'stack', 'studio', 'code', 'checklist', 'card', 'plan', 'proposal', 'dismissed', 'inbox',
   'notebook', 'squeeze', 'folder', 'reply', 'feedback', 'software', 'product-video', 'social-post', 'blog', 'deck',
-  'video-clone', 'workflow-kit',
+  'video-clone', 'studio-kit',
 ] as const
 
 /** The palette keys a part may colour with. */

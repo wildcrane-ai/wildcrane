@@ -19,9 +19,9 @@ import { move } from './helpers/board.ts'
 describe('a card with several approvals', () => {
   let root = ''
   const kanban = () => path.join(root, 'docs', 'kanban')
-  const create = async (workflow?: string) => {
-    const id = (await move(root, ['create', '--title', 'Launch post', ...(workflow ? ['--workflow', workflow] : [])])).id as number
-    if (workflow) await move(root, ['update', String(id), '--previews', 'blog-planner,blog-writer'])
+  const create = async (studio?: string) => {
+    const id = (await move(root, ['create', '--title', 'Launch post', ...(studio ? ['--studio', studio] : [])])).id as number
+    if (studio) await move(root, ['update', String(id), '--previews', 'blog-planner,blog-writer'])
     return id
   }
 

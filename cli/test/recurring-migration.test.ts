@@ -1,5 +1,5 @@
 // Recurring cards become scheduled agents (#1414): the card's words are the agent's rule,
-// its cadence and last run go to the workflow, and the card leaves the board.
+// its cadence and last run go to the studio, and the card leaves the board.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
-import { scheduledAgent } from '../src/lib/agent/workflows.ts'
+import { scheduledAgent } from '../src/lib/agent/studios.ts'
 import { specAgentCatalog } from '../src/lib/agents/catalog.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
 import { migrateRecurringCards } from '../src/lib/recurring.ts'
@@ -114,10 +114,10 @@ describe('a recurring card becomes a scheduled agent', () => {
     assert.doesNotMatch(read('agents', 'other-job', 'AGENT.md'), /Run state/)
   })
 
-  it('goes to the workflow the card names, and to the first one when that one is gone', () => {
-    recurringCard('7-check-the-links', { front: ['workflow: no-such-workflow'] })
+  it('goes to the studio the card names, and to the first one when that one is gone', () => {
+    recurringCard('7-check-the-links', { front: ['studio: no-such-studio'] })
     const done = migrateRecurringCards()
-    assert.equal(done.agents[0]!.workflow, 'Blog post')
+    assert.equal(done.agents[0]!.studio, 'Blog post')
     assert.ok(scheduledAgent('blog-post', 'check-the-links'))
   })
 

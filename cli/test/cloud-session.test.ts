@@ -130,7 +130,7 @@ describe('the token a request carries', () => {
     assert.equal(token.ok && token.token, 'token-2')
     assert.equal(readSession()?.refreshToken, 'refresh-2')
     assert.equal(calls.length, 1)
-    assert.match(calls[0]!, /grant_type=refresh_token/)
+    assert.equal(calls[0], `${API}/auth/v1/token?grant_type=refresh_token`)
   })
 
   it('退出后迟到的刷新不能恢复旧会话', async () => {

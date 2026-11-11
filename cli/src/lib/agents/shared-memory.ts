@@ -1,10 +1,12 @@
 // Which `memory/` files are the workspace's rather than the project's (#2093): the ones each
-// agent lists under `akb.memoryFiles.workspace`, built-in and board agents alike. An agent akb
-// refuses lists none, so its files stay the project's.
+// agent lists under `akb.memoryFiles.workspace`, built-in and board agents alike, and each
+// studio under `memoryFiles.workspace` in its `STUDIO.md` (#656). An agent akb refuses lists
+// none, so its files stay the project's.
 
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { cloudFlows } from '../agent/cloud-studios'
 import { officialAgent, shippedAgentFiles } from './bundled'
 import { parseSpecAgent } from './parse'
 
@@ -38,7 +40,10 @@ export function sharedMemory(board: string): Shared {
     }
     take(folder, text, false)
   }
-  const matches = [...declared].flatMap(([agent, paths]) => paths.map((p) => matcher(`agents/${agent}/${p}`)))
+  const matches = [
+    ...[...declared].flatMap(([agent, paths]) => paths.map((p) => matcher(`agents/${agent}/${p}`))),
+    ...cloudFlows().flatMap((f) => (f.def.memoryFiles?.workspace ?? []).map((p) => matcher(`studios/${f.def.id}/${p}`))),
+  ]
   return (name) => matches.some((m) => m(name))
 }
 

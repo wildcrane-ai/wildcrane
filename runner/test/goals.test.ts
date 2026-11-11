@@ -22,7 +22,7 @@ it('讨论元数据跨分页保留目录与已选要点，落卡显式传递空�
   const before = process.env.WILDCRANE_HOME
   process.env.WILDCRANE_HOME = home
   try {
-    const goal = { id: 'idea_1', title: 'Goal', outcome: 'Result', acceptance: [], workflow: 'wf_custom', previews: ['custom'] }
+    const goal = { id: 'idea_1', title: 'Goal', outcome: 'Result', acceptance: [], studio: 'wf_custom', previews: ['custom'] }
     const catalog = [{ agent: 'custom', title: { zh: '审阅' }, when: 'The full trigger.' }]
     const pages: (string | null | undefined)[] = []
     const result = await writeGoals({ id: 'job_1', discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [goal] } } as never, async (_workspace, after) => {
@@ -32,7 +32,7 @@ it('讨论元数据跨分页保留目录与已选要点，落卡显式传递空�
     assert.ok('file' in result)
     const data = JSON.parse(fs.readFileSync(result.file, 'utf8'))
     assert.equal(data.workspace, 'ws_1')
-    assert.deepEqual(data.workflows[1].previews, catalog)
+    assert.deepEqual(data.studios[1].previews, catalog)
     assert.deepEqual(pages, [null, 'wf_first'])
     assert.deepEqual(readGoals(result.file), [goal])
     assert.equal(fs.existsSync(result.file), false)

@@ -576,11 +576,11 @@ describe('the Runner', () => {
     assert.equal(job.outcome, 'failed')
   })
 
-  it('hands an idea conversation its ideas and workflows, and reports what the reply left (#2073)', async () => {
-    const ideas = [{ id: 'idea_1', title: 'Pricing page', outcome: 'Prices.', acceptance: [], workflow: 'wf_builtin_coding', task: null }]
+  it('hands an idea conversation its ideas and studios, and reports what the reply left (#2073)', async () => {
+    const ideas = [{ id: 'idea_1', title: 'Pricing page', outcome: 'Prices.', acceptance: [], studio: 'wf_builtin_coding', task: null }]
     const job = cloud.dispatch({ id: 'j1', discussion: { id: 'dsc_1', workspace: 'ws_1', ideas } })
     start(`const fs = require('node:fs'); const f = process.env.KANBAN_IDEAS; const held = JSON.parse(fs.readFileSync(f, 'utf8'));
-      if (held.workflows[0].id !== 'wf_builtin_coding') process.exit(4);
+      if (held.studios[0].id !== 'wf_builtin_coding') process.exit(4);
       held.ideas[0].start = true; fs.writeFileSync(f, JSON.stringify(held))`)
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'done')
@@ -589,10 +589,10 @@ describe('the Runner', () => {
   })
 
   it('新服务通过 goals 接收旧 CLI 编辑的草稿', async () => {
-    const ideas = [{ id: 'idea_1', title: 'Pricing page', outcome: 'Prices.', acceptance: [], workflow: 'wf_builtin_coding', task: null }]
+    const ideas = [{ id: 'idea_1', title: 'Pricing page', outcome: 'Prices.', acceptance: [], studio: 'wf_builtin_coding', task: null }]
     const job = cloud.dispatch({ id: 'j1', discussion: { id: 'dsc_1', workspace: 'ws_1', goals: ideas, ideas } })
     start(`const fs = require('node:fs'); const f = process.env.KANBAN_IDEAS; const held = JSON.parse(fs.readFileSync(f, 'utf8'));
-      if (held.workflows[0].id !== 'wf_builtin_coding') process.exit(4);
+      if (held.studios[0].id !== 'wf_builtin_coding') process.exit(4);
       held.ideas[0].start = true; fs.writeFileSync(f, JSON.stringify(held))`)
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'done')
@@ -1181,10 +1181,10 @@ describe('the Runner', () => {
     assert.deepEqual(stop, { reason: 'elsewhere', machine: 'laptop' })
   })
 
-  it('registers with protocol 17', async () => {
+  it('registers with protocol 18', async () => {
     start()
     await until(() => cloud.registrations > 0)
-    assert.equal(cloud.protocol, 17)
+    assert.equal(cloud.protocol, 18)
   })
 
   it('stops as outdated when Cloud no longer takes its protocol', async () => {
@@ -1213,8 +1213,8 @@ describe('a task’s folder (#2037)', () => {
     cloud.types.set('art_2', 'image')
     cloud.task = {
       artifacts: new Map([['art_1', [Buffer.from('hero-1')]], ['art_2', [Buffer.from('a-1')]]]),
-      workflow: { workflow: 'wf_own', version: 2, files: {
-        'WORKFLOW.md': '---\nname: Coding\n---\n',
+      studio: { studio: 'wf_own', version: 2, files: {
+        'STUDIO.md': '---\nname: Coding\n---\n',
         'agents/software-planner/AGENT.md': 'Plan it.',
         'agents/software-planner/references/notes.md': 'Notes',
       } },
@@ -1231,7 +1231,7 @@ describe('a task’s folder (#2037)', () => {
   let script = ''
   const runTask = async (id: string, edit = '', extra: Partial<FakeJob> = {}) => {
     script = edit && `process.chdir('.akb/kanban'); ${edit}`
-    const job = cloud.dispatch({ id, task: 'task_1', project: 'prj_1', number: 1, workflow: cloud.task.workflow?.workflow, ...extra })
+    const job = cloud.dispatch({ id, task: 'task_1', project: 'prj_1', number: 1, studio: cloud.task.studio?.studio, ...extra })
     if (!runner) start('', { plan: (r, p, c) => fakeRuntime(script)(r, p, c) })
     await until(() => job.state === 'finished')
     return job
@@ -1301,7 +1301,7 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(cloud.akbContract, AKB_CONTRACT)
   })
 
-  it('reads the task’s workflow version once into this machine’s copy, and places none of its agents (#409)', async () => {
+  it('reads the task’s studio version once into this machine’s copy, and places none of its agents (#409)', async () => {
     // Agents a Runner before #409 placed: an untouched one goes, a hand-edited one stays.
     fs.mkdirSync(path.join(board(), 'agents', 'old'), { recursive: true })
     fs.mkdirSync(path.join(board(), '.sync'), { recursive: true })
@@ -1312,19 +1312,19 @@ describe('a task’s folder (#2037)', () => {
 
     const job = await runTask('j1')
     assert.equal(job.outcome, 'done', job.reason)
-    const held = path.join(runnerHome(), 'workflows')
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(held, 'tasks', 'task_1.json'), 'utf8')), { workflow: 'wf_own', version: 2 })
+    const held = path.join(runnerHome(), 'studios')
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(held, 'tasks', 'task_1.json'), 'utf8')), { studio: 'wf_own', version: 2 })
     assert.equal(JSON.parse(fs.readFileSync(path.join(held, 'versions', 'wf_own@2.json'), 'utf8')).files['agents/software-planner/AGENT.md'], 'Plan it.')
-    assert.ok(!fs.existsSync(path.join(board(), 'agents', 'software-planner')), 'a workflow agent was placed on the board')
+    assert.ok(!fs.existsSync(path.join(board(), 'agents', 'software-planner')), 'a studio agent was placed on the board')
     assert.ok(!fs.existsSync(path.join(board(), 'agents', 'old', 'AGENT.md')), 'an agent an earlier Runner placed stayed')
     assert.equal(read('agents/old/notes.md'), 'Edited.')
-    assert.doesNotMatch(planned[0]!.prompt, /^Workflow:/m)
+    assert.doesNotMatch(planned[0]!.prompt, /^Studio:/m)
 
     await runTask('j2')
-    assert.equal(cloud.log.filter((l) => l === 'GET /v1/tasks/task_1/workflow').length, 1, 'the pinned version was read again')
+    assert.equal(cloud.log.filter((l) => l === 'GET /v1/tasks/task_1/studio').length, 1, 'the pinned version was read again')
 
-    delete cloud.task.workflow
-    assert.equal((await runTask('j3', '', { workflow: null })).outcome, 'done', 'a task with no workflow failed')
+    delete cloud.task.studio
+    assert.equal((await runTask('j3', '', { studio: null })).outcome, 'done', 'a task with no studio failed')
   })
 
   it('syncs triage as board files: what another computer sorted comes down, a move here goes up (#2107)', async () => {
@@ -1399,13 +1399,13 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(commits().length, 0, 'the index went up')
   })
 
-  it('writes a workflow’s skills into the project, only when they changed, and leaves the project’s own (#2030)', async () => {
+  it('writes a studio’s skills into the project, only when they changed, and leaves the project’s own (#2030)', async () => {
     const skill = (root: string, file: string) => path.join(cached(), root, 'skills', file)
     fs.mkdirSync(path.dirname(skill('.claude', 'mine/SKILL.md')), { recursive: true })
     fs.writeFileSync(skill('.claude', 'mine/SKILL.md'), 'my own')
     const version = (n: number, skills: Record<string, string>) => {
-      cloud.task.workflow = { workflow: 'wf_builtin_coding', version: n, builtin: true, files: {
-        'WORKFLOW.md': 'x',
+      cloud.task.studio = { studio: 'wf_builtin_coding', version: n, builtin: true, files: {
+        'STUDIO.md': 'x',
         'skills/mine/SKILL.md': 'not yours',
         'skills/kanban/SKILL.md': 'not the board’s',
         ...skills,
@@ -1428,7 +1428,7 @@ describe('a task’s folder (#2037)', () => {
 
     // The task moved onto a newer version.
     version(3, { 'skills/slides/SKILL.md': 'Slides.' })
-    fs.rmSync(path.join(runnerHome(), 'workflows', 'tasks', 'task_1.json'))
+    fs.rmSync(path.join(runnerHome(), 'studios', 'tasks', 'task_1.json'))
     await runTask('j3')
     assert.equal(fs.readFileSync(skill('.agents', 'slides/SKILL.md'), 'utf8'), 'Slides.')
     assert.ok(!fs.existsSync(skill('.claude', 'deck')), 'a skill the version dropped stayed')
@@ -1768,20 +1768,20 @@ describe('a task’s folder (#2037)', () => {
       'the drawn page was written over its source')
   })
 
-  it('stores a workflow diagram as a workflow, also one first pushed as a plain file (#484)', async () => {
+  it('stores a studio diagram as a studio, also one first pushed as a plain file (#484)', async () => {
     const tag = (name: string) => `
       const fs = require('fs')
       const dir = '../boards/.akb/kanban/assets/1'
       fs.mkdirSync(dir, { recursive: true })
-      fs.writeFileSync(dir + '/workflow.json', JSON.stringify({ version: 1, rounds: [[{ agent: 'a', title: { en: 'A' } }]], land: [], scheduled: [] }))
-      const body = fs.readFileSync('${CARD}', 'utf8').replace(/\\n<(Asset|Workflow) src="\\.assets\\/1\\/workflow\\.json" \\/>\\n/, '')
-      fs.writeFileSync('${CARD}', body + '\\n<${name} src=".assets/1/workflow.json" />\\n')
+      fs.writeFileSync(dir + '/studio.json', JSON.stringify({ version: 1, rounds: [[{ agent: 'a', title: { en: 'A' } }]], land: [], scheduled: [] }))
+      const body = fs.readFileSync('${CARD}', 'utf8').replace(/\\n<(Asset|Studio) src="\\.assets\\/1\\/studio\\.json" \\/>\\n/, '')
+      fs.writeFileSync('${CARD}', body + '\\n<${name} src=".assets/1/studio.json" />\\n')
     `
-    const type = () => cloud.types.get(JSON.parse(cloud.file('assets/task_1.json')!)['.assets/1/workflow.json'].artifact)
+    const type = () => cloud.types.get(JSON.parse(cloud.file('assets/task_1.json')!)['.assets/1/studio.json'].artifact)
     assert.equal((await runTask('j1', tag('Asset'))).outcome, 'done')
     assert.equal(type(), 'asset')
-    assert.equal((await runTask('j2', tag('Workflow'))).outcome, 'done')
-    assert.equal(type(), 'workflow')
+    assert.equal((await runTask('j2', tag('Studio'))).outcome, 'done')
+    assert.equal(type(), 'studio')
   })
 
   it('a preview that cannot be drawn never blocks the push; the list says why until it draws (#456)', async () => {
@@ -2251,7 +2251,7 @@ describe('a task’s folder (#2037)', () => {
   })
 
   it('writes nothing once the job moved to another computer', async () => {
-    const job = cloud.dispatch({ id: 'j1', task: 'task_1', project: 'prj_1', number: 1, workflow: 'wf_own' })
+    const job = cloud.dispatch({ id: 'j1', task: 'task_1', project: 'prj_1', number: 1, studio: 'wf_own' })
     script = `process.chdir('.akb/kanban'); require('fs').writeFileSync('memory/readme.md', 'Late')`
     start('', { plan: (r, p, c) => fakeRuntime(script)(r, p, c), renewMs: 60_000 })
     await until(() => planned.length === 1)
@@ -2263,7 +2263,7 @@ describe('a task’s folder (#2037)', () => {
   })
 
   it('runs a job on offline and writes it back once Cloud is reached within the lease', async () => {
-    const job = cloud.dispatch({ id: 'j1', task: 'task_1', project: 'prj_1', number: 1, workflow: 'wf_own' })
+    const job = cloud.dispatch({ id: 'j1', task: 'task_1', project: 'prj_1', number: 1, studio: 'wf_own' })
     script = `process.chdir('.akb/kanban'); setTimeout(() => require('fs').writeFileSync('memory/readme.md', 'Offline work'), 300)`
     start('', { plan: (r, p, c) => fakeRuntime(script)(r, p, c) })
     await until(() => planned.length === 1)
@@ -2277,7 +2277,7 @@ describe('a task’s folder (#2037)', () => {
   })
 
   it('drops a result still offline when its lease ran out', async () => {
-    const job = cloud.dispatch({ id: 'j1', task: 'task_1', project: 'prj_1', number: 1, workflow: 'wf_own' })
+    const job = cloud.dispatch({ id: 'j1', task: 'task_1', project: 'prj_1', number: 1, studio: 'wf_own' })
     script = `process.chdir('.akb/kanban'); setTimeout(() => require('fs').writeFileSync('memory/readme.md', 'Too late'), 200)`
     start('', { plan: (r, p, c) => fakeRuntime(script)(r, p, c), leaseMs: 300 })
     await until(() => planned.length === 1)
@@ -2292,24 +2292,24 @@ describe('a task’s folder (#2037)', () => {
 
   it('gives the task the workspace memory its agents share, written back in the same commit as its card (#2093, #2114)', async () => {
     cloud.putShared({ 'memory/agents/copywriting/style.md': 'Shared', 'memory/agents/copywriting/notes.md': 'Not declared',
-      'memory/agents/video-cloner/motions/pan.md': 'Pan' })
+      'memory/studios/video-clone/motions/pan.md': 'Pan' })
     cloud.put({ 'memory/agents/copywriting/draft.md': 'Old draft' })
     const job = await runTask('j1', [
       `require('fs').appendFileSync('memory/agents/copywriting/style.md', ' + edit')`,
-      `require('fs').mkdirSync('memory/agents/carousel-planner')`,
-      `require('fs').writeFileSync('memory/agents/carousel-planner/format-reel.md', 'Reel')`,
+      `require('fs').mkdirSync('memory/studios/carousel-post', { recursive: true })`,
+      `require('fs').writeFileSync('memory/studios/carousel-post/format-reel.md', 'Reel')`,
       `require('fs').writeFileSync('memory/agents/copywriting/draft.md', 'Draft')`,
-      `require('fs').rmSync('memory/agents/video-cloner/motions/pan.md')`,
+      `require('fs').rmSync('memory/studios/video-clone/motions/pan.md')`,
       `require('fs').appendFileSync('${CARD}', 'Done.')`,
     ].join('; '))
     assert.equal(job.outcome, 'done', job.reason)
     assert.equal(commits().length, 1, 'the card and the shared memory went up apart')
     assert.ok(!fs.existsSync(path.join(board(), 'memory', 'agents', 'copywriting', 'notes.md')), 'an undeclared workspace file reached the task')
     assert.equal(cloud.shared('memory/agents/copywriting/style.md'), 'Shared + edit')
-    assert.equal(cloud.shared('memory/agents/carousel-planner/format-reel.md'), 'Reel')
-    assert.equal(cloud.shared('memory/agents/video-cloner/motions/pan.md'), null)
+    assert.equal(cloud.shared('memory/studios/carousel-post/format-reel.md'), 'Reel')
+    assert.equal(cloud.shared('memory/studios/video-clone/motions/pan.md'), null)
     assert.equal(cloud.shared('memory/agents/copywriting/notes.md'), 'Not declared')
-    assert.equal(cloud.file('memory/agents/carousel-planner/format-reel.md'), null, 'shared memory reached the project')
+    assert.equal(cloud.file('memory/studios/carousel-post/format-reel.md'), null, 'shared memory reached the project')
     assert.equal(cloud.file('memory/agents/copywriting/draft.md'), 'Draft')
     assert.match(cloud.file(CARD)!, /Done\.$/)
   })
@@ -2429,8 +2429,8 @@ describe('the workspace’s memory files (#2093)', () => {
     assert.ok(shared('agents/notes-keeper/tone.md'))
     assert.ok(!shared('agents/notes-keeper/other.md'))
     assert.ok(!shared('agents/broken/tone.md'))
-    assert.ok(shared('agents/carousel-planner/format-reel.md'))
-    assert.ok(!shared('agents/carousel-planner/format-x/reel.md'))
+    assert.ok(shared('studios/carousel-post/format-reel.md'))
+    assert.ok(!shared('studios/carousel-post/format-x/reel.md'))
     assert.ok(!shared('readme.md'))
   })
 })
@@ -2449,7 +2449,7 @@ describe('flow jobs (#2020)', () => {
     c[0] !== 'raw' || c[1] === 'init' || c[1] === 'create' ? c : c[1] === 'memory' ? [`${c[2]}-memory`, ...c.slice(3)] : c.slice(1))
   const cardCalls = () => calls().filter((c) => c[0] === 'card').map((c) => c.join(' '))
   const flowJob = async (id: string, flow: Partial<NonNullable<FakeFlow>> & { verb: string }, extra: Partial<Parameters<FakeCloud['dispatch']>[0]> = {}) => {
-    const job = cloud.dispatch({ id, task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code', flow: { workflow: 'wf_builtin_coding', ...flow }, ...extra })
+    const job = cloud.dispatch({ id, task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', ...flow }, ...extra })
     if (!runner) start()
     await until(() => job.state === 'finished')
     return job
@@ -2490,7 +2490,7 @@ describe('flow jobs (#2020)', () => {
     const job = await flowJob('j1', { verb: 'create' })
     assert.equal(job.outcome, 'done', job.reason)
     const create = calls().find((c) => c[0] === 'raw' && c[1] === 'create')!
-    assert.deepEqual(create.slice(0, 6), ['raw', 'create', '--title', 'Pricing page', '--workflow', 'coding'])
+    assert.deepEqual(create.slice(0, 6), ['raw', 'create', '--title', 'Pricing page', '--studio', 'coding'])
     assert.deepEqual(calls().find((c) => c[0] === 'agent'), ['agent', 'use', 'claude-code', '--board', board()])
     assert.deepEqual(calls().find((c) => c[1] === 'set' && c[2] === 'model'), ['agent', 'set', 'model', '--board', board()])
     assert.deepEqual(cardCalls(), [`card refine 2 --follow --events --json --board ${board()}`])
@@ -2551,14 +2551,14 @@ describe('flow jobs (#2020)', () => {
     assert.deepEqual(cloud.reviewed, [], 'an unplanned build ran the rejection review')
   })
 
-  it('sends each item the job added up with the board, from its task, on its workflow (#2107)', async () => {
-    process.env.FAKE_AKB = JSON.stringify({ refine: { propose: 'Own idea', workflow: 'wf-own1' } })
+  it('sends each item the job added up with the board, from its task, on its studio (#2107)', async () => {
+    process.env.FAKE_AKB = JSON.stringify({ refine: { propose: 'Own idea', studio: 'wf-own1' } })
     assert.equal((await flowJob('j1', { verb: 'create' })).outcome, 'done')
-    assert.match(cloud.file('triage/proposed.md')!, /\nworkflow: wf-own1\n[\s\S]*source_task: task_1\n/)
+    assert.match(cloud.file('triage/proposed.md')!, /\nstudio: wf-own1\n[\s\S]*source_task: task_1\n/)
     cloud.put({ 'triage/proposed.md': null })
-    process.env.FAKE_AKB = JSON.stringify({ refine: { propose: 'Plain idea', workflow: '' } })
+    process.env.FAKE_AKB = JSON.stringify({ refine: { propose: 'Plain idea', studio: '' } })
     assert.equal((await flowJob('j2', { verb: 'create' })).outcome, 'done')
-    assert.match(cloud.file('triage/proposed.md')!, /title: Plain idea\n[\s\S]*source_task: task_1\nworkflow: coding\n---/)
+    assert.match(cloud.file('triage/proposed.md')!, /title: Plain idea\n[\s\S]*source_task: task_1\nstudio: coding\n---/)
     assert.ok(!cloud.log.some((l) => l.includes('/v1/triage')), 'triage went to Cloud on its own')
   })
 
@@ -2870,7 +2870,7 @@ describe('flow jobs (#2020)', () => {
     const building = async () => {
       await flowJob('j1', { verb: 'create' })
       process.env.FAKE_AKB = JSON.stringify({ implement: { hang: true, chain: 2 } })
-      const job = cloud.dispatch({ id: 'j2', task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code', flow: { workflow: 'wf_builtin_coding', verb: 'implement', card: 2 } })
+      const job = cloud.dispatch({ id: 'j2', task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb: 'implement', card: 2 } })
       await until(() => runs().some((r) => r.sessionId.startsWith('run-implement') && r.status === 'running'))
       // A run on the card the job did not start.
       fs.writeFileSync(runsFile(), JSON.stringify([...runs(), { sessionId: 'run-mine', cardId: 2, status: 'running', startedAt: 1 }]))
@@ -3074,7 +3074,7 @@ describe('flow jobs (#2020)', () => {
       await runner!.close()
       runner = null
       leaveRun()
-      const job = cloud.dispatch({ id: 'j2', state: 'claimed', machine: MACHINE, task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code', flow: { workflow: 'wf_builtin_coding', verb: 'implement', card: 2 } })
+      const job = cloud.dispatch({ id: 'j2', state: 'claimed', machine: MACHINE, task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb: 'implement', card: 2 } })
       cloud.runner = { machineId: MACHINE, machineName: 'studio', live: true }
       start()
       await until(() => job.state === 'finished')
@@ -3089,7 +3089,7 @@ describe('flow jobs (#2020)', () => {
       leaveRun()
       const before = cardCalls().length
       const job = cloud.dispatch({ id: 'j2', state: 'claimed', machine: MACHINE, task: 'task_1', project: 'prj_1', number: 2,
-        runtime: 'claude-code', flow: { workflow: 'wf_builtin_coding', verb: 'implement', card: 2 } })
+        runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb: 'implement', card: 2 } })
       cloud.runner = { machineId: MACHINE, machineName: 'studio', live: true }
       start('', { akb: () => ({ ...fakeAkb(), args: ['-e', 'process.exit(1)', '--'] }) })
       await until(() => job.state === 'finished')
@@ -3112,7 +3112,7 @@ describe('flow jobs (#2020)', () => {
     it('but not one another job here is working on', async () => {
       await flowJob('j1', { verb: 'create' })
       process.env.FAKE_AKB = JSON.stringify({ implement: { hang: true } })
-      cloud.dispatch({ id: 'j2', task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code', flow: { workflow: 'wf_builtin_coding', verb: 'implement', card: 2 } })
+      cloud.dispatch({ id: 'j2', task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb: 'implement', card: 2 } })
       await until(() => runs().some((r) => r.sessionId.startsWith('run-implement') && r.status === 'running'))
       const job = await flowJob('j3', { verb: 'revise', card: 2, text: 'shorter' })
       assert.equal(job.outcome, 'failed')
@@ -3137,22 +3137,22 @@ describe('flow jobs (#2020)', () => {
     assert.equal(calls().filter((c) => c[0] === 'agent' && c[1] === 'use').length, 1, 'a missing connector was swapped for the other')
   })
 
-  it('names the task’s workflow to akb, a built-in and an account’s own, and keeps the version on this machine (#409)', async () => {
-    cloud.task.workflow = { workflow: 'wf_builtin_hyperframes_video', version: 1, files: { 'WORKFLOW.md': 'x' }, builtin: true }
-    await flowJob('j1', { verb: 'create', workflow: 'wf_builtin_hyperframes_video' })
+  it('names the task’s studio to akb, a built-in and an account’s own, and keeps the version on this machine (#409)', async () => {
+    cloud.task.studio = { studio: 'wf_builtin_hyperframes_video', version: 1, files: { 'STUDIO.md': 'x' }, builtin: true }
+    await flowJob('j1', { verb: 'create', studio: 'wf_builtin_hyperframes_video' })
     assert.equal(calls().find((c) => c[1] === 'create')![5], 'hyperframes-video')
     assert.ok(!fs.existsSync(path.join(board(), 'agents')), 'a built-in’s agents were written')
 
-    cloud.task = { artifacts: new Map(), workflow: { workflow: 'wf_7Kx', version: 1, files: { 'WORKFLOW.md': 'own' } } }
-    await flowJob('j2', { verb: 'create', workflow: 'wf_7Kx' }, { task: 'task_2', number: 3 })
+    cloud.task = { artifacts: new Map(), studio: { studio: 'wf_7Kx', version: 1, files: { 'STUDIO.md': 'own' } } }
+    await flowJob('j2', { verb: 'create', studio: 'wf_7Kx' }, { task: 'task_2', number: 3 })
     assert.equal(calls().filter((c) => c[1] === 'create').at(-1)![5], 'wf-7kx')
-    assert.equal(JSON.parse(fs.readFileSync(path.join(runnerHome(), 'workflows', 'versions', 'wf_7Kx@1.json'), 'utf8')).files['WORKFLOW.md'], 'own')
-    assert.ok(!fs.existsSync(path.join(board(), 'workflows')), 'the version was written to the board')
+    assert.equal(JSON.parse(fs.readFileSync(path.join(runnerHome(), 'studios', 'versions', 'wf_7Kx@1.json'), 'utf8')).files['STUDIO.md'], 'own')
+    assert.ok(!fs.existsSync(path.join(board(), 'studios')), 'the version was written to the board')
   })
 
-  it('gives this run alone the MCP servers the workflow declares (#2030)', async () => {
+  it('gives this run alone the MCP servers the studio declares (#2030)', async () => {
     const servers = { mcpServers: { files: { command: 'npx', args: ['-y', '@acme/files'] } } }
-    cloud.task.workflow = { workflow: 'wf_builtin_coding', version: 1, builtin: true, files: { 'WORKFLOW.md': 'x', 'mcp.json': JSON.stringify(servers) } }
+    cloud.task.studio = { studio: 'wf_builtin_coding', version: 1, builtin: true, files: { 'STUDIO.md': 'x', 'mcp.json': JSON.stringify(servers) } }
     await flowJob('j1', { verb: 'create' })
     const file = path.join(board(), '.sync', 'task_1.mcp.json')
     assert.deepEqual(calls().find((c) => c[1] === 'set' && c[2] === 'args'), ['agent', 'set', 'args', '--board', board(), '--', `--mcp-config ${file}`])
@@ -3164,8 +3164,8 @@ describe('flow jobs (#2020)', () => {
     )
 
     // The task moved onto a newer version.
-    cloud.task.workflow = { ...cloud.task.workflow, version: 2, files: { 'WORKFLOW.md': 'x' } }
-    fs.rmSync(path.join(runnerHome(), 'workflows', 'tasks', 'task_1.json'))
+    cloud.task.studio = { ...cloud.task.studio, version: 2, files: { 'STUDIO.md': 'x' } }
+    fs.rmSync(path.join(runnerHome(), 'studios', 'tasks', 'task_1.json'))
     await flowJob('j2', { verb: 'refine', card: 2 })
     assert.deepEqual(calls().filter((c) => c[1] === 'set' && c[2] === 'args').at(-1), ['agent', 'set', 'args', '--board', board()], 'the servers outlived the version')
   })
@@ -3173,7 +3173,7 @@ describe('flow jobs (#2020)', () => {
   it('hands an ACP runtime the MCP servers as its mcpConfig, not as arguments', async () => {
     installed = [{ name: 'opencode', installed: true }]
     const servers = { mcpServers: { files: { command: 'npx', args: ['-y', '@acme/files'] } } }
-    cloud.task.workflow = { workflow: 'wf_builtin_coding', version: 1, builtin: true, files: { 'WORKFLOW.md': 'x', 'mcp.json': JSON.stringify(servers) } }
+    cloud.task.studio = { studio: 'wf_builtin_coding', version: 1, builtin: true, files: { 'STUDIO.md': 'x', 'mcp.json': JSON.stringify(servers) } }
     const job = await flowJob('j1', { verb: 'create' }, { runtime: 'opencode' })
     assert.equal(job.outcome, 'done', job.reason)
     const file = path.join(board(), '.sync', 'task_1.mcp.json')
@@ -3237,60 +3237,60 @@ describe('flow jobs (#2020)', () => {
     assert.equal(spawnSync('git', ['-C', project, 'status', '--porcelain'], { encoding: 'utf8' }).stdout, '', 'the skill or board reached git')
   })
 
-  describe('a Workflow builder task (#2004)', () => {
-    const BUILDER = 'wf_builtin_workflow_builder'
-    const DRAFT = 'workflows/task-1/'
-    const WORKFLOW = '---\nname: Report\npreviews: [writer]\n---\n'
+  describe('a Studio builder task (#2004)', () => {
+    const BUILDER = 'wf_builtin_studio_builder'
+    const DRAFT = 'studios/task-1/'
+    const STUDIO = '---\nname: Report\npreviews: [writer]\n---\n'
     const AGENT = '---\nname: writer\ndescription: Writes it.\n---\n\nWrite it.\n'
-    const written = { [`${DRAFT}WORKFLOW.md`]: WORKFLOW, 'agents/writer/AGENT.md': AGENT }
+    const written = { [`${DRAFT}STUDIO.md`]: STUDIO, 'agents/writer/AGENT.md': AGENT }
 
     it('places a new one, names its folder on the card, and sends it back with its agents', async () => {
       process.env.FAKE_AKB = JSON.stringify({ refine: { result: 'Wrote it.', writes: written } })
       cloud.task.title = '每周竞品周报'
-      const job = await flowJob('j1', { verb: 'create', workflow: BUILDER })
+      const job = await flowJob('j1', { verb: 'create', studio: BUILDER })
       assert.equal(job.outcome, 'done', job.reason)
-      assert.match(cloud.file('todo/2-task.md')!, /<!-- workflow folder: \.akb\/kanban\/workflows\/task-1\/ -->/)
-      const files = { 'WORKFLOW.md': WORKFLOW, 'agents/writer/AGENT.md': AGENT }
-      assert.deepEqual((job.report?.workflow as { files: unknown }).files, files)
+      assert.match(cloud.file('todo/2-task.md')!, /<!-- studio folder: \.akb\/kanban\/studios\/task-1\/ -->/)
+      const files = { 'STUDIO.md': STUDIO, 'agents/writer/AGENT.md': AGENT }
+      assert.deepEqual((job.report?.studio as { files: unknown }).files, files)
       assert.equal(cloud.file(`${DRAFT}agents/writer/AGENT.md`), AGENT)
     })
 
     it('starts a new one as the task\'s title with no agents', async () => {
       process.env.FAKE_AKB = JSON.stringify({ refine: { result: 'Left it.' } })
       cloud.task.title = 'Job posts'
-      const job = await flowJob('j1', { verb: 'create', workflow: BUILDER })
+      const job = await flowJob('j1', { verb: 'create', studio: BUILDER })
       assert.equal(job.outcome, 'done', job.reason)
-      assert.match(cloud.file(`${DRAFT}WORKFLOW.md`)!, /^---\nname: Job posts\nneedsArtifact: false\n---\n$/)
+      assert.match(cloud.file(`${DRAFT}STUDIO.md`)!, /^---\nname: Job posts\nneedsArtifact: false\n---\n$/)
     })
 
     it('changes one of the user\'s own in place, its agents laid out for akb', async () => {
-      cloud.task.context = { workflow: 'wf_own' }
-      cloud.workflows.wf_own = { 'WORKFLOW.md': WORKFLOW, 'agents/writer/AGENT.md': AGENT }
+      cloud.task.context = { studio: 'wf_own' }
+      cloud.studios.wf_own = { 'STUDIO.md': STUDIO, 'agents/writer/AGENT.md': AGENT }
       process.env.FAKE_AKB = JSON.stringify({ refine: { result: 'Changed it.', writes: { 'agents/writer/AGENT.md': AGENT.replace('Write it.', 'Write it short.') } } })
-      const job = await flowJob('j1', { verb: 'create', workflow: BUILDER })
+      const job = await flowJob('j1', { verb: 'create', studio: BUILDER })
       assert.equal(job.outcome, 'done', job.reason)
-      assert.match((job.report?.workflow as { files: Record<string, string> }).files['agents/writer/AGENT.md']!, /Write it short\./)
+      assert.match((job.report?.studio as { files: Record<string, string> }).files['agents/writer/AGENT.md']!, /Write it short\./)
 
       fs.rmSync(path.join(board(), 'agents'), { recursive: true, force: true })
       process.env.FAKE_AKB = JSON.stringify({ revise: { result: 'Again.' } })
-      const again = await flowJob('j2', { verb: 'revise', workflow: BUILDER, card: 2, text: 'Shorter' })
+      const again = await flowJob('j2', { verb: 'revise', studio: BUILDER, card: 2, text: 'Shorter' })
       assert.equal(again.outcome, 'done', again.reason)
       assert.match(fs.readFileSync(path.join(board(), 'agents', 'writer', 'AGENT.md'), 'utf8'), /Write it short\./)
     })
 
     it('sends the draft back as written, whatever akb finds in it (#622)', async () => {
       process.env.FAKE_AKB = JSON.stringify({ refine: { writes: written }, specProblems: ['.akb/kanban/agents/writer/AGENT.md: no description'] })
-      const job = await flowJob('j1', { verb: 'create', workflow: BUILDER })
+      const job = await flowJob('j1', { verb: 'create', studio: BUILDER })
       assert.equal(job.outcome, 'done', job.reason)
-      assert.ok((job.report?.workflow as { files: Record<string, string> }).files['WORKFLOW.md'])
+      assert.ok((job.report?.studio as { files: Record<string, string> }).files['STUDIO.md'])
     })
 
     it('sends its card to Cloud before planning, without the draft (#577)', async () => {
       process.env.FAKE_AKB = JSON.stringify({ refine: { refuse: 'stopped' } })
-      const job = await flowJob('j1', { verb: 'create', workflow: BUILDER })
+      const job = await flowJob('j1', { verb: 'create', studio: BUILDER })
       assert.equal(job.outcome, 'failed')
-      assert.match(cloud.file('todo/2-pricing-page.md') ?? '', /workflow folder: \.akb\/kanban\/workflows\/task-1\//)
-      assert.equal(cloud.file(`${DRAFT}WORKFLOW.md`), null)
+      assert.match(cloud.file('todo/2-pricing-page.md') ?? '', /studio folder: \.akb\/kanban\/studios\/task-1\//)
+      assert.equal(cloud.file(`${DRAFT}STUDIO.md`), null)
     })
   })
 })
@@ -3354,7 +3354,7 @@ describe('periodic agents on the Runner (#2068)', () => {
     await until(() => cloud.jobs.get('agent-1')?.state === 'finished')
     const job = cloud.jobs.get('agent-1')!
     assert.equal(job.outcome, 'done', job.reason)
-    assert.deepEqual(cloud.asked[0], { project: 'prj_1', agent: 'prune-memory', workflow: null, seen: null })
+    assert.deepEqual(cloud.asked[0], { project: 'prj_1', agent: 'prune-memory', studio: null, seen: null })
     assert.ok(cloud.asked.every((a) => a.agent === 'prune-memory'), 'an agent with nothing new was asked for')
     assert.deepEqual(periodic().args.slice(0, 1), ['prune-memory'])
     assert.equal(cloud.file('memory/prune-memory.md'), 'prune-memory ran.\n')
@@ -3371,8 +3371,8 @@ describe('periodic agents on the Runner (#2068)', () => {
     assert.match(cloud.file('triage/proposed.md')!, /title: Add a pricing FAQ\n[\s\S]*source_task: task_7\n/)
   })
 
-  it('tells a reflection the workflow agents Cloud has on, and no other agent (#277)', async () => {
-    const row = (name: string, workflow?: string) => agent({ name, workflow, newWork: false, reads: 'archived-cards' })
+  it('tells a reflection the studio agents Cloud has on, and no other agent (#277)', async () => {
+    const row = (name: string, studio?: string) => agent({ name, studio, newWork: false, reads: 'archived-cards' })
     cloud.periodic = [row('prune-memory'), row('qa-manager', 'coding'), row('qa-manager', 'wf_own'), row('seo-writer', 'wf_own')]
     const job = cloud.dispatch({ id: 'r1', project: 'prj_1', projectDir: project, agent: { name: 'reflect', tasks: [{ id: 'task_7', number: 7 }] } })
     start()
@@ -3404,8 +3404,8 @@ describe('periodic agents on the Runner (#2068)', () => {
     assert.equal(job.outcome, 'done', job.reason)
   })
 
-  it('runs a workflow\'s scheduled agent by its akb name, and fails a project with no folder here', async () => {
-    const qa = cloud.dispatch({ id: 'q1', project: 'prj_1', projectDir: project, agent: { name: 'qa-manager', workflow: 'wf_builtin_coding' } })
+  it('runs a studio\'s scheduled agent by its akb name, and fails a project with no folder here', async () => {
+    const qa = cloud.dispatch({ id: 'q1', project: 'prj_1', projectDir: project, agent: { name: 'qa-manager', studio: 'wf_builtin_coding' } })
     const away = cloud.dispatch({ id: 'q2', project: 'prj_1', projectDir: null, agent: { name: 'prune-memory' } })
     start()
     await until(() => qa.state === 'finished' && away.state === 'finished')

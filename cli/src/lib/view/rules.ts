@@ -136,7 +136,7 @@ export function canRefine(card: Card): boolean {
  * do. And a card whose every box is ticked is finished: what it is waiting for is an
  * archive, not another build.
  *
- * A card whose workflow lands nothing is never built (#1057): approving it archives it.
+ * A card whose studio lands nothing is never built (#1057): approving it archives it.
  *
  * Being blocked is not part of this, the same as with `canRefine`: it is a judgment about
  * when to spend a turn, not a fact about the card.

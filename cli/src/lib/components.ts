@@ -2,14 +2,14 @@ import asset from '../components/Asset.md'
 import compare from '../components/Compare.md'
 import set from '../components/Set.md'
 import storyboard from '../components/Storyboard.md'
-import workflow from '../components/Workflow.md'
+import studio from '../components/Studio.md'
 import shared from '../components/shared.md'
 import { findSpecAgent } from './agents'
 import { BoardError } from './io'
 import { boardText } from './paths'
-import { workflowById, previewMembers, scheduledMembers } from './agent/workflows'
+import { studioById, previewMembers, scheduledMembers } from './agent/studios'
 
-const DOCUMENTS: Record<string, string> = { Asset: asset, Compare: compare, Storyboard: storyboard, Set: set, Workflow: workflow }
+const DOCUMENTS: Record<string, string> = { Asset: asset, Compare: compare, Storyboard: storyboard, Set: set, Studio: studio }
 
 export interface ComponentDoc {
   name: string
@@ -37,9 +37,9 @@ export function agentComponents(
   return [...docs.values()]
 }
 
-export function workflowComponents(id: string): ComponentDoc[] {
-  const flow = workflowById(id)
-  if (!flow) throw new BoardError(`no workflow called "${id}"`, { kind: 'unknown-workflow', workflow: id })
+export function studioComponents(id: string): ComponentDoc[] {
+  const flow = studioById(id)
+  if (!flow) throw new BoardError(`no studio called "${id}"`, { kind: 'unknown-studio', studio: id })
   const members = [...previewMembers(flow), ...flow.land, ...scheduledMembers(flow)].map((row) => row.agent)
   return agentComponents(members)
 }

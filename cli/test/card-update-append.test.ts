@@ -32,7 +32,7 @@ function writeCard(id: number, meta: Partial<Meta> = {}, at = `${id}-card-${id}.
     blocked_by: [],
     related: [],
     modules: [],
-    workflow: 'coding',
+    studio: 'coding',
     questions: [],
     ...meta,
   }

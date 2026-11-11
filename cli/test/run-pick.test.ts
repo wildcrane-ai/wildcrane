@@ -102,15 +102,15 @@ describe('the pick reaching the run', () => {
   it('is what the prompt calls the skill by — the CLI spawned, not the agent’s own', () => {
     // The builder runs Codex here, so its own prompt says `$kanban`; a build picked onto a
     // Claude Code row must say `/kanban`, or the skill never loads.
-    assert.match(buildPrompt({ action: 'implement', id: 1, title: 'card 1', workflow: 'coding' }), /\$kanban/)
-    assert.match(buildPrompt({ action: 'implement', id: 1, title: 'card 1', workflow: 'coding', runtime: 'strong' }), /\/kanban/)
+    assert.match(buildPrompt({ action: 'implement', id: 1, title: 'card 1', studio: 'coding' }), /\$kanban/)
+    assert.match(buildPrompt({ action: 'implement', id: 1, title: 'card 1', studio: 'coding', runtime: 'strong' }), /\/kanban/)
   })
 
   it('is what the pictures follow too — the CLI spawned decides where they go (#517)', () => {
     // The builder runs Codex, which takes a flag per file, so its own prompt says nothing
     // about them; picked onto a Claude Code row the same run must NAME them, or the pictures
     // reach neither the words nor the command line.
-    const build: AgentRequest = { action: 'implement', id: 1, title: 'card 1', workflow: 'coding', pictures: ['/a.png'] }
+    const build: AgentRequest = { action: 'implement', id: 1, title: 'card 1', studio: 'coding', pictures: ['/a.png'] }
     assert.doesNotMatch(buildPrompt(build), /picture came/)
     assert.match(buildPrompt({ ...build, runtime: 'strong' }), /A picture came with this[\s\S]*\/a\.png/)
     // And the other way: a Claude Code run reads a path out of the words, and one picked onto
@@ -127,7 +127,7 @@ describe('the pick reaching the run', () => {
   })
 })
 
-// A Runner's picks per workflow step (#625): each agent runs its own, and one bound to another
+// A Runner's picks per studio step (#625): each agent runs its own, and one bound to another
 // computer fails the step rather than running something else.
 describe('a step’s own runtime', () => {
   const spec = (specAgent: string) => openRun({ action: 'spec', id: 1, specAgent }, 'prompt')

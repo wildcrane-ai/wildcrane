@@ -27,7 +27,7 @@ import type { AgentAction, CommandAction } from './types'
 export type FlowGroup = 'card' | 'delivery' | 'triage' | 'memory'
 
 /** One option a flow takes, as its command declares it. `flags` is Commander's own
- *  notation, so `--workflow <id>` takes a value and `--discard` does not. */
+ *  notation, so `--studio <id>` takes a value and `--discard` does not. */
 export interface FlowOption {
   flags: string
   description: string

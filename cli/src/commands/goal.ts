@@ -5,18 +5,18 @@ import { canonicalSpecAgent } from '../lib/spec-agent-names'
 
 import { say } from '../lib/io'
 import { die } from '../lib/paths'
-import { noWorkflowMessage } from '../lib/agent/workflows'
+import { noStudioMessage } from '../lib/agent/studios'
 import type { MoveResult } from '../lib/types'
 
 export interface GoalOptions {
   id?: string
   title?: string
   bodyFile?: string
-  workflow?: string
+  studio?: string
   previews?: string
 }
 
-export interface GoalWorkflow {
+export interface GoalStudio {
   previews?: { agent: string; title?: { en?: string; zh?: string }; when: string }[]
   id: string
   name: string
@@ -30,7 +30,7 @@ export interface Goal {
   outcome: string
   acceptance: string[]
   previews?: string[]
-  workflow: string
+  studio: string
   task?: string | null
   start?: boolean
   dropped?: boolean
@@ -38,7 +38,7 @@ export interface Goal {
 
 export interface GoalsFile {
   workspace?: string
-  workflows: GoalWorkflow[]
+  studios: GoalStudio[]
   goals: Goal[]
 }
 
@@ -53,23 +53,23 @@ export function loadGoals(): { file: string; held: GoalsFile } {
   if (held.goals !== undefined && held.ideas !== undefined && JSON.stringify(held.goals) !== JSON.stringify(held.ideas)) die('goals and ideas do not match.')
   const goals = held.goals ?? held.ideas
   if (!Array.isArray(goals)) die('The goals array is missing or invalid.')
-  return { file, held: { ...held, workflows: held.workflows ?? [], goals } }
+  return { file, held: { ...held, studios: held.studios ?? [], goals } }
 }
 
-/** A built-in's short name, as `akb workflow list` shows it: `wf_builtin_slide_deck` → `slide-deck`. */
-export const shortWorkflowId = (id: string) =>
+/** A built-in's short name, as `akb studio list` shows it: `wf_builtin_slide_deck` → `slide-deck`. */
+export const shortStudioId = (id: string) =>
   id.startsWith('wf_builtin_') ? id.slice('wf_builtin_'.length).replace(/_/g, '-') : id
 
-export function workflowOf(held: GoalsFile, asked: string): string {
+export function studioOf(held: GoalsFile, asked: string): string {
   const wanted = asked.trim()
-  const found = held.workflows.find((w) => w.id === wanted || shortWorkflowId(w.id) === wanted)
-  if (!found) die(`No workflow \`${wanted}\` here. It has: ${held.workflows.map((w) => shortWorkflowId(w.id)).join(', ')}.`)
+  const found = held.studios.find((w) => w.id === wanted || shortStudioId(w.id) === wanted)
+  if (!found) die(`No studio \`${wanted}\` here. It has: ${held.studios.map((w) => shortStudioId(w.id)).join(', ')}.`)
   return found.id
 }
 
-function fallbackWorkflow(held: GoalsFile): string {
-  const first = held.workflows[0]?.id
-  if (!first) die(noWorkflowMessage(''))
+function fallbackStudio(held: GoalsFile): string {
+  const first = held.studios[0]?.id
+  if (!first) die(noStudioMessage(''))
   return first!
 }
 
@@ -111,29 +111,29 @@ export function cmdGoal(args: string[], opts: GoalOptions): MoveResult {
     if (!title) die('--title must not be empty')
     if (held.goals.filter(open).length >= MAX_GOALS) die(`A conversation holds at most ${MAX_GOALS} goals; drop one first.`)
     const body = readBody(opts.bodyFile)
-    const workflow = opts.workflow ? workflowOf(held, opts.workflow) : fallbackWorkflow(held)
+    const studio = opts.studio ? studioOf(held, opts.studio) : fallbackStudio(held)
     const id = `new_${held.goals.filter((i) => i.id.startsWith('new_')).length + 1}`
-    const previews = goalPreviews(held, workflow, opts.previews)
-    held.goals.push({ id, title, ...body, workflow, previews, task: null })
+    const previews = goalPreviews(held, studio, opts.previews)
+    held.goals.push({ id, title, ...body, studio, previews, task: null })
     write()
-    say(`Saved goal ${id}: ${title} (${shortWorkflowId(workflow)}).`)
-    return { id, title, workflow, previews }
+    say(`Saved goal ${id}: ${title} (${shortStudioId(studio)}).`)
+    return { id, title, studio, previews }
   }
 
   const goal = named(held, opts.id)
   if (goal.task) die(`${goal.id} is already a task; it no longer changes here.`)
   if (sub === 'save') {
-    const workflow = opts.workflow !== undefined ? workflowOf(held, opts.workflow) : goal.workflow
-    const previews = opts.previews !== undefined ? goalPreviews(held, workflow, opts.previews) : workflow === goal.workflow ? goal.previews ?? [] : []
+    const studio = opts.studio !== undefined ? studioOf(held, opts.studio) : goal.studio
+    const previews = opts.previews !== undefined ? goalPreviews(held, studio, opts.previews) : studio === goal.studio ? goal.previews ?? [] : []
     if (opts.title !== undefined) {
       if (!opts.title.trim()) die('--title must not be empty')
       goal.title = opts.title.trim()
     }
     if (opts.bodyFile !== undefined) Object.assign(goal, readBody(opts.bodyFile))
-    Object.assign(goal, { workflow, previews })
+    Object.assign(goal, { studio, previews })
     write()
-    say(`Saved goal ${goal.id}: ${goal.title} (${shortWorkflowId(goal.workflow)}).`)
-    return { id: goal.id, title: goal.title, workflow: goal.workflow, previews: goal.previews }
+    say(`Saved goal ${goal.id}: ${goal.title} (${shortStudioId(goal.studio)}).`)
+    return { id: goal.id, title: goal.title, studio: goal.studio, previews: goal.previews }
   }
   if (sub === 'drop') {
     goal.dropped = true
@@ -150,34 +150,34 @@ export function cmdGoal(args: string[], opts: GoalOptions): MoveResult {
   die('Use goal new, save, drop or start.')
 }
 
-/** `akb workflow list` inside a goal discussion: the workspace's installed workflows. */
-export function cmdGoalWorkflows(): MoveResult {
+/** `akb studio list` inside a goal discussion: the workspace's installed studios. */
+export function cmdGoalStudios(): MoveResult {
   const { held } = loadGoals()
-  for (const w of held.workflows) {
-    say(`${shortWorkflowId(w.id)}  ${w.name}`)
+  for (const w of held.studios) {
+    say(`${shortStudioId(w.id)}  ${w.name}`)
     if (w.description && w.description !== w.name) say(`  ${w.description}`)
     if (w.when) say(`  when        ${w.when}`)
   }
-  return { workflows: held.workflows.map((w) => ({ ...w, id: shortWorkflowId(w.id) })) }
+  return { studios: held.studios.map((w) => ({ ...w, id: shortStudioId(w.id) })) }
 }
 
 
-export function goalPreviews(held: GoalsFile, workflow: string, asked = ''): string[] {
+export function goalPreviews(held: GoalsFile, studio: string, asked = ''): string[] {
   if (!asked.trim()) return []
-  const catalog = held.workflows.find((w) => w.id === workflow)?.previews
+  const catalog = held.studios.find((w) => w.id === studio)?.previews
   if (!catalog) die('Preview agents are unavailable; update Runner and try again.')
   const names = asked.split(',').map((p) => canonicalSpecAgent(({ ui: 'ui-designer', api: 'api-designer' } as Record<string, string>)[p.trim()] ?? p.trim()))
   if (names.length > 50) die('previews must contain at most 50 agent names.')
-  for (const name of names) if (!catalog.some((p) => p.agent === name)) die(`Preview agent ${name} is not enabled in workflow ${workflow}.`)
+  for (const name of names) if (!catalog.some((p) => p.agent === name)) die(`Preview agent ${name} is not enabled in studio ${studio}.`)
   return catalog.filter((p) => names.includes(p.agent)).map((p) => p.agent)
 }
 
-export function cmdGoalPreviews(workflow: string): MoveResult {
+export function cmdGoalPreviews(studio: string): MoveResult {
   const { held } = loadGoals()
-  const id = workflowOf(held, workflow)
-  const catalog = held.workflows.find((w) => w.id === id)?.previews
+  const id = studioOf(held, studio)
+  const catalog = held.studios.find((w) => w.id === id)?.previews
   if (!catalog) die('Preview agents are unavailable; update Runner and try again.')
   const agents = catalog.map((p) => ({ name: p.agent, when: p.when || null }))
-  say(agents.length ? agents.map((p) => `${p.name}\n  ${p.when ?? 'Always'}`).join('\n') : 'This workflow has no preview agent. Ask for none.')
+  say(agents.length ? agents.map((p) => `${p.name}\n  ${p.when ?? 'Always'}`).join('\n') : 'This studio has no preview agent. Ask for none.')
   return { agents, problems: [] }
 }

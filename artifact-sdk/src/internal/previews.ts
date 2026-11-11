@@ -184,13 +184,13 @@ export class Previews {
   }
 
   /** What a body path draws as; `as` is the type its tag declares. */
-  viewOfSrc(src: string, label?: string, as?: "workflow"): MockupView {
+  viewOfSrc(src: string, label?: string, as?: "studio"): MockupView {
     return this.once(`src:${src}:${as ?? ""}`, () => {
       const why = this.shared.card?.assets[src]?.error;
       if (why) return { src, error: this.services.copy.card.mockup.undrawn(label || src.split("/").pop()!, why) };
       const ref = this.refOfSrc(src);
       if (!ref) return this.absent(this.shared.card?.assets[src]?.artifact, src, label);
-      // Runner 0.6.28 stored a workflow diagram as a plain file (#484).
+      // Runner 0.6.28 stored a studio diagram as a plain file (#484).
       return this.viewOf(as && ref.art.type === "asset" ? { ...ref, art: { ...ref.art, type: as } } : ref, src);
     });
   }
@@ -257,8 +257,8 @@ export class Previews {
         };
       case "storyboard":
         return { src, storyboard: () => this.storyboard(v, src) };
-      case "workflow":
-        return { src, workflow: () => resource.json() };
+      case "studio":
+        return { src, studio: () => resource.json() };
       case "tiled":
         // A tileset on its own is a file, not a map.
         if (/\.ts[xj]$/i.test(art.name)) return { src, file: this.fileOf(art, v) };

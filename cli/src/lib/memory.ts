@@ -124,6 +124,8 @@ function scaffoldMemoryDir(dir: string, set: Record<string, string>): Scaffolded
 
 /** The one folder name a module may not take: it is where agent memories live. */
 export const RESERVED_MEMORY_DIR = 'agents'
+/** Where each studio's memory lives (#656), `memory/studios/<studio>/`. */
+export const STUDIO_MEMORY_DIR = 'studios'
 
 // The two files a spec agent kept before its prompt said what to keep — only the migration
 // from the one-file memory writes them now.
@@ -450,7 +452,7 @@ function legacyModuleDirs(): string[] {
   try {
     return fs
       .readdirSync(MEMORY, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && e.name !== RESERVED_MEMORY_DIR && !isGlobalMemory(e.name))
+      .filter((e) => e.isDirectory() && e.name !== RESERVED_MEMORY_DIR && e.name !== STUDIO_MEMORY_DIR && !isGlobalMemory(e.name))
       .map((e) => e.name)
   } catch {
     return []

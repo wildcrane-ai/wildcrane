@@ -6,7 +6,7 @@ import { findSpecAgent, specAgentAssigned } from '../agents'
 import { allCards } from '../view/read'
 import type { Card } from '../view/types'
 import { refinementRequest } from './refine'
-import { cardWorkflowId } from './workflows'
+import { cardStudioId } from './studios'
 import type { AgentRequest, RefineAsk, SpecAsk } from './types'
 
 /**
@@ -20,7 +20,7 @@ import type { AgentRequest, RefineAsk, SpecAsk } from './types'
  *
  * An ask for a card that is no longer there is dropped: the run that asked went on to
  * archive or reject it, and there is nothing left to write a section on. So is an ask for an
- * agent its card's workflow no longer assigns, or that has left the board (#403, #749) —
+ * agent its card's studio no longer assigns, or that has left the board (#403, #749) —
  * both are read here, as the run is about to start, so the last change is the one that
  * counts.
  */
@@ -37,7 +37,7 @@ export function specRunsAfter(asks: SpecAsk[]): AgentRequest[] {
     const card = byId.get(ask.cardId)
     if (!card) return []
     const agent = findSpecAgent(ask.specAgent)
-    if (!agent || !specAgentAssigned(agent.name, cardWorkflowId(ask.cardId))) return []
+    if (!agent || !specAgentAssigned(agent.name, cardStudioId(ask.cardId))) return []
     return [{
       action: 'spec' as const,
       id: ask.cardId,

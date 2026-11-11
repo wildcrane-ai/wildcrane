@@ -31,7 +31,7 @@ function quiet<T>(work: () => T): T {
 }
 
 const create = (opts: Partial<Parameters<typeof cmdCreate>[0]> = {}) =>
-  quiet(() => cmdCreate({ title: 'A card', asked: [], id: next++, workflow: 'coding', ...opts }))
+  quiet(() => cmdCreate({ title: 'A card', asked: [], id: next++, studio: 'coding', ...opts }))
 
 const metaOf = (id: number) => {
   const name = fs.readdirSync(todo()).find((f) => f.startsWith(`${id}-`))!

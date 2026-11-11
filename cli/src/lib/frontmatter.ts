@@ -22,8 +22,8 @@ export function serializeFrontmatter(m: Partial<Meta>): string {
   out.push(`blocked_by: [${(m.blocked_by || []).join(', ')}]`)
   out.push(`related: [${(m.related || []).join(', ')}]`)
   out.push(`modules: [${(m.modules || []).join(', ')}]`)
-  // The workflow this card runs on (#715) — its stable id.
-  if (m.workflow) out.push(`workflow: ${yamlScalar(m.workflow)}`)
+  // The studio this card runs on (#715) — its stable id.
+  if (m.studio) out.push(`studio: ${yamlScalar(m.studio)}`)
   if (m.triage) out.push(`triage: ${yamlScalar(m.triage)}`)
   // One per line, never `[a, b]`: an address may hold a comma.
   if (m.source?.length) {
@@ -137,8 +137,8 @@ export function parseFrontmatter(text: string): { meta: Meta | null; body: strin
   delete meta.release
   delete meta.schedule
   delete meta.roi
-  // The workflow this card runs on; missing, empty or damaged reads as none.
-  meta.workflow = typeof meta.workflow === 'string' && meta.workflow.trim() ? meta.workflow.trim() : ''
+  // The studio this card runs on; missing, empty or damaged reads as none.
+  meta.studio = typeof meta.studio === 'string' && meta.studio.trim() ? meta.studio.trim() : ''
   meta.triage = typeof meta.triage === 'string' ? meta.triage.trim() : ''
   meta.source = (Array.isArray(meta.source) ? meta.source : typeof meta.source === 'string' ? [meta.source] : [])
     .map((ref) => String(ref).trim())

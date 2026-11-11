@@ -15,8 +15,8 @@ formats like these:
 
 ## Archive the card
 
-Use `akb raw delivery complete <id>` to finish your current workflow step. The last step archives
-the card and prints its handoff. Earlier steps leave it for the remaining workflow agents.
+Use `akb raw delivery complete <id>` to finish your current studio step. The last step archives
+the card and prints its handoff. Earlier steps leave it for the remaining studio agents.
 Outside an active delivery, use `akb raw archive <id>` or `akb raw reject <id>`.
 
 **Never finish a task by hand.** Deleting the card file yourself leaves other cards'

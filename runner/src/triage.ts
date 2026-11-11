@@ -11,7 +11,7 @@ import { derivedSourceId } from '../../cli/src/lib/signals/identity'
 import { yamlScalar } from '../../cli/src/lib/yaml'
 import { REJECTIONS_TO_REVIEW } from '../../cli/src/lib/paths'
 import { slugify } from '../../cli/src/lib/slug'
-import { workflowName } from '../../cli/src/lib/shared/board-files.ts'
+import { studioName } from '../../cli/src/lib/shared/board-files.ts'
 import * as api from './api'
 
 const triageDir = (board: string) => path.join(board, 'triage')
@@ -49,7 +49,7 @@ function itemText(item: api.Triage, fields: Record<string, string> = {}): string
 function writeItem(dir: string, item: api.Triage, fields: Record<string, string> = {}): string {
   fs.mkdirSync(dir, { recursive: true })
   const name = freeName(dir, item.title)
-  fs.writeFileSync(path.join(dir, name), itemText(item, item.workflow ? { workflow: workflowName(item.workflow), ...fields } : fields))
+  fs.writeFileSync(path.join(dir, name), itemText(item, item.studio ? { studio: studioName(item.studio), ...fields } : fields))
   return name
 }
 

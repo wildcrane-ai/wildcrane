@@ -57,11 +57,11 @@ describe('akb and akb raw (#551)', () => {
   it('akb lists only Cloud and tool commands; raw lists the local ones', async () => {
     const top = await captured(() => runAgent(['help'], { program: 'akb', cwd }))
     assert.deepEqual(words(top.out).sort(), [
-      'account', 'agent', 'goal', 'guide', 'help', 'image', 'music', 'project', 'raw', 'runner', 'task',
-      'telemetry', 'template', 'tts', 'update', 'workflow', 'workspace',
+      'account', 'agent', 'goal', 'guide', 'help', 'image', 'music', 'project', 'raw', 'runner', 'studio',
+      'task', 'telemetry', 'template', 'tts', 'update', 'workspace',
     ])
     const raw = words((await captured(() => runAgent(['raw', 'help'], { program: 'akb', cwd }))).out)
-    for (const word of ['card', 'delivery', 'run', 'triage', 'memory', 'previews', 'components', 'agent', 'workflow', 'create']) {
+    for (const word of ['card', 'delivery', 'run', 'triage', 'memory', 'previews', 'components', 'agent', 'studio', 'create']) {
       assert.ok(raw.includes(word), word)
     }
   })
@@ -70,7 +70,7 @@ describe('akb and akb raw (#551)', () => {
     for (const [argv, said] of [
       [['delivery', 'complete', 'd_42'], '`akb delivery` is now `akb raw delivery`.'],
       [['prune-memory'], '`akb prune-memory` is now `akb raw memory prune`.'],
-      [['workflow', 'diagram', 'coding', '1'], '`akb workflow diagram` is now `akb raw workflow diagram`.'],
+      [['studio', 'diagram', 'coding', '1'], '`akb studio diagram` is now `akb raw studio diagram`.'],
       [['cloud', 'image'], '`akb cloud` is gone: use `akb account`, `akb image`, `akb tts`, `akb music` or `akb template`.'],
     ] as const) {
       const { code, err } = await captured(() => runAgent([...argv], { program: 'akb', cwd }))

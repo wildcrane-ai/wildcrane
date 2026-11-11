@@ -1,6 +1,6 @@
-// A workflow's scheduled agents, as the board starts them (#1401).
+// A studio's scheduled agents, as the board starts them (#1401).
 //
-// Which agents a workflow has is ./workflows.ts. This file decides what a pass is asked with,
+// Which agents a studio has is ./studios.ts. This file decides what a pass is asked with,
 // and what stands in a new pass's way.
 
 import { insideRun } from './env'
@@ -18,21 +18,21 @@ import {
 /** One pass of one scheduled agent, as a request. */
 export const scheduledRequest = (pass: ScheduledPass): AgentRequest => ({
   action: 'scheduled',
-  workflow: pass.workflow,
+  studio: pass.studio,
   specAgent: pass.agent,
 })
 
-const isPass = (run: Pick<RunRecord, 'action' | 'workflow' | 'specAgent'>, pass: ScheduledPass): boolean =>
-  run.action === 'scheduled' && run.workflow === pass.workflow && run.specAgent === pass.agent
+const isPass = (run: Pick<RunRecord, 'action' | 'studio' | 'specAgent'>, pass: ScheduledPass): boolean =>
+  run.action === 'scheduled' && run.studio === pass.studio && run.specAgent === pass.agent
 
 const openPasses = (deliveries: DeliveryRecord[], pass: ScheduledPass): DeliveryRecord[] =>
   deliveries.filter(
-    (d) => d.status === 'active' && d.scheduled?.workflow === pass.workflow && d.scheduled.agent === pass.agent,
+    (d) => d.status === 'active' && d.scheduled?.studio === pass.studio && d.scheduled.agent === pass.agent,
   )
 
 /** Why a new pass of this agent cannot start: its last one is still running, or still landing. */
 export function scheduledBusy(pass: ScheduledPass, store = readStore()): RunRefusal | null {
-  const args = { agent: pass.agent, workflow: pass.workflow }
+  const args = { agent: pass.agent, studio: pass.studio }
   if (store.runs.some((r) => r.status === 'running' && isPass(r, pass))) {
     return refusal('scheduledRunning', `\`${pass.agent}\` is already running`, args)
   }
@@ -51,8 +51,8 @@ export const stalePasses = (pass: ScheduledPass): string[] =>
 export function insideScheduledPass(): ScheduledPass | null {
   const sessionId = insideRun()
   const run = sessionId ? readStore().runs.find((r) => r.sessionId === sessionId) : undefined
-  return run?.action === 'scheduled' && run.workflow && run.specAgent
-    ? { workflow: run.workflow, agent: run.specAgent }
+  return run?.action === 'scheduled' && run.studio && run.specAgent
+    ? { studio: run.studio, agent: run.specAgent }
     : null
 }
 

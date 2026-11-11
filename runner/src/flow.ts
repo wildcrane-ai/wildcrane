@@ -21,7 +21,7 @@ import { RAW_ARGS_KEY } from '../../cli/src/lib/agent/harnesses/types'
 import { LABELS, providerKey, providerOf, secretKeys, settingKeys } from './runtimes'
 import { secretsOf } from './secrets'
 import { akbCardOf, cardAssetsDir, cardFile, findCard, mcpServersOf, pull, resetSorted, withBoard, workspaceOf, type McpServers, type TaskFolder } from './task-folder'
-import { workflowName } from '../../cli/src/lib/shared/board-files.ts'
+import { studioName } from '../../cli/src/lib/shared/board-files.ts'
 import { clearLaid, layOut } from './triage'
 import { prepareKanbanSkill } from './kanban-skill'
 import { installCommitHook } from '../../cli/src/lib/skill/hook'
@@ -39,7 +39,7 @@ export interface FlowDeps {
   machineId: string
   akb: Akb
   runtimes: () => Promise<RuntimeReport[]>
-  api: Pick<typeof api, 'readTask' | 'readWorkflow' | 'readRejections' | 'markReviewed' | 'readAgents'>
+  api: Pick<typeof api, 'readTask' | 'readStudio' | 'readRejections' | 'markReviewed' | 'readAgents'>
   /** How long stopping the job's board runs may take. */
   stopMs: number
 }
@@ -126,7 +126,7 @@ export function mcpConfig(servers: McpServers, file: string): string | null {
   return file
 }
 
-/** The runtime's arguments that give this run, and no other, the workflow's MCP servers (#2030):
+/** The runtime's arguments that give this run, and no other, the studio's MCP servers (#2030):
  *  Claude Code reads them from a file, Codex as config overrides. A CLI that talks takes the file
  *  as its `mcpConfig` setting instead; Kimi Code and ZCode take none. */
 export function mcpArgs(runtime: Job['runtime'], servers: McpServers, file: string): string {
@@ -309,7 +309,7 @@ async function setUp(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Prom
   const used = await akb(['raw', 'agent', 'use', runtime])
   if (used.code !== 0) return refusal(used)
   // The runtime's settings on the board's Global default, each one set or cleared (#2135); the
-  // workflow's MCP servers ride on the extra arguments, or on `mcpConfig` for a CLI that talks.
+  // studio's MCP servers ride on the extra arguments, or on `mcpConfig` for a CLI that talks.
   const servers = mcpServersOf(ws)
   const mcpFile = path.join(ws.board, '.sync', `${ws.task}.mcp.json`)
   const takes = new Set(settingKeys(runtime))
@@ -346,7 +346,7 @@ async function setUp(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Prom
   return null
 }
 
-/** A runtime's settings with the model and the workflow's MCP servers. */
+/** A runtime's settings with the model and the studio's MCP servers. */
 function valuesOf(runtime: Job['runtime'], model: string | null | undefined, given: Record<string, string>, servers: McpServers, mcpFile: string): Record<string, string> {
   const values: Record<string, string> = { ...given, model: model ?? '' }
   if (settingKeys(runtime).includes(MCP_KEY)) values[MCP_KEY] = mcpConfig(servers, mcpFile) ?? given[MCP_KEY] ?? ''
@@ -417,15 +417,15 @@ async function learnRejections(job: Job, ws: TaskFolder, deps: FlowDeps, io: Flo
   return runs
 }
 
-/** What tells a reflection the workflow agents Cloud has switched on (#277); Cloud unreached,
- *  nothing, and it goes by what the workflows list. */
+/** What tells a reflection the studio agents Cloud has switched on (#277); Cloud unreached,
+ *  nothing, and it goes by what the studios list. */
 async function scheduledEnv(ws: TaskFolder, deps: FlowDeps): Promise<NodeJS.ProcessEnv> {
   const read = await deps.api.readAgents(deps.machineId, ws.project)
   if (!read.ok) {
     console.error(`runner: scheduled agents not read: ${read.error}`)
     return {}
   }
-  const names = read.value.agents.filter((a) => a.workflow).map((a) => a.name)
+  const names = read.value.agents.filter((a) => a.studio).map((a) => a.name)
   return { [SCHEDULED_AGENTS_ENV]: [...new Set(names)].join(',') }
 }
 
@@ -434,20 +434,20 @@ export async function runAgent(job: Job & { agent: AgentJob }, ws: TaskFolder, d
   const since = Date.now()
   const failed = await setUp(job, ws, deps, io)
   if (failed) return { ok: false, reason: failed }
-  const { name, workflow, tasks } = job.agent
+  const { name, studio, tasks } = job.agent
   if (name === 'review-dismissals') {
     const { runs, failure } = await reviewRejections(job, ws, deps, io)
     if (io.lost()) return { ok: false, reason: '' }
     return failure ? { ok: false, reason: failure } : { ok: true, report: spentBy(runs, job) }
   }
   if (name === 'reflect' && !tasks?.length) return { ok: true, report: {} }
-  const args = workflow ? ['raw', 'agent', 'run', workflowName(workflow), name]
+  const args = studio ? ['raw', 'agent', 'run', studioName(studio), name]
     : name === 'reflect' ? ['raw', 'reflect', '--cards', ...tasks!.map((t) => String(t.number))]
     : ['raw', ...(name === 'prune-memory' ? ['memory', 'prune'] : [name])]
   const akb = boardAkb(job, ws, deps, io, ws.cloudTask ?? undefined)
   // Listing reaps a run a stopped Runner left recorded as live, which would hold the agent for good.
   await akb(['raw', 'run', 'list', '--all', '--json'])
-  const env = name === 'reflect' && !workflow ? await scheduledEnv(ws, deps) : undefined
+  const env = name === 'reflect' && !studio ? await scheduledEnv(ws, deps) : undefined
   const ran = await akb([...args, '--follow', '--events', '--json'], true, env)
   if (io.lost()) return { ok: false, reason: '' }
   const answer = answerOf<{ result?: string; error?: { message?: string } }>(ran)
@@ -528,7 +528,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     // a card Cloud does not hold yet (#575). A builder's draft is placed after, so it goes only
     // once it checks out.
     const created = await withBoard(ws, async (push): Promise<api.Call<number>> => {
-      const card = made(await akb(['raw', 'create', '--title', title, '--workflow', workflowName(flow.workflow), '--body-file', body,
+      const card = made(await akb(['raw', 'create', '--title', title, '--studio', studioName(flow.studio), '--body-file', body,
         '--id', String(ws.number), ...cardFlags(ws, flow.metadata), '--json']))
       fs.rmSync(body, { force: true })
       if (!card.ok) return card

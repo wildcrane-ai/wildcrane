@@ -41,9 +41,9 @@ Print it, or run it
   /** Under `delivery`: what one is, which no verb of it says on its own. */
   deliveries: (program: string): string => `
 What a delivery is
-  A delivery freezes the approved requirements and runs the workflow agents in order.
+  A delivery freezes the approved requirements and runs the studio agents in order.
   Each agent records its result with \`delivery complete\`; the final step archives the card.
-  The builder manages its branch, worktree, checks and merge. File workflows deliver their
+  The builder manages its branch, worktree, checks and merge. File studios deliver their
   recorded outputs in the authorized directory. A successful run alone does not finish a delivery.
   \`cancel\` ends it and preserves files. \`resume\` continues unfinished work.
 

@@ -25,12 +25,12 @@ export function uiConfigOf(...board: string[]): string {
   return path.join(dir, 'ui.config.json')
 }
 
-/** Put one workflow's scheduled rows straight into a board's `ui.config.json`. */
-export function saveScheduled(root: string, workflow: string, helpers: Record<string, unknown>[]): void {
+/** Put one studio's scheduled rows straight into a board's `ui.config.json`. */
+export function saveScheduled(root: string, studio: string, helpers: Record<string, unknown>[]): void {
   const file = uiConfigOf(root, 'docs', 'kanban')
   const cfg = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {}
-  const stages = (cfg.workflows ??= {}).stages ?? {}
-  cfg.workflows.stages = { ...stages, [workflow]: { ...stages[workflow], schedule: { helpers } } }
+  const stages = (cfg.studios ??= {}).stages ?? {}
+  cfg.studios.stages = { ...stages, [studio]: { ...stages[studio], schedule: { helpers } } }
   fs.writeFileSync(file, JSON.stringify(cfg))
 }
 
@@ -106,12 +106,12 @@ export function cloudNumber(root: string): number {
 
 /** Run one board move against `root` and hand back its own fields. A `create` with no `--id`
  *  outside a Runner workspace takes the number Cloud would give it, and one with no
- *  `--workflow` is a Coding card. */
+ *  `--studio` is a Coding card. */
 export async function move(root: string, argv: string[]): Promise<Record<string, unknown>> {
   onlyTempBoards(root, argv)
   let answered: Record<string, unknown> = {}
   if (argv[0] === 'create' && !argv.includes('--id') && !process.env.AI4KANBAN_TASK) argv = [...argv, '--id', String(cloudNumber(root))]
-  if (argv[0] === 'create' && !argv.some((a) => ['--workflow', '--triage'].includes(a) || a.startsWith('--workflow='))) argv = [...argv, '--workflow', 'coding']
+  if (argv[0] === 'create' && !argv.some((a) => ['--studio', '--triage'].includes(a) || a.startsWith('--studio='))) argv = [...argv, '--studio', 'coding']
   await refusalOf(argv, () =>
     runBoard(argv, {
       program: 'kanban',

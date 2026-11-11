@@ -8,8 +8,8 @@
     "properties": { "a": { "type": "string" }, "b": { "type": "string" } }
   },
   "references": [
-    { "json": "/a", "types": ["storyboard", "compare", "spritesheet", "workflow"] },
-    { "json": "/b", "types": ["storyboard", "compare", "spritesheet", "workflow"] },
-    { "json": "/shots", "types": ["storyboard", "compare", "spritesheet", "workflow"] }
+    { "json": "/a", "types": ["storyboard", "compare", "spritesheet", "studio"] },
+    { "json": "/b", "types": ["storyboard", "compare", "spritesheet", "studio"] },
+    { "json": "/shots", "types": ["storyboard", "compare", "spritesheet", "studio"] }
   ]
 }

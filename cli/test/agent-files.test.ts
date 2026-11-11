@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { buildAsk, buildPrompt } from '../src/lib/agent/prompts.ts'
 import { findSpecAgent, specAgentCatalog, specAgentList } from '../src/lib/agents/index.ts'
+import { sharedMemory } from '../src/lib/agents/shared-memory.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
 import { forgetMachineState, move, refuses } from './helpers/board.ts'
 import { resetOfficial, writeOfficial } from './helpers/official.ts'
@@ -84,8 +85,8 @@ describe('what a run is told', () => {
 
   it('names them on a leading run too', async () => {
     agent('clip-editor', [], { 'style.md': 'Cut on the beat.' })
-    writeOfficial('workflows/clips/WORKFLOW.md', '---\nname: Clips\nland: [clip-editor]\n---\n')
-    const id = (await move(root, ['create', '--title', 'A clip', '--workflow', 'clips'])).id as number
+    writeOfficial('studios/clips/STUDIO.md', '---\nname: Clips\nland: [clip-editor]\n---\n')
+    const id = (await move(root, ['create', '--title', 'A clip', '--studio', 'clips'])).id as number
     const prompt = buildPrompt({ action: 'implement', id })
     assert.match(prompt, /——— your own files ———[\s\S]*docs\/kanban\/agents\/clip-editor\/style\.md/)
     assert.doesNotMatch(prompt, /Cut on the beat/)
@@ -97,9 +98,24 @@ describe('what a run is told', () => {
 
   it("names `ui-designer`'s reference by path rather than pasting it in (#1003)", () => {
     const ask = helperAsk('ui-designer')
-    assert.match(ask, /your own files/)
+    assert.match(ask, /your studio's files/)
     assert.match(ask, /references\/rendered-screen\.md/)
     assert.doesNotMatch(ask, /How to draw a rendered screen/)
+  })
+})
+
+describe("a studio's shared rules, files and memory (#656)", () => {
+  it('hands them to every agent of the studio, and reads its files by studio path', async () => {
+    const id = (await move(root, ['create', '--title', 'A deck', '--studio', 'slide-deck'])).id as number
+    fs.mkdirSync(path.join(kanban(), 'memory', 'studios', 'slide-deck'), { recursive: true })
+    fs.writeFileSync(path.join(kanban(), 'memory', 'studios', 'slide-deck', 'feedback.md'), '- Dark covers.\n')
+    const ask = buildAsk({ action: 'spec', id, specAgent: 'deck-builder' })
+    assert.match(ask, /——— your studio's rules ———[\s\S]*## Pages/)
+    assert.match(ask, /raw file slide-deck shared\/scripts\/validate-storyboard\.mjs/)
+    assert.match(ask, /——— what your studio remembers ———[\s\S]*Dark covers/)
+    assert.match(String((await move(root, ['file', 'slide-deck', 'shared/RULES.md'])).text), /## Pages/)
+    assert.ok(sharedMemory(kanban())('studios/slide-deck/feedback.md'))
+    assert.ok(!sharedMemory(kanban())('studios/slide-deck/notes.md'))
   })
 })
 
@@ -112,16 +128,17 @@ describe('`akb raw agent-file`', () => {
   it("prints a built-in agent's file, which has no path to open", async () => {
     writeOfficial('agents/ui-designer/spacing.md', 'Eight pixels, or a multiple of it.')
     assert.deepEqual(findSpecAgent('ui-designer')!.files, ['references/rendered-screen.md', 'spacing.md'])
-    const said = await move(root, ['agent-file', 'ui-designer', 'spacing.md'])
+    const said = await move(root, ['file', 'coding', 'agents/ui-designer/spacing.md'])
     assert.equal(said.text, 'Eight pixels, or a multiple of it.')
-    assert.match(buildAsk({ action: 'spec', id: card, specAgent: 'ui-designer' }), /agent-file ui-designer spacing\.md/)
+    assert.match(buildAsk({ action: 'spec', id: card, specAgent: 'ui-designer' }), /raw file coding agents\/ui-designer\/spacing\.md/)
+    assert.equal((await move(root, ['agent-file', 'ui-designer', 'spacing.md'])).text, said.text)
   })
 
   it('ships the email planner with its render script, and refuses a board copy of the same name', async () => {
     assert.deepEqual(findSpecAgent('email-planner')!.files, ['scripts/render.mjs'])
-    const said = await move(root, ['agent-file', 'email-planner', 'scripts/render.mjs'])
+    const said = await move(root, ['file', 'coding', 'agents/email-planner/scripts/render.mjs'])
     assert.match(String(said.text), /plainText: true/)
-    assert.match(buildAsk({ action: 'spec', id: card, specAgent: 'email-planner' }), /agent-file email-planner scripts\/render\.mjs/)
+    assert.match(buildAsk({ action: 'spec', id: card, specAgent: 'email-planner' }), /raw file coding agents\/email-planner\/scripts\/render\.mjs/)
     agent('email-planner', ['  when: A card needs it.'])
     assert.match(specAgentCatalog().problems.join('\n'), /an agent named `email-planner` is already on this board/)
     assert.equal(findSpecAgent('email-planner')!.dir, undefined)
@@ -131,7 +148,7 @@ describe('`akb raw agent-file`', () => {
     const own = await move(root, ['agent-file', 'api-contract', 'AGENT.md'])
     assert.match(String(own.text), /^---\nname: api-contract\n[\s\S]*You write the api-contract part\./)
     const builtIn = await move(root, ['agent-file', 'prompt-writer', 'AGENT.md'])
-    assert.equal(builtIn.text, fs.readFileSync(path.join(process.env.AI4KANBAN_WORKFLOWS!, 'agents', 'prompt-writer', 'AGENT.md'), 'utf8'))
+    assert.equal(builtIn.text, fs.readFileSync(path.join(process.env.AI4KANBAN_STUDIOS!, 'agents', 'prompt-writer', 'AGENT.md'), 'utf8'))
     assert.ok(!findSpecAgent('prompt-writer')!.files.includes('AGENT.md'))
   })
 

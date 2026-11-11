@@ -25,7 +25,7 @@ akb:
   session: new
   # Preview components this agent uses; an empty list loads no component documentation.
   components: [Asset]
-  # Optional: a sticker of its deliverable, by glyph name (the Workflow builder lists them),
+  # Optional: a sticker of its deliverable, by glyph name (the Studio builder lists them),
   # or 1 to 12 parts `{ d, f?, o?: true, s?, w? }`. Without it, a generic file is drawn.
   icon: text
 ---
@@ -33,7 +33,7 @@ akb:
 You write the words a screen shows.
 ```
 
-Its workflow, not the agent, sets its role: `WORKFLOW.md` lists it under `previews`, `land`
+Its studio, not the agent, sets its role: `STUDIO.md` lists it under `previews`, `land`
 or `scheduled`.
 
 A scheduled agent can also name the new input it works on; it then runs only when there is some:
@@ -65,7 +65,8 @@ akb:
 ```
 
 Everything under the frontmatter is the agent's instructions, read fresh on every run —
-a file with none is refused.
+a file with none is refused. A preview agent already redoes only what the user names or an
+upstream change affects; state only how its own rework differs, such as what to re-render.
 
 An agent declares no options of its own. Two ways of working is two agents, each with its own
 `AGENT.md` — a switch that changes how one agent works costs more than it buys.
@@ -92,10 +93,12 @@ akb:
 Every file beside `AGENT.md`, in any subfolder, is named to the run by its path and opened only
 when the work calls for it. Put long material there and keep `AGENT.md` short.
 
+- **Shared files**: a file several agents of one studio use goes in the studio's `shared/`, never
+  in one agent's folder for the others to borrow.
 - **Scripts**: every agent owns its task scripts in its own folder, including built-in agents.
   Keep business validation there, outside the CLI's board logic. Document the runtime, inputs
   and invocation beside the script; consumers use the owner's script. Built-in files can be
-  saved through `akb raw agent-file <agent> <path>` and run locally with their relative layout
+  saved through `akb raw file <studio> <path>` and run locally with their relative layout
   intact; custom agents use their existing folders.
 
 ## Imported skills
@@ -119,7 +122,9 @@ An agent may carry several skills, each whole in its own `skills/<skill>/` folde
 
 ## Memory
 
-`docs/kanban/memory/agents/<name>/` is read into every run. Keep none unless the agent has wide
+`docs/kanban/memory/agents/<name>/` is read into every run; what several agents of one studio
+remember goes in the studio's `docs/kanban/memory/studios/<studio>/`, described in its
+`shared/RULES.md`. Keep none unless the agent has wide
 latitude and its mistakes or the user's corrections should change its next output. Otherwise say
 in `AGENT.md`:
 
@@ -136,7 +141,7 @@ in `AGENT.md`:
 
 Declare the preview components the agent uses in `akb.components` (Asset, Compare, Storyboard, Set).
 Their usage documentation is supplied with the run; omitted declarations default to Asset.
-Use `akb raw components --agent <name> --docs` or `--workflow <id> --docs` to read it.
+Use `akb raw components --agent <name> --docs` or `--studio <id> --docs` to read it.
 
 Choose the form the reader takes in fastest and say it in `AGENT.md`: an image for a look, a
 storyboard for a sequence over time, readable Markdown for everything else.
@@ -154,7 +159,7 @@ storyboard for a sequence over time, readable Markdown for everything else.
 Say what the agent owns, what it produces, and what it leaves alone. Don't repeat the contract
 every run is pointed to (`akb guide preview-agent`): where the section goes, how to validate,
 how to keep memory, and how to defer to the user. A scheduled agent says what one run does,
-never when it runs.
+never when it runs. Write the text as `akb guide write-prompt` says.
 
 ## Work with the user
 
@@ -173,8 +178,8 @@ never when it runs.
   Do not finish until the agent is accepted with no problems reported for it.
 - **`akb raw previews <name> <id> --print`** on a real card prints the whole prompt the agent will get:
   its instructions, the reference for each chosen setting, its files and its memory. Read it, and cut whatever the run does not need.
-- **Workflow**: a new agent belongs to the workflow it was created in and starts switched on;
-  a preview agent joins the end of that workflow's `previews`. `akb raw previews` refuses it while it is off.
-  Switch it in that workflow's `WORKFLOW.md`.
+- **Studio**: a new agent belongs to the studio it was created in and starts switched on;
+  a preview agent joins the end of that studio's `previews`. `akb raw previews` refuses it while it is off.
+  Switch it in that studio's `STUDIO.md`.
 - **Schedule**: set `reads` from what the agent works on; it runs automatically by default.
-  For a fixed cadence, add `cadence: 1d` to its entry in the workflow's `scheduled`.
+  For a fixed cadence, add `cadence: 1d` to its entry in the studio's `scheduled`.

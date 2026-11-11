@@ -1,4 +1,4 @@
-// Storyboard 与 Workflow 标签独占段落，label 为可选标题。
+// Storyboard 与 Studio 标签独占段落，label 为可选标题。
 
 const attr = (name: string) => new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`)
 const SRC_ATTR = attr('src')
@@ -19,4 +19,4 @@ const blockTag = (name: string) => {
 }
 
 export const storyboardAttrs = blockTag('Storyboard')
-export const workflowAttrs = blockTag('Workflow')
+export const studioAttrs = blockTag('Studio')

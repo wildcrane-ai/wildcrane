@@ -12,10 +12,10 @@ export interface SpecAgent {
   /** What it does, in one sentence. */
   description: string
   /** When planning requests it as a preview, exceptions included — `akb.when`. Absent: every
-   *  card on its workflow requests it. */
+   *  card on its studio requests it. */
   when?: string
   /** The previews whose approval it waits on when a card requests them too (#2154) —
-   *  `akb.after`. ../agent/workflows.ts drops a name outside its workflow or one that closes a loop. */
+   *  `akb.after`. ../agent/studios.ts drops a name outside its studio or one that closes a loop. */
   after: string[]
   /** Preview component documentation supplied with the run. */
   components: string[]
@@ -68,7 +68,7 @@ export interface AgentLines {
   when?: string
 }
 
-/** The `akb.*` keys from before #2152, when an agent declared its own role. Its workflow
+/** The `akb.*` keys from before #2152, when an agent declared its own role. Its studio
  *  lists it now. */
 const OLD_ROLE_KEYS = ['lead', 'hook', 'stage', 'kind']
 
@@ -124,8 +124,8 @@ export function parseSpecAgent(
   if (old.length) {
     return bad(
       `\`${name}\` declares ${old.map((key) => `\`akb.${key}\``).join(', ')}, which the board no longer reads — remove ` +
-        `${old.length > 1 ? 'them' : 'it'}, and list the agent in its workflow's \`WORKFLOW.md\` under \`previews\`, \`land\` ` +
-        'or `scheduled` (`akb guide write-agent`), or ask the Workflow builder to rewrite it',
+        `${old.length > 1 ? 'them' : 'it'}, and list the agent in its studio's \`STUDIO.md\` under \`previews\`, \`land\` ` +
+        'or `scheduled` (`akb guide write-agent`), or ask the Studio builder to rewrite it',
       { keys: old },
     )
   }
@@ -210,7 +210,8 @@ function readTranslations(raw: YamlValue | undefined): Record<string, AgentLines
 
 // `akb.memoryFiles.workspace`: paths inside the agent's memory folder, or why the value is
 // not one. `*` matches within one name, so `format-*.md` covers every format file.
-function memoryPaths(raw: YamlValue | undefined): string[] | string {
+/** `memoryFiles: { workspace: [...] }`, its paths relative to the memory folder; a string says why not. */
+export function memoryPaths(raw: YamlValue | undefined, folder = 'memory/agents/<name>/'): string[] | string {
   if (raw === undefined) return []
   const block = map(raw)
   const extra = block ? Object.keys(block).filter((key) => key !== 'workspace') : []
@@ -222,7 +223,7 @@ function memoryPaths(raw: YamlValue | undefined): string[] | string {
   }
   const paths = [...new Set(list.map((v) => (v as string).trim()))]
   const outside = paths.find((p) => p.startsWith('/') || p.includes('\\') || p.split('/').some((part) => part === '..' || part === '.'))
-  if (outside) return `\`akb.memoryFiles.workspace: ${outside}\`, which is outside its memory folder — use a path inside \`memory/agents/<name>/\``
+  if (outside) return `\`akb.memoryFiles.workspace: ${outside}\`, which is outside its memory folder — use a path inside \`${folder}\``
   return paths
 }
 

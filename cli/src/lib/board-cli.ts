@@ -18,7 +18,7 @@ import path from 'node:path'
 import { die, projectRootOf, setBoardDir, setBoardRoot, useProjectState } from './paths'
 import { BoardError, warn, type Sink } from './io'
 import { POINTER_FILE, hasRetiredPointer } from './cloud/pointer'
-import { backfillCardWorkflows } from './card-workflow-backfill'
+import { backfillCardStudios } from './card-studio-backfill'
 
 // `init` is the one move that may run where no board exists yet — it is what makes one.
 const MAKES_A_BOARD = 'init'
@@ -57,7 +57,7 @@ export function useBoard(found: FoundBoard, dirNamed: boolean): void {
   if (!found.named && found.board === path.join(found.root, 'docs', 'kanban')) setBoardRoot(found.root, dirNamed)
   else setBoardDir(found.board, found.root)
   useProjectState()
-  backfillCardWorkflows()
+  backfillCardStudios()
 }
 
 // A board with no `todo/` is half a board — a folder someone deleted from, or one an

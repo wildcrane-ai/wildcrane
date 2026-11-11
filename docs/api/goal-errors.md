@@ -3,9 +3,9 @@
 PUT /v1/discussions/{id}/draft：输入 expectedVersion 与 goals 或兼容 ideas；成功返回讨论，冲突返回 409/version_conflict 和最新 discussion。
 POST /v1/discussions/{id}/goals/{goal}/start（兼容 /ideas/{idea}/start）：输入 project?、expectedVersion?、skip_plan?、machine?；成功返回任务，保留外部讨论重复调用返回原任务的行为。
 wildcrane_draft_save({discussionId, expectedVersion, goals?, ideas?})：二选一传目标数组；成功返回 saved:true，冲突返回 saved:false、最新 version/goals/ideas/url，参数错误保持 isError:true。
-akb goal <new|save|drop|start> [--id <goal>] [--title <title>] [--body-file <file>] [--workflow <id>] [--previews <agents>]：编辑目标及审阅要点，成功结果增加 previews，文件校验失败沿用现有退出行为。
+akb goal <new|save|drop|start> [--id <goal>] [--title <title>] [--body-file <file>] [--studio <id>] [--previews <agents>]：编辑目标及审阅要点，成功结果增加 previews，文件校验失败沿用现有退出行为。
 
-`akb raw previews --triggers [--workflow <id>] [--workspace <id>] [--json]` 查询已启用要点；[完整接口与兼容语义](goal-previews.md)。
+`akb raw previews --triggers [--studio <id>] [--workspace <id>] [--json]` 查询已启用要点；[完整接口与兼容语义](goal-previews.md)。
 
 | 场景 | 英文文字 |
 | --- | --- |
@@ -14,7 +14,7 @@ akb goal <new|save|drop|start> [--id <goal>] [--title <title>] [--body-file <fil
 | HTTP 保存冲突，409/version_conflict | The goals have changed. Read them again before saving. |
 | HTTP 目标不存在，404/not_found | No goal has this id. |
 | HTTP 已开始，409/conflict | This goal has already been started. |
-| 数据库工作流变化，409/conflict | This goal's workflow has changed. |
+| 数据库工作台变化，409/conflict | This goal's studio has changed. |
 | MCP 缺失或双传，bad_request | Provide exactly one of goals or ideas. |
 | MCP 保存冲突，saved:false 的 reason | The goals have changed. Merge your changes with the latest goals and save again. |
 | CLI/Runner/Web 两字段不一致 | goals and ideas do not match. |

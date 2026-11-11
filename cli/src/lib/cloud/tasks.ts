@@ -24,15 +24,15 @@ export interface CloudTask {
   id: string
   key: string
   project: string
-  workflow: { id: string } | null
+  studio: { id: string } | null
 }
 
 /** `WC-12` → 12. */
 export const numberOf = (key: string): number => Number(/-(\d+)$/.exec(key)?.[1] ?? NaN)
 
-/** An akb workflow name as Cloud's id: a built-in's (`coding` → `wf_builtin_coding`), or an
+/** An akb studio name as Cloud's id: a built-in's (`coding` → `wf_builtin_coding`), or an
  *  account's own folder (`wf-0190ab` → `wf_0190ab`). */
-export function cloudWorkflow(name: string): string {
+export function cloudStudio(name: string): string {
   if (/^wf-/.test(name)) return name.replace('-', '_')
   return `wf_builtin_${name.replace(/-/g, '_')}`
 }
@@ -69,8 +69,8 @@ export interface NewTask {
   title: string
   /** What the task's own card is written from. */
   request?: string
-  /** An akb workflow name; left off, the source task's. */
-  workflow?: string
+  /** An akb studio name; left off, the source task's. */
+  studio?: string
   /** Cloud runs it at once, from planning. */
   run?: boolean
   /** What tells this task apart from another made from the same one, with the title. */
@@ -96,11 +96,11 @@ export type Made = CloudCall<{ task: CloudTask; number: number; from: CloudTask;
 export async function createTask(from: string, said: NewTask): Promise<Made> {
   const source = await call<CloudTask>('GET', `/v1/tasks/${encodeURIComponent(from)}`)
   if (!source.ok) return source
-  const workflow = said.workflow ? cloudWorkflow(said.workflow) : source.value.workflow?.id
+  const studio = said.studio ? cloudStudio(said.studio) : source.value.studio?.id
   const body = {
     title: said.title,
     project: source.value.project,
-    ...(workflow ? { workflow } : {}),
+    ...(studio ? { studio } : {}),
     ...(said.request?.trim() ? { request: said.request.trim() } : {}),
     source: 'api',
     source_context: { task: from, ...(said.agent ? { agent: said.agent } : {}) },
@@ -166,7 +166,7 @@ export async function creationProject(board: string, root: string, task = worksp
 export async function createProjectTask(project: string, said: NewTask, key: string): Promise<CloudCall<{ task: CloudTask; number: number }>> {
   const made = await call<CloudTask>('POST', '/v1/tasks', {
     title: said.title, project, source: 'api',
-    ...(said.workflow ? { workflow: cloudWorkflow(said.workflow) } : {}),
+    ...(said.studio ? { studio: cloudStudio(said.studio) } : {}),
     ...(said.request?.trim() ? { request: said.request.trim() } : {}),
     ...(said.agent ? { source_context: { agent: said.agent } } : {}),
     ...(said.triage ? { triage: `tri_${project.replace(/^prj_/, '')}_${said.triage}` } : {}),

@@ -12,14 +12,14 @@ import { filesStop } from './outputs'
 import type { MoveResult } from '../types'
 import { findCard } from '../view/read'
 import { readStore, withStore } from './store'
-import { landAgents, noWorkflowMessage, workflowFor } from './workflows'
+import { landAgents, noStudioMessage, studioFor } from './studios'
 import { specAgentCatalog } from '../agents/catalog'
 import type { DeliveryCompletion, DeliveryRecord } from './types'
 
 export function deliveryAgents(delivery: DeliveryRecord) {
-  if (delivery.workflow?.land) return delivery.workflow.land
-  const flow = workflowFor(delivery.workflow?.id)
-  if (!flow) throw new Error(noWorkflowMessage(delivery.workflow?.id))
+  if (delivery.studio?.land) return delivery.studio.land
+  const flow = studioFor(delivery.studio?.id)
+  if (!flow) throw new Error(noStudioMessage(delivery.studio?.id))
   return landAgents(flow)
 }
 
@@ -67,14 +67,14 @@ export function completeDelivery(named: string, result: { commit?: string; branc
         return { delivery, receipt: pending }
       }
       const agent = delivery.scheduled?.agent ?? deliveryAgents(delivery)[deliveryStep(delivery)]?.agent
-      if (!agent) throw new Error('No workflow step remains to complete.')
+      if (!agent) throw new Error('No studio step remains to complete.')
       if (delivery.cardId !== null && !locate(delivery.cardId)) throw new Error('The card is missing before completion.')
       const finalStep = !!delivery.scheduled || receipts.length + 1 >= deliveryAgents(delivery).length
       const card = delivery.cardId === null ? undefined : findCard(delivery.cardId)
       if (finalStep && card && /[-*]\s+\[ \]/.test(card.body)) throw new Error('Complete every Todo before finishing the delivery.')
       const merges = specAgentCatalog().agents.find((a) => a.name === agent)?.merges
       if (merges && !commit && delivery.base) throw new Error(`\`${agent}\` must report its merged commit and target branch.`)
-      if (delivery.workflow?.needsArtifact && !delivery.scheduled) {
+      if (delivery.studio?.needsArtifact && !delivery.scheduled) {
         const stop = filesStop(delivery)
         if (stop) throw new Error(stop.why)
       }
@@ -86,7 +86,7 @@ export function completeDelivery(named: string, result: { commit?: string; branc
     syncAudit(delivery.deliveryId)
     const final = !!delivery.scheduled || receipt.step + 1 >= deliveryAgents(delivery).length
     if (final && !receipt.finished) {
-      if (delivery.workflow?.needsArtifact && !delivery.scheduled) {
+      if (delivery.studio?.needsArtifact && !delivery.scheduled) {
         const stop = filesStop(delivery)
         if (stop) throw new Error(stop.why)
       }

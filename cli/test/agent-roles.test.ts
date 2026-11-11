@@ -56,7 +56,7 @@ describe('the roles', () => {
     }
   })
 
-  it('names every board flow, and leaves the build to the workflow', () => {
+  it('names every board flow, and leaves the build to the studio', () => {
     assert.deepEqual(
       roles().map((r) => r.name),
       [
@@ -142,17 +142,17 @@ describe('the roles', () => {
       'schema-designer',
       'scriptwriter',
       'social-illustrator',
+      'studio-writer',
       'tech-stack-advisor',
       'ui-designer',
       'video-cloner',
       'video-template-builder',
-      'workflow-writer',
     ])
     assert.deepEqual(agentRoster().map((a) => a.kind), [...Array(6).fill('role'), ...Array(26).fill('agent')])
     // A role says which work it runs; a specialist is asked for by name and runs none.
     assert.ok(agentRoster()[0]!.flows.length > 0)
     assert.deepEqual(agentRoster()[7]!.flows, [])
-    // No role lands a workflow; `builder` is one of Coding's agents.
+    // No role lands a studio; `builder` is one of Coding's agents.
     assert.deepEqual(agentRoster().filter((a) => a.kind === 'role' && a.lands).map((a) => a.name), [])
   })
 })
@@ -209,7 +209,7 @@ describe("the one-time move onto the agents", () => {
 
   it('reports the move in the run log the first time a run is built', () => {
     rule('implement', 'Run the smoke tests.')
-    const { notes, prompt } = buildRun({ action: 'implement', id: 1, title: 'card one', workflow: 'coding' })
+    const { notes, prompt } = buildRun({ action: 'implement', id: 1, title: 'card one', studio: 'coding' })
     assert.match(notes.join('\n'), /a rule is one per agent now/)
     assert.match(prompt, /smoke tests/)
   })

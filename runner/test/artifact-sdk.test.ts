@@ -252,12 +252,12 @@ it('第三方 connect() 保持初始化、权限变化和保存消息契约', as
   }
 })
 
-describe('存成普通文件的工作流图（#484）', () => {
-  it('Workflow 标签照样画出，其他标签仍是普通文件', async () => {
+describe('存成普通文件的工作台图（#484）', () => {
+  it('Studio 标签照样画出，其他标签仍是普通文件', async () => {
     const flow = { version: 1, rounds: [], land: [], scheduled: [] }
-    const p = preview([art('a1', 'asset', [version(1, null, 'application/json')])], { '.assets/2/workflow.json': { artifact: 'a1', version: 1 } }, { readFile: async () => new Blob([JSON.stringify(flow)]) })
-    assert.deepEqual(await p.viewOfSrc('.assets/2/workflow.json', '图', 'workflow').workflow!(), flow)
-    assert.equal(p.viewOfSrc('.assets/2/workflow.json').workflow, undefined)
+    const p = preview([art('a1', 'asset', [version(1, null, 'application/json')])], { '.assets/2/studio.json': { artifact: 'a1', version: 1 } }, { readFile: async () => new Blob([JSON.stringify(flow)]) })
+    assert.deepEqual(await p.viewOfSrc('.assets/2/studio.json', '图', 'studio').studio!(), flow)
+    assert.equal(p.viewOfSrc('.assets/2/studio.json').studio, undefined)
   })
 })
 

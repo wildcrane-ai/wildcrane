@@ -2,9 +2,9 @@
 /** A file the card body names, with the types a JSON file there may be. */
 export type Source = { src: string; types: string[] };
 const STORYBOARD = ['storyboard'];
-const WORKFLOW = ['workflow'];
+const STUDIO = ['studio'];
 // 排列里的 JSON：Asset 能画的类型，或需要拒绝嵌套的分镜与对比。
-const ARRANGED = ['storyboard', 'compare', 'spritesheet', 'workflow'];
+const ARRANGED = ['storyboard', 'compare', 'spritesheet', 'studio'];
 // Any other JSON stays a plain file.
 const ASSET = ['spritesheet', 'asset'];
 export const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -24,12 +24,12 @@ export function bodyReferences(body: string): Source[] {
     if (delimiter) { fence = delimiter; visible.push(''); continue; }
     const kept = inTag || !/^(?: {4}|\t)/.test(line);
     visible.push(kept ? line : '');
-    if (kept && /^ {0,3}<(?:Asset|Mockup|Compare|Storyboard|Workflow)\b/.test(line)) inTag = true;
+    if (kept && /^ {0,3}<(?:Asset|Mockup|Compare|Storyboard|Studio)\b/.test(line)) inTag = true;
     if (line.includes('/>')) inTag = false;
   }
   const text = visible.join('\n').replace(/(`+)[^]*?\1/g, '');
-  const tag = /<(Asset|Mockup|Compare|Storyboard|Workflow)\b([^<>]*?)\/>/g;
-  const blocks = text.matchAll(/^ {0,3}(?:<(?:Asset|Mockup|Compare|Storyboard|Workflow)\b[^<>]*?\/>[ \t]*(?:\n[ \t]*)?)+$/gm);
+  const tag = /<(Asset|Mockup|Compare|Storyboard|Studio)\b([^<>]*?)\/>/g;
+  const blocks = text.matchAll(/^ {0,3}(?:<(?:Asset|Mockup|Compare|Storyboard|Studio)\b[^<>]*?\/>[ \t]*(?:\n[ \t]*)?)+$/gm);
   for (const block of blocks) {
     const tags = [...block[0].matchAll(tag)];
     for (const m of tags) {
@@ -39,7 +39,7 @@ export function bodyReferences(body: string): Source[] {
         if (!a.a || !a.b) continue;
         for (const k of ['a', 'b', 'shots']) if (a[k]) out.push({ src: a[k]!, types: ARRANGED });
       } else if (a.src) {
-        out.push({ src: a.src, types: m[1] === 'Storyboard' ? STORYBOARD : m[1] === 'Workflow' ? WORKFLOW : m[1] === 'Asset' ? ASSET : [] });
+        out.push({ src: a.src, types: m[1] === 'Storyboard' ? STORYBOARD : m[1] === 'Studio' ? STUDIO : m[1] === 'Asset' ? ASSET : [] });
         if (a.variants) {
           try {
             const v: unknown = JSON.parse(a.variants);
@@ -61,7 +61,7 @@ export const TYPES: Record<string, string> = {
   '.otf': 'font/otf', '.ttf': 'font/ttf', '.woff': 'font/woff', '.woff2': 'font/woff2', '.css': 'text/css',
   '.tmx': 'application/xml', '.tmj': 'application/json', '.tsj': 'application/json',
 };
-export type Kind = 'html' | 'markdown' | 'image' | 'video' | 'asset' | 'storyboard' | 'compare' | 'workflow' | 'tiled' | 'spritesheet';
+export type Kind = 'html' | 'markdown' | 'image' | 'video' | 'asset' | 'storyboard' | 'compare' | 'studio' | 'tiled' | 'spritesheet';
 export function kindOf(ext: string): Kind {
   if (ext === '.tsx' || ext === '.html') return 'html';
   if (ext === '.md' || ext === '.mdx') return 'markdown';

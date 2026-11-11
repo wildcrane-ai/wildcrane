@@ -26,7 +26,7 @@ researches/
 .env.*
 social-posts/
 screenshots/
-!official/workflows/*/screenshots/
+!official/studios/*/screenshots/
 .DS_Store
 .wrangler/
 video/

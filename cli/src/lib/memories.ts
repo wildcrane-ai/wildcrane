@@ -11,7 +11,7 @@ import path from 'node:path'
 import { rawMove } from './agent/command'
 import { type SpecAgent } from './agents/parse'
 import { parseYamlBlock, splitFrontmatter, type YamlValue } from './agents/yaml'
-import { RESERVED_MEMORY_DIR } from './memory'
+import { RESERVED_MEMORY_DIR, STUDIO_MEMORY_DIR } from './memory'
 import { MEMORY } from './paths'
 import { BUNDLED_MEMORY_FILES } from '../memories/bundled'
 
@@ -69,7 +69,7 @@ export function globalMemories(): GlobalMemory[] {
     // no memory folder yet
   }
   for (const name of folders) {
-    if (name in BUNDLED_MEMORY_FILES || name === RESERVED_MEMORY_DIR) continue
+    if (name in BUNDLED_MEMORY_FILES || name === RESERVED_MEMORY_DIR || name === STUDIO_MEMORY_DIR) continue
     const file = path.join(MEMORY, name, GLOBAL_MEMORY_FILE)
     if (!fs.existsSync(file)) continue
     const memory = readMemory(fs.readFileSync(file, 'utf8'), false, name)

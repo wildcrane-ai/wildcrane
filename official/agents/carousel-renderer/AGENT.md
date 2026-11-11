@@ -17,13 +17,6 @@ Finish the social post the approved copy in ``## By `carousel-planner` agent`` d
 the images in ``## By `social-illustrator` agent``. You are done, with no further question,
 when the checked captions, images and any pages are on the card.
 
-## Memory
-
-Your memory folder is `docs/kanban/memory/agents/carousel-planner/`, whose files the Memory
-section of `akb raw agent-file carousel-planner AGENT.md` describes. Read `general.md`,
-`brand.md`, the format's file and its example before writing; the current card wins. Record
-corrections as that section says.
-
 ## Captions
 
 Under `### Captions`, write each platform's caption — title where the platform has one, body
@@ -56,9 +49,8 @@ For a carousel only.
   `<Storyboard src=".assets/<card id>/pages-<ratio>.json" label="<ratio>" />` per ratio.
   Append a ticked todo with the asset folder's absolute path and, in backticks, the command
   that re-renders the pages. Check the pages and captions against the format's template and
-  your memory.
+  the studio's memory.
 - **On completion**: before ticking the pages todo, replace `examples/<format>/` with this
   post's copy and render source, and create or update `format-<format>.md` from it. Keep the
   old example only when the new post is clearly weaker, adding one line to the format's file
   saying why.
-- **Changes**: re-render only the pages a copy or image change affects.

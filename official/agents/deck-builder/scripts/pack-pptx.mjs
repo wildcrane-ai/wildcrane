@@ -4,7 +4,7 @@
 //   node scripts/pack-pptx.mjs <card asset folder>/storyboard.json <out>.pptx
 //
 // Runtime: Node 18 or later, nothing else. Save it from a built-in agent with
-// `akb raw agent-file deck-builder scripts/pack-pptx.mjs > pack-pptx.mjs`.
+// `akb raw file slide-deck agents/deck-builder/scripts/pack-pptx.mjs > pack-pptx.mjs`.
 // Each slide's image is `slides/<slide id>.png` beside the storyboard, else its preview when
 // that is itself an image. The slide is sized to the storyboard's `size` ratio (1920×1080 when
 // unset) and its `notes` become the speaker notes. Exits 1 naming every slide with no image;

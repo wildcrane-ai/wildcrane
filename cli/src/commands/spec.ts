@@ -19,7 +19,7 @@ import {
   specAgentProblems,
   SPEC_ASSIGN_HOME,
 } from '../lib/agents'
-import { cardWorkflowId } from '../lib/agent/workflows'
+import { cardStudioId } from '../lib/agent/studios'
 import type { MoveResult } from '../lib/types'
 import { followStarted, short } from './run'
 
@@ -32,13 +32,13 @@ export interface SpecOptions {
   follow?: boolean
   print?: boolean
   triggers?: boolean
-  workflow?: string
+  studio?: string
   workspace?: string
 }
 
 export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveResult> {
-  if ((opts.workflow || opts.workspace) && !opts.triggers) die('--workflow and --workspace require --triggers', { kind: 'invalid-usage' })
-  if (opts.workspace && !opts.workflow) die('--workspace requires --workflow', { kind: 'invalid-usage' })
+  if ((opts.studio || opts.workspace) && !opts.triggers) die('--studio and --workspace require --triggers', { kind: 'invalid-usage' })
+  if (opts.workspace && !opts.studio) die('--workspace requires --studio', { kind: 'invalid-usage' })
   if (opts.triggers) {
     if (opts.agent !== undefined || opts.id !== undefined || opts.note?.length || opts.print || opts.follow || opts.notes !== undefined) {
       die('--triggers cannot be combined with positional arguments, --print, --follow or --notes', { kind: 'invalid-usage' })
@@ -56,7 +56,7 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
 
   // No agent named: say which ones there are. Every agent on the board, because this is
   // typed with no card in hand — which of them a card may actually ask for is its own
-  // workflow's answer, and the ask below is where that is checked.
+  // studio's answer, and the ask below is where that is checked.
   if (!opts.agent) {
     say(specAgentList(program, !insideRun()))
     return { agents: specAgentNamesOnBoard(), problems: specAgentProblems() }
@@ -73,10 +73,10 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
   }
   if (!locate(id)) die(`no task with id ${id} under ${rel(TODO)}`, { kind: 'card-not-found', id })
 
-  // Off, or in another workflow (#749): refused, with what to do instead.
-  if (!specAgentAssigned(name, cardWorkflowId(id))) {
+  // Off, or in another studio (#749): refused, with what to do instead.
+  if (!specAgentAssigned(name, cardStudioId(id))) {
     die(
-      `the \`${name}\` agent is off or no preview of the workflow of #${id}, so it isn't running. Plan that part of the card yourself and carry on. It joins when ${SPEC_ASSIGN_HOME}.`,
+      `the \`${name}\` agent is off or no preview of the studio of #${id}, so it isn't running. Plan that part of the card yourself and carry on. It joins when ${SPEC_ASSIGN_HOME}.`,
       { kind: 'spec-agent-off', specAgent: name },
     )
   }

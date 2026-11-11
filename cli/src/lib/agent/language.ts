@@ -4,8 +4,8 @@ import type { Language } from '../machine/types'
 export const LANGUAGE_ENV = 'AI4KANBAN_LANGUAGE'
 export const LANGUAGE_LINE_ENV = 'AI4KANBAN_LANGUAGE_LINE'
 
-export const SYSTEM_LANGUAGE_ZH = '用中文回复。给任务创建者看的用中文，工作流的最终产物沿用项目语言。'
-export const SYSTEM_LANGUAGE_EN = "Reply in English. Write for the task creator in English; the workflow's final artifacts follow the project's language."
+export const SYSTEM_LANGUAGE_ZH = '用中文回复。给任务创建者看的用中文，工作台的最终产物沿用项目语言。'
+export const SYSTEM_LANGUAGE_EN = "Reply in English. Write for the task creator in English; the studio's final artifacts follow the project's language."
 
 // 仅识别平台曾注入的完整段落，Cloud 旧语言行另行兼容。
 const systemLanguages = new Set([

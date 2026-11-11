@@ -42,7 +42,7 @@ const create = (argv: string[]): Promise<Record<string, unknown>> => move(root, 
 describe('card creation', () => {
   it('缺少 Cloud 编号时指向创建命令，且不写卡（#222）', () => {
     const before = fs.readdirSync(todo, { recursive: true })
-    assert.throws(() => cmdCreate({ title: '测试卡片', asked: [], workflow: 'coding' }), (error: unknown) => {
+    assert.throws(() => cmdCreate({ title: '测试卡片', asked: [], studio: 'coding' }), (error: unknown) => {
       assert.ok(error instanceof BoardError)
       assert.equal(error.kind, 'needs-cloud')
       assert.equal(error.exitCode, 1)
@@ -124,14 +124,14 @@ describe('card creation', () => {
     await refuses(root, ['record-run', String(made.id)], /unknown command/)
   })
 
-  it('runs a card made of a triage item on the workflow the item named (#2139)', async () => {
+  it('runs a card made of a triage item on the studio the item named (#2139)', async () => {
     fs.mkdirSync(path.join(kanban, 'triage'), { recursive: true })
     fs.writeFileSync(
       path.join(kanban, 'triage', 'shorter.md'),
-      '---\nsource_id: item-1\ntitle: Shorter\nworkflow: hyperframes-video\ncollected_at: 2026-10-27 10:00\nimported_at: 2026-10-27 10:00\n---\n\nCut it.\n',
+      '---\nsource_id: item-1\ntitle: Shorter\nstudio: hyperframes-video\ncollected_at: 2026-10-27 10:00\nimported_at: 2026-10-27 10:00\n---\n\nCut it.\n',
     )
     const made = await create(['--title', 'Shorter', '--triage', 'item-1'])
-    assert.match(fs.readFileSync(path.join(root, String(made.file)), 'utf8'), /^workflow: hyperframes-video$/m)
+    assert.match(fs.readFileSync(path.join(root, String(made.file)), 'utf8'), /^studio: hyperframes-video$/m)
   })
 
   it('requires a complete card instead of reserving an id', async () => {
@@ -188,7 +188,7 @@ describe('card creation', () => {
     })
     process.env[RUN_ENV] = build.sessionId
 
-    assert.equal(await runBoard(['create', '--title', typed, '--id', '8', '--workflow', 'coding'], { cwd: root }), 0)
+    assert.equal(await runBoard(['create', '--title', typed, '--id', '8', '--studio', 'coding'], { cwd: root }), 0)
     assert.equal(peekRun(build.sessionId)?.cardId, 8)
     assert.equal(listDeliveries().find((d) => d.deliveryId === deliveryId)?.cardId, 8)
     assert.match(fs.readFileSync(path.join(todo, '8-rename-the-heading.md'), 'utf8'), /status: implementing/)

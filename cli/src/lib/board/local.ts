@@ -32,6 +32,7 @@ import { cmdInit } from '../../commands/init'
 import { cmdList, type ListOptions } from '../../commands/list'
 import { cmdRemove, type RemoveOptions } from '../../commands/remove'
 import { cmdAgentFile } from '../../commands/agent-file'
+import { cmdStudioFile } from '../../commands/studio-file'
 import { cmdMemoryFile } from '../../commands/memory-file'
 import { cmdValidate } from '../../commands/validate'
 import { quietly } from '../io'
@@ -82,6 +83,7 @@ const MOVES: Record<string, RunMove> = {
   archive: ({ args }) => cmdRemove(Number(args[0]), 'completed'),
   reject: ({ args, opts }) => cmdRemove(Number(args[0]), 'rejected', as<RemoveOptions>(opts)),
   'agent-file': ({ args }) => cmdAgentFile(args[0] ?? '', args[1] ?? ''),
+  file: ({ args }) => cmdStudioFile(args[0] ?? '', args[1] ?? ''),
   'memory-file': ({ args }) => cmdMemoryFile(args[0] ?? ''),
 }
 
@@ -90,7 +92,7 @@ export const BOARD_MOVES: ReadonlySet<string> = new Set(Object.keys(MOVES))
 
 /** The moves that only read. They take no lock and no envelope — nothing they do can be
  *  half-written, and a board someone is mid-write on is still readable. */
-export const READ_ONLY_MOVES: ReadonlySet<string> = new Set(['list', 'validate', 'agent-file', 'memory-file'])
+export const READ_ONLY_MOVES: ReadonlySet<string> = new Set(['list', 'validate', 'file', 'agent-file', 'memory-file'])
 
 // ---- the provider ----------------------------------------------------------
 

@@ -28,9 +28,9 @@ export function storyboardAttrs(raw: string): { src: string; label?: string } | 
 /** The `src` of a block that is exactly one `<Storyboard … />` tag — `null` for anything else. */
 export const storyboardTag = (raw: string): string | null => storyboardAttrs(raw)?.src ?? null
 
-/** The `src` of a block that is exactly one `<Workflow … />` tag (#451) — `null` for anything else. */
-export const workflowTag = (raw: string): string | null => {
-  const m = /^<Workflow\b([^<>]*?)\/>$/.exec(raw.trim())
+/** The `src` of a block that is exactly one `<Studio … />` tag (#451) — `null` for anything else. */
+export const studioTag = (raw: string): string | null => {
+  const m = /^<Studio\b([^<>]*?)\/>$/.exec(raw.trim())
   const src = m ? SRC_ATTR.exec(m[1]!) : null
   return src ? (src[1] ?? src[2])! : null
 }

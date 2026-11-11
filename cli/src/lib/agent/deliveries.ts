@@ -12,7 +12,7 @@ import { insideRun } from './env'
 import { DELIVERY_FLOWS } from './flows'
 import { deliveryState, type DeliveryState } from './pause'
 import { deliveryRules, readRule } from './rules'
-import { cardWorkflowId, frozenWorkflow } from './workflows'
+import { cardStudioId, frozenStudio } from './studios'
 import { logPathOf, readDeliveryRow, readStore, runIsLive, withStore, type Store } from './store'
 import {
   refusal,
@@ -160,24 +160,24 @@ function allAudits(): DeliveryAudit[] {
 export interface LandedDelivery {
   cardId: number
   title: string
-  /** The workflow the delivery ran on; a record that names none ran on the default. */
-  workflow: string
+  /** The studio the delivery ran on; a record that names none ran on the default. */
+  studio: string
   at: number
   commit: string
 }
 
 /** Every landing with a commit, oldest first — optionally only those after `since` (ms) or on
- *  one workflow. Read from the permanent records, which outlive the archived card file. */
-export function landedDeliveries(filter: { since?: number; workflow?: string } = {}): LandedDelivery[] {
+ *  one studio. Read from the permanent records, which outlive the archived card file. */
+export function landedDeliveries(filter: { since?: number; studio?: string } = {}): LandedDelivery[] {
   const out: LandedDelivery[] = []
   for (const audit of allAudits()) {
     const landing = audit.landing
     if (typeof audit.cardId !== 'number' || landing?.status !== 'landed' || !landing.commit) continue
-    // A delivery frozen before workflows were recorded was a Coding one.
-    const workflow = audit.workflow?.id || 'coding'
+    // A delivery frozen before studios were recorded was a Coding one.
+    const studio = audit.studio?.id || 'coding'
     if (filter.since !== undefined && !(landing.at > filter.since)) continue
-    if (filter.workflow !== undefined && workflow !== filter.workflow) continue
-    out.push({ cardId: audit.cardId, title: audit.title, workflow, at: landing.at, commit: landing.commit })
+    if (filter.studio !== undefined && studio !== filter.studio) continue
+    out.push({ cardId: audit.cardId, title: audit.title, studio, at: landing.at, commit: landing.commit })
   }
   return out.sort((a, b) => a.at - b.at)
 }
@@ -303,7 +303,7 @@ export function resumeRefusal(delivery: DeliveryRecord, store?: Store): RunRefus
   // A **Start now** delivery holds no card (#428), so there is nothing here to check.
   if (delivery.cardId === null) return undefined
   const card = String(delivery.cardId)
-  const pendingArchive = delivery.completions?.some((c) => !c.finished && c.step + 1 >= (delivery.workflow?.land?.length ?? 1))
+  const pendingArchive = delivery.completions?.some((c) => !c.finished && c.step + 1 >= (delivery.studio?.land?.length ?? 1))
   if (cardOnBoard(delivery.cardId) === false && !(pendingArchive && locateArchived(delivery.cardId))) {
     return refusal(
       'deliveryCardGone',
@@ -509,14 +509,14 @@ export const listDeliveries = (): DeliveryRecord[] => readStore().deliveries
 /** The delivery one run belongs to: the one it names outright — the only way a build with
  *  no card can be found (#428) — or the one in flight on its card. Nothing on a run that is
  *  not a delivery's own. */
-export const withWorkflow = (req: AgentRequest): AgentRequest =>
-  req.workflow
+export const withStudio = (req: AgentRequest): AgentRequest =>
+  req.studio
     ? req
     : {
         ...req,
-        workflow:
-          deliveryFor(req)?.workflow?.id ??
-          (typeof req.id === 'number' ? cardWorkflowId(req.id) || undefined : undefined),
+        studio:
+          deliveryFor(req)?.studio?.id ??
+          (typeof req.id === 'number' ? cardStudioId(req.id) || undefined : undefined),
       }
 
 export function deliveryFor(req: Pick<AgentRequest, 'action' | 'id' | 'deliveryId'>): DeliveryRecord | undefined {
@@ -571,13 +571,13 @@ export function joinDelivery(
       priorStatus: cardId === null ? undefined : cardStatus(cardId),
       planned: start?.planned,
       rules: {
-        ...deliveryRules(cardId === null ? direct?.scheduled?.workflow : cardWorkflowId(cardId)),
+        ...deliveryRules(cardId === null ? direct?.scheduled?.studio : cardStudioId(cardId)),
         ...(direct?.scheduled && readRule(direct.scheduled.agent) ? { [direct.scheduled.agent]: readRule(direct.scheduled.agent) } : {}),
       },
-      // And the one read of the workflow it builds under (#715) — its name and all three
+      // And the one read of the studio it builds under (#715) — its name and all three
       // stages' assignments, frozen the way the rules are. Reassigning a stage, renaming the
-      // workflow or deleting it changes the next delivery and never this one.
-      workflow: frozenWorkflow(cardId === null ? direct?.scheduled?.workflow ?? '' : cardWorkflowId(cardId)),
+      // studio or deleting it changes the next delivery and never this one.
+      studio: frozenStudio(cardId === null ? direct?.scheduled?.studio ?? '' : cardStudioId(cardId)),
       scheduled: direct?.scheduled,
       targetBranch: start?.targetBranch,
 

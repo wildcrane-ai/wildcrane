@@ -97,13 +97,13 @@ const goalOf = (i: api.DraftGoal) => ({
   title: i.title,
   outcome: i.outcome,
   acceptance: i.acceptance,
-  workflow: i.workflow,
+  studio: i.studio,
   previews: i.previews ?? [],
   task: i.task ? { ...i.task, url: taskUrl(i.task.key || i.task.id) } : null,
 })
 
-async function workflowsOf(workspace: string) {
-  const list = await api.listWorkflows(workspace)
+async function studiosOf(workspace: string) {
+  const list = await api.listStudios(workspace)
   if (!list.ok) return []
   return list.value.data.map((w) => ({ id: w.id, name: w.name, names: w.names, description: w.description ?? '', when: w.when ?? '', previews: w.previews }))
 }
@@ -113,7 +113,7 @@ async function draftOf(id: string) {
   if (!read.ok) return failure(read)
   const d = read.value
   const goals = linked(d, (d.goals ?? d.ideas).map(goalOf))
-  return { discussion: d.id, url: discussionUrl(d.id), project: d.project, version: d.version, goals, ideas: goals, workflows: await workflowsOf(d.workspace) }
+  return { discussion: d.id, url: discussionUrl(d.id), project: d.project, version: d.version, goals, ideas: goals, studios: await studiosOf(d.workspace) }
 }
 
 /** The Runner: started once signed in, closed with the host. */
@@ -374,7 +374,7 @@ const GoalInput = z.object({
   title: z.string().max(200),
   outcome: z.string().describe('What the user gets, in at most 150 words, in their language.'),
   acceptance: z.array(z.string()).describe('`Done when` checks a reviewer can verify.'),
-  workflow: z.string().describe('One of the workflow ids wildcrane_draft_read lists.'),
+  studio: z.string().describe('One of the studio ids wildcrane_draft_read lists.'),
   previews: z.array(z.string()).max(50).optional(),
 })
 
@@ -423,8 +423,8 @@ export function server(): McpServer {
   if (host !== 'claude-code') {
     mcp.registerTool('wildcrane_draft_read', {
       description: host === 'dsh'
-        ? "Read a WildCrane discussion: its goals, their version, the workflows a goal can use, and its web page. Without `discussionId` it opens a new one in the project of `path`; pass the returned `discussion` on every later call in this chat."
-        : "Read this session's WildCrane discussion: its goals, their version, the workflows a goal can use, and its web page. Opens one on first use, in the project of `path`.",
+        ? "Read a WildCrane discussion: its goals, their version, the studios a goal can use, and its web page. Without `discussionId` it opens a new one in the project of `path`; pass the returned `discussion` on every later call in this chat."
+        : "Read this session's WildCrane discussion: its goals, their version, the studios a goal can use, and its web page. Opens one on first use, in the project of `path`.",
       inputSchema: {
         path: z.string().optional().describe('The current working directory. The component runs elsewhere and cannot see it.'),
         discussionId: z.string().optional().describe(host === 'dsh' ? 'Leave out only on the first call in this chat.' : "Leave out for this session's discussion."),
@@ -505,7 +505,7 @@ export function server(): McpServer {
 
   const key = panelKey()
   mcp.registerTool('wildcrane_draft_read', {
-    description: "Read a WildCrane discussion: its goals, their version, and the workflows a goal can use. Give `sessionId` for this Claude Code session's discussion, opened on first use.",
+    description: "Read a WildCrane discussion: its goals, their version, and the studios a goal can use. Give `sessionId` for this Claude Code session's discussion, opened on first use.",
     inputSchema: {
       discussionId: z.string().optional(),
       sessionId: z.string().optional().describe("This Claude Code session's id, given at session start."),

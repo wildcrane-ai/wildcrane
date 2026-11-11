@@ -75,8 +75,8 @@ export type MockupView = Drawn & {
   /** Loaded once it scrolls near (#906). `screen` marks an HTML page, laid out on a device. */
   deferred?: { load: () => Promise<Drawn>; screen: boolean; hyperframe?: boolean };
   storyboard?: () => Promise<StoryboardView>;
-  /** A workflow diagram's data (#451), checked by the component drawing it. */
-  workflow?: () => Promise<unknown>;
+  /** A studio diagram's data (#451), checked by the component drawing it. */
+  studio?: () => Promise<unknown>;
   compare?: CompareSpec;
   tiled?: TiledSpec;
   sprite?: SpriteSpec;

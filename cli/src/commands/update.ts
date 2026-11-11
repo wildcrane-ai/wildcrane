@@ -87,7 +87,7 @@ async function repairBoard(root: string, report: Report, named?: string | null):
   moveLegacyMemory(board, report)
   dropModuleGoals(board, report)
   movePlanRules(board, report)
-  noteOldWorkflows(board, report)
+  noteOldStudios(board, report)
   report.sayDid()
   await boardMove(root, ['init'], board)
   moveRuntimes(root, board, report)
@@ -169,16 +169,16 @@ const PLAN_LEADS: Record<string, string[]> = {
   'carousel-post': ['carousel-planner'],
   'blog-post': ['blog-planner'],
   'video-clone': ['video-cloner'],
-  'workflow-builder': ['workflow-writer'],
+  'studio-builder': ['studio-writer'],
 }
 const GONE_LEADS = ['software-planner', 'planner']
 
 export function planLeads(board: string): Record<string, string[]> {
   const leads = { ...PLAN_LEADS }
-  const root = path.join(board, 'workflows')
+  const root = path.join(board, 'studios')
   for (const entry of fs.existsSync(root) ? fs.readdirSync(root, { withFileTypes: true }) : []) {
     if (!entry.isDirectory()) continue
-    const meta = splitFrontmatter(read(path.join(root, entry.name, 'WORKFLOW.md')) ?? '').meta
+    const meta = splitFrontmatter(read(path.join(root, entry.name, 'STUDIO.md')) ?? '').meta
     const stages = meta === null ? undefined : parseYamlBlock(meta).stages
     const plan = stages && typeof stages === 'object' && !Array.isArray(stages) ? stages.plan : undefined
     const lead = plan && typeof plan === 'object' && !Array.isArray(plan) && typeof plan.lead === 'string' ? plan.lead.trim() : ''
@@ -195,7 +195,7 @@ export function movePlanRules(board: string, report: Pick<Report, 'did' | 'notes
       const from = path.join(rules, `${lead}.md`)
       const rule = read(from)?.trim()
       if (!rule) continue
-      const to = path.join(rules, 'workflows', `${id}.md`)
+      const to = path.join(rules, 'studios', `${id}.md`)
       const there = read(to)?.trim() ?? ''
       if (!there.includes(rule)) {
         fs.mkdirSync(path.dirname(to), { recursive: true })
@@ -205,20 +205,20 @@ export function movePlanRules(board: string, report: Pick<Report, 'did' | 'notes
     }
   }
   for (const lead of GONE_LEADS) fs.rmSync(path.join(rules, `${lead}.md`), { force: true })
-  if (moved.length) report.did.push(`made each plan agent's rule its workflow's card rule (docs/kanban/rules/workflows/): ${moved.join(', ')}`)
+  if (moved.length) report.did.push(`made each plan agent's rule its studio's card rule (docs/kanban/rules/studios/): ${moved.join(', ')}`)
 }
-export function noteOldWorkflows(board: string, report: Pick<Report, 'did' | 'notes'>): void {
+export function noteOldStudios(board: string, report: Pick<Report, 'did' | 'notes'>): void {
   const old = (dir: string, file: string, keys: RegExp) => {
     const root = path.join(board, dir)
     return (fs.existsSync(root) ? fs.readdirSync(root, { withFileTypes: true }) : [])
       .filter((e) => e.isDirectory() && keys.test(splitFrontmatter(read(path.join(root, e.name, file)) ?? '').meta ?? ''))
       .map((e) => `docs/kanban/${dir}/${e.name}/${file}`)
   }
-  const files = [...old('workflows', 'WORKFLOW.md', /^(stages|delivers):/m), ...old('agents', 'AGENT.md', /^\s+(hook|lead):/m)]
+  const files = [...old('studios', 'STUDIO.md', /^(stages|delivers):/m), ...old('agents', 'AGENT.md', /^\s+(hook|lead):/m)]
   if (files.length) {
     report.notes.push(
-      `written in the old form, so not read until rewritten — list a workflow's agents under \`previews\`, \`land\` and ` +
-        `\`scheduled\`, and drop \`hook\`/\`lead\` from each agent (or ask the Workflow builder): ${files.join(', ')}`,
+      `written in the old form, so not read until rewritten — list a studio's agents under \`previews\`, \`land\` and ` +
+        `\`scheduled\`, and drop \`hook\`/\`lead\` from each agent (or ask the Studio builder): ${files.join(', ')}`,
     )
   }
 }

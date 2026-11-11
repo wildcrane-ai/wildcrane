@@ -16,7 +16,7 @@ import * as api from './api'
 import type { AgentJob, Flow, Job, JobEvent, JobReport, RuntimeReport } from './api'
 import { keepChat, keepCloudChat, keepDecisions, markReviewed, reviewMarks } from './chats'
 import { confirmFlowStopped, runAgent, runFlow, runReview, writeTranscript } from './flow'
-import { builtWorkflow } from './built'
+import { builtStudio, draftBase } from './built'
 import { hold } from './cache'
 import { allowedProjects } from './folders'
 import { goalsFileOf, readGoals, writeGoals } from './goals'
@@ -57,7 +57,7 @@ export const TEST_MS = 30_000
 interface Shared {
   authorize?: (job: Job) => Promise<boolean>
   machineId: string
-  api: Pick<typeof api, 'claimJob' | 'renewJob' | 'openLog' | 'finishJob' | 'readTask' | 'readWorkflow' | 'listWorkflows' | 'readRejections' | 'markReviewed' | 'readAgents' | 'readChat' | 'readDecisions' | 'listChats'>
+  api: Pick<typeof api, 'claimJob' | 'renewJob' | 'openLog' | 'finishJob' | 'readTask' | 'readStudio' | 'listStudios' | 'readRejections' | 'markReviewed' | 'readAgents' | 'readChat' | 'readDecisions' | 'listChats'>
   plan: (runtime: Job['runtime'], prompt: string, cwd: string, resume?: string | null, model?: string | null, settings?: Settings, fork?: boolean, language?: 'zh' | 'en' | null) => Plan
   /** How often output goes while a page watches. */
   flushMs: number
@@ -553,7 +553,7 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
       discussed = board.board
     }
     if (job.discussion) {
-      const wrote = recovering && fs.existsSync(goalsFileOf(job)) ? { file: goalsFileOf(job) } : await writeGoals({ ...job, discussion: job.discussion }, deps.api.listWorkflows)
+      const wrote = recovering && fs.existsSync(goalsFileOf(job)) ? { file: goalsFileOf(job) } : await writeGoals({ ...job, discussion: job.discussion }, deps.api.listStudios)
       if ('error' in wrote) throw new Error(wrote.error)
       goalFile = wrote.file
     }
@@ -988,8 +988,8 @@ async function finish(deps: Shared, id: string, lease: Lease, outcome: Outcome, 
 
 /** What the job changed goes back, then how it ended; `landed` once both were taken. */
 async function sendBack(deps: StepDeps, id: string, lease: Lease, ws: TaskFolder, said: JobReport, landed = () => {}): Promise<void> {
-  const built = await builtWorkflow(ws, deps.akb)
-  const report = built ? { ...said, workflow: { files: built } } : said
+  const built = await builtStudio(ws, deps.akb)
+  const report = built ? { ...said, studio: { files: built, base: draftBase(ws) } } : said
   const pushed = await whileOffline<Pushed>(deps, id, lease, () => push(ws, { id, machineId: deps.machineId }))
   if (!pushed) return
   if (pushed.ok) {
@@ -1101,7 +1101,7 @@ function report(job: Job, run: Plan, turn?: TurnEnd): JobReport {
 /** A reply stopped part way: what the agent said by then. */
 const cutShort = (said: JobReport, text: string): JobReport => ({ ...said, reply: said.reply || text || undefined, stopped: true })
 
-/** Where the task's card, workflow and memory are, for the agent. */
+/** Where the task's card, studio and memory are, for the agent. */
 function folderLines(ws: TaskFolder | null): string {
   if (!ws) return ''
   const undrawn = undrawnPreviews(ws)

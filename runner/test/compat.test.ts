@@ -8,7 +8,7 @@ import { after, before, describe, it } from 'node:test'
 import { prepareKanbanSkill } from '../src/kanban-skill'
 import { installCommitHook } from '../../cli/src/lib/skill/hook'
 import { answerOf, runAkb, type Akb, type Ran } from '../src/akb'
-import { builtWorkflow } from '../src/built'
+import { builtStudio } from '../src/built'
 import { BUILDER, draftFolder } from '../../cli/src/lib/shared/board-files'
 
 // The real built akb, driven the way the Runner drives it: every command flow.ts and built.ts
@@ -95,13 +95,13 @@ describe('the akb the Runner carries (#171)', () => {
     ok(await onBoard(['raw', 'agent', 'set', 'args']))
   })
 
-  it('packs a drafted workflow landing with the built-in builder, its version note dropped (#494, #564)', async () => {
-    const ws = { task: 'task_9', cloudTask: 'task_9', board, cwd: project, project, number: 9, workflow: BUILDER }
-    const dir = path.join(board, 'workflows', draftFolder(ws.task))
+  it('packs a drafted studio landing with the built-in builder, its version note dropped (#494, #564)', async () => {
+    const ws = { task: 'task_9', cloudTask: 'task_9', board, cwd: project, project, number: 9, studio: BUILDER }
+    const dir = path.join(board, 'studios', draftFolder(ws.task))
     fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, 'WORKFLOW.md'), '---\nname: Site\nneedsArtifact: false\nland: [builder]\n---\n')
+    fs.writeFileSync(path.join(dir, 'STUDIO.md'), '---\nname: Site\nneedsArtifact: false\nland: [builder]\n---\n')
     fs.writeFileSync(path.join(dir, 'version.json'), '{"id":"wf_1","version":2}\n')
-    const built = await builtWorkflow(ws, akb)
+    const built = await builtStudio(ws, akb)
     assert.match(built?.['agents/builder/AGENT.md'] ?? '', /^name: builder$/m)
     assert.equal(built?.['version.json'], undefined)
   })
@@ -109,7 +109,7 @@ describe('the akb the Runner carries (#171)', () => {
   it('makes a card with the task’s number, keeps a retry to that card, and names what it refuses', async () => {
     const body = path.join(project, 'request.md')
     fs.writeFileSync(body, 'Two tiers.\n\n## Worth noting\n- Monthly leads.\n\n<!-- agent -->\n\n## Scope\n- Pricing.\n\n## Todo\n- [ ] Build it\n\n## Decided by the agent\n- Two.\n')
-    const create = ['raw', 'create', '--title', 'Pricing', '--workflow', 'coding', '--body-file', body, '--id', '2', '--priority', 'med', '--json']
+    const create = ['raw', 'create', '--title', 'Pricing', '--studio', 'coding', '--body-file', body, '--id', '2', '--priority', 'med', '--json']
     for (let i = 0; i < 2; i++) {
       const made = await onBoard(create)
       ok(made)
@@ -120,7 +120,7 @@ describe('the akb the Runner carries (#171)', () => {
   })
 
   it('creates a card with the preview choices sent by Runner', async () => {
-    const create = ['raw', 'create', '--title', 'Article', '--workflow', 'blog-post', '--json']
+    const create = ['raw', 'create', '--title', 'Article', '--studio', 'blog-post', '--json']
     ok(await onBoard([...create, '--id', '9', '--previews', 'blog-writer,blog-planner']))
     assert.match(fs.readFileSync(path.join(board, 'todo', '9-article.md'), 'utf8'), /previews: \[blog-planner, blog-writer\]/)
     ok(await onBoard([...create, '--id', '10', '--previews', '']))
@@ -128,9 +128,9 @@ describe('the akb the Runner carries (#171)', () => {
     refused(await onBoard([...create, '--id', '11', '--previews', 'missing-agent']), /missing-agent/)
   })
 
-  it('answers the workflow checks', async () => {
-    const list = answerOf<{ workflows?: { id: string; problems?: string[] }[]; problems?: string[] }>(await onBoard(['workflow', 'list', '--json']))
-    assert.ok(list?.workflows?.some((w) => w.id === 'coding'))
+  it('answers the studio checks', async () => {
+    const list = answerOf<{ studios?: { id: string; problems?: string[] }[]; problems?: string[] }>(await onBoard(['studio', 'list', '--json']))
+    assert.ok(list?.studios?.some((w) => w.id === 'coding'))
     const spec = answerOf<{ problems?: string[] }>(await onBoard(['raw', 'previews', '--json']))
     assert.ok(Array.isArray(spec?.problems))
   })
@@ -158,10 +158,10 @@ describe('the akb the Runner carries (#171)', () => {
     assert.notEqual((await onBoard(['raw', 'run', 'stop', 'nobody'])).code, 0)
   })
 
-  it('gives a reflection the scheduled agents it is told, or else the ones the workflows list (#277)', async () => {
+  it('gives a reflection the scheduled agents it is told, or else the ones the studios list (#277)', async () => {
     const body = path.join(project, 'done.md')
     fs.writeFileSync(body, 'Done.\n\n## Worth noting\n\n<!-- agent -->\n\n## Scope\n- Done.\n\n## Todo\n- [x] Done\n\n## Decided by the agent\n')
-    ok(await onBoard(['raw', 'create', '--title', 'Done', '--workflow', 'coding', '--body-file', body, '--id', '3', '--priority', 'med', '--json']))
+    ok(await onBoard(['raw', 'create', '--title', 'Done', '--studio', 'coding', '--body-file', body, '--id', '3', '--priority', 'med', '--json']))
     ok(await onBoard(['raw', 'archive', '3']))
     const printed = async (env?: NodeJS.ProcessEnv) => {
       const ran = await runAkb(akb, ['raw', 'reflect', '--cards', '3', '--print', '--board', board], { cwd: project, board, env })

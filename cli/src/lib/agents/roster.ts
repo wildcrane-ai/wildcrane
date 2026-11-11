@@ -13,7 +13,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { forgetFileMemos } from '../file-memo'
 
-import { forgetWorkflowAgent, landAgents, previewAgents, scheduledMembers, workflows } from '../agent/workflows'
+import { forgetStudioAgent, landAgents, previewAgents, scheduledMembers, studios } from '../agent/studios'
 import { forgetAgentRuntime } from '../agent/runtimes'
 import { forgetSpecAgent } from '../agent/settings'
 import { agentMemoryDir, legacyAgentMemoryFile } from '../memory'
@@ -29,10 +29,10 @@ const projectAgents = () => specAgentCatalog().agents.filter((agent) => !agent.b
 export const isCustomAgent = (name: string | undefined): boolean =>
   !!name && projectAgents().some((agent) => agent.name === name)
 
-/** The project's own agents that are on: on means some workflow runs it. */
+/** The project's own agents that are on: on means some studio runs it. */
 export function customAgentsOn(): string[] {
   const running = new Set<string>()
-  for (const flow of workflows()) {
+  for (const flow of studios()) {
     for (const h of [...previewAgents(flow), ...landAgents(flow)]) running.add(h.agent)
     for (const scheduled of scheduledMembers(flow)) if (!scheduled.off) running.add(scheduled.agent)
   }
@@ -72,6 +72,6 @@ export function deleteAgent(name: string): WriteResult & { removed?: string[] } 
   // says, and refusing here would leave the pane reporting a failure it cannot undo.
   forgetSpecAgent(name)
   forgetAgentRuntime(name)
-  forgetWorkflowAgent(name)
+  forgetStudioAgent(name)
   return { ok: true, removed }
 }

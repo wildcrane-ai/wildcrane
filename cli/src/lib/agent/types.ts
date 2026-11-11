@@ -53,7 +53,7 @@ export type AgentAction =
   | 'review'
   /** Retired (#1507): nothing runs after a build any more. Kept for the runs recorded. */
   | 'hook'
-  /** One pass of a workflow's scheduled agent (#1401): named by `specAgent` and `workflow`, on
+  /** One pass of a studio's scheduled agent (#1401): named by `specAgent` and `studio`, on
    *  no card. The board starts it when its cadence comes round; it is a card-less delivery of
    *  its own, so what it changes is committed and landed like a build. */
   | 'scheduled'
@@ -130,7 +130,7 @@ export interface AgentRequest {
   /** The pictures this run was handed, as paths on this machine — worked out from `box` and
    *  `shots` when the run is written down, so a browser never names one. */
   pictures?: string[]
-  workflow?: string
+  studio?: string
   /** Internal position in a watcher-managed refinement run chain. */
   refineRound?: number
   /** clarify, resolve: how the run's session is opened (#1304), set as the run is written
@@ -257,13 +257,13 @@ export type RunRefusalKind =
   | 'cardDiscarded'
   | 'cardCreating'
   | 'cardUnfinished'
-  | 'workflowUnknown'
-  /** A card whose workflow lands nothing: its last approval archives it (#2152). */
+  | 'studioUnknown'
+  /** A card whose studio lands nothing: its last approval archives it (#2152). */
   | 'planDelivered'
-  | 'workflowLandMissing'
+  | 'studioLandMissing'
   /** A land agent's file is there and the board does not use it (#1342); `args.cause` says why. */
-  | 'workflowLandRefused'
-  // Runtimes, workflows and settings the Configuration dialog saves.
+  | 'studioLandRefused'
+  // Runtimes, studios and settings the Configuration dialog saves.
   | 'runtimeUnnamed'
   | 'runtimeTaken'
   | 'runtimeNotFound'
@@ -271,17 +271,17 @@ export type RunRefusalKind =
   | 'runtimeKey'
   | 'harnessNotFound'
   | 'harnessUnused'
-  | 'workflowUnnamed'
-  | 'workflowTaken'
-  | 'workflowNotFound'
-  /** Only a Workflow builder draft is written on the board; workflows change by `pull`/`push`. */
-  | 'workflowReadOnly'
-  /** Workflows are Cloud's (#409): not signed in, or the board is linked to no project. */
+  | 'studioUnnamed'
+  | 'studioTaken'
+  | 'studioNotFound'
+  /** Only a Studio builder draft is written on the board; studios change by `pull`/`push`. */
+  | 'studioReadOnly'
+  /** Studios are Cloud's (#409): not signed in, or the board is linked to no project. */
   | 'needsCloud'
   /** Offline, and the version the task runs on was never downloaded (#409). */
-  | 'workflowOffline'
+  | 'studioOffline'
   | 'agentNotFound'
-  | 'agentOtherWorkflow'
+  | 'agentOtherStudio'
   | 'agentNotListed'
   | 'agentNotScheduled'
   /** A scheduled agent's pass that cannot start (#1401): already running, or its last pass
@@ -439,9 +439,9 @@ export interface RunRecord {
   /** The agent's process never started (#1321), so no session stands behind this run —
    *  even under a connector that takes our id. */
   unspawned?: boolean
-  /** implement with no card: the workflow the sheet named (#1321), kept so a
+  /** implement with no card: the studio the sheet named (#1321), kept so a
    *  retry asks for the same thing. */
-  workflow?: string
+  studio?: string
   /** A stop has been asked for. Written so the supervisor's own end, whichever path
    *  witnesses it, records `stopped` rather than a failure. */
   stopping?: boolean
@@ -713,26 +713,26 @@ export interface DeliveryRecord {
   reviewed?: { mark: string; diff?: string; at: number }
   landing?: DeliveryLanding
   rules?: Record<string, string>
-  workflow?: FrozenWorkflow
+  studio?: FrozenStudio
   /** On a scheduled agent's pass (#1401): whose it is. It holds no card and writes none. */
   scheduled?: ScheduledPass
 }
 
-/** Which scheduled agent a pass is: the workflow's id and the agent's name. */
+/** Which scheduled agent a pass is: the studio's id and the agent's name. */
 export interface ScheduledPass {
-  workflow: string
+  studio: string
   agent: string
 }
 
-/** A delivery's own copy of the workflow it builds under (#715). */
-export interface FrozenWorkflow {
-  /** The workflow's stable id — what the card carried when the delivery opened. */
+/** A delivery's own copy of the studio it builds under (#715). */
+export interface FrozenStudio {
+  /** The studio's stable id — what the card carried when the delivery opened. */
   id: string
-  /** Its name at that moment, so a record still names its workflow after a rename and after
-   *  the workflow itself is gone. */
+  /** Its name at that moment, so a record still names its studio after a rename and after
+   *  the studio itself is gone. */
   name: string
   /** Whether this delivery has to leave a file behind to count as finished — frozen with
-   *  the rest, so a workflow retyped mid-flight cannot change what this build owes. */
+   *  the rest, so a studio retyped mid-flight cannot change what this build owes. */
   needsArtifact?: boolean
   /** Its previews and land agents (#2152), with the extra requirements each assignment
    *  carried. Absent on a record frozen before #2152. */
@@ -1086,16 +1086,16 @@ export interface AutoSchedule {
   reads?: 'archived-cards' | 'chats' | 'dismissals'
 }
 
-/** The three groups a workflow lists its agents in. */
-export const WORKFLOW_GROUPS = ['previews', 'land', 'scheduled'] as const
+/** The three groups a studio lists its agents in. */
+export const STUDIO_GROUPS = ['previews', 'land', 'scheduled'] as const
 
 /** One of the three. */
-export type WorkflowGroup = (typeof WORKFLOW_GROUPS)[number]
+export type StudioGroup = (typeof STUDIO_GROUPS)[number]
 
-/** One agent of one workflow, and what the workflow asks of it on top of the agent's own
- *  instructions. An agent belongs to one workflow (#1095); `off` keeps it there without
+/** One agent of one studio, and what the studio asks of it on top of the agent's own
+ *  instructions. An agent belongs to one studio (#1095); `off` keeps it there without
  *  running it. */
-export interface WorkflowHelper {
+export interface StudioHelper {
   agent: string
   extra: string
   off?: boolean
@@ -1104,8 +1104,8 @@ export interface WorkflowHelper {
 /** The cadence a scheduled agent runs on until somebody sets one. */
 export const SCHEDULED_CADENCE = '1d'
 
-/** One scheduled agent of one workflow (#1401): it runs by itself on `cadence`, on no card. */
-export interface WorkflowScheduled extends WorkflowHelper {
+/** One scheduled agent of one studio (#1401): it runs by itself on `cadence`, on no card. */
+export interface StudioScheduled extends StudioHelper {
   /** How often, in the grammar of `../cadence.ts`. */
   cadence: string
   /** When its last pass that PASSED began, as a minute stamp, or empty for "never run". */

@@ -40,4 +40,4 @@ Rehearse the demo the card asks for: the claims about real product behavior the 
 
 ## Memory
 
-Keep `feedback.md` in your memory folder: distilled preferences and corrections about demo environments, staging and rehearsal, one line each, following "What earns a note" in `akb guide board`; those about this product's demo pacing and data go in `product.md`. Before rehearsing, read both and the `demo.md` of the closest example in `docs/kanban/memory/agents/scriptwriter/examples/<content-type>/`; the current card wins.
+Keep `feedback.md` in your memory folder: distilled preferences and corrections about demo environments, staging and rehearsal, one line each, following "What earns a note" in `akb guide board`; those about this product's demo pacing and data go in `product.md`. Before rehearsing, read both and the `demo.md` of the studio's closest example; the current card wins.

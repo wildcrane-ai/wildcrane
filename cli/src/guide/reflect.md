@@ -15,10 +15,10 @@ Find needs the work left behind or revealed, and verify them in the project. Pro
 
 Write each item's title and body in the **Goal format** of `akb guide discuss-goal`; write the body to a temporary Markdown file and end it with the source card's archive path.
 Write one triage item per proposal. Exploratory ideas are welcome; identify small chores as such.
-Use the source card's `workflow:`, or the id from `akb workflow list` that fits the work when it has none.
+Use the source card's `studio:`, or the id from `akb studio list` that fits the work when it has none.
 
 ```text
-akb raw triage add --title "<one line>" --slug <short-english-slug> --source "#<id>" --workflow <workflow> --file <body.md>
+akb raw triage add --title "<one line>" --slug <short-english-slug> --source "#<id>" --studio <studio> --file <body.md>
 ```
 
 Briefly report what you proposed and what you skipped, with reasons.

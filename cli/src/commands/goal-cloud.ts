@@ -6,7 +6,7 @@ import { cloud } from './task'
 import type { MoveResult } from '../lib/types'
 import { die } from '../lib/paths'
 import { say, quietlyAsync } from '../lib/io'
-import { cmdGoal, cmdGoalPreviews, cmdGoalWorkflows, goalsFile, shortWorkflowId, type GoalOptions, type GoalWorkflow, type Goal } from './goal'
+import { cmdGoal, cmdGoalPreviews, cmdGoalStudios, goalsFile, shortStudioId, type GoalOptions, type GoalStudio, type Goal } from './goal'
 
 /** The host session the goals belong to; Cursor's and Kimi Code's models pass their session id themselves,
  *  and dsh's model the discussion `wildcrane_draft_read` opened. */
@@ -23,11 +23,11 @@ export const externalGoalSession = () => !goalsFile() && !process.env.KANBAN_RUN
 
 const request = <T>(method: string, route: string, body?: unknown): Promise<T> => cloud<T>(method, route, body)
 
-async function workflows(workspace: string): Promise<GoalWorkflow[]> {
-  const all: GoalWorkflow[] = []
+async function studios(workspace: string): Promise<GoalStudio[]> {
+  const all: GoalStudio[] = []
   let after: string | null = null
   do {
-    const page: { data: GoalWorkflow[]; next: string | null } = await request('GET', `/v1/workflows?workspace=${encodeURIComponent(workspace)}&limit=100${after ? `&after=${encodeURIComponent(after)}` : ''}`)
+    const page: { data: GoalStudio[]; next: string | null } = await request('GET', `/v1/studios?workspace=${encodeURIComponent(workspace)}&limit=100${after ? `&after=${encodeURIComponent(after)}` : ''}`)
     all.push(...page.data)
     after = page.next
   } while (after)
@@ -70,7 +70,7 @@ export async function withGoalDiscussion(action: () => unknown, save = false): P
   const before = process.env.KANBAN_GOALS
   try {
     const previous = goalsOf(d)
-    fs.writeFileSync(file, JSON.stringify({ workspace: d.workspace, workflows: await workflows(d.workspace), ideas: previous.map((g) => ({ ...g, task: typeof g.task === 'object' && g.task ? g.task.id : g.task })) }))
+    fs.writeFileSync(file, JSON.stringify({ workspace: d.workspace, studios: await studios(d.workspace), ideas: previous.map((g) => ({ ...g, task: typeof g.task === 'object' && g.task ? g.task.id : g.task })) }))
     process.env.KANBAN_GOALS = file
     const result = (save ? await quietlyAsync(async () => action()) : await action()) as Record<string, unknown>
     if (save) {
@@ -98,17 +98,17 @@ export async function withGoalDiscussion(action: () => unknown, save = false): P
 }
 
 export const cloudGoal = (args: string[], opts: GoalOptions) => withGoalDiscussion(() => cmdGoal(args, opts), true)
-export const cloudGoalWorkflows = () => withGoalDiscussion(cmdGoalWorkflows)
-export async function queryPreviews(workflow: string, workspace?: string) {
+export const cloudGoalStudios = () => withGoalDiscussion(cmdGoalStudios)
+export async function queryPreviews(studio: string, workspace?: string) {
   if (!workspace) {
-    if (externalGoalSession()) return withGoalDiscussion(() => cmdGoalPreviews(workflow))
+    if (externalGoalSession()) return withGoalDiscussion(() => cmdGoalPreviews(studio))
     die('--workspace is required outside a goal discussion.')
   }
-  const list = await workflows(workspace)
-  const flow = list.find((w) => w.id === workflow || shortWorkflowId(w.id) === workflow)
-  if (!flow) die(`No workflow \`${workflow}\` here.`)
+  const list = await studios(workspace)
+  const flow = list.find((w) => w.id === studio || shortStudioId(w.id) === studio)
+  if (!flow) die(`No studio \`${studio}\` here.`)
   if (!flow.previews) die('Preview agents are unavailable; update Runner and try again.')
   const agents = flow.previews.map((p) => ({ name: p.agent, when: p.when || null }))
-  say(agents.length ? agents.map((p) => `${p.name}\n  ${p.when ?? 'Always'}`).join('\n') : 'This workflow has no preview agent. Ask for none.')
+  say(agents.length ? agents.map((p) => `${p.name}\n  ${p.when ?? 'Always'}`).join('\n') : 'This studio has no preview agent. Ask for none.')
   return { agents, problems: [] }
 }

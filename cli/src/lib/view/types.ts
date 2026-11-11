@@ -247,11 +247,11 @@ export interface Card {
   related: number[]
   /** The card's open questions, plain and options ones alike. */
   questions: Question[]
-  /** The workflow this card runs through (#715) — a workflow's stable id, never its name.
-   *  Empty on a card that names none and on a board that picks no workflows, and both read
-   *  as the default workflow. */
-  workflow: string
-  /** Its workflow lands nothing (#1057, #2152): its last approval archives the card. */
+  /** The studio this card runs through (#715) — a studio's stable id, never its name.
+   *  Empty on a card that names none and on a board that picks no studios, and both read
+   *  as the default studio. */
+  studio: string
+  /** Its studio lands nothing (#1057, #2152): its last approval archives the card. */
   deliversIn?: 'plan'
   /** The approvals its previews make and the one it is on, 1-based (#2154). Absent when it
    *  has one. */
@@ -333,7 +333,7 @@ export interface WriteResult {
 /** What turning an older board's recurring cards into scheduled agents did (#1414). */
 export interface RecurringMigration {
   /** The cards that became agents. */
-  agents: { card: string; agent: string; workflow: string; on: boolean; cadence: string }[]
+  agents: { card: string; agent: string; studio: string; on: boolean; cadence: string }[]
   /** The cards deleted with no agent made — "Fetch triage items". */
   removed: string[]
   /** The cards left where they were, each with why. The next pass tries them again. */
@@ -398,8 +398,8 @@ export interface Signal {
   meta: SignalMeta[]
   /** The agent whose run added it (#1475), or absent when no run did. */
   agent?: string
-  /** The workflow that does its work, as `akb raw triage add` named it (#2139). Absent on an older item. */
-  workflow?: string
+  /** The studio that does its work, as `akb raw triage add` named it (#2139). Absent on an older item. */
+  studio?: string
   /** The thing itself, when there is one to open. Empty otherwise. */
   url: string
   /** When it was collected, `YYYY-MM-DD HH:MM` local. What the list sorts on. */
@@ -483,8 +483,8 @@ export interface InboxDrop {
   slug?: string
   /** The agent whose run is adding it (#1475). */
   agent?: string
-  /** The workflow that does its work (#2139). */
-  workflow?: string
+  /** The studio that does its work (#2139). */
+  studio?: string
 }
 
 /** What one add did. The failure carries the one sentence the page shows. */

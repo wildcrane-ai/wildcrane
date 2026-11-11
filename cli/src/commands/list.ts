@@ -21,7 +21,7 @@ import { parseFrontmatter } from '../lib/frontmatter'
 import { walkMd, walkDirs, idPrefix, boardCardIds, isLegacyRecurring } from '../lib/cards'
 import { formatStamp, parseStamp } from '../lib/cadence'
 import { landedDeliveries } from '../lib/agent/deliveries'
-import { knownWorkflow, scheduledAgent } from '../lib/agent/workflows'
+import { knownStudio, scheduledAgent } from '../lib/agent/studios'
 import { insideScheduledPass } from '../lib/agent/scheduled'
 import { cardAges, staleAfter, type Age } from '../lib/card-age'
 import { heldBy, type Hold } from '../lib/card-holds'
@@ -158,10 +158,10 @@ function cmdArchived(opts: ListOptions): MoveResult {
   if (opts.since?.trim() === LAST_RUN) {
     const pass = insideScheduledPass()
     if (!pass) die(`--since ${LAST_RUN} only works inside a scheduled agent's run. Elsewhere, write the time as "YYYY-MM-DD HH:MM".`)
-    const last = scheduledAgent(pass!.workflow, pass!.agent)?.lastRun ?? ''
+    const last = scheduledAgent(pass!.studio, pass!.agent)?.lastRun ?? ''
     if (!parseStamp(last)) {
       say('this is the first run, so no cards are listed.')
-      return { cards: [], since: null, workflow: opts.workflow ?? null, firstRun: true }
+      return { cards: [], since: null, studio: opts.studio ?? null, firstRun: true }
     }
     opts = { ...opts, since: last }
   }
@@ -169,23 +169,23 @@ function cmdArchived(opts: ListOptions): MoveResult {
     since = parseStamp(opts.since)
     if (!since) die(`cannot read --since "${opts.since}". Write it as "YYYY-MM-DD HH:MM", e.g. --since "2026-08-02 14:31".`)
   }
-  const workflow = opts.workflow === undefined ? null : knownWorkflow(opts.workflow)
+  const studio = opts.studio === undefined ? null : knownStudio(opts.studio)
 
   const open = boardCardIds()
   const files = archivedFiles()
-  const cards = landedDeliveries({ since: since?.getTime(), workflow: workflow ?? undefined })
+  const cards = landedDeliveries({ since: since?.getTime(), studio: studio ?? undefined })
     .filter((d) => !open.has(d.cardId))
     .map((d) => ({
       id: d.cardId,
       title: d.title,
-      workflow: d.workflow,
+      studio: d.studio,
       landedAt: formatStamp(new Date(d.at)),
       commit: d.commit,
       file: files.has(d.cardId) ? rel(files.get(d.cardId)!) : '',
     }))
-  const result = { cards, since: since ? formatStamp(since) : null, workflow }
+  const result = { cards, since: since ? formatStamp(since) : null, studio }
 
-  const scope = [workflow ? `on workflow \`${workflow}\`` : '', since ? `since ${formatStamp(since)}` : ''].filter(Boolean).join(' ')
+  const scope = [studio ? `on studio \`${studio}\`` : '', since ? `since ${formatStamp(since)}` : ''].filter(Boolean).join(' ')
   if (!cards.length) {
     say(`no cards landed${scope ? ` ${scope}` : ''}.`)
     return result
@@ -195,7 +195,7 @@ function cmdArchived(opts: ListOptions): MoveResult {
   for (const c of cards) {
     say('')
     say(`#${c.id} ${c.title}${c.file ? `  (${c.file})` : ''}`)
-    say(`    ${c.workflow} · landed ${c.landedAt} · commit ${c.commit}`)
+    say(`    ${c.studio} · landed ${c.landedAt} · commit ${c.commit}`)
   }
   return result
 }
@@ -206,17 +206,17 @@ export interface ListOptions {
   stale?: boolean
   archived?: boolean
   since?: string
-  workflow?: string
+  studio?: string
 }
 
 export function cmdList(opts: ListOptions): MoveResult {
   if (opts.archived) {
     if (opts.stale) die('--archived and --stale answer different questions — pass one of them.')
-    if (opts.module !== undefined) die('--module does not apply to --archived; narrow it with --workflow.')
+    if (opts.module !== undefined) die('--module does not apply to --archived; narrow it with --studio.')
     return cmdArchived(opts)
   }
   if (opts.since !== undefined) die('--since only applies to --archived.')
-  if (opts.workflow !== undefined) die('--workflow only applies to --archived.')
+  if (opts.studio !== undefined) die('--studio only applies to --archived.')
 
   const all = openRows()
   let rows = all

@@ -69,7 +69,7 @@ it('requires ownership and paired full software results', async () => {
   await refuses(root, ['archive', '1'], /delivery complete/)
 })
 it('asks a merged commit only of a land agent declaring akb.merges', () => {
-  patch((d) => { d.base = sha; d.workflow!.land = [{ agent: 'blog-writer', extra: '' }] })
+  patch((d) => { d.base = sha; d.studio!.land = [{ agent: 'blog-writer', extra: '' }] })
   assert.equal(completeDelivery(deliveryId).finished, true)
 })
 it('lets the builder finish without a commit outside git', () => {
@@ -98,8 +98,8 @@ it('keeps a failed archive retryable and lets a resumed run finish the receipt',
   process.env[RUN_ENV] = 'resumed'
   assert.equal(completeDelivery(deliveryId, { commit: sha, branch: 'main' }).finished, true)
 })
-it('records workflow steps in order and retains the earlier code result', async () => {
-  patch((d) => { d.workflow!.land = [{ agent: 'builder', extra: '' }, { agent: 'blog-writer', extra: '' }]; d.rules = { builder: 'Builder rule', 'blog-writer': 'Writer rule' } })
+it('records studio steps in order and retains the earlier code result', async () => {
+  patch((d) => { d.studio!.land = [{ agent: 'builder', extra: '' }, { agent: 'blog-writer', extra: '' }]; d.rules = { builder: 'Builder rule', 'blog-writer': 'Writer rule' } })
   assert.equal(completeDelivery(deliveryId, { commit: sha, branch: 'main' }).finished, false)
   assert.ok(fs.existsSync(card))
   assert.equal(completeDelivery(deliveryId, { commit: sha, branch: 'main' }).finished, false)
@@ -115,7 +115,7 @@ it('records workflow steps in order and retains the earlier code result', async 
   assert.equal(findDelivery(deliveryId)?.landing?.commit, sha)
 })
 it('validates file outputs without a Git repository', () => {
-  patch((d) => { d.workflow!.needsArtifact = true; d.workflow!.land = [{ agent: 'blog-writer', extra: '' }] })
+  patch((d) => { d.studio!.needsArtifact = true; d.studio!.land = [{ agent: 'blog-writer', extra: '' }] })
   assert.throws(() => completeDelivery(deliveryId), /no output/)
   fs.appendFileSync(card, '\n- [x] Output: `out/article.md`\n')
   assert.throws(() => completeDelivery(deliveryId), /missing/)
@@ -230,7 +230,7 @@ it('recovers a non-Git delivery from its local log when its live index is lost',
 it('rejects retired Git commands and keeps leaf arguments strict', async () => {
   for (const args of [
     ['delivery', 'conflict', '1'], ['raw', 'delivery', 'blocked', '1', 'why'],
-    ['raw', 'delivery', 'discard', '1', '--yes'], ['workflow', 'worktree', 'coding', 'on'],
+    ['raw', 'delivery', 'discard', '1', '--yes'], ['studio', 'worktree', 'coding', 'on'],
   ]) {
     const program = args[0] === 'raw'
       ? buildBoardProgram({ program: 'akb raw', cwd: root, installHint: '', version: null })
@@ -238,7 +238,7 @@ it('rejects retired Git commands and keeps leaf arguments strict', async () => {
     await assert.rejects(() => program.parseAsync(args[0] === 'raw' ? args.slice(1) : args, { from: 'user' }), { code: 'commander.unknownCommand' })
   }
   await assert.rejects(() => run(root, ['raw', 'delivery', 'complete', '1', 'extra']), /too many arguments/)
-  await assert.rejects(() => run(root, ['workflow', 'list', '--unexpected']), /unknown option/)
+  await assert.rejects(() => run(root, ['studio', 'list', '--unexpected']), /unknown option/)
 })
 
 it('replays the durable completion receipt when a legacy writer drops live receipt fields', () => {

@@ -12,7 +12,7 @@ Plan one card in this session until it can be built.
   `akb raw reject <id> --reason "<what shows it>"` and stop.
 - **Gone or already done**: for any other card, append a question asking the user whether to
   discard it, run no preview agent, and stop.
-- **Workflow rules**: write the card as the workflow rules at the end of this prompt say.
+- **Studio rules**: write the card as the studio rules at the end of this prompt say.
 - **Preview agents**: an agent's `After` names the previews it waits for; the board approves
   previews in stages, one stage per Approve, and the card's `previews` were chosen when its
   goal was written. A card without `previews` has not chosen: choose and save them first, as

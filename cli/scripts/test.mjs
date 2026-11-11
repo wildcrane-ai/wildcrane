@@ -46,13 +46,13 @@ const bundles = tests.map((f) => path.join(OUT_DIR, f.replace(/\.ts$/, '.mjs')))
 // (src/lib/machine/project.ts), so the run gets a throwaway one. Nothing else carries over
 // from whoever started it: an inherited `AI4KANBAN_BOARD` beats a test's own folder and
 // once pointed a test at the real board (#93). A test that wants a variable sets it itself.
-// `DO_NOT_TRACK` keeps every command from posting usage (#96). The official workflows are read
+// `DO_NOT_TRACK` keeps every command from posting usage (#96). The official studios are read
 // from official/, unpublished (#409).
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-test-home-'))
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(AI4KANBAN_|KANBAN_|WILDCRANE_)/.test(k)))
 const run = spawnSync(process.execPath, ['--test', ...nodeArgs, ...bundles], {
   stdio: 'inherit',
-  env: { ...env, AI4KANBAN_HOME: HOME, AI4KANBAN_WORKFLOWS: path.join(PKG_DIR, '..', 'official'), AI4KANBAN_PATH_ONLY: '1', DO_NOT_TRACK: '1', CLAUDE_CODE_SESSION_ID: '', CODEX_THREAD_ID: '' },
+  env: { ...env, AI4KANBAN_HOME: HOME, AI4KANBAN_STUDIOS: path.join(PKG_DIR, '..', 'official'), AI4KANBAN_PATH_ONLY: '1', DO_NOT_TRACK: '1', CLAUDE_CODE_SESSION_ID: '', CODEX_THREAD_ID: '' },
 })
 fs.rmSync(OUT_DIR, { recursive: true, force: true })
 fs.rmSync(HOME, { recursive: true, force: true })

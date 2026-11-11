@@ -5,7 +5,7 @@ import { deliveryStep } from './progress'
 // button say exactly the same thing. Only the opening — how this agent is asked for the
 // skill — follows the agent that runs; everything after it is the same for all of them.
 
-import { agentComponents, workflowComponents, componentDocsText } from '../components'
+import { agentComponents, studioComponents, componentDocsText } from '../components'
 import path from 'node:path'
 import { locate, locateArchived } from '../cards'
 import { PLANNER } from '../memory'
@@ -21,14 +21,16 @@ import {
   specAgentSelector,
 } from '../agents'
 import { boardCommand, boardCommandFor, commandNote } from './command'
-import { activeDelivery, deliveryFor, endedDelivery, findDelivery, withWorkflow } from './deliveries'
+import { activeDelivery, deliveryFor, endedDelivery, findDelivery, withStudio } from './deliveries'
 import { SCHEDULED_AGENTS_ENV } from './env'
 import { field } from './facts'
 import { recordedOutputs } from './outputs'
 import { readArchive } from '../view/archive'
 import { DELIVERY_FLOWS } from './flows'
 import { agentImages, skillCall } from './resolve'
-import { agentForRun, workflowForRun } from './runner'
+import { agentForRun, studioForRun } from './runner'
+import { studioFiles, studioHoldsAgent, studioSections } from './studio-shared'
+import { CARD_TEMPLATE_FILE } from '../shared/studio-files'
 import {
   cardMeta,
   cardStage,
@@ -37,11 +39,11 @@ import {
   listedScheduled,
   previewMembers,
   scheduledAgent,
-  workflowById,
-  workflowFor,
-  userWorkflowRules,
-  workflows,
-} from './workflows'
+  studioById,
+  studioFor,
+  userStudioRules,
+  studios,
+} from './studios'
 import { specAgentCatalog } from '../agents/catalog'
 import { roleNamed } from './roles'
 import { migrateFlowRules, ruleBlock, ruleOwner } from './rules'
@@ -167,7 +169,7 @@ const NO_IMPLEMENT = `(Unless the request explicitly asks for implementation, do
  *  Split out from `buildPrompt` for the one caller that needs the ask alone: a printed flow
  *  puts the rule at the very end, after the flows themselves (`flow.ts`). */
 export function buildAsk(rawReq: AgentRequest, notes: string[] = []): string {
-  const req = withWorkflow(rawReq)
+  const req = withStudio(rawReq)
   // A delivery's runs work in that delivery's own worktree, so their board commands
   // name the project's own copy outright (#303). Everything else runs in the project and
   // spells the command the ordinary way.
@@ -180,9 +182,9 @@ export function buildAsk(rawReq: AgentRequest, notes: string[] = []): string {
 
 function componentsBlock(req: AgentRequest): string {
   const agent = findSpecAgent(agentForRun(req) ?? '')
-  const flow = workflowFor(workflowForRun(req))
+  const flow = studioFor(studioForRun(req))
   const docs = PLANNING_FOR.has(req.action) && flow
-    ? workflowComponents(flow.id)
+    ? studioComponents(flow.id)
     : agent ? agentComponents([agent.name]) : []
   const text = componentDocsText(docs)
   return text ? `——— preview components ———\n\n${text}` : ''
@@ -210,30 +212,30 @@ function realPaths(text: string, req: AgentRequest): string {
     .join(REPO_ROOT)
 }
 
-// What one workflow asks of a preview it runs, on top of the agent's own instructions
+// What one studio asks of a preview it runs, on top of the agent's own instructions
 // (#715). Read off the delivery's frozen copy when the run is part of one, and off the board
 // otherwise — the same rule a rule follows.
 //
-// It belongs to the ASSIGNMENT: the same agent in two workflows carries a different one in
-// each, and an agent no workflow lists carries none.
+// It belongs to the ASSIGNMENT: the same agent in two studios carries a different one in
+// each, and an agent no studio lists carries none.
 function helperExtra(req: AgentRequest): string {
   const agent = req.specAgent ?? ''
   if (!agent || req.action !== 'spec') return ''
-  const frozen = deliveryFor(req)?.workflow
-  const flow = frozen ? undefined : workflowFor(workflowForRun(req))
+  const frozen = deliveryFor(req)?.studio
+  const flow = frozen ? undefined : studioFor(studioForRun(req))
   const rows = frozen ? (frozen.previews ?? []) : flow ? previewMembers(flow) : []
   const extra = rows.find((h) => h.agent === agent)?.extra?.trim()
-  return extra ? `——— what this workflow asks of you here ———\n\n${extra}` : ''
+  return extra ? `——— what this studio asks of you here ———\n\n${extra}` : ''
 }
 
-// The planning passes, which write the card to its workflow's rules (#2152).
+// The planning passes, which write the card to its studio's rules (#2152).
 const PLANNING_FOR = new Set<AgentAction>(['clarify', 'resolve', 'approve', 'edit'])
 
-/** How a card on this run's workflow is written (#2152): its file's body and the user's own
+/** How a card on this run's studio is written (#2152): its file's body and the user's own
  *  rule for it, and the stage a card is in when it has several. */
-export function workflowRulesBlock(req: AgentRequest): string {
+export function studioRulesBlock(req: AgentRequest): string {
   if (!PLANNING_FOR.has(req.action)) return ''
-  const flow = workflowFor(workflowForRun(req))
+  const flow = studioFor(studioForRun(req))
   if (!flow) return ''
   const meta = req.id !== undefined ? cardMeta(req.id) : null
   const stages = cardStages(meta, flow).length
@@ -243,26 +245,40 @@ export function workflowRulesBlock(req: AgentRequest): string {
       ? `#${req.id} awaits Approve ${stage} of ${stages}: write only the previews this Approve covers${stage < stages ? '; the next previews start once the user approves' : ''}.`
       : ''
   const end = landAgents(flow).length
-    ? 'After the last approval, the workflow agents complete the approved outcome and archive the card.'
+    ? 'After the last approval, the studio agents complete the approved outcome and archive the card.'
     : 'The last Approve archives the card: nothing is built, so leave no todo for a build.'
-  const own = userWorkflowRules(flow)
+  const own = userStudioRules(flow)
+  const template = studioFiles(flow.id)?.[CARD_TEMPLATE_FILE]?.trim()
   const body = [where, end, flow.rules.trim()].filter(Boolean).join('\n\n')
   return [
-    `<workflow name="${flow.name}">`,
-    'How a card on this workflow is written.',
-    body,
-    '</workflow>',
-    ...(own ? ['', '<rules>', "The user's own rules for cards on this workflow; they win over the workflow above.", own, '</rules>'] : []),
-  ].join('\n')
+    [
+      `<studio name="${flow.name}">`,
+      'How a card on this studio is written.',
+      body,
+      '</studio>',
+      ...(template ? ['', '<card-template>', 'Write the card from this template: keep only the parts that fit this card, and fill them in.', template, '</card-template>'] : []),
+      ...(own ? ['', '<rules>', "The user's own rules for cards on this studio; they win over the studio above.", own, '</rules>'] : []),
+    ].join('\n'),
+    ...studioSections(flow.id),
+  ].join('\n\n')
+}
+
+/** A run's studio sections (#656) and its own files: listed there when its studio holds them,
+ *  else as their own section. */
+function ownFiles(studio: string | undefined, agent: string | undefined, files: string | undefined): string[] {
+  const sections = studioSections(studio, { agent, memory: true })
+  const listed = !!agent && studioHoldsAgent(studio, agent)
+  return [...sections, ...(files && !listed ? [`——— your own files ———\n\n${files}`] : [])]
 }
 
 /** 按交付顺序叠加各 agent 的专属指令。 */
 export function landBlock(req: AgentRequest): string {
   if (req.action !== 'implement') return ''
-  const frozen = deliveryFor(req)?.workflow
-  const flow = frozen ? undefined : workflowFor(workflowForRun(req))
+  const frozen = deliveryFor(req)?.studio
+  const flow = frozen ? undefined : studioFor(studioForRun(req))
   const rows = frozen ? (frozen.land ?? []) : flow ? landAgents(flow) : []
   const delivery = deliveryFor(req)
+  const studio = frozen?.id ?? flow?.id
   const step = delivery ? deliveryStep(delivery) : 0
   const agents = rows.slice(step, step + 1).flatMap((h) => {
     const agent = findSpecAgent(h.agent)
@@ -273,9 +289,9 @@ export function landBlock(req: AgentRequest): string {
       .map(({ agent, extra }, i) =>
         [
           `——— ${agents.length > 1 ? `step ${i + 1}: ` : ''}you, the \`${agent.name}\` agent — where this differs from the shared flow, follow this ———\n\n${agent.body}`,
-          agentFilesBlock(agent) ? `——— your own files ———\n\n${agentFilesBlock(agent)}` : '',
+          ...ownFiles(studio, agent.name, agentFilesBlock(agent)),
           globalMemoryBlock(agent) ? `——— global memories ———\n\n${globalMemoryBlock(agent)}` : '',
-          extra ? `——— what this workflow asks of you here ———\n\n${extra}` : '',
+          extra ? `——— what this studio asks of you here ———\n\n${extra}` : '',
         ]
           .filter(Boolean)
           .join('\n\n'),
@@ -287,8 +303,8 @@ export function landBlock(req: AgentRequest): string {
 /** The words one run is given, this board's own rule for the flow last (#306). It goes
  *  after everything else the board writes, so nothing of the board's follows the user's. */
 export function buildPrompt(rawReq: AgentRequest, notes: string[] = []): string {
-  const req = withWorkflow(rawReq)
-  return [buildAsk(req, notes), workflowRulesBlock(req), landBlock(req), settingsBlock(req), ruleBlock(req, frozenRules(req))]
+  const req = withStudio(rawReq)
+  return [buildAsk(req, notes), studioRulesBlock(req), landBlock(req), settingsBlock(req), ruleBlock(req, frozenRules(req))]
     .filter(Boolean)
     .join('\n\n')
 }
@@ -378,21 +394,21 @@ function reflectBlocks(ids: number[]): string[] {
 }
 
 // The scheduled agents switched on, whose own work a reflection leaves to them (#1494). Cloud
-// holds the switches, so a Runner passes them (#277); without it, every agent a workflow lists.
+// holds the switches, so a Runner passes them (#277); without it, every agent a studio lists.
 function scheduledBlock(): string[] {
   const given = process.env[SCHEDULED_AGENTS_ENV]
-  const on = new Set(given === undefined ? workflows().flatMap((flow) => listedScheduled(flow)) : given.split(','))
+  const on = new Set(given === undefined ? studios().flatMap((flow) => listedScheduled(flow)) : given.split(','))
   const lines = specAgentCatalog().agents.filter((a) => on.has(a.name)).map((a) => `${a.name} — ${a.description}`)
   return lines.length ? ['<scheduled-agents>', ...lines, '</scheduled-agents>'] : []
 }
 
 function roster(req: AgentRequest): string {
   if (req.id === undefined) return ''
-  // The card's own workflow, not only the one the request carries (#749): the ask this block
+  // The card's own studio, not only the one the request carries (#749): the ask this block
   // invites is checked against the card's, and a list that offered a different team would be
   // a run told to ask for agents its card refuses.
   if (!SPEC_SELECTOR_FOR.has(req.action)) return ''
-  const flow = workflowFor(workflowForRun(req))
+  const flow = studioFor(studioForRun(req))
   return specAgentSelector(req.id, flow?.id, cardMeta(req.id))
 }
 
@@ -508,7 +524,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
     case 'prune-memory':
       return [
         `${kb}. Prune this board's memory following \`akb guide prune-memory\`.`,
-        `Cover the board's own record at \`${rel(MEMORY)}/\` and every agent's memory at \`${rel(MEMORY)}/agents/<agent>/\`, the ${PLANNER}'s among them.`,
+        `Cover the board's own record at \`${rel(MEMORY)}/\` and every agent's memory at \`${rel(MEMORY)}/agents/<agent>/\`, the ${PLANNER}'s among them, and each studio's at \`${rel(MEMORY)}/studios/<studio>/\`.`,
         `Change nothing but those files: no card, no question for anyone.`,
       ].join(' ')
     // Reading back over the conversations (#748). It names nothing either: which ones have
@@ -580,12 +596,12 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
           .filter(Boolean)
           .join(' '),
         agent && own ? `——— you, the \`${agent.name}\` agent ———\n\n${own.instructions}` : '',
-        own?.files ? `——— your own files ———\n\n${own.files}` : '',
+        ...ownFiles(studioForRun(req), agent?.name, own?.files),
         memory ? `——— what you remember ———\n\n${memory}` : '',
         shared ? `——— global memories ———\n\n${shared}` : '',
-        // What THIS workflow asks of it here (#715) — the assignment's own words, after the
+        // What THIS studio asks of it here (#715) — the assignment's own words, after the
         // agent's instructions and its memory, because it is written on top of them and never
-        // in place of them. A card whose workflow does not call this agent in has none.
+        // in place of them. A card whose studio does not call this agent in has none.
         helperExtra(req),
       ]
         .filter(Boolean)
@@ -599,18 +615,18 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
       if (own) notes.push(...own.notes)
       const memory = agent ? agentMemoryBlock(agent) : ''
       const shared = agent ? globalMemoryBlock(agent) : ''
-      const flow = workflowById(req.workflow ?? '')
+      const flow = studioById(req.studio ?? '')
       const extra = flow ? scheduledAgent(flow.id, req.specAgent ?? '')?.extra.trim() : ''
       return [
         [
-          `You are the \`${req.specAgent}\` agent of the \`${flow?.name ?? req.workflow ?? ''}\` workflow.`,
+          `You are the \`${req.specAgent}\` agent of the \`${flow?.name ?? req.studio ?? ''}\` studio.`,
           `The board is at \`${BOARD_FOLDER}\`, in the project at \`${PROJECT_FOLDER}\`.`,
           `Nobody is watching: never ask.`,
           req.deliveryId ? `When the outcome is complete, run \`${command} raw delivery complete ${req.deliveryId}\`.` : '',
         ].join(' '),
         agent && own ? `——— you, the \`${agent.name}\` agent ———\n\n${own.instructions}` : '',
-        own?.files ? `——— your own files ———\n\n${own.files}` : '',
-        extra ? `——— what this workflow asks of you here ———\n\n${extra}` : '',
+        ...ownFiles(flow?.id, agent?.name, own?.files),
+        extra ? `——— what this studio asks of you here ———\n\n${extra}` : '',
         memory ? `——— what you remember ———\n\n${memory}` : '',
         shared ? `——— global memories ———\n\n${shared}` : '',
       ]
@@ -635,7 +651,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
         'Do only the task below, and finish with one message saying what you did and what you could not do: it is all the run that started you will read.',
         `——— your task ———\n\n${req.description ?? ''}`,
         agent && own ? `——— you, the \`${agent.name}\` agent ———\n\n${own.instructions}` : '',
-        own?.files ? `——— your own files ———\n\n${own.files}` : '',
+        ...ownFiles(studioForRun(req), agent?.name, own?.files),
         memory ? `——— what you remember ———\n\n${memory}` : '',
         shared ? `——— global memories ———\n\n${shared}` : '',
       ]

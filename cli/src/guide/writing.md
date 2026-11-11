@@ -34,10 +34,9 @@ Use this order and keep the English section titles and empty scaffold sections:
 - **Delivery boundary**: Worth noting after implementation never changes approved scope or
   blocks an ongoing delivery; the build must fix deviations or refer them to the user.
 - **Preview ownership**: produce preview sections only by running their agent; before changing
-  owned content, read `akb raw agent-file <agent> AGENT.md`, then only the references needed
-  for that change with `akb raw agent-file <agent> <path>`; paths are relative to the named
-  agent's folder, and cross-agent references use their named owner; report unreadable rules
-  before proceeding.
+  owned content, read `akb raw file <studio> agents/<agent>/AGENT.md` and the studio's
+  `shared/RULES.md`, then only the files needed for that change with `akb raw file <studio> <path>`;
+  report unreadable rules before proceeding.
 - **Preserve work**: leave checked todos and supplied Done when checklists unchanged; append a
   todo to reverse completed work, and move user-overruled decisions to Overruled by the user
   until the card leaves no room to repeat them.

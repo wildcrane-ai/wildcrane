@@ -16,7 +16,7 @@ for (const [phase, status, expectedPhase, action] of [
       fs.mkdirSync(path.join(board, 'todo'), { recursive: true })
       fs.writeFileSync(path.join(board, 'config.md'), '# Config\n')
       const file = path.join(board, 'todo', '3-pricing.md')
-      fs.writeFileSync(file, `---\ntitle: Pricing\nworkflow: blog-post\npreviews: [blog-planner, blog-illustrator, blog-writer]\nphase: ${phase}\nstatus: ${status}\nquestions: []\n---\n\nPlan.\n`)
+      fs.writeFileSync(file, `---\ntitle: Pricing\nstudio: blog-post\npreviews: [blog-planner, blog-illustrator, blog-writer]\nphase: ${phase}\nstatus: ${status}\nquestions: []\n---\n\nPlan.\n`)
       fs.writeFileSync(path.join(root, '.akb', 'base.json'), JSON.stringify({
         layout: 'workspace', head_seq: 1,
         files: { 'projects/prj_1/todo/3-pricing.md': { seq: 1, content: '' } },

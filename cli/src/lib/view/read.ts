@@ -27,7 +27,7 @@ import {
   countTodos,
 } from '../board/assemble'
 import { revisionOf } from '../board/revision'
-import { archivesOnApproval, cardStage, cardStages, workflowFor } from '../agent/workflows'
+import { archivesOnApproval, cardStage, cardStages, studioFor } from '../agent/studios'
 import type {
   Card,
   CardLandingRetry,
@@ -53,8 +53,8 @@ function buildCard(id: number, file: string, relFromTodo: string): Card | null {
   const { meta, body } = parseFrontmatter(text)
   if (!meta) return null
   const relPath = relFromTodo.split(path.sep).join('/')
-  const flow = workflowFor(meta.workflow)
-  const plan = !!meta.workflow && archivesOnApproval(flow)
+  const flow = studioFor(meta.studio)
+  const plan = !!meta.studio && archivesOnApproval(flow)
   const stages = cardStages(meta, flow).length
   return {
     id,
@@ -69,7 +69,7 @@ function buildCard(id: number, file: string, relFromTodo: string): Card | null {
     blocked_by: meta.blocked_by,
     related: meta.related,
     questions: meta.questions,
-    workflow: meta.workflow,
+    studio: meta.studio,
     ...(plan ? { deliversIn: 'plan' as const } : {}),
     ...(stages > 1 ? { stages, stage: cardStage(meta, flow) } : {}),
     modules: meta.modules,

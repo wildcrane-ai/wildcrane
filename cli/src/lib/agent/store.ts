@@ -17,7 +17,7 @@ import type {
   DeliveryReview,
   DeliveryStatus,
   DeliveryStep,
-  FrozenWorkflow,
+  FrozenStudio,
   LandingReason,
   LandingStatus,
   LandingWait,
@@ -188,7 +188,7 @@ function parseStore(): Store {
       pictures: readPictures(entry.pictures),
       stopping: entry.stopping === true ? true : undefined,
       unspawned: entry.unspawned === true ? true : undefined,
-      workflow: typeof entry.workflow === 'string' && entry.workflow ? entry.workflow : undefined,
+      studio: typeof entry.studio === 'string' && entry.studio ? entry.studio : undefined,
       specAgent: typeof entry.specAgent === 'string' && entry.specAgent ? entry.specAgent : undefined,
       triage: typeof entry.triage === 'string' ? entry.triage : undefined,
       refineRound:
@@ -376,20 +376,20 @@ export function readDeliveryRow(raw: unknown): DeliveryRecord | null {
     // The flow rules this delivery froze (#306). A delivery written down before they
     // existed has none, and its runs read the files — which is what they always did.
     rules: readRules(entry.rules),
-    // The workflow this delivery froze (#715). A delivery written down before workflows
+    // The studio this delivery froze (#715). A delivery written down before studios
     // existed has none, and its runs read the board — which is what they always did.
-    workflow: readWorkflow(entry.workflow),
+    studio: readStudio(entry.studio),
     scheduled:
-      entry.scheduled && typeof entry.scheduled.workflow === 'string' && typeof entry.scheduled.agent === 'string'
-        ? { workflow: entry.scheduled.workflow, agent: entry.scheduled.agent }
+      entry.scheduled && typeof entry.scheduled.studio === 'string' && typeof entry.scheduled.agent === 'string'
+        ? { studio: entry.scheduled.studio, agent: entry.scheduled.agent }
         : undefined,
   }
 }
 
-// The workflow a delivery froze, whole. Dropped rather than half-read: a frozen workflow
+// The studio a delivery froze, whole. Dropped rather than half-read: a frozen studio
 // with no id names nothing, and a run given half of one would resolve the other half off the
 // board — which is the one thing freezing it exists to prevent.
-function readWorkflow(raw: unknown): FrozenWorkflow | undefined {
+function readStudio(raw: unknown): FrozenStudio | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
   const box = raw as Record<string, unknown>
   const id = text(box.id)

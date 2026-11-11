@@ -18,7 +18,7 @@ import { resetOfficial, switchAgent } from './helpers/official.ts'
 let root = ''
 const kanban = (): string => path.join(root, 'docs', 'kanban')
 
-/** A project agent, written the way the board's template writes one: in no workflow yet. */
+/** A project agent, written the way the board's template writes one: in no studio yet. */
 const newAgent = (name: string, title?: string): string => {
   const file = path.join(AGENTS, name, 'AGENT.md')
   fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -73,8 +73,8 @@ afterEach(() => {
 })
 
 describe("a project's own agents", () => {
-  it('counts the ones a workflow runs, and never a shipped one', () => {
-    // Made in no workflow, so off.
+  it('counts the ones a studio runs, and never a shipped one', () => {
+    // Made in no studio, so off.
     newAgent('outliner')
     newAgent('checker')
     assert.deepEqual(customAgentsOn(), [])

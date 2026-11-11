@@ -1,6 +1,6 @@
 // Approve (#1790, #2154): the user accepts the current stage's previews. Before the last stage
 // the board moves the card to the next one, and planning makes its previews; on the last, the
-// card is built and landed when its workflow lands anything, and archived when it does not.
+// card is built and landed when its studio lands anything, and archived when it does not.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -12,7 +12,7 @@ import { awaitingApproval } from '../view/rules'
 import { readRuns } from './store'
 import { holdsCard } from './types'
 import type { AgentRequest, CommandRequest } from './types'
-import { archivesOnApproval, workflowFor } from './workflows'
+import { archivesOnApproval, studioFor } from './studios'
 
 /** The run an Approve starts, or why the card is not waiting on one. Writes nothing:
  *  `advancePhase` moves the card once an `approve` run is cleared to start. */
@@ -27,7 +27,7 @@ export function approvalRequest(req: CommandRequest): AgentRequest | { error: st
   const ask = { id: card.id, title: card.title, notes: req.notes }
   if (awaitingApproval(card)) return { action: 'approve', ...ask }
   if (card.stages && card.stage! < card.stages) return { error: `#${card.id} is still planning stage ${card.stage} — approve it once its previews are ready.` }
-  return archivesOnApproval(workflowFor(card.workflow)) ? { action: 'archive', ...ask } : { action: 'implement', ...ask }
+  return archivesOnApproval(studioFor(card.studio)) ? { action: 'archive', ...ask } : { action: 'implement', ...ask }
 }
 
 /** Move the card one stage on, or say why it no longer waits on Approve. */

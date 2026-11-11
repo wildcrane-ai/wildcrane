@@ -1,0 +1,95 @@
+// `akb studio rule` / `instructions` (#585) write through Cloud's own endpoints, the way the web does.
+
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterEach, beforeEach, it } from 'node:test'
+
+import { writeSession } from '../src/lib/cloud/session.ts'
+import { restoreMachineHome, run } from './helpers/board.ts'
+
+const SUPABASE = 'https://project.supabase.co'
+const API = 'https://api.example.test'
+const realFetch = globalThis.fetch
+
+let root = ''
+let puts: { route: string; rule: unknown }[] = []
+
+beforeEach(() => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-notes-'))
+  const board = path.join(root, '.akb', 'kanban')
+  fs.mkdirSync(path.join(board, 'todo'), { recursive: true })
+  fs.writeFileSync(path.join(board, 'config.md'), '# Config\n')
+  fs.writeFileSync(path.join(root, '.akb', 'base.json'), JSON.stringify({ project: 'prj_1', files: {} }))
+  process.env.AI4KANBAN_HOME = path.join(root, 'home')
+  process.env.AI4KANBAN_SUPABASE_URL = SUPABASE
+  process.env.AI4KANBAN_CLOUD_URL = API
+  writeSession({
+    version: 1, supabaseUrl: SUPABASE, accessToken: 't', refreshToken: 'r',
+    expiresAt: Date.now() + 3600_000, subject: '11111111-1111-4111-8111-111111111111',
+  })
+  puts = []
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    const route = String(url).slice(API.length)
+    if (init?.method === 'PUT') {
+      puts.push({ route, rule: JSON.parse(String(init.body)).rule })
+      return Response.json({})
+    }
+    if (route === '/v1/projects/prj_1') return Response.json({ id: 'prj_1', workspace: 'ws_1' })
+    if (route === '/v1/projects/prj_1/agents') return Response.json({ board: ['proposer', 'memory-pruner'] })
+    if (route === '/v1/workspaces/ws_1/studio-rules') {
+      return Response.json({ studios: [{ id: 'wf_builtin_coding', rule: '- Titles in English.\n- Tests first.' }, { id: 'wf_01own' }], data: [{ agent: 'ui-designer' }, { agent: 'builder' }] })
+    }
+    return Response.json({ error: { code: 'not_found', message: 'Not found.' } }, { status: 404 })
+  }) as typeof fetch
+})
+
+afterEach(() => {
+  globalThis.fetch = realFetch
+  fs.rmSync(root, { recursive: true, force: true })
+  restoreMachineHome()
+  delete process.env.AI4KANBAN_SUPABASE_URL
+  delete process.env.AI4KANBAN_CLOUD_URL
+})
+
+it('saves a studio rule from a file and clears it with empty text', async () => {
+  const file = path.join(root, 'rule.md')
+  fs.writeFileSync(file, 'Titles in English.\nThe rest in Chinese.\n')
+  await run(root, ['studio', 'rule', 'coding', '--file', file])
+  await run(root, ['studio', 'rule', 'coding', '--text', ''])
+  assert.deepEqual(puts, [
+    { route: '/v1/workspaces/ws_1/studios/wf_builtin_coding/rule', rule: 'Titles in English.\nThe rest in Chinese.' },
+    { route: '/v1/workspaces/ws_1/studios/wf_builtin_coding/rule', rule: '' },
+  ])
+})
+
+it("saves a studio agent's instructions on the workspace and a board agent's on the project", async () => {
+  await run(root, ['studio', 'instructions', 'builder', '--text', 'Install first.'])
+  await run(root, ['studio', 'instructions', 'proposer', '--text', 'Propose less.'])
+  assert.deepEqual(puts, [
+    { route: '/v1/workspaces/ws_1/agents/builder', rule: 'Install first.' },
+    { route: '/v1/projects/prj_1/agents/proposer', rule: 'Propose less.' },
+  ])
+})
+
+it('refuses an unknown name with the valid choices', async () => {
+  await assert.rejects(() => run(root, ['studio', 'rule', 'blog', '--text', 'x']), /There are: coding, wf-01own\./)
+  await assert.rejects(() => run(root, ['studio', 'instructions', 'deployer', '--text', 'x']), /There are: ui-designer, builder, proposer, memory-pruner\./)
+  assert.deepEqual(puts, [])
+})
+
+// #592: a bare call reads the current text, so a new rule can keep the old ones.
+it('prints the current rules without writing when no text is given', async () => {
+  const out: string[] = []
+  const write = process.stdout.write
+  process.stdout.write = ((chunk: string) => (out.push(String(chunk)), true)) as typeof process.stdout.write
+  try {
+    await run(root, ['studio', 'rule', 'coding'])
+    await run(root, ['studio', 'instructions', 'builder'])
+  } finally {
+    process.stdout.write = write
+  }
+  assert.match(out.join(''), /- Titles in English\.\n- Tests first\.[\s\S]*builder has no instructions/)
+  assert.deepEqual(puts, [])
+})

@@ -40,7 +40,7 @@ async function run(argv: string[]): Promise<{ code: number; out: string; err: st
 
 describe('shared options before raw', () => {
   before(async () => {
-    const made = await run(['raw', 'create', '--title', 'A card', '--id', '1', '--workflow', 'coding', '--board', board])
+    const made = await run(['raw', 'create', '--title', 'A card', '--id', '1', '--studio', 'coding', '--board', board])
     assert.equal(made.code, 0, made.err)
   })
 

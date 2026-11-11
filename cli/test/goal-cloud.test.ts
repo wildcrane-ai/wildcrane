@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, it } from 'node:test'
-import { cloudGoal, cloudGoalWorkflows, queryPreviews } from '../src/commands/goal-cloud'
+import { cloudGoal, cloudGoalStudios, queryPreviews } from '../src/commands/goal-cloud'
 import { writeSession } from '../src/lib/cloud/session'
 
 const originalEnv = { ...process.env }
@@ -29,7 +29,7 @@ beforeEach(() => {
     calls.push({ url, method: init?.method || 'GET', body })
     let result: unknown
     if (url.pathname.endsWith('/folders')) result = { folders: [{ path: process.cwd(), project: 'prj_test' }] }
-    else if (url.pathname.endsWith('/workflows')) {
+    else if (url.pathname.endsWith('/studios')) {
       if (url.searchParams.get('workspace') === 'missing') return new Response(JSON.stringify({ error: { message: 'No workspace has this id.' } }), { status: 404 })
       result = { data: [{ id: 'wf_builtin_coding', name: 'Coding', previews: catalog }], next: null }
     } else if (url.pathname.endsWith('/external')) result = { id: 'dsc_test', workspace: 'ws_test', version, goals, ideas: goals }
@@ -53,7 +53,7 @@ afterEach(() => {
 })
 it('外部会话按会话与项目保存，返回 Cloud 目标 id；后续编辑与开始使用同一讨论', async () => {
   const body = path.join(root, 'body.md'); fs.writeFileSync(body, 'Deliver.\n\n## Done when\n- Done')
-  const created = await cloudGoal(['new'], { title: 'Goal', bodyFile: body, workflow: 'coding', previews: 'api,ui,ui' })
+  const created = await cloudGoal(['new'], { title: 'Goal', bodyFile: body, studio: 'coding', previews: 'api,ui,ui' })
   assert.equal(created.id, 'idea_1')
   assert.equal(created.url, 'https://app.wildcrane.ai/discussions/dsc_test')
   assert.deepEqual(goals[0].previews, ['ui-designer', 'api-designer'])
@@ -66,13 +66,13 @@ it('外部会话按会话与项目保存，返回 Cloud 目标 id；后续编辑
   assert.equal(process.env.KANBAN_GOALS, originalEnv.KANBAN_GOALS)
 })
 it('外部查询包含完整触发条件，错误不继续写入，支持 Claude Code 的同一入口', async () => {
-  assert.equal((await cloudGoalWorkflows()).discussion, 'dsc_test')
+  assert.equal((await cloudGoalStudios()).discussion, 'dsc_test')
   assert.deepEqual((await queryPreviews('coding', 'ws_test')).agents, [{ name: 'ui-designer', when: catalog[0].when }, { name: 'api-designer', when: null }])
   await assert.rejects(queryPreviews('coding', 'missing'), /No workspace/)
   process.env.CLAUDE_CODE_SESSION_ID = 'test-claude'
-  await cloudGoalWorkflows()
+  await cloudGoalStudios()
   assert.deepEqual([...calls].reverse().find((c) => c.url.pathname.endsWith('/external'))?.body, { requestId: 'test-claude', host: 'claude-code', project: 'prj_test' })
-  goals = [{ id: 'idea_1', title: 'Goal', workflow: 'wf_builtin_coding', previews: [], task: null }]
+  goals = [{ id: 'idea_1', title: 'Goal', studio: 'wf_builtin_coding', previews: [], task: null }]
   conflict = true
   await assert.rejects(cloudGoal(['save'], { id: 'idea_1', title: 'Changed' }), /goals have changed/)
   assert.equal(goals[0].title, 'Goal')
@@ -81,6 +81,6 @@ it('外部查询包含完整触发条件，错误不继续写入，支持 Claude
 it('dsh 会话使用模型传入的讨论编号，不再开新讨论 (#531)', async () => {
   delete process.env.CODEX_THREAD_ID
   process.env.WILDCRANE_DISCUSSION = 'dsc_dsh'
-  assert.equal((await cloudGoalWorkflows()).discussion, 'dsc_dsh')
+  assert.equal((await cloudGoalStudios()).discussion, 'dsc_dsh')
   assert.equal(calls.some((c) => c.url.pathname.endsWith('/external')), false)
 })

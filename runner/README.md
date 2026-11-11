@@ -35,9 +35,9 @@ wildcrane-runner
   delivery is paused there, or its last sync failed.
 - **Runner files**: `~/.wildcrane/bin/` holds the downloaded versions and the `akb` shims.
 - **Periodic agents**: in each project folder it also runs the board's own agents (reflect,
-  describe-project, review-dismissals, prune-memory) and each workflow's scheduled agents, when
+  describe-project, review-dismissals, prune-memory) and each studio's scheduled agents, when
   due by this computer's clock — on your runtime, so they use its quota.
-- **akb**: tasks started from WildCrane run akb's workflows, on whichever of those the task's
+- **akb**: tasks started from WildCrane run akb's studios, on whichever of those the task's
   runtime names, with the version WildCrane names, else the copy the Runner carries (`dist/akb/`).
   Each registration may name a new one: it downloads from npm in the background to
   `~/.wildcrane/bin/akb/<version>/`, and takes over at the next task step once its contract matches
@@ -53,7 +53,7 @@ Releasing: [`docs/deploy.md`](../docs/deploy.md).
 
 ## 插件目标草稿
 
-Codex 使用 `wildcrane_draft_read({ path?, discussionId? })`，Claude 使用 `wildcrane_draft_read({ discussionId?, sessionId? })`。返回 version、workflows、goals 和同值 ideas，以及讨论 url 和各目标 url；已开始目标链接任务。
+Codex 使用 `wildcrane_draft_read({ path?, discussionId? })`，Claude 使用 `wildcrane_draft_read({ discussionId?, sessionId? })`。返回 version、studios、goals 和同值 ideas，以及讨论 url 和各目标 url；已开始目标链接任务。
 
 `wildcrane_draft_save({ discussionId, expectedVersion, goals })` 保存全部开放目标，最多 10 个，遗漏的开放目标会丢弃，保存不会开始任务。旧 ideas 入参继续可用，缺少或同传两者均返回 bad_request。冲突返回最新 version、goals 和 ideas，供合并后重试。两个宿主的保存结果都含目标网页链接。目标从网页管理和开始。`wildcrane_status().recent[]` 提供 goals 计数及兼容 ideas 计数。
 

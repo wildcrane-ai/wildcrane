@@ -32,8 +32,9 @@ and that judgement is the whole job.
   for future tasks, not a history of the fix. Both go in the folder of the module each
   conversation is listed with (`akb guide board`). Each conversation also lists the agents
   whose sections its card holds and the memory files each keeps: where what was settled lands
-  on one agent's own work, it goes in that agent's memory instead. Read that agent's AGENT.md
-  (`akb raw agent-file <agent> AGENT.md`) only then, and keep its memory the way it says.
+  on one agent's own work, it goes in that agent's memory, or the studio's when its `shared/RULES.md`
+  keeps it. Read those rules (`akb raw file <studio> agents/<agent>/AGENT.md`, `shared/RULES.md`)
+  only then, and keep the memory the way they say.
   Distill settled feedback into reusable preferences (dos) and corrections (don'ts), retaining
   their scope; never copy raw reviews. An agent whose instructions name no memory gets no new file.
 - **What the card settled**: the summary says what the card was about and earns no note. A

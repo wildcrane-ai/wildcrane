@@ -34,7 +34,7 @@ import {
   titleOf,
 } from '../lib/agent/sessions'
 import { startResume, startRun, startSubRun } from '../lib/agent/start'
-import { knownWorkflow, scheduledAgent } from '../lib/agent/workflows'
+import { knownStudio, scheduledAgent } from '../lib/agent/studios'
 import { scheduledRequest } from '../lib/agent/scheduled'
 import { cardCreation, eventsPathOf, noteRefineTried, readRuns, withStore } from '../lib/agent/store'
 import type {
@@ -146,12 +146,12 @@ export async function cmdStartRun(
   return { sessionId: run.sessionId, action, cardId: run.cardId }
 }
 
-/** One pass of a workflow's scheduled agent, now (#2068): what a Runner starts once it is due. */
-export async function cmdRunScheduled(workflow: string, agent: string, opts: StartOptions, program = 'akb'): Promise<MoveResult> {
-  const id = knownWorkflow(workflow)
+/** One pass of a studio's scheduled agent, now (#2068): what a Runner starts once it is due. */
+export async function cmdRunScheduled(studio: string, agent: string, opts: StartOptions, program = 'akb'): Promise<MoveResult> {
+  const id = knownStudio(studio)
   const one = scheduledAgent(id, agent)
   if (!one) die(`\`${id}\` schedules no agent called \`${agent}\``, { kind: 'run-refused', action: 'scheduled' })
-  const req = scheduledRequest({ workflow: id, agent: one!.agent })
+  const req = scheduledRequest({ studio: id, agent: one!.agent })
   if (insideRun() || opts.print) return printFlow(req, program)
   const started = await startRun(req)
   if ('error' in started) die(started.error, { kind: 'run-refused', action: 'scheduled' })

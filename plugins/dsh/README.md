@@ -4,7 +4,7 @@ Shape goals with dsh in your own chat and start them as WildCrane tasks, run on 
 
 - **Needs**: dsh, [pnpm](https://pnpm.io/installation) 10.5 or later, and Node 22 or later. macOS and Linux.
 - **Goals**: tell dsh what you want to build; it asks in the chat and saves the goals, replying
-  with one line and a link per goal. Review, change the workflow, discard and **Start** on the web:
+  with one line and a link per goal. Review, change the studio, discard and **Start** on the web:
   dsh never starts a task.
 - **Tasks**: ask dsh to list, create, approve, change, resume or comment on your tasks.
 - **Ask dsh**: for your projects, recent discussions and agent connections.

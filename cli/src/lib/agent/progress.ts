@@ -6,11 +6,11 @@ import type { AgentRequest, DeliveryRecord } from './types'
 export function deliveryStep(delivery: DeliveryRecord): number {
   const count = delivery.completions?.length ?? 0
   const last = delivery.completions?.[count - 1]
-  const end = delivery.workflow?.land?.length ?? 1
+  const end = delivery.studio?.land?.length ?? 1
   return last && !last.finished && last.step + 1 >= end ? last.step : count
 }
 
-/** Advance recorded workflow steps and applied answers, without inspecting or changing Git. */
+/** Advance recorded studio steps and applied answers, without inspecting or changing Git. */
 export function nextDeliveryRun(deliveryId?: string): AgentRequest | undefined {
   const store = readStore()
   for (const delivery of store.deliveries) {

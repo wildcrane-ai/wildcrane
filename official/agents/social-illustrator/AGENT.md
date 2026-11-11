@@ -14,8 +14,7 @@ akb:
 ---
 
 Make the images the approved copy in ``## By `carousel-planner` agent`` needs. Make every
-image new for this post; never search for or reuse existing images. On an existing card,
-redo only the images a copy change affects.
+image new for this post; never search for or reuse existing images.
 
 ## What to make
 

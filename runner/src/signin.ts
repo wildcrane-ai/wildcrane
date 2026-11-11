@@ -1,6 +1,6 @@
-// Signing in from a terminal: GitHub or Google with PKCE, chosen on a page served from a
-// loopback port, which also catches the answer. The Supabase project must allow
-// `http://127.0.0.1:*/**` as a redirect URL.
+// Signing in from a terminal: an emailed code, or GitHub or Google with PKCE, chosen on a page
+// served from a loopback port, which also catches the answer. The Supabase project must allow
+// `http://127.0.0.1:*/**` as a redirect URL. Token calls go through Cloud's relay (#632).
 
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
@@ -23,6 +23,19 @@ type Provider = 'github' | 'google'
 const COPY = {
   zh: {
     choose: ['登录 WildCrane', '选择登录方式，完成后回到 WildCrane。'],
+    email: 'name@company.com',
+    send: '发送验证码',
+    sending: '正在发送…',
+    or: '或',
+    sent: '验证码已发送至 ',
+    code: '6 位验证码',
+    submit: '登录',
+    verifying: '正在登录…',
+    change: '换个邮箱',
+    badEmail: '请输入有效的邮箱。',
+    badCode: '验证码错误或已过期，请重新输入或重新发送。',
+    tooMany: '请求太频繁，请稍后再试。',
+    error: '登录没有完成，请重试。',
     github: '用 GitHub 登录',
     google: '用 Google 登录',
     ok: ['已登录 WildCrane', '可以关闭此页面，回到 WildCrane 继续。'],
@@ -31,6 +44,19 @@ const COPY = {
   },
   en: {
     choose: ['Sign in to WildCrane', 'Choose how to sign in, then return to WildCrane.'],
+    email: 'name@company.com',
+    send: 'Send code',
+    sending: 'Sending…',
+    or: 'or',
+    sent: 'We sent a code to ',
+    code: '6-digit code',
+    submit: 'Sign in',
+    verifying: 'Signing in…',
+    change: 'Use a different email',
+    badEmail: 'Enter a valid email.',
+    badCode: "That code is wrong or has expired. Try again or resend it.",
+    tooMany: 'Too many attempts. Try again in a moment.',
+    error: "Sign-in didn't finish. Try again.",
     github: 'Sign in with GitHub',
     google: 'Sign in with Google',
     ok: ['Signed in to WildCrane', 'You can close this page and return to WildCrane.'],
@@ -53,6 +79,26 @@ const GOOGLE_ICON = '<svg viewBox="0 0 48 48" width="17" height="17" aria-hidden
 <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>\
 <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>'
 
+type Copy = (typeof COPY)['en']
+
+// Two steps on one form: send the code, then trade it for a session through this port.
+const EMAIL_SCRIPT = (c: Copy) => `(()=>{const t=${JSON.stringify({
+  send: c.send, sending: c.sending, sent: c.sent, submit: c.submit, verifying: c.verifying,
+  badEmail: c.badEmail, badCode: c.badCode, tooMany: c.tooMany, error: c.error,
+}).replace(/</g, '\\u003c')};\
+const $=(i)=>document.getElementById(i),f=$('f'),e=$('e'),c=$('c'),b=$('b'),m=$('m'),x=$('x');let to='';\
+const say=(s,bad)=>{m.textContent=s;m.className=bad?'bad':''};\
+const step=(code)=>{to=code?e.value.trim():'';e.hidden=!!code;c.hidden=!code;x.hidden=!code;b.textContent=code?t.submit:t.send;\
+if(code){say(t.sent+to);c.value='';c.focus()}else{say('');e.focus()}};\
+x.onclick=()=>step(false);\
+f.onsubmit=async(ev)=>{ev.preventDefault();const verify=!!to;\
+if(!verify&&!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(e.value.trim()))return say(t.badEmail,true);\
+b.disabled=true;b.textContent=verify?t.verifying:t.sending;let r={error:'failed'};\
+try{r=await (await fetch(verify?'/verify':'/send',{method:'POST',headers:{'content-type':'application/json'},\
+body:JSON.stringify(verify?{email:to,code:c.value.trim()}:{email:e.value.trim()})})).json()}catch{}\
+b.disabled=false;if(r.ok){if(!verify)return step(true);document.open();document.write(r.page);return document.close()}\
+b.textContent=verify?t.submit:t.send;say(r.error==='bad_code'?t.badCode:r.error==='too_many'?t.tooMany:t.error,true)}})()`
+
 // Colors and type follow web/src/review/globals.css; icons are Feather's check and x.
 const PAGE = (outcome: Outcome | 'choose', lang: 'zh' | 'en', links?: Record<Provider, string>) => {
   const c = COPY[lang]
@@ -60,8 +106,12 @@ const PAGE = (outcome: Outcome | 'choose', lang: 'zh' | 'en', links?: Record<Pro
   const ok = outcome === 'ok'
   const icon = ok ? '<polyline points="20 6 9 17 4 12"/>' : '<path d="M18 6 6 18M6 6l12 12"/>'
   const top = links
-    ? `<h1>${title}</h1><p>${body}</p><nav><a class="dark" href="${links.github}">${GITHUB_ICON}${c.github}</a>\
-<a href="${links.google}">${GOOGLE_ICON}${c.google}</a></nav>`
+    ? `<h1>${title}</h1><p>${body}</p><form id="f" novalidate><input id="e" type="email" autocomplete="email" \
+placeholder="${c.email}" required><input id="c" inputmode="numeric" autocomplete="one-time-code" maxlength="10" \
+placeholder="${c.code}" hidden><button id="b" class="dark">${c.send}</button><small id="m"></small>\
+<button id="x" type="button" class="link" hidden>${c.change}</button></form><div class="or">${c.or}</div>\
+<nav><a href="${links.github}">${GITHUB_ICON}${c.github}</a>\
+<a href="${links.google}">${GOOGLE_ICON}${c.google}</a></nav><script>${EMAIL_SCRIPT(c)}</script>`
     : `<span class="icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" \
 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg></span>\
 <h1 class="below">${title}</h1><p>${body}</p>`
@@ -82,6 +132,15 @@ nav{margin-top:28px;display:flex;flex-direction:column;gap:12px}\
 nav a{display:flex;height:44px;align-items:center;justify-content:center;gap:8px;border-radius:10px;font-size:14.5px;\
 font-weight:600;color:#24231f;text-decoration:none;background:#fff;border:1px solid rgba(36,35,31,0.14)}\
 nav a.dark{background:#24231f;color:#fff;border-color:#24231f}\
+form{margin-top:28px;display:flex;flex-direction:column;gap:12px}\
+input{height:44px;padding:0 14px;border-radius:10px;border:1px solid rgba(36,35,31,0.14);font:inherit;font-size:14.5px}\
+button{height:44px;border-radius:10px;border:0;font:inherit;font-size:14.5px;font-weight:600;cursor:pointer}\
+button.dark{background:#24231f;color:#fff}button:disabled{opacity:.6}\
+button.link{height:auto;background:none;color:#565550;font-size:13px;font-weight:500}\
+small{font-size:13px;line-height:19px;color:#565550}small.bad{color:#b83a12}small:empty{display:none}\
+.or{margin-top:20px;display:flex;align-items:center;gap:12px;font-size:13px;color:#8a8984}\
+.or::before,.or::after{content:"";flex:1;height:1px;background:rgba(36,35,31,0.12)}\
+.or+nav{margin-top:20px}\
 </style><header><svg viewBox="2 4 56 52" width="23.7" height="22" aria-hidden="true">\
 <path d="${CRANE}" fill="#24231f"/><path d="${CREST}" fill="#dd4f1e"/></svg></header>\
 <main><div${links ? ' class="choose"' : ''}>${top}</div></main></html>`
@@ -115,6 +174,20 @@ export async function signIn(options: SignInOptions = {}): Promise<SignInFailure
     if (asked.pathname === '/' && !answering) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
       res.end(PAGE('choose', lang, { github: authorize('github'), google: authorize('google') }))
+      return
+    }
+    if (req.method === 'POST' && (asked.pathname === '/send' || asked.pathname === '/verify') && !answering) {
+      const asks = (await readJson(req)) as { email?: string; code?: string }
+      const answer = asked.pathname === '/send'
+        ? await sendCode(asks.email ?? '', lang)
+        : await verifyCode(asks.email ?? '', asks.code ?? '', generation, options.signal)
+      const done = answer.ok && asked.pathname === '/verify'
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+      res.end(JSON.stringify(done ? { ...answer, page: PAGE('ok', lang) } : answer))
+      if (done) {
+        answering = true
+        finish(null)
+      }
       return
     }
     if (asked.pathname !== '/signed-in' || answering) {
@@ -163,14 +236,9 @@ export async function signIn(options: SignInOptions = {}): Promise<SignInFailure
 
 /** Trade the code for a session and write it. */
 async function exchange(code: string, verifier: string, generation: string, signal?: AbortSignal): Promise<SignInFailure | null> {
-  const { supabaseUrl, anonKey } = cloudEndpoints()
   let response: Response
   try {
-    response = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=pkce`, {
-      method: 'POST',
-      headers: { apikey: anonKey, 'content-type': 'application/json' },
-      body: JSON.stringify({ auth_code: code, code_verifier: verifier }),
-    })
+    response = await authCall('token?grant_type=pkce', { auth_code: code, code_verifier: verifier })
   } catch (e) {
     return { why: 'unreachable', detail: e instanceof Error ? e.message : String(e) }
   }
@@ -179,6 +247,58 @@ async function exchange(code: string, verifier: string, generation: string, sign
   if (signal?.aborted || accountGeneration() !== generation) return { why: 'cancelled', detail: 'cancelled' }
   writeSession(session)
   return null
+}
+
+type EmailAnswer = { ok: true } | { ok: false; error: 'bad_code' | 'too_many' | 'failed' }
+
+const authCall = (path: string, body: unknown) => {
+  const { api, anonKey } = cloudEndpoints()
+  return fetch(`${api}/auth/v1/${path}`, {
+    method: 'POST',
+    headers: { apikey: anonKey, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20_000),
+  })
+}
+
+const refusal = (status: number): EmailAnswer =>
+  ({ ok: false, error: status === 429 ? 'too_many' : status === 400 || status === 401 || status === 403 ? 'bad_code' : 'failed' })
+
+async function sendCode(email: string, lang: 'zh' | 'en'): Promise<EmailAnswer> {
+  try {
+    const response = await authCall('otp', { email: email.trim(), create_user: true, data: { lang } })
+    return response.ok ? { ok: true } : { ok: false, error: response.status === 429 ? 'too_many' : 'failed' }
+  } catch {
+    return { ok: false, error: 'failed' }
+  }
+}
+
+async function verifyCode(email: string, code: string, generation: string, signal?: AbortSignal): Promise<EmailAnswer> {
+  let response: Response
+  try {
+    response = await authCall('verify', { type: 'email', email: email.trim(), token: code.trim() })
+  } catch {
+    return { ok: false, error: 'failed' }
+  }
+  if (!response.ok) return refusal(response.status)
+  const session = sessionFrom(await response.json().catch(() => ({})))
+  if (!session) return { ok: false, error: 'failed' }
+  if (signal?.aborted || accountGeneration() !== generation) return { ok: false, error: 'failed' }
+  writeSession(session)
+  return { ok: true }
+}
+
+async function readJson(req: http.IncomingMessage): Promise<unknown> {
+  let text = ''
+  for await (const chunk of req) {
+    text += chunk
+    if (text.length > 10_000) break
+  }
+  try {
+    return JSON.parse(text)
+  } catch {
+    return {}
+  }
 }
 
 function openBrowser(url: string): void {

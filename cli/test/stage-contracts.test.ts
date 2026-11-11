@@ -48,7 +48,7 @@ function writeCard(id: number, body = 'A card.', opts: { folder?: string; status
     blocked_by: [],
     related: [],
     modules: [],
-    workflow: 'coding',
+    studio: 'coding',
     questions: [],
   }
   const dir = opts.folder ? path.join(kanban(), 'todo', opts.folder) : path.join(kanban(), 'todo')
@@ -253,6 +253,6 @@ describe('the rules a delivery freezes', () => {
     // A delivery frozen before rules moved onto the agents holds them under the FLOW name,
     // and that key is untouched by the contracts (#420, #714).
     const frozen = { implement: 'The rule as it was frozen.' }
-    assert.equal(ruleFor({ action: 'implement', id: 1, workflow: 'coding' }, frozen), 'The rule as it was frozen.')
+    assert.equal(ruleFor({ action: 'implement', id: 1, studio: 'coding' }, frozen), 'The rule as it was frozen.')
   })
 })

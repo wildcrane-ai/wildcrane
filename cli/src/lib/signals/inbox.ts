@@ -86,7 +86,7 @@ function serialize(signal: Signal): string {
     ...(signal.sourceType ? [`source_type: ${yamlScalar(signal.sourceType)}`] : []),
     ...(signal.url ? [`url: ${yamlScalar(signal.url)}`] : []),
     ...(signal.agent ? [`agent: ${yamlScalar(signal.agent)}`] : []),
-    ...(signal.workflow ? [`workflow: ${yamlScalar(signal.workflow)}`] : []),
+    ...(signal.studio ? [`studio: ${yamlScalar(signal.studio)}`] : []),
     `collected_at: ${yamlScalar(signal.collectedAt)}`,
     `imported_at: ${yamlScalar(signal.importedAt)}`,
     ...(signal.meta.length > 0
@@ -155,7 +155,7 @@ export function parse(file: string, lenient = false): Signal | null {
     meta: missed ? [missed, ...written] : written,
     url: held.url || '',
     ...(held.agent ? { agent: held.agent } : {}),
-    ...(held.workflow ? { workflow: held.workflow } : {}),
+    ...(held.studio ? { studio: held.studio } : {}),
     collectedAt: held.collected_at ?? '',
     importedAt: held.imported_at ?? '',
     dismissedAt: held.dismissed_at || '',

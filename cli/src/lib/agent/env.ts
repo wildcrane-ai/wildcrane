@@ -14,7 +14,7 @@
 export const RUN_ENV = 'KANBAN_RUN'
 
 /** Set by the Runner on a reflection (#277): Cloud's switched-on scheduled agents, by name and
- *  comma-separated. Even empty, it stands over what the workflows list. */
+ *  comma-separated. Even empty, it stands over what the studios list. */
 export const SCHEDULED_AGENTS_ENV = 'AI4KANBAN_SCHEDULED_AGENTS'
 
 /** Set by the Runner beside `--session` (#627): that session's last recorded cost total. */

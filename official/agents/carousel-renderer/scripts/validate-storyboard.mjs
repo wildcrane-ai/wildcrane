@@ -4,7 +4,7 @@
 //   node scripts/validate-storyboard.mjs <card asset folder>/storyboard.json [--json]
 //
 // Runtime: Node 18 or later, nothing else. Save it from a built-in agent with
-// `akb raw agent-file <agent> scripts/validate-storyboard.mjs > validate-storyboard.mjs`.
+// `akb raw file carousel-post agents/carousel-renderer/scripts/validate-storyboard.mjs > validate-storyboard.mjs`.
 // Previews are `.assets/<card id>/<path>` paths, read from the JSON's own folder, which is
 // named after the card; subfolders such as `pages/` are allowed. A preview is an image or a
 // static `.html`/`.tsx` page; only images are measured. Exits 0 when the file

@@ -107,7 +107,7 @@ const PROJECT_WRITER: AgentRole = {
 // `reflect` is an event entry rather than a stage (./stages.ts): no flow a person types, and
 // the role's work all the same — a card reaching the archive is what starts one.
 const SMALL_FIX =
-  'A small fix is a small change whose workflow needs none of its previews.'
+  'A small fix is a small change whose studio needs none of its previews.'
 
 const PROPOSER: AgentRole = {
   name: 'proposer',
@@ -125,7 +125,7 @@ const PROPOSER: AgentRole = {
           cost: 'For speed over quality',
           prompt:
             `${SMALL_FIX} Do each one instead of proposing it: create it with ` +
-            '`akb raw create --workflow <workflow> --source "#<finished card id>"`, its Scope and Todo ' +
+            '`akb raw create --studio <studio> --source "#<finished card id>"`, its Scope and Todo ' +
             'written per `akb guide writing`, then `akb raw update <id> --status ready` so it waits only ' +
             'for the user to approve the build.',
         },
@@ -142,12 +142,12 @@ const PROPOSER: AgentRole = {
   ],
 }
 
-// The role that writes every card (#2152), to its workflow's rules. It runs on the discussion's
+// The role that writes every card (#2152), to its studio's rules. It runs on the discussion's
 // runtime, so planning can carry a discussion's session on (#1316), and it has no rule of its
-// own: what a user asks of planning is a workflow's rule.
+// own: what a user asks of planning is a studio's rule.
 const PLANNER_ROLE: AgentRole = {
   name: PLANNER,
-  gloss: 'plans every card, to its workflow\'s rules',
+  gloss: 'plans every card, to its studio\'s rules',
   memory: [PLANNER_DECISIONS, PLANNER_REJECTED, PLANNER_REDESIGN],
   hidden: true,
 }
@@ -185,8 +185,8 @@ export const roles = (): AgentRole[] => BOARD_ROLES
  *  Undefined when this board has no such flow, and also when the contract names a
  *  SPECIALIST — a land agent — as its lead: a specialist is not a role, and `agentForFlow` is
  *  what a caller that only wants the name should ask. */
-export const roleForFlow = (flow: string, workflow?: string): AgentRole | undefined => {
-  const name = agentForFlow(flow, workflow)
+export const roleForFlow = (flow: string, studio?: string): AgentRole | undefined => {
+  const name = agentForFlow(flow, studio)
   return name ? (roleNamed(name) ?? landRole(name)) : undefined
 }
 
@@ -204,9 +204,9 @@ export const hiddenRole = (name: string): boolean => roleNamed(name)?.hidden ===
 
 /** The flows an agent runs, in the order the board declares them (./flows.ts). What the
  *  one-time rule migration concatenates in. */
-export function roleFlowsInOrder(name: string, workflow?: string): string[] {
+export function roleFlowsInOrder(name: string, studio?: string): string[] {
   const order = FLOWS.map((flow) => flow.command)
-  return flowsOfAgent(name, workflow).sort((a, b) => order.indexOf(a) - order.indexOf(b))
+  return flowsOfAgent(name, studio).sort((a, b) => order.indexOf(a) - order.indexOf(b))
 }
 
 /** Every reason one of this board's contracts names an agent it does not have (./stages.ts).
@@ -226,9 +226,9 @@ export interface RosterEntry {
   title: string
   /** What it does: a role's line, or a specialist's own `description`. */
   gloss: string
-  /** `role` for one of the board's own; `agent` for one a workflow lists. */
+  /** `role` for one of the board's own; `agent` for one a studio lists. */
   kind: 'role' | 'agent'
-  /** Whether a workflow may list it under `land` (#2152): any agent, never a role. */
+  /** Whether a studio may list it under `land` (#2152): any agent, never a role. */
   lands: boolean
   /** Whether the command ships it, as opposed to the project adding it. */
   builtIn: boolean

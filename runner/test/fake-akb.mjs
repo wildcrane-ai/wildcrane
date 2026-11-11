@@ -60,8 +60,8 @@ if (a === 'raw' && b === 'init') {
     process.exit(1)
   }
   const body = flag('--body-file') ? fs.readFileSync(flag('--body-file'), 'utf8') : ''
-  const workflow = flag('--workflow') ? `workflow: ${flag('--workflow')}\n` : ''
-  fs.writeFileSync(path.join(board, 'todo', `${id}-${(flag('--slug') ?? flag('--title')).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'task'}.md`), `---\ntitle: ${flag('--title')}\n${workflow}questions: []\n---\n\n${body}`)
+  const studio = flag('--studio') ? `studio: ${flag('--studio')}\n` : ''
+  fs.writeFileSync(path.join(board, 'todo', `${id}-${(flag('--slug') ?? flag('--title')).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'task'}.md`), `---\ntitle: ${flag('--title')}\n${studio}questions: []\n---\n\n${body}`)
   console.log(JSON.stringify({ ok: true, id }))
 } else if (a === 'agent' && b === 'use') {
   fs.writeFileSync(path.join(state, 'agent'), c)
@@ -100,7 +100,7 @@ if (a === 'raw' && b === 'init') {
   // A follow-up proposed as `akb triage add` writes it.
   if (how.propose) {
     fs.mkdirSync(path.join(board, 'triage'), { recursive: true })
-    fs.writeFileSync(path.join(board, 'triage', 'proposed.md'), `---\nsource_id: derived-1\ntitle: ${how.propose}\n${how.workflow === '' ? '' : `workflow: ${how.workflow ?? 'coding'}\n`}collected_at: 2026-10-26 09:00\nimported_at: 2026-10-26 09:00\n---\n\nWhy ${how.propose}.\n`)
+    fs.writeFileSync(path.join(board, 'triage', 'proposed.md'), `---\nsource_id: derived-1\ntitle: ${how.propose}\n${how.studio === '' ? '' : `studio: ${how.studio ?? 'coding'}\n`}collected_at: 2026-10-26 09:00\nimported_at: 2026-10-26 09:00\n---\n\nWhy ${how.propose}.\n`)
   }
   // A build's last word is its review's, a later run than the one that started it.
   const last = b === 'implement' ? `run-review-${runs.length + 2}` : sessionId
@@ -211,10 +211,10 @@ if (a === 'raw' && b === 'init') {
   runs.push({ sessionId: 'run-review-dismissals', cardId: null, startedAt: Date.now(), ...how.spent })
   write('runs.json', runs)
   console.log(JSON.stringify({ ok: true, status: 'done', result: 'Learned one.' }))
-} else if (a === 'workflow' && b === 'list') {
-  const dir = path.join(board, 'workflows')
+} else if (a === 'studio' && b === 'list') {
+  const dir = path.join(board, 'studios')
   const ids = fs.existsSync(dir) ? fs.readdirSync(dir) : []
-  console.log(JSON.stringify({ ok: true, workflows: ids.map((id) => ({ id, problems: plan.workflowProblems ?? [] })), problems: [] }))
+  console.log(JSON.stringify({ ok: true, studios: ids.map((id) => ({ id, problems: plan.studioProblems ?? [] })), problems: [] }))
 } else if (a === 'previews' && (!b || b.startsWith('--'))) {
   console.log(JSON.stringify({ ok: true, agents: [], problems: plan.specProblems ?? [] }))
 } else if (a === 'reflect' || a === 'prune-memory' || a === 'describe-project' || (a === 'agent' && b === 'run')) {
@@ -237,7 +237,7 @@ if (a === 'raw' && b === 'init') {
   }
   if (how.propose) {
     fs.mkdirSync(path.join(board, 'triage'), { recursive: true })
-    fs.writeFileSync(path.join(board, 'triage', 'proposed.md'), `---\nsource_id: derived-1\ntitle: ${how.propose}\n${how.workflow === '' ? '' : `workflow: ${how.workflow ?? 'coding'}\n`}collected_at: 2026-10-26 09:00\nimported_at: 2026-10-26 09:00\n---\n\nWhy ${how.propose}.\n`)
+    fs.writeFileSync(path.join(board, 'triage', 'proposed.md'), `---\nsource_id: derived-1\ntitle: ${how.propose}\n${how.studio === '' ? '' : `studio: ${how.studio ?? 'coding'}\n`}collected_at: 2026-10-26 09:00\nimported_at: 2026-10-26 09:00\n---\n\nWhy ${how.propose}.\n`)
   }
   const runs = read('runs.json', [])
   runs.push({ sessionId: `run-${name}`, cardId: null, startedAt: Date.now(), ...how.spent })

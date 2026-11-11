@@ -27,7 +27,7 @@ status: todo
 blocked_by: []
 related: []
 modules: []
-workflow: coding
+studio: coding
 questions: []
 ---
 
@@ -184,6 +184,7 @@ describe('the card format contract', () => {
     const set = '<Set label="States">\n<Asset src="a.tsx" label="A" device="desktop" />\n<Asset src="a.m.tsx" label="A" device="mobile" />\n<Asset src="b.ts.diff" label="b.ts" />\n</Set>'
     const card = (body: string) => valid.replace('An observable feature.', `An observable feature.\n\n${body}\n\nMore.`)
     assert.deepEqual(validateSpec(file, card(set)), [])
+    assert.deepEqual(validateSpec(file, card(set.replaceAll('\n', '\n\n'))), [])
     for (const broken of [set.replace(' label="States"', ''), set.replace('\n</Set>', ''), set.replace('<Asset src="b', 'Prose\n<Asset src="b'), `Prose\n${set}`, set.replace('<Set label="States">\n', '')]) {
       assert.ok(validateSpec(file, card(broken)).some((e) => e.rule.startsWith('set-')), broken)
     }

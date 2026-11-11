@@ -67,8 +67,9 @@ export function connectCloudLive(handlers: LiveHandlers): LiveConnection | null 
   const Socket = (globalThis as { WebSocket?: typeof WebSocket }).WebSocket
   if (!Socket) return null
 
-  const { supabaseUrl, anonKey } = cloudEndpoints()
-  const url = `${supabaseUrl.replace(/^http/, 'ws')}/realtime/v1/websocket?apikey=${encodeURIComponent(anonKey)}&vsn=${VSN}`
+  // Through Cloud, which relays to Supabase: supabase.co is unreachable from mainland China (#635).
+  const { api, anonKey } = cloudEndpoints()
+  const url = `${api.replace(/^http/, 'ws')}/realtime/v1/websocket?apikey=${encodeURIComponent(anonKey)}&vsn=${VSN}`
   const topic = `realtime:${handlers.topic}`
 
   let socket: WebSocket | null = null

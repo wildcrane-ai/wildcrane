@@ -22,7 +22,7 @@ interface Landing {
   at: number
   commit?: string
   status?: string
-  workflow?: string
+  studio?: string
 }
 
 let serial = 0
@@ -37,7 +37,7 @@ function delivery(l: Landing): void {
     endedAt: l.at,
     sessions: [],
     landing: { status: l.status ?? 'landed', attempts: 0, ...(l.commit ? { commit: l.commit } : {}), at: l.at },
-    ...(l.workflow ? { workflow: { id: l.workflow, name: l.workflow } } : {}),
+    ...(l.studio ? { studio: { id: l.studio, name: l.studio } } : {}),
   }
   fs.writeFileSync(path.join(kanban, 'deliveries', `${deliveryId}.json`), JSON.stringify(record))
 }
@@ -51,7 +51,7 @@ function cardFile(folder: string, relPath: string): void {
 interface Listed {
   id: number
   title: string
-  workflow: string
+  studio: string
   landedAt: string
   commit: string
   file: string
@@ -74,16 +74,16 @@ after(() => fs.rmSync(root, { recursive: true, force: true }))
 describe('list --archived', () => {
   it('lists each landing oldest first, with its commit and archived file', async () => {
     delivery({ cardId: 2, at: T0 + 5 * MINUTE, commit: 'bbb' })
-    delivery({ cardId: 1, at: T0, commit: 'aaa', workflow: 'coding' })
+    delivery({ cardId: 1, at: T0, commit: 'aaa', studio: 'coding' })
     cardFile('.archive', '1-first.md')
     cardFile('.archive', '2-group/root.md')
 
     assert.deepEqual(await listed(), [
-      { id: 1, title: 'Card 1', workflow: 'coding', landedAt: formatStamp(new Date(T0)), commit: 'aaa', file: 'docs/kanban/.archive/1-first.md' },
+      { id: 1, title: 'Card 1', studio: 'coding', landedAt: formatStamp(new Date(T0)), commit: 'aaa', file: 'docs/kanban/.archive/1-first.md' },
       {
         id: 2,
         title: 'Card 2',
-        workflow: 'coding',
+        studio: 'coding',
         landedAt: formatStamp(new Date(T0 + 5 * MINUTE)),
         commit: 'bbb',
         file: 'docs/kanban/.archive/2-group/root.md',
@@ -101,14 +101,14 @@ describe('list --archived', () => {
     assert.equal(answer.since, formatStamp(new Date(T0)))
   })
 
-  it('keeps only one workflow, counting a record that names none as the default', async () => {
+  it('keeps only one studio, counting a record that names none as the default', async () => {
     delivery({ cardId: 1, at: T0, commit: 'aaa' })
-    delivery({ cardId: 2, at: T0 + 1, commit: 'bbb', workflow: 'blog-post' })
-    delivery({ cardId: 3, at: T0 + 2, commit: 'ccc', workflow: 'coding' })
+    delivery({ cardId: 2, at: T0 + 1, commit: 'bbb', studio: 'blog-post' })
+    delivery({ cardId: 3, at: T0 + 2, commit: 'ccc', studio: 'coding' })
 
-    assert.deepEqual((await listed(['--workflow', 'coding'])).map((c) => c.id), [1, 3])
-    assert.deepEqual((await listed(['--workflow', 'blog-post'])).map((c) => c.id), [2])
-    await refuses(root, ['list', '--archived', '--workflow', 'nope'], /no workflow called "nope"/)
+    assert.deepEqual((await listed(['--studio', 'coding'])).map((c) => c.id), [1, 3])
+    assert.deepEqual((await listed(['--studio', 'blog-post'])).map((c) => c.id), [2])
+    await refuses(root, ['list', '--archived', '--studio', 'nope'], /no studio called "nope"/)
   })
 
   it('leaves out a landing with no commit, one that did not land, and one with no card', async () => {
@@ -145,6 +145,6 @@ describe('list --archived', () => {
     await refuses(root, ['list', '--archived', '--stale'], /--archived and --stale/)
     await refuses(root, ['list', '--archived', '--module', 'cli'], /--module does not apply/)
     await refuses(root, ['list', '--since', '2026-08-02 14:00'], /--since only applies to --archived/)
-    await refuses(root, ['list', '--workflow', 'coding'], /--workflow only applies to --archived/)
+    await refuses(root, ['list', '--studio', 'coding'], /--studio only applies to --archived/)
   })
 })

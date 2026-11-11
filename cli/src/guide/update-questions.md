@@ -7,7 +7,7 @@ least two coherent options.
 ### The material-decision test
 
 Ask when the tradeoff materially changes the delivered result, the accepted scope, the user's
-risk, or a meaningful ongoing cost, and a reasonable reviewer may reject it; a workflow's rules
+risk, or a meaningful ongoing cost, and a reasonable reviewer may reject it; a studio's rules
 add what else counts. Settle everything else yourself. Leave the question open and stop only
 the work that depends on it. An obstacle only the user can clear is a question too: say what
 cannot proceed and offer ways forward.

@@ -40,7 +40,7 @@ import { agentForRun } from './runner'
 import { killMarked, killTreeOnWindows, killUnderOnWindows, runMark } from './stop'
 import { readRuntimes, runtimeById } from './runtimes'
 import { dropReflected, stampMemoryPrune, stampMemoryReview, stampProjectDescription } from './settings'
-import { scheduledAgent, stampScheduledRun, workflowById } from './workflows'
+import { scheduledAgent, stampScheduledRun, studioById } from './studios'
 import { creationOf, eventsPathOf, logPathOf, noteRefineTried, readRuns, runIsLive, withRuns, withStore } from './store'
 import { withCreationLock } from './creation-lock'
 import { creationRefusal } from '../view/rules'
@@ -286,13 +286,13 @@ function recordReflection(run: RunRecord): void {
   }
 }
 
-// And a workflow's scheduled agent (#1401): a pass that PASSED, by when its delivery began —
+// And a studio's scheduled agent (#1401): a pass that PASSED, by when its delivery began —
 // a resumed pass still covers everything since the first attempt started.
 function recordScheduledRun(run: RunRecord): void {
-  if (run.action !== 'scheduled' || run.status !== 'done' || !run.workflow || !run.specAgent) return
+  if (run.action !== 'scheduled' || run.status !== 'done' || !run.studio || !run.specAgent) return
   try {
     const began = (run.deliveryId ? findDelivery(run.deliveryId)?.startedAt : undefined) ?? run.startedAt
-    stampScheduledRun(run.workflow, run.specAgent, new Date(began))
+    stampScheduledRun(run.studio, run.specAgent, new Date(began))
   } catch {
     // the settings file would not take the write — the run is over either way
   }
@@ -374,7 +374,7 @@ function retryAsk(r: RunRecord): AgentRequest | undefined {
     triage: r.triage,
     refineRound: r.refineRound,
     flowId: r.flowId,
-    workflow: r.workflow,
+    studio: r.studio,
     cards: r.cards,
   }
   switch (r.action) {
@@ -605,19 +605,19 @@ function approvedDirect(req: AgentRequest): DirectBuild | RunRefusal | undefined
 }
 
 /** What a scheduled agent's pass opens its delivery from (#1401): no requirement, only whose
- *  pass it is. Refused when the workflow has no such agent. A switched-off one still runs
+ *  pass it is. Refused when the studio has no such agent. A switched-off one still runs
  *  when asked (#1435): only the scheduler passes over it. */
 function scheduledDirect(req: AgentRequest): DirectBuild | RunRefusal {
-  const flow = workflowById(req.workflow ?? '')
+  const flow = studioById(req.studio ?? '')
   const agent = req.specAgent ?? ''
   const one = flow ? scheduledAgent(flow.id, agent) : undefined
   if (!flow || !one) {
-    return refusal('agentNotScheduled', `\`${agent}\` is not a scheduled agent of the \`${req.workflow ?? ''}\` workflow`, {
+    return refusal('agentNotScheduled', `\`${agent}\` is not a scheduled agent of the \`${req.studio ?? ''}\` studio`, {
       agent,
-      workflow: req.workflow ?? '',
+      studio: req.studio ?? '',
     })
   }
-  return { title: `${agent}: scheduled run (${flow.name})`, approved: '', scheduled: { workflow: flow.id, agent } }
+  return { title: `${agent}: scheduled run (${flow.name})`, approved: '', scheduled: { studio: flow.id, agent } }
 }
 
 export function openRun(
@@ -709,9 +709,9 @@ export function openRun(
     // a resume starts the same agent rather than a different one.
     specAgent: SPECIALIST_ACTIONS.has(req.action) ? req.specAgent : undefined,
     ...(req.action === 'implement' && cardId === null
-      ? { workflow: req.workflow?.trim() || undefined }
+      ? { studio: req.studio?.trim() || undefined }
       : {}),
-    ...(req.action === 'scheduled' ? { workflow: req.workflow?.trim() || undefined } : {}),
+    ...(req.action === 'scheduled' ? { studio: req.studio?.trim() || undefined } : {}),
     cards: req.action === 'reflect' ? req.cards : undefined,
     // Internal refinement sessions name their position in the request. A standalone
     // resolve carries no round.
@@ -848,7 +848,7 @@ export function requestOf(record: RunRecord): AgentRequest {
     // the CLI actually spawned takes it.
     runtime: record.runtime,
     specAgent: record.specAgent,
-    ...(record.action === 'scheduled' ? { workflow: record.workflow } : {}),
+    ...(record.action === 'scheduled' ? { studio: record.studio } : {}),
     triage: record.triage,
     cards: record.cards,
     refineRound: record.refineRound,
@@ -979,7 +979,7 @@ async function resumeHeld(
     // No `input` on a resume: the note the user typed is already in the conversation being
     // resumed — repeating it would read as a second instruction they never gave. A retry is
     // the ask itself again, so it keeps everything the ask was written down with.
-    ...(retry ? { input: prev.input, workflow: prev.workflow } : {}),
+    ...(retry ? { input: prev.input, studio: prev.studio } : {}),
     harness: plan.harness,
     runtime: plan.runtime,
     agent: plan.agent,
@@ -1002,7 +1002,7 @@ async function resumeHeld(
         }),
     logPath: logPathOf(sessionId),
     specAgent: prev.specAgent,
-    ...(prev.action === 'scheduled' ? { workflow: prev.workflow } : {}),
+    ...(prev.action === 'scheduled' ? { studio: prev.studio } : {}),
     cards: prev.cards,
     refineRound: prev.refineRound,
     // The same refinement carried on, not a second one — the way a resume re-joins the

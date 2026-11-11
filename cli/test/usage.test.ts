@@ -329,7 +329,7 @@ describe("a board's own counts", () => {
     const triage = path.join(project, 'docs', 'kanban', 'triage')
     fs.mkdirSync(triage, { recursive: true })
     fs.writeFileSync(path.join(triage, 'proposed.md'), '---\nsource_id: derived-1\ntitle: proposed\ncollected_at: 2026-11-02\nimported_at: 2026-11-02\n---\n\n需求。\n')
-    await akb('create', '--title', 'proposed', '--triage', 'derived-1', '--workflow', 'coding')
+    await akb('create', '--title', 'proposed', '--triage', 'derived-1', '--studio', 'coding')
     const body = path.join(project, 'body.md')
     fs.writeFileSync(
       body,

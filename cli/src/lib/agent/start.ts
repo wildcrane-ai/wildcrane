@@ -17,8 +17,8 @@ import { claimRunPictures, returnRunPictures } from './pictures'
 import { deliveryFor } from './deliveries'
 import { readRuns } from './store'
 import { buildRun } from './prompts'
-import { NEEDS_CLOUD, NOT_DOWNLOADED, pinMissing, workflowsReachable } from './cloud-workflows'
-import { archivesOnApproval, cardWorkflowId, noWorkflowMessage, workflowFor, workflowIssues } from './workflows'
+import { NEEDS_CLOUD, NOT_DOWNLOADED, pinMissing, studiosReachable } from './cloud-studios'
+import { archivesOnApproval, cardStudioId, noStudioMessage, studioFor, studioIssues } from './studios'
 import { cancelDelivery, carriedSession, closeRun, markSpawned, openResume, openRun, peekRun } from './sessions'
 import { runtimeById } from './runtimes'
 import { scheduledBusy, stalePasses } from './scheduled'
@@ -29,7 +29,7 @@ import { refusal, type AgentRequest, type RunRecord, type RunRefusal } from './t
 export async function startRun(req: AgentRequest): Promise<{ run: RunRecord; spawned: boolean } | RunRefusal> {
   const sessionId = randomUUID()
   const cardId = Number.isInteger(req.id) ? (req.id as number) : null
-  const short = workflowRefusal(req) ?? (await scheduledRefusal(req))
+  const short = studioRefusal(req) ?? (await scheduledRefusal(req))
   if (short) return short
   const delivery = req.action === 'implement' ? deliveryFor(req) : undefined
   if (delivery && req.session !== 'new') {
@@ -45,27 +45,27 @@ export async function startRun(req: AgentRequest): Promise<{ run: RunRecord; spa
   return open(req, sessionId)
 }
 
-// Why this run's card cannot start on the workflow it names (#715): a land agent this board
+// Why this run's card cannot start on the studio it names (#715): a land agent this board
 // cannot run. It is read before the card lock is taken, so a refused run leaves nothing behind.
 //
-// The whole workflow is checked rather than only the stage this run is: a card that cannot be
+// The whole studio is checked rather than only the stage this run is: a card that cannot be
 // reviewed is a card that should not be built, and finding that out after the build is worse
 // than finding it out now. A run already inside a delivery is not checked — that delivery
 // froze its own answer, and re-reading the board would refuse a build in flight over a change
 // made after it started.
-export function workflowRefusal(req: AgentRequest): RunRefusal | null {
+export function studioRefusal(req: AgentRequest): RunRefusal | null {
   if (!Number.isInteger(req.id)) return null
-  if (!workflowsReachable().ok) return refusal('needsCloud', NEEDS_CLOUD)
-  if (pinMissing()) return refusal('workflowOffline', NOT_DOWNLOADED)
+  if (!studiosReachable().ok) return refusal('needsCloud', NEEDS_CLOUD)
+  if (pinMissing()) return refusal('studioOffline', NOT_DOWNLOADED)
   if (deliveryFor(req)) return null
-  const id = cardWorkflowId(req.id as number)
-  const flow = workflowFor(id)
-  if (!flow) return refusal('workflowUnknown', noWorkflowMessage(id), { card: String(req.id), workflow: id })
-  // A workflow that lands nothing builds nothing: its last approval archives the card.
+  const id = cardStudioId(req.id as number)
+  const flow = studioFor(id)
+  if (!flow) return refusal('studioUnknown', noStudioMessage(id), { card: String(req.id), studio: id })
+  // A studio that lands nothing builds nothing: its last approval archives the card.
   if (archivesOnApproval(flow) && req.action === 'implement') {
     return refusal('planDelivered', `#${req.id} lands nothing, so its last approval archives it rather than building it.`, { card: String(req.id) })
   }
-  const [problem] = workflowIssues(flow.id)
+  const [problem] = studioIssues(flow.id)
   return problem ?? null
 }
 
@@ -73,8 +73,8 @@ export function workflowRefusal(req: AgentRequest): RunRefusal | null {
 // landing. One that stopped short is given up here — the new pass
 // replaces it — so a failing agent never piles up worktrees.
 async function scheduledRefusal(req: AgentRequest): Promise<RunRefusal | null> {
-  if (req.action !== 'scheduled' || req.deliveryId || !req.workflow || !req.specAgent) return null
-  const pass = { workflow: req.workflow, agent: req.specAgent }
+  if (req.action !== 'scheduled' || req.deliveryId || !req.studio || !req.specAgent) return null
+  const pass = { studio: req.studio, agent: req.specAgent }
   const refused = scheduledBusy(pass)
   if (refused) return refused
   for (const id of stalePasses(pass)) await cancelDelivery(id)

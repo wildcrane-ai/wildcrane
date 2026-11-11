@@ -10,7 +10,7 @@ import { die, warn, rel, TODO } from '../lib/paths'
 import { say } from '../lib/io'
 import { countBoardEvent, type BoardCount } from '../lib/machine/usage'
 import { slugify, validModules, parseIdList, dependencyCycle } from '../lib/validate'
-import { cardStages, knownWorkflow, noWorkflowMessage, previewAgents, workflowById, workflowFor, workflows } from '../lib/agent/workflows'
+import { cardStages, knownStudio, noStudioMessage, previewAgents, studioById, studioFor, studios } from '../lib/agent/studios'
 import { readAllDismissed, readArchived, readInbox } from '../lib/signals/inbox'
 import { collectQuestions, readQuestionOps, type QuestionOpsInput } from '../lib/questions'
 import { applyQuestionOps, QuestionOpError, type QuestionOpsResult } from '../lib/question-ops'
@@ -18,7 +18,7 @@ import { serializeFrontmatter, parseFrontmatter } from '../lib/frontmatter'
 import { locate, locateArchived, enclosingGroupRoot } from '../lib/cards'
 import { sourceRefFrom } from '../lib/source'
 import { cardCreation, readStore } from '../lib/agent/store'
-import { switchWorkflow } from '../lib/agent/workflow-cards'
+import { switchStudio } from '../lib/agent/studio-cards'
 import { canonicalSpecAgent } from '../lib/spec-agent-names'
 import { insideRun } from '../lib/agent/env'
 import { workspaceTask } from '../lib/cloud/tasks'
@@ -70,8 +70,8 @@ export interface CreateOptions {
   body?: boolean
   /** `--body-file`: a short draft or full card body. */
   bodyFile?: string
-  /** `--workflow`: which workflow the card runs on (#715). Left off, the board's default. */
-  workflow?: string
+  /** `--studio`: which studio the card runs on (#715). Left off, the board's default. */
+  studio?: string
   /** `--previews`: the preview agents the card chose; `""` chooses none. */
   previews?: string[]
   /** `--triage`: the source id of the triage item this card is made of. */
@@ -144,8 +144,8 @@ export function validateCreate(opts: CreateOptions) {
   const related = parseIdList(opts.related ?? [], 'related')
   const modules = validModules(opts.modules ?? [])
   const triage = (opts.triage ?? '').trim()
-  const workflow = workflowFlag(opts.workflow ?? (triage ? itemWorkflow(triage) : undefined))
-  const flow = workflowFor(workflow)
+  const studio = studioFlag(opts.studio ?? (triage ? itemStudio(triage) : undefined))
+  const flow = studioFor(studio)
   const previews = opts.previews === undefined ? undefined : previewsFlag(opts.previews, flow)
   const stages = previews ? cardStages({ previews }, flow).length : 0
   const source = sourceFlag(opts.source ?? [], 'source')
@@ -153,11 +153,11 @@ export function validateCreate(opts: CreateOptions) {
   const questions = collectQuestions(opts.asked ?? [])
   const draft = bodyFromFile(opts)
   const written = draft ? normalizeBody(draft) : null
-  return { title, priority, blocked_by, related, modules, triage, workflow, previews, stages, source, questions, written }
+  return { title, priority, blocked_by, related, modules, triage, studio, previews, stages, source, questions, written }
 }
 
 export function cmdCreate(opts: CreateOptions): MoveResult {
-  const { title, priority, blocked_by, related, modules, triage, workflow, previews, stages, source, questions, written } = validateCreate(opts)
+  const { title, priority, blocked_by, related, modules, triage, studio, previews, stages, source, questions, written } = validateCreate(opts)
   if (opts.id === undefined) die('请通过 `akb raw create` 创建卡片，由 Cloud 分配编号', { kind: 'needs-cloud' })
   const start = opts.id
   const slug = slugify(opts.slug !== undefined ? opts.slug : title)
@@ -175,7 +175,7 @@ export function cmdCreate(opts: CreateOptions): MoveResult {
 
   // validation passed → write
   countBoardEvent(triage ? 'cards_created_proposed' : 'cards_created_asked')
-  const meta: Partial<Meta> = { title, priority, status: 'todo', blocked_by, related, modules, workflow, previews, stages, triage, source, questions }
+  const meta: Partial<Meta> = { title, priority, status: 'todo', blocked_by, related, modules, studio, previews, stages, triage, source, questions }
   const scaffolded = !written && opts.body !== false
   const body = written ?? (scaffolded ? defaultBody() : '')
   fs.writeFileSync(file, serializeFrontmatter(meta) + '\n\n' + body)
@@ -207,8 +207,8 @@ export interface UpdateOptions {
   phase?: string
   /** `--previews`: the preview agents the card chose (#2154); `""` chooses none. */
   previews?: string[]
-  /** `--workflow`: move the card to another workflow; `""` is the default (#1849). */
-  workflow?: string
+  /** `--studio`: move the card to another studio; `""` is the default (#1849). */
+  studio?: string
 }
 
 // What `--source` names, as `source:` stores it. A plan's path becomes `plan:<id>`, which
@@ -224,32 +224,32 @@ function sourceFlag(said: string[], flag: string): string[] {
   return out
 }
 
-// Which workflow a card runs on: the one asked for, else the only one — inside a task's run,
+// Which studio a card runs on: the one asked for, else the only one — inside a task's run,
 // the task's own. Never a guess among several (#498).
-function workflowFlag(asked: string | undefined): string {
+function studioFlag(asked: string | undefined): string {
   const wanted = (asked ?? '').trim()
-  if (wanted) return knownWorkflow(wanted)
-  const all = workflows()
-  if (!all[0]) die(noWorkflowMessage(''), { kind: 'no-workflow', workflow: '' })
+  if (wanted) return knownStudio(wanted)
+  const all = studios()
+  if (!all[0]) die(noStudioMessage(''), { kind: 'no-studio', studio: '' })
   if (all.length > 1 && !workspaceTask()) {
-    die(`--workflow is required on a board with several workflows. Pick one: ${all.map((w) => w.id).join(', ')}`, { kind: 'needs-input' })
+    die(`--studio is required on a board with several studios. Pick one: ${all.map((w) => w.id).join(', ')}`, { kind: 'needs-input' })
   }
   return all[0]!.id
 }
 
-// The workflow a triage item named, when this board still has it: the card made of it runs on it.
-function itemWorkflow(sourceId: string): string | undefined {
+// The studio a triage item named, when this board still has it: the card made of it runs on it.
+function itemStudio(sourceId: string): string | undefined {
   const item = [...readInbox(), ...readArchived(), ...readAllDismissed()].find((signal) => signal.sourceId === sourceId)
-  return item?.workflow && workflowById(item.workflow) ? item.workflow : undefined
+  return item?.studio && studioById(item.studio) ? item.studio : undefined
 }
 
-// `--previews`: the chosen preview agents, in their workflow's order; `""` chooses none.
-function previewsFlag(said: string[], flow: ReturnType<typeof workflowFor>): string[] {
+// `--previews`: the chosen preview agents, in their studio's order; `""` chooses none.
+function previewsFlag(said: string[], flow: ReturnType<typeof studioFor>): string[] {
   const offered = flow ? previewAgents(flow).map((h) => h.agent) : []
   const asked = new Set(said.map((name) => canonicalSpecAgent(name.trim())).filter(Boolean))
   const unknown = [...asked].filter((name) => !offered.includes(name))
   if (unknown.length) {
-    die(`${unknown.map((n) => `\`${n}\``).join(', ')} ${unknown.length > 1 ? 'are not previews' : 'is not a preview'} of its workflow. It offers: ${offered.join(', ') || 'none'}.`, { kind: 'needs-input' })
+    die(`${unknown.map((n) => `\`${n}\``).join(', ')} ${unknown.length > 1 ? 'are not previews' : 'is not a preview'} of its studio. It offers: ${offered.join(', ') || 'none'}.`, { kind: 'needs-input' })
   }
   return offered.filter((name) => asked.has(name))
 }
@@ -325,10 +325,10 @@ export function cmdUpdate(id: number, flags: UpdateOptions): MoveResult {
     meta.source = [...new Set([...meta.source, ...sourceFlag(flags.addSource, 'add-source')])]
     changes.push('source')
   }
-  if (flags.workflow !== undefined && switchWorkflow(id, meta, flags.workflow)) {
-    changes.push(`workflow→${meta.workflow}`, 'status→todo')
+  if (flags.studio !== undefined && switchStudio(id, meta, flags.studio)) {
+    changes.push(`studio→${meta.studio}`, 'status→todo')
   }
-  const flow = workflowFor(meta.workflow)
+  const flow = studioFor(meta.studio)
   if (flags.previews !== undefined) {
     meta.previews = previewsFlag(flags.previews, flow)
     changes.push('previews')

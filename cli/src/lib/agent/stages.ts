@@ -19,7 +19,7 @@
 // and none is open to be hooked — they are listed here so the classification is a total one:
 // every flow this board has is a stage's or an event, and never both.
 
-import { landAgents, previewAgents, workflowFor, workflows } from './workflows'
+import { landAgents, previewAgents, studioFor, studios } from './studios'
 
 export const STAGES = ['discuss', 'plan', 'build'] as const
 
@@ -87,15 +87,15 @@ const BOARD_STAGES: StageContract[] = [
     flows: ['implement', 'run'],
     input: 'the approved card and the rules its delivery froze',
     output: "the approved outcome and its recorded results",
-    done: 'all workflow steps have recorded completion and the card is archived',
-    // The card workflow's first land agent; none without one.
+    done: 'all studio steps have recorded completion and the card is archived',
+    // The card studio's first land agent; none without one.
     lead: '',
     helpers: [],
     requires: [],
   },
 ]
 
-// The contracts a workflow's agents are laid over: planning calls in its previews, and its
+// The contracts a studio's agents are laid over: planning calls in its previews, and its
 // first land agent leads the build. Everything else on a contract is the kernel's.
 
 // The nodes that are no stage's work, started by something happening rather than by a
@@ -110,9 +110,9 @@ const BOARD_NODES: FlowNode[] = [
 ]
 
 /** The three stage contracts one card runs under, in the order it goes through them, under
- *  `workflow` — the card's own (./workflows.ts). */
-export function stageContracts(workflow?: string): StageContract[] {
-  const flow = workflowFor(workflow)
+ *  `studio` — the card's own (./studios.ts). */
+export function stageContracts(studio?: string): StageContract[] {
+  const flow = studioFor(studio)
   if (!flow) return BOARD_STAGES
   // As written down, not as they resolve against the roster: this table is read to BUILD it.
   return BOARD_STAGES.map((contract) => {
@@ -122,9 +122,9 @@ export function stageContracts(workflow?: string): StageContract[] {
   })
 }
 
-/** One stage's contract, under one card's workflow. */
-export const stageContract = (stage: Stage, workflow?: string): StageContract =>
-  stageContracts(workflow).find((c) => c.stage === stage)!
+/** One stage's contract, under one card's studio. */
+export const stageContract = (stage: Stage, studio?: string): StageContract =>
+  stageContracts(studio).find((c) => c.stage === stage)!
 
 /** This board's shared nodes — everything it can start that is no stage's. */
 export const flowNodes = (): FlowNode[] => BOARD_NODES
@@ -141,19 +141,19 @@ export const nodeOfFlow = (flow: string): FlowNode | undefined =>
 
 /** The agent that runs one flow — the one mapping from a flow to who does it. A stage's
  *  flow resolves to its lead; a shared node's to the agent on the node. */
-export const agentForFlow = (flow: string, workflow?: string): string | undefined => {
+export const agentForFlow = (flow: string, studio?: string): string | undefined => {
   if (!flow) return undefined
-  const stage = stageContracts(workflow).find((c) => c.flows.includes(flow))
+  const stage = stageContracts(studio).find((c) => c.flows.includes(flow))
   return stage ? stage.lead || undefined : nodeOfFlow(flow)?.agent
 }
 
 /** The flows one agent runs here, stages first and then its nodes. */
-export const flowsOfAgent = (name: string, workflow?: string): string[] => [
+export const flowsOfAgent = (name: string, studio?: string): string[] => [
   ...new Set([
-    // Across every workflow this board has, unless one is named: the same agent leads the build
-    // in one workflow and nothing in another, and a rule written for it has to reach every
-    // flow it runs anywhere. A caller that names a workflow is asking about that one alone.
-    ...(workflow !== undefined ? [workflow] : workflows().map((w) => w.id)).flatMap((id) =>
+    // Across every studio this board has, unless one is named: the same agent leads the build
+    // in one studio and nothing in another, and a rule written for it has to reach every
+    // flow it runs anywhere. A caller that names a studio is asking about that one alone.
+    ...(studio !== undefined ? [studio] : studios().map((w) => w.id)).flatMap((id) =>
       stageContracts(id).filter((c) => c.lead && c.lead === name).flatMap((c) => c.flows),
     ),
     ...flowNodes().filter((n) => n.agent === name).map((n) => n.flow),

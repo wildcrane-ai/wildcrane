@@ -37,8 +37,7 @@ target and the context changes — nothing else. Label each target with its file
 
 ## When to edit
 
-- **Only a real gap**: edit a prompt only when its agent lacks an instruction it needs. A
-  changed feature is no reason by itself; reuse existing instructions when they remain sufficient.
+- **Changed features**: a changed feature alone is no reason to edit a prompt.
 - **Responsibility, not location**: prompts embedded in code are still agent instructions;
   change them when needed, but do not turn application-controlled mechanics into agent duties.
 - **Right place**: put an instruction in the prompt of the task that needs it, never in an
@@ -47,15 +46,7 @@ target and the context changes — nothing else. Label each target with its file
 
 ## Writing standard
 
-- **Natural language only**: never write code, pseudocode, or a programmatic wrapper,
-  including code that builds, picks, or controls a prompt. State conditions, branches, and
-  order as plain instructions in the prompt.
-- **English**: the prompt text is ALWAYS written in English.
-- **Short and generic**: one generic sentence per rule, said once; no obvious explanations,
-  defensive clauses, or downstream duties. Trim what is there while you add.
-- **Scannable Markdown**: keep headings and lists where they help; bullets read
-  `- **bold title**: one liner`.
-- **Professional and comprehensible**: plain, clear language.
+Write as `akb guide write-prompt` says.
 
 ## Memory
 

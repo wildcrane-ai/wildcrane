@@ -80,9 +80,9 @@ export function stampTime(stamp: string | undefined): number | null {
   return Number.isNaN(at) ? null : at
 }
 
-/** An akb workflow name as Cloud's id: a built-in's (`coding` → `wf_builtin_coding`), or a
+/** An akb studio name as Cloud's id: a built-in's (`coding` → `wf_builtin_coding`), or a
  *  workspace's own by its folder (`wf-0190ab` → `wf_0190ab`). */
-export const cloudWorkflowOf = (name: string) =>
+export const cloudStudioOf = (name: string) =>
   /^wf-/.test(name) ? name.replace('-', '_') : `wf_builtin_${name.replace(/-/g, '_')}`
 
 /** A free file name for an item, from its title: akb's slug, numbered past one taken. */

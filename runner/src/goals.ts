@@ -14,20 +14,20 @@ export function goalsOf<T>(held: { goals?: T[]; ideas?: T[] }): T[] {
 
 export const goalsFileOf = (job: Pick<Job, 'id'>) => path.join(runnerHome(), 'ideas', `${job.id}.json`)
 
-export async function writeGoals(job: Job & { discussion: NonNullable<Job['discussion']> }, list: typeof api.listWorkflows): Promise<{ file: string } | { error: string }> {
+export async function writeGoals(job: Job & { discussion: NonNullable<Job['discussion']> }, list: typeof api.listStudios): Promise<{ file: string } | { error: string }> {
   let goals: Goal[]
   try { goals = goalsOf(job.discussion) } catch (e) { return { error: String(e) } }
-  const workflows: api.Workflow[] = []
+  const studios: api.Studio[] = []
   let after: string | null = null
   do {
     const page = await list(job.discussion.workspace, after)
     if (!page.ok) return { error: page.error }
-    for (const w of page.value.data) workflows.push({ ...w, id: w.id, name: w.names ? `${w.names.en} / ${w.names.zh}` : w.name, ...(w.description ? { description: w.description } : {}) })
+    for (const w of page.value.data) studios.push({ ...w, id: w.id, name: w.names ? `${w.names.en} / ${w.names.zh}` : w.name, ...(w.description ? { description: w.description } : {}) })
     after = page.value.next
   } while (after)
   const file = goalsFileOf(job)
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, `${JSON.stringify({ workspace: job.discussion.workspace, workflows, ideas: goals }, null, 2)}\n`)
+  fs.writeFileSync(file, `${JSON.stringify({ workspace: job.discussion.workspace, studios, ideas: goals }, null, 2)}\n`)
   return { file }
 }
 

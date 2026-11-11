@@ -28,7 +28,7 @@ const card = (title: string, extra: string[] = []): string =>
     'blocked_by: []',
     'related: []',
     'modules: [cloud]',
-    'workflow: coding',
+    'studio: coding',
     ...extra,
     'questions: []',
     '---',

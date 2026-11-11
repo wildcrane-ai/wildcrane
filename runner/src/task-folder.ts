@@ -10,10 +10,10 @@ import path from 'node:path'
 
 import { diff3Merge } from 'node-diff3'
 
-import { BOARD_FILE_LIMIT, BUILDER, assetsFile, cardFront, draftFolder, isBoardPath, isSettingsPath, numberOfCard, workflowFolder, workflowName } from '../../cli/src/lib/shared/board-files.ts'
+import { BOARD_FILE_LIMIT, BUILDER, assetsFile, cardFront, draftFolder, isBoardPath, isSettingsPath, numberOfCard, studioFolder, studioName } from '../../cli/src/lib/shared/board-files.ts'
 import { itemAt, stampItem } from '../../cli/src/lib/shared/triage-files.ts'
 import { projectStateDir } from '../../cli/src/lib/machine/project'
-import { readPin, readVersion, savePin, saveVersion } from '../../cli/src/lib/agent/cloud-workflows'
+import { readPin, readVersion, savePin, saveVersion } from '../../cli/src/lib/agent/cloud-studios'
 import { renderError } from '../../cli/src/lib/preview-validation'
 import { referenceText } from '../../cli/src/lib/dress-page'
 import * as api from './api'
@@ -22,7 +22,7 @@ import { busy, markUsed, markUnsent } from './cache'
 import { keepOutOfGit } from './kanban-skill'
 import { sharedMemory, type Shared } from './memory-files'
 
-export { workflowFolder }
+export { studioFolder }
 
 export interface TaskFolder {
   /** What its records here are kept under: the task, or a periodic agent's own name. */
@@ -37,8 +37,8 @@ export interface TaskFolder {
   project: string
   /** The task's short number, which its card file starts with. */
   number: number | null
-  /** The task's workflow, e.g. `wf_builtin_coding`. */
-  workflow: string | null
+  /** The task's studio, e.g. `wf_builtin_coding`. */
+  studio: string | null
 }
 
 interface Entry {
@@ -47,7 +47,7 @@ interface Entry {
   localHash?: string
 }
 
-/** What this computer keeps of one task beside the board: its assets and its workflow's tools. */
+/** What this computer keeps of one task beside the board: its assets and its studio's tools. */
 interface Record_ {
   task?: string
   number?: number
@@ -55,11 +55,11 @@ interface Record_ {
   /** `kind` is the artifact's type (#2003); an `html` one is the page a mockup draws, and its
    *  hash is the page's. */
   assets: { [path: string]: Entry & { artifact: string; kind?: Kind; dependencies?: string[] } }
-  /** The agents a Workflow builder task's draft copied to the board's `agents/`, by file hash. */
+  /** The agents a Studio builder task's draft copied to the board's `agents/`, by file hash. */
   agents?: { [path: string]: string }
   /** Its skills written into the project, by file hash, and the MCP servers its runs get (#2030). */
   tools?: { skills: { [path: string]: string }; mcp: McpServers }
-  /** The task runs on akb's own workflow and agents. */
+  /** The task runs on akb's own studio and agents. */
   builtin?: boolean
 }
 
@@ -86,7 +86,7 @@ export const NO_FOLDER = 'This project has no folder on this computer. Link one,
 const EMPTY: Record_ = { assets: {} }
 
 /** A task runs only in its project's linked folder (#516). */
-export function openTaskFolder(job: Pick<Job, 'task' | 'project' | 'number' | 'workflow' | 'flow'>, projectDir: string | null): TaskFolder {
+export function openTaskFolder(job: Pick<Job, 'task' | 'project' | 'number' | 'studio' | 'flow'>, projectDir: string | null): TaskFolder {
   const task = job.task ?? ''
   if (!TASK_ID.test(task)) throw new Error('This job names no task.')
   if (!job.project) throw new Error('This job names no project.')
@@ -95,7 +95,7 @@ export function openTaskFolder(job: Pick<Job, 'task' | 'project' | 'number' | 'w
   markUsed(projectDir)
   const board = path.join(projectDir, '.akb', 'kanban')
   fs.mkdirSync(board, { recursive: true })
-  return { task, cloudTask: task, board, cwd: projectDir, project: job.project, number: job.number ?? null, workflow: job.workflow ?? job.flow?.workflow ?? null }
+  return { task, cloudTask: task, board, cwd: projectDir, project: job.project, number: job.number ?? null, studio: job.studio ?? job.flow?.studio ?? null }
 }
 
 /** A periodic agent's folder (#2068): the project's board, where a reflect works for the first
@@ -107,13 +107,13 @@ export function openAgentFolder(job: Pick<Job, 'project' | 'agent'>, projectDir:
   const board = path.join(projectDir, '.akb', 'kanban')
   fs.mkdirSync(board, { recursive: true })
   return {
-    task: `agent-${safe(job.agent.workflow ? `${job.agent.workflow}-${job.agent.name}` : job.agent.name)}`,
+    task: `agent-${safe(job.agent.studio ? `${job.agent.studio}-${job.agent.name}` : job.agent.name)}`,
     cloudTask: job.agent.tasks?.[0]?.id ?? null,
     board,
     cwd: projectDir,
     project: job.project,
     number: null,
-    workflow: job.agent.workflow ?? null,
+    studio: job.agent.studio ?? null,
   }
 }
 
@@ -124,12 +124,12 @@ export function openDiscussionFolder(job: Pick<Job, 'project'>, projectDir: stri
   markUsed(projectDir)
   const board = path.join(projectDir, '.akb', 'kanban')
   fs.mkdirSync(board, { recursive: true })
-  return { task: 'discussion', cloudTask: null, board, cwd: projectDir, project: job.project, number: null, workflow: null }
+  return { task: 'discussion', cloudTask: null, board, cwd: projectDir, project: job.project, number: null, studio: null }
 }
 
 /** The board itself, for no task: what a change made outside a job goes back as (#59). */
 const boardFolder = (ws: Pick<TaskFolder, 'board' | 'cwd' | 'project'>): TaskFolder =>
-  ({ task: 'board', cloudTask: null, board: ws.board, cwd: ws.cwd, project: ws.project, number: null, workflow: null })
+  ({ task: 'board', cloudTask: null, board: ws.board, cwd: ws.cwd, project: ws.project, number: null, studio: null })
 
 /** The board a project folder here keeps for Cloud, once read from it; null when never read. */
 export function keptBoard(cwd: string): TaskFolder | null {
@@ -152,8 +152,8 @@ function inFolder<T>(dir: string, work: () => Promise<T>): Promise<T> {
 
 const safe = (name: string) => name.replace(/[^\w.-]/g, '_') || 'default'
 
-/** Managed workflows execute in an ordinary directory. */
-/** Where a workflow's skills go in the project, beside the kanban skill. */
+/** Managed studios execute in an ordinary directory. */
+/** Where a studio's skills go in the project, beside the kanban skill. */
 const SKILL_ROOTS = ['.claude/skills', '.agents/skills']
 
 /** The card's file: akb's `todo/<number>-<slug>.md`, a group's `root.md`, or wherever akb moved it since. */
@@ -340,34 +340,34 @@ function pullTools(ws: TaskFolder, record: Record_, files: Record<string, string
   record.tools = { skills, mcp }
 }
 
-/** The MCP servers the task's workflow gives its runs. */
+/** The MCP servers the task's studio gives its runs. */
 export const mcpServersOf = (ws: TaskFolder): McpServers => readRecord(ws).tools?.mcp ?? {}
 
-/** The workflow version a job runs on (#409), from this machine's copy, which akb reads too: a
- *  task's own version, read once; an agent job's workflow's current one. */
-async function workflowFiles(ws: TaskFolder): Promise<api.Call<Record<string, string>>> {
-  const workflow = ws.workflow!
+/** The studio version a job runs on (#409), from this machine's copy, which akb reads too: a
+ *  task's own version, read once; an agent job's studio's current one. */
+async function studioFiles(ws: TaskFolder): Promise<api.Call<Record<string, string>>> {
+  const studio = ws.studio!
   if (ws.cloudTask && ws.cloudTask === ws.task) {
     const pin = readPin(ws.cloudTask)
-    const held = pin && readVersion(pin.workflow, pin.version)
+    const held = pin && readVersion(pin.studio, pin.version)
     if (held) return { ok: true, value: held.files }
-    const read = await api.readTaskWorkflow(ws.cloudTask)
+    const read = await api.readTaskStudio(ws.cloudTask)
     if (!read.ok) return read
-    savePin(ws.cloudTask, { id: read.value.workflow, version: read.value.version, name: read.value.name ?? read.value.workflow, files: read.value.files })
+    savePin(ws.cloudTask, { id: read.value.studio, version: read.value.version, name: read.value.name ?? read.value.studio, files: read.value.files })
     return { ok: true, value: read.value.files }
   }
-  const read = await api.readWorkflow(workflow)
+  const read = await api.readStudio(studio)
   if (!read.ok) return read
-  saveVersion({ id: workflow, version: read.value.version, name: read.value.name ?? workflow, files: read.value.files })
+  saveVersion({ id: studio, version: read.value.version, name: read.value.name ?? studio, files: read.value.files })
   return { ok: true, value: read.value.files }
 }
 
-/** The job's workflow: its skills into the project. akb reads its agents from the same copy, so
+/** The job's studio: its skills into the project. akb reads its agents from the same copy, so
  *  agents an earlier Runner placed on the board go. */
-async function pullWorkflow(ws: TaskFolder, record: Record_): Promise<api.Call<void>> {
-  if (ws.workflow) {
-    record.builtin = ws.workflow.startsWith('wf_builtin_')
-    const files = await workflowFiles(ws)
+async function pullStudio(ws: TaskFolder, record: Record_): Promise<api.Call<void>> {
+  if (ws.studio) {
+    record.builtin = ws.studio.startsWith('wf_builtin_')
+    const files = await studioFiles(ws)
     if (!files.ok && files.code !== 'not_found') return files
     if (files.ok) pullTools(ws, record, files.value)
   }
@@ -380,7 +380,7 @@ async function pullWorkflow(ws: TaskFolder, record: Record_): Promise<api.Call<v
 
 const agentsRecord = (ws: TaskFolder) => path.join(ws.board, '.sync', 'agents.json')
 
-/** The workflows' agents an earlier Runner placed, by file hash. */
+/** The studios' agents an earlier Runner placed, by file hash. */
 function readPlaced(ws: TaskFolder): Record<string, string> {
   try {
     return JSON.parse(fs.readFileSync(agentsRecord(ws), 'utf8')) as Record<string, string>
@@ -389,18 +389,18 @@ function readPlaced(ws: TaskFolder): Record<string, string> {
   }
 }
 
-/** Before #409 a Runner copied every workflow's agents into `agents/`; akb now reads them from
- *  the workflow's version. */
+/** Before #409 a Runner copied every studio's agents into `agents/`; akb now reads them from
+ *  the studio's version. */
 function dropPlacedAgents(ws: TaskFolder): void {
   const placed = readPlaced(ws)
   for (const name of Object.keys(placed)) if (hashFile(path.join(ws.board, name)) === placed[name]) fs.rmSync(path.join(ws.board, name), { force: true })
   fs.rmSync(agentsRecord(ws), { force: true })
 }
 
-/** A Workflow builder task's draft keeps the agents it writes (#2004); akb reads them in `agents/`. */
+/** A Studio builder task's draft keeps the agents it writes (#2004); akb reads them in `agents/`. */
 function pullDraftAgents(ws: TaskFolder, record: Record_): void {
-  if (ws.workflow !== BUILDER) return
-  const root = path.join(ws.board, 'workflows', draftFolder(ws.task), 'agents')
+  if (ws.studio !== BUILDER) return
+  const root = path.join(ws.board, 'studios', draftFolder(ws.task), 'agents')
   record.agents ??= {}
   for (const name of filesUnder(root)) {
     const text = fs.readFileSync(path.join(root, name))
@@ -543,10 +543,10 @@ async function readCloud(ws: TaskFolder): Promise<api.Call<void>> {
   reset(view)
 
   const record = readRecord(ws)
-  const workflow = await pullWorkflow(ws, record)
-  if (!workflow.ok) return workflow
+  const studio = await pullStudio(ws, record)
+  if (!studio.ok) return studio
   pullDraftAgents(ws, record)
-  // The workflow's agents may share more than the board's did.
+  // The studio's agents may share more than the board's did.
   reset(viewOf(ws, base, sharedMemory(ws.board)))
   const assets = await pullAssets(ws, record, assetsOf(assetsListOf(ws, base)))
   if (!assets.ok) return assets
@@ -857,7 +857,7 @@ export function resetSorted(ws: TaskFolder): void {
   }
 }
 
-/** Each item the job added to `triage/`, proposed from its task on its workflow — the job's when
+/** Each item the job added to `triage/`, proposed from its task on its studio — the job's when
  *  the file names none — as `akb raw triage add` cannot know either. */
 function proposeItems(ws: TaskFolder, base: Base): void {
   const root = rootOf(ws)
@@ -868,7 +868,7 @@ function proposeItems(ws: TaskFolder, base: Base): void {
     const said = (key: string) => new RegExp(`^${key}:`, 'm').test(content.split(/\n---/)[0] ?? '')
     const fields: Record<string, string> = {
       ...(ws.cloudTask && !said('source_task') ? { source_task: ws.cloudTask } : {}),
-      ...(ws.workflow && !said('workflow') ? { workflow: workflowName(ws.workflow) } : {}),
+      ...(ws.studio && !said('studio') ? { studio: studioName(ws.studio) } : {}),
     }
     const stamped = Object.keys(fields).length ? stampItem(content, fields) : content
     if (stamped !== content) write(file, stamped)

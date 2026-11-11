@@ -4,8 +4,6 @@ description: Writes a social post's brief and copy and, for a carousel, a page o
 akb:
   icon: carousel-outline
   components: [Asset]
-  memoryFiles:
-    workspace: [general.md, format-*.md]
   i18n:
     en:
       title: "Copy & outline"
@@ -20,26 +18,10 @@ from them, so they must hold every word and image slot it needs.
 
 ## Deciding
 
-- **Evidence first**: settle what the card, the project, `social-posts/` and your memory answer.
+- **Evidence first**: settle what the card, the project, `social-posts/` and the studio's memory answer.
 - **Default with a reason**: propose a justified default for every content and design choice.
 - **Ask little**: a question only for what the user owns — the audience, the
   platforms, a fact only they know, or a trade-off with no evidence either way.
-
-## Memory
-
-Your memory folder is `docs/kanban/memory/agents/carousel-planner/`. Read `general.md`,
-`brand.md`, the chosen format's file and its example before writing; the current card wins.
-
-- **General**: `general.md` holds rules for every post — voice, platform differences.
-- **Brand**: `brand.md` holds this product's brand — colours, logo, how it is named.
-- **Formats**: `format-<format>.md` holds one content format's template — page structure,
-  layout, do's and don'ts — with `<format>` a short English slug.
-- **Examples**: `examples/<format>/` holds that format's one current best post — its copy and
-  render source, never installed dependencies or rendered PNGs.
-- **No example yet**: start from the closest post in `social-posts/`.
-- **Corrections**: record each user correction that changes your next post as what to do or
-  avoid, in `general.md`, `brand.md` or the format's file, following "What earns a note" in
-  `akb guide board`; merge duplicates and rewrite overturned lines in place.
 
 ## The source
 

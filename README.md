@@ -14,7 +14,7 @@ This repository holds the parts of WildCrane that run on your computer:
 | `runner/` | The Runner that runs tasks on your computer (npm package `wildcrane-runner`) |
 | `plugins/` | The WildCrane plugins for Claude Code, ZCode, Codex, Cursor and Kimi Code |
 | `artifact-sdk/` | The SDK for previews (npm package `wildcrane-artifact-sdk`) |
-| `official/` | Built-in workflows and preview agents |
+| `official/` | Built-in studios and preview agents |
 
 WildCrane Cloud and the web app at [app.wildcrane.ai](https://app.wildcrane.ai) are closed source and not in this repository. Everything here talks to it only over its public API.
 

@@ -25,8 +25,8 @@ import { rel, RULES } from '../paths'
 import { canonicalSpecAgent, FOLDED_SPEC_AGENTS, specAgentNames } from '../spec-agent-names'
 import { DELIVERY_FLOWS, FLOWS, flowByAction, flowByCommand, type Flow } from './flows'
 import { hiddenRole, roleForFlow, roleFlowsInOrder, roleNamed, roles, type AgentRole } from './roles'
-import { agentForRun, workflowForRun } from './runner'
-import { landAgents, workflowFor } from './workflows'
+import { agentForRun, studioForRun } from './runner'
+import { landAgents, studioFor } from './studios'
 import { REFINE_ACTIONS, SPECIALIST_ACTIONS } from './types'
 import type { AgentRequest } from './types'
 
@@ -53,17 +53,17 @@ export function readRule(agent: string): string {
  *  agents a delivery's flows are run by, read once, the way it reads the card it was
  *  approved to build. Editing a rule afterwards changes the next delivery, never one in
  *  flight. */
-export function deliveryRules(workflow?: string): Record<string, string> {
+export function deliveryRules(studio?: string): Record<string, string> {
   migrateFlowRules()
   const rules: Record<string, string> = {}
   for (const flow of FLOWS) {
     if (flow.action === 'refine' || !DELIVERY_FLOWS.has(flow.action)) continue
-    const role = roleForFlow(flow.command, workflow)
+    const role = roleForFlow(flow.command, studio)
     if (!role || rules[role.name] !== undefined) continue
     const rule = ruleFile(role.name)
     if (rule) rules[role.name] = rule
   }
-  const flow = workflowFor(workflow)
+  const flow = studioFor(studio)
   for (const { agent } of flow ? landAgents(flow) : []) {
     const rule = ruleFile(agent)
     if (rule) rules[agent] = rule
@@ -99,7 +99,7 @@ function ownerOf(req: AgentRequest): RuleOwner | null {
   // A reflection is the proposer's (#534) and is no flow a person types under `akb raw card`,
   // so it names itself here.
   const flow = req.action === 'reflect' ? req.action : flowForRequest(req)?.command
-  const role = roleForFlow(flow ?? '', workflowForRun(req))
+  const role = roleForFlow(flow ?? '', studioForRun(req))
   return role ? { name: role.name, role, flow } : null
 }
 

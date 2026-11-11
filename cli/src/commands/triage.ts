@@ -4,7 +4,7 @@
 import fs from 'node:fs'
 
 import { runAgent } from '../lib/agent/scheduled'
-import { knownWorkflow } from '../lib/agent/workflows'
+import { knownStudio } from '../lib/agent/studios'
 import { addToInbox, checkSource, migrateTriage } from '../lib/signals'
 import { say } from '../lib/io'
 import { die } from '../lib/paths'
@@ -17,7 +17,7 @@ export interface TriageAddOptions {
   file?: string
   source?: string
   slug?: string
-  workflow?: string
+  studio?: string
 }
 
 /** Write one item into triage. The body comes from `--text` for a line or two and from
@@ -26,8 +26,8 @@ export async function cmdTriageAdd(opts: TriageAddOptions): Promise<MoveResult> 
   const title = (opts.title ?? '').trim()
   if (!title) die('say what it is: --title "<one line>"', { kind: 'needs-input' })
   if (opts.file !== undefined && opts.text !== undefined) die('pass --file or --text, not both', { kind: 'needs-input' })
-  if (!opts.workflow?.trim()) die('say which workflow does it: --workflow <id> (`akb workflow list`)', { kind: 'needs-input' })
-  const workflow = knownWorkflow(opts.workflow!)
+  if (!opts.studio?.trim()) die('say which studio does it: --studio <id> (`akb studio list`)', { kind: 'needs-input' })
+  const studio = knownStudio(opts.studio!)
 
   let body = opts.text
   if (opts.file !== undefined) {
@@ -42,7 +42,7 @@ export async function cmdTriageAdd(opts: TriageAddOptions): Promise<MoveResult> 
   }
 
   const agent = runAgent()
-  const done = addToInbox({ title, text: body, source: opts.source, slug: opts.slug, workflow, ...(agent ? { agent } : {}) })
+  const done = addToInbox({ title, text: body, source: opts.source, slug: opts.slug, studio, ...(agent ? { agent } : {}) })
   if (!done.ok) die(done.error, { kind: 'triage-item-refused' })
   say(`added to triage: ${done.signal.relPath}`)
   return { title: done.signal.title, source_id: done.signal.sourceId, file: done.signal.relPath }

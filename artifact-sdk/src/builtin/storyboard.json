@@ -26,8 +26,8 @@
     }
   },
   "references": [
-    { "json": "/shots/*/frames/*/src", "types": ["storyboard", "compare", "spritesheet", "workflow"] },
-    { "json": "/slides/*/preview/src", "types": ["storyboard", "compare", "spritesheet", "workflow"] },
+    { "json": "/shots/*/frames/*/src", "types": ["storyboard", "compare", "spritesheet", "studio"] },
+    { "json": "/slides/*/preview/src", "types": ["storyboard", "compare", "spritesheet", "studio"] },
     { "json": "/slides/*/assets/*" }
   ]
 }

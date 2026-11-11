@@ -21,7 +21,7 @@ import { agentMemoryDir, readAgentMemory } from '../memory'
 import { rel } from '../paths'
 import { canonicalSpecAgent, specAgentNames } from '../spec-agent-names'
 import { specAgentCatalog } from './catalog'
-import { agentKeyProblems, cardStage, cardStages, previewAgents, workflowFor, workflowFileProblems } from '../agent/workflows'
+import { agentKeyProblems, agentStudio, cardStage, cardStages, previewAgents, studioFor, studioFileProblems } from '../agent/studios'
 import type { SpecAgent } from './parse'
 import type { Meta } from '../types'
 
@@ -49,13 +49,13 @@ export function agentLines(
   }
 }
 
-/** Everything wrong with the agents on this board — a malformed `AGENT.md` or `WORKFLOW.md`, a
+/** Everything wrong with the agents on this board — a malformed `AGENT.md` or `STUDIO.md`, a
  *  name already taken, a folder still in the place agents used to live, a key its place in a
- *  workflow does not read (#2152), or a stage contract that names somebody this board does not
+ *  studio does not read (#2152), or a stage contract that names somebody this board does not
  *  have (#714). Shown wherever the agents are listed, and put in a run's log before it starts. */
 export const specAgentProblems = (): string[] => [
   ...specAgentCatalog().problems,
-  ...workflowFileProblems(),
+  ...studioFileProblems(),
   ...agentKeyProblems(),
   ...stageContractProblems(),
 ]
@@ -80,7 +80,7 @@ export const specHeadingRe = (name: string): RegExp =>
 // ---- set (#191, #255) ----------------------------------------------------------
 //
 // An agent is set in the board UI, and what it is set to is saved with the board, so it is
-// the same for everyone working on it. Whether it runs is its workflow's answer (#749).
+// the same for everyone working on it. Whether it runs is its studio's answer (#749).
 // They are read as a run is about to start, never remembered from earlier, so the last
 // change is the one that counts. What the file holds is keyed `specAgents` (#403, #419).
 
@@ -181,11 +181,14 @@ export function specAgentInstructions(
 export function agentFilesBlock(agent: SpecAgent): string {
   if (!agent.files.length) return ''
   const dir = agent.dir
+  const studio = dir ? '' : agentStudio(agent.name)
   return [
     'Read one only when the work calls for it:',
     '',
     ...agent.files.map((f) =>
-      dir ? `- \`${rel(path.join(dir, f))}\`` : `- \`${f}\` — \`${rawMove(`agent-file ${agent.name} ${f}`)}\``,
+      dir
+        ? `- \`${rel(path.join(dir, f))}\``
+        : `- \`${f}\` — \`${rawMove(studio ? `file ${studio} agents/${agent.name}/${f}` : `agent-file ${agent.name} ${f}`)}\``,
     ),
   ].join('\n')
 }
@@ -207,24 +210,24 @@ const agentsOf = (names: string[]): SpecAgent[] => {
   return names.map((name) => all.find((a) => a.name === name)).filter((a): a is SpecAgent => !!a)
 }
 
-/** Whether one workflow runs this agent as a preview — the one gate `akb raw previews`
+/** Whether one studio runs this agent as a preview — the one gate `akb raw previews`
  *  and every ask written mid-run are checked against (#749). */
-export const specAgentAssigned = (name: string, workflow?: string): boolean => {
-  const flow = workflowFor(workflow)
+export const specAgentAssigned = (name: string, studio?: string): boolean => {
+  const flow = studioFor(studio)
   const wanted = canonicalSpecAgent(name)
   return !!flow && previewAgents(flow).some((h) => h.agent === wanted)
 }
 
 /** The previews a card may run (#2154): those of its current stage once it has chosen. A card
  *  with no `previews` has not chosen yet (#422), so planning chooses and writes them back first. */
-export function specAgentSelector(id: number | string, workflow: string | undefined, meta: Pick<Meta, 'previews' | 'phase'> | null): string {
-  const flow = workflowFor(workflow)
+export function specAgentSelector(id: number | string, studio: string | undefined, meta: Pick<Meta, 'previews' | 'phase'> | null): string {
+  const flow = studioFor(studio)
   if (!flow || !previewAgents(flow).length) return ''
   if (!meta?.previews) {
     return [
       '<preview-agents>',
       "This card has not chosen its previews yet. Choose them first: the agents from",
-      `\`akb raw previews --triggers --workflow ${flow.id}\` whose conditions the card meets, always including those marked \`Always\`. Save them with`,
+      `\`akb raw previews --triggers --studio ${flow.id}\` whose conditions the card meets, always including those marked \`Always\`. Save them with`,
       `\`akb raw update ${id} --previews <agents>\` (\`""\` when that leaves none); its stages follow from them.`,
       'Then run only the chosen agents whose `After` is empty — the first stage; the rest run after its approval.',
       `Command: \`akb raw previews <agent> ${id} <short note>\` — add \`--print\` to run it in this session, as \`akb guide refine\` says.`,
@@ -252,16 +255,16 @@ export const notAnAgent = (name: string): string => {
     : `"${name}" is not an agent on this board, and this board has none.`
 }
 
-/** Where a workflow agent is switched on or off — the one answer to whether it runs (#749). */
+/** Where a studio agent is switched on or off — the one answer to whether it runs (#749). */
 export const SPEC_ASSIGN_HOME =
-  'it is switched on in its workflow, in the board UI under Configuration → Workflows'
+  'it is switched on in its studio, in the board UI under Configuration → Studios'
 
 /** Where a project puts an agent of its own. */
 export const SPEC_AGENT_HOME = 'docs/kanban/agents/<name>/AGENT.md'
 
 /** The list of agents, one entry each — what `akb raw previews` with no agent named prints. Every one
  *  on the board: this is typed with no card in hand, and which of them a card may ask for is
- *  its own workflow's answer (`specAgentSelector`). */
+ *  its own studio's answer (`specAgentSelector`). */
 export function specAgentList(program: string, forPerson = false): string {
   const problems = specAgentProblems()
   const agents = specAgents()

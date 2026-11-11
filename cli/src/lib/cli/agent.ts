@@ -1,9 +1,9 @@
-import { queryPreviews, externalGoalSession, cloudGoal, cloudGoalWorkflows } from '../../commands/goal-cloud'
+import { queryPreviews, externalGoalSession, cloudGoal, cloudGoalStudios } from '../../commands/goal-cloud'
 // Two halves (#551):
 //
 //   declareRuns  onto `akb` (./akb.ts): Cloud tasks and goals, the account, generation, guides
 //   declareRaw   onto `akb raw` (./board.ts): the local board and in-run commands —
-//                card, delivery, run, triage, memory, previews, agent, workflow validate|rename|diagram
+//                card, delivery, run, triage, memory, previews, agent, studio validate|rename|diagram
 //
 // The flow commands come from ../agent/flows.ts, so a new flow is a command and a help entry at once.
 
@@ -12,7 +12,7 @@ import { Option } from 'commander'
 import { BoardError } from '../io'
 import { KANBAN } from '../paths'
 import { resolveBoard, sayIfRetiredPointer, useBoard } from '../board-cli'
-import { syncWorkflows } from '../agent/cloud-workflows'
+import { syncStudios } from '../agent/cloud-studios'
 import { FLOWS, flowVerb, type Flow, type FlowGroup, type FlowOption } from '../agent/flows'
 import { namedDelivery } from '../agent/deliveries'
 import type { DeliveryRecord } from '../agent/types'
@@ -47,7 +47,7 @@ import {
   workspaceList,
 } from '../../commands/task'
 import { cmdGuide } from '../../commands/guide'
-import { cmdWorkflowDiagram, cmdWorkflowInstructions, cmdWorkflowList, cmdWorkflowRule, cmdWorkflowPull, cmdWorkflowPush, cmdWorkflowRename, cmdWorkflowValidate } from '../../commands/workflow'
+import { cmdStudioDiagram, cmdStudioInstructions, cmdStudioList, cmdStudioRule, cmdStudioPull, cmdStudioPush, cmdStudioRename, cmdStudioValidate } from '../../commands/studio'
 import {
   cmdAnswered,
   cmdCancel,
@@ -64,7 +64,7 @@ import {
   cmdWatch,
 } from '../../commands/run'
 import { cmdTriageAdd, cmdTriageCheck } from '../../commands/triage'
-import { cmdGoalWorkflows, cmdGoalPreviews, goalsFile } from '../../commands/goal'
+import { cmdGoalStudios, cmdGoalPreviews, goalsFile } from '../../commands/goal'
 import { cmdSpec } from '../../commands/spec'
 import { cmdTelemetry } from '../../commands/telemetry'
 import { cmdAgentCheck } from '../../commands/agent-check'
@@ -96,16 +96,16 @@ async function onBoard(
     const found = resolveBoard('runs', { board: ctx.board, dir: ctx.dir, cwd: cli.cwd, installHint: cli.installHint })
     useBoard(found, ctx.dir !== null)
     sayIfRetiredPointer(found.root)
-    await syncWorkflows()
+    await syncStudios()
     return { board: KANBAN, ...((await work(cli.program)) ?? {}) }
   })
 }
 
-// Inside an idea conversation (#2073) the workflows are the workspace's, and there is no board.
-const workflowList = (cmd: Command, cli: AgentCliOptions) =>
-  !cmd.optsWithGlobals().board && externalGoalSession() ? boardless(cmd, cli, cloudGoalWorkflows) : goalsFile() ? boardless(cmd, cli, () => cmdGoalWorkflows()) : onBoard(cmd, cli, async () => {
-    await syncWorkflows(true)
-    return cmdWorkflowList()
+// Inside an idea conversation (#2073) the studios are the workspace's, and there is no board.
+const studioList = (cmd: Command, cli: AgentCliOptions) =>
+  !cmd.optsWithGlobals().board && externalGoalSession() ? boardless(cmd, cli, cloudGoalStudios) : goalsFile() ? boardless(cmd, cli, () => cmdGoalStudios()) : onBoard(cmd, cli, async () => {
+    await syncStudios(true)
+    return cmdStudioList()
   })
 
 async function boardless(
@@ -191,16 +191,16 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
     .option('--notes <text>', 'what the flow wants looked at, for a caller building a command')
     .option('--print', 'print specialist instructions and work in this session')
     .option('--triggers', 'list agent names and trigger conditions without starting a run')
-    .option('--workflow <id>', 'only enabled preview agents of this workflow')
-    .option('--workspace <id>', 'the workspace whose workflows to query')
+    .option('--studio <id>', 'only enabled preview agents of this studio')
+    .option('--workspace <id>', 'the workspace whose studios to query')
     .addHelpText('after', `\nList trigger conditions: ${raw} previews --triggers --json`)
     .action(async function (this: Command, ...vals: unknown[]) {
       const [agent, id, note] = positional(vals) as [string | undefined, number | undefined, string[]]
       const opts = this.opts()
-      if (opts.triggers && opts.workflow && !agent && id === undefined && !note?.length && !opts.print && !opts.follow && opts.notes === undefined) {
+      if (opts.triggers && opts.studio && !agent && id === undefined && !note?.length && !opts.print && !opts.follow && opts.notes === undefined) {
         await boardless(this, cli, async () => {
-          if (goalsFile() && !opts.workspace) return cmdGoalPreviews(opts.workflow)
-          return queryPreviews(opts.workflow, opts.workspace)
+          if (goalsFile() && !opts.workspace) return cmdGoalPreviews(opts.studio)
+          return queryPreviews(opts.studio, opts.workspace)
         })
       } else await onBoard(this, cli, (p) => cmdSpec({ agent, id, note, ...opts }, p))
     })
@@ -227,7 +227,7 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
     .option('--text <text>', 'its own words')
     .option('--file <path>', 'its own words, written to a file first')
     .option('--source <text>', 'where it came from')
-    .requiredOption('--workflow <id>', 'the workflow that does it (`akb workflow list`); the card made of it runs on it')
+    .requiredOption('--studio <id>', 'the studio that does it (`akb studio list`); the card made of it runs on it')
     .option('--slug <slug>', 'a short English name for its file, and for the card it becomes (default: from the title)')
     .action(async function (this: Command) {
       await onBoard(this, cli, () => cmdTriageAdd(this.opts()))
@@ -247,9 +247,9 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
     })
 
   withShared(program.command('components'))
-    .summary('list an agent or workflow’s preview components and their usage')
+    .summary('list an agent or studio’s preview components and their usage')
     .option('--agent <name>', 'one agent’s components')
-    .option('--workflow <id>', 'all components used by a workflow')
+    .option('--studio <id>', 'all components used by a studio')
     .option('--docs', 'include component usage documentation')
     .action(async function (this: Command) {
       const ctx = ctxOf(this, cli.program)
@@ -257,26 +257,26 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
       await boardless(this, cli, () => cmdComponents(this.opts()))
     })
 
-  const workflow = noun('workflow', "check a workflow folder, or rename a draft or draw a diagram inside a run")
-  withShared(workflow.command('validate'))
-    .argument('<folder>', 'a workflow folder: WORKFLOW.md and agents/')
-    .summary('report every problem in a workflow folder; agents it names but lacks are read from the board')
+  const studio = noun('studio', "check a studio folder, or rename a draft or draw a diagram inside a run")
+  withShared(studio.command('validate'))
+    .argument('<folder>', 'a studio folder: STUDIO.md and agents/')
+    .summary('report every problem in a studio folder; agents it names but lacks are read from the board')
     .action(async function (this: Command, folder: string) {
-      await onBoard(this, cli, () => cmdWorkflowValidate(folder))
+      await onBoard(this, cli, () => cmdStudioValidate(folder))
     })
-  withShared(workflow.command('rename'))
-    .argument('<id>', 'the draft, from `workflow list`')
+  withShared(studio.command('rename'))
+    .argument('<id>', 'the draft, from `studio list`')
     .argument('<name...>', 'what to call it now')
-    .summary('rename the Workflow builder draft. Only inside that task\'s run.')
+    .summary('rename the Studio builder draft. Only inside that task\'s run.')
     .action(async function (this: Command, id: string, name: string[]) {
-      await onBoard(this, cli, () => cmdWorkflowRename(id, name.join(' ')))
+      await onBoard(this, cli, () => cmdStudioRename(id, name.join(' ')))
     })
-  withShared(workflow.command('diagram'))
-    .argument('<id>', 'the workflow, from `workflow list`')
-    .argument('<card>', 'the card whose asset folder gets workflow.json')
-    .summary('write the workflow\'s diagram to .assets/<card>/workflow.json and print the <Workflow> tag that shows it')
+  withShared(studio.command('diagram'))
+    .argument('<id>', 'the studio, from `studio list`')
+    .argument('<card>', 'the card whose asset folder gets studio.json')
+    .summary('write the studio\'s diagram to .assets/<card>/studio.json and print the <Studio> tag that shows it')
     .action(async function (this: Command, id: string, card: string) {
-      await onBoard(this, cli, () => cmdWorkflowDiagram(id, card))
+      await onBoard(this, cli, () => cmdStudioDiagram(id, card))
     })
 }
 
@@ -309,7 +309,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .argument('<request...>', 'what the task should do')
     .summary('create a task')
     .option('--project <id>', 'the project; default: this folder’s linked one')
-    .option('--workflow <id>', 'a name `akb workflow list` shows')
+    .option('--studio <id>', 'a name `akb studio list` shows')
     .action(async function (this: Command, request: string[]) {
       await boardless(this, cli, () => taskCreate(request.join(' '), this.opts()))
     })
@@ -374,11 +374,11 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
   const goal = withShared(program.command('goal'))
     .argument('<move>', 'new, save, drop or start')
     .summary('save, drop and start goals of this conversation')
-    .description('Write a temporary draft, then goal new --title "…" --body-file <file> [--workflow <id>] [--previews <agents>]; update with goal save --id <goal> and any of --title, --body-file, --workflow, --previews. goal drop --id <goal> withdraws one; goal start --id <goal> turns it into a task. A `## Done when` list in the body is what counts as done. Workflows are the ones `akb workflow list` shows.')
+    .description('Write a temporary draft, then goal new --title "…" --body-file <file> [--studio <id>] [--previews <agents>]; update with goal save --id <goal> and any of --title, --body-file, --studio, --previews. goal drop --id <goal> withdraws one; goal start --id <goal> turns it into a task. A `## Done when` list in the body is what counts as done. Studios are the ones `akb studio list` shows.')
     .option('--id <goal>', 'the goal to save, drop or start')
     .option('--title <title>', 'what the goal is called')
     .option('--body-file <path>', 'the outcome, then a `## Done when` list')
-    .option('--workflow <id>', 'the workflow that does the work, from `akb workflow list`')
+    .option('--studio <id>', 'the studio that does the work, from `akb studio list`')
     .option('--previews <agents>', 'review points, comma-separated; empty clears the selection')
   goal.action(async function (this: Command, sub: string) {
     await boardless(this, cli, () => (externalGoalSession() ? cloudGoal([sub], this.opts()) : cmdGoal([sub], this.opts())))
@@ -576,76 +576,76 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       })
   }
 
-  // ---- the workflows a card runs through (#715) -----------------------------
+  // ---- the studios a card runs through (#715) -----------------------------
 
-  const workflow = withShared(program.command('workflow'))
-    .summary('the workflows this board runs, and the agents each one lists')
+  const studio = withShared(program.command('studio'))
+    .summary('the studios this board runs, and the agents each one lists')
     .description(
-      'Every card runs through one workflow, kept in Cloud: the built-ins and the workflows this ' +
+      'Every card runs through one studio, kept in Cloud: the built-ins and the studios this ' +
         'workspace installed or made. To change one of this workspace\'s own: `pull` it into a folder, ' +
         'edit, `push`. New tasks take the new version; a task already started keeps its own. ' +
-        '`akb guide update-workflow` has the whole flow.',
+        '`akb guide update-studio` has the whole flow.',
     )
     .allowExcessArguments()
     .allowUnknownOption()
     .action(async function (this: Command) {
       const word = this.args[0]
       if (word === 'rename' || word === 'diagram') {
-        this.error(`\`${cli.program} workflow ${word}\` is now \`${cli.program} raw workflow ${word}\`.`, { code: 'commander.unknownCommand' })
+        this.error(`\`${cli.program} studio ${word}\` is now \`${cli.program} raw studio ${word}\`.`, { code: 'commander.unknownCommand' })
       }
       if (word) this.error(`unknown command '${word}'`, { code: 'commander.unknownCommand' })
-      await workflowList(this, cli)
+      await studioList(this, cli)
     })
 
-  const flowWord = (name: string) => withShared(workflow.command(name))
+  const flowWord = (name: string) => withShared(studio.command(name))
 
   flowWord('list')
-    .summary('every workflow this workspace can run, with its previews and what each waits on, land and scheduled agents. Offline, the ones downloaded before, marked (offline).')
+    .summary('every studio this workspace can run, with its previews and what each waits on, land and scheduled agents. Offline, the ones downloaded before, marked (offline).')
     .action(async function (this: Command) {
-      await workflowList(this, cli)
+      await studioList(this, cli)
     })
 
   flowWord('pull')
-    .argument('<id>', 'the workflow, from `workflow list`')
+    .argument('<id>', 'the studio, from `studio list`')
     .argument('[folder]', 'where to write it, empty or new; default ./<id>')
-    .summary('write the workflow\'s current version into a folder to edit')
+    .summary('write the studio\'s current version into a folder to edit')
     .action(async function (this: Command, id: string, folder?: string) {
-      await onBoard(this, cli, () => cmdWorkflowPull(id, folder))
+      await onBoard(this, cli, () => cmdStudioPull(id, folder))
     })
 
   flowWord('push')
-    .argument('<folder>', 'a folder `workflow pull` wrote')
+    .argument('<folder>', 'a folder `studio pull` wrote')
     .option('--dry-run', 'check the folder and print what would happen, saving nothing')
-    .summary('save the edited folder as the workflow\'s next version, which new tasks take')
+    .summary('save the edited folder as the studio\'s next version, which new tasks take')
     .action(async function (this: Command, folder: string) {
-      await boardless(this, cli, () => cmdWorkflowPush(folder, this.opts()))
+      await boardless(this, cli, () => cmdStudioPush(folder, this.opts()))
     })
 
   flowWord('rule')
-    .argument('<workflow>', 'a workflow id from `akb workflow list`')
+    .argument('<studio>', 'a studio id from `akb studio list`')
     .option('--text <text>', 'the rules, for a one-liner; empty clears them')
     .option('--file <path>', 'the rules, as markdown written to a file first')
-    .summary("set a workflow's rules — what every card on it follows — in the user's own words")
+    .summary("set a studio's rules — what every card on it follows — in the user's own words")
     .description(
-      "Without --text or --file, prints the workflow's current rules. With them, replaces all of them, " +
+      "Without --text or --file, prints the studio's current rules. With them, replaces all of them, " +
         'saved to Cloud for every project in the workspace; empty clears them.',
     )
     .action(async function (this: Command, id: string) {
-      await onBoard(this, cli, () => cmdWorkflowRule(id, this.opts()))
+      await onBoard(this, cli, () => cmdStudioRule(id, this.opts()))
     })
 
   flowWord('instructions')
-    .argument('<agent>', 'an agent `akb workflow list` names')
+    .argument('<agent>', 'an agent `akb studio list` names')
     .option('--text <text>', 'the instructions, for a one-liner; empty clears them')
     .option('--file <path>', 'the instructions, as markdown written to a file first')
     .summary("set one agent's instructions — appended to every run it does — in the user's own words")
     .description(
       "Without --text or --file, prints the agent's current instructions. With them, replaces all of them. " +
-        "A workflow's agent is the workspace's, shared by every workflow listing it; a board's scheduled " +
+        "A studio's agent is the workspace's, shared by every studio listing it; a board's scheduled " +
         "agent is this project's. Saved to Cloud; empty clears them.",
     )
     .action(async function (this: Command, agent: string) {
-      await onBoard(this, cli, () => cmdWorkflowInstructions(agent, this.opts()))
+      await onBoard(this, cli, () => cmdStudioInstructions(agent, this.opts()))
     })
 
   withShared(program.command('guide'))
@@ -942,20 +942,20 @@ function declareAgent(program: Command, cli: AgentCliOptions): void {
     })
 
   withShared(agent.command('picks', { hidden: true }))
-    .argument('<json>', 'runtime picks by workflow agent')
+    .argument('<json>', 'runtime picks by studio agent')
     .action(async function (this: Command, json: string) {
       await onBoard(this, cli, () => cmdAgent(['picks', json]))
     })
 
   // What a Runner starts once the agent is due by its own clock (#2068).
   word('run')
-    .argument('<workflow>', 'a workflow id, e.g. coding')
+    .argument('<studio>', 'a studio id, e.g. coding')
     .argument('<agent>', 'one of the agents it schedules')
-    .summary("run a workflow's scheduled agent once, now")
+    .summary("run a studio's scheduled agent once, now")
     .addOption(new Option('-p, --print', 'say what to do and start nothing').conflicts('follow'))
     .option('-f, --follow', 'watch the log instead of returning')
     .option('--events', 'with --follow: print its structured events, one JSON object per line')
-    .action(async function (this: Command, workflow: string, name: string) {
-      await onBoard(this, cli, (p) => cmdRunScheduled(workflow, name, this.opts(), p))
+    .action(async function (this: Command, studio: string, name: string) {
+      await onBoard(this, cli, (p) => cmdRunScheduled(studio, name, this.opts(), p))
     })
 }

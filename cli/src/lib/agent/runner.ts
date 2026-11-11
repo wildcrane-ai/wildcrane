@@ -11,7 +11,7 @@
 import { findSpecAgent } from '../agents'
 import { flowByAction } from './flows'
 import { roleForFlow } from './roles'
-import { cardWorkflowId, landAgents, workflowFor } from './workflows'
+import { cardStudioId, landAgents, studioFor } from './studios'
 import { deliveryFor } from './deliveries'
 import { deliveryStep } from './progress'
 import { REFINE_ACTIONS, SPECIALIST_ACTIONS } from './types'
@@ -21,7 +21,7 @@ import type { AgentAction } from './types'
  *  `agent/rules.ts` reads to hand a run its rule, and read the same way. */
 export interface RunAsk {
   action?: AgentAction
-  /** The card this run is for, when it names one. Read only to find the card's workflow —
+  /** The card this run is for, when it names one. Read only to find the card's studio —
    *  who leads a stage is the card's answer now, not the board's (#715). */
   id?: number
   /** The agent's name on a `spec` or `write` run, and nothing on any other. */
@@ -29,21 +29,21 @@ export interface RunAsk {
   /** Set on a pass a refine spawned, absent on a flow a user typed — the one thing that
    *  tells a refine's `resolve` pass from an `akb raw card resolve` of its own. */
   refineRound?: number
-  /** The workflow this run's card runs on (#715). Given by a caller that already knows it —
+  /** The studio this run's card runs on (#715). Given by a caller that already knows it —
    *  a delivery hands its frozen one down — and read off the card otherwise. */
-  workflow?: string
+  studio?: string
   /** The delivery a review run belongs to, when it names one. */
   deliveryId?: string
 }
 
-/** The workflow one run belongs to: the one it was handed, the one its card carries, or the
- *  one its delivery froze. A run on none of these has no workflow. */
-export const workflowForRun = (ask: RunAsk): string | undefined =>
-  ask.workflow ??
+/** The studio one run belongs to: the one it was handed, the one its card carries, or the
+ *  one its delivery froze. A run on none of these has no studio. */
+export const studioForRun = (ask: RunAsk): string | undefined =>
+  ask.studio ??
   (typeof ask.id === 'number'
-    ? cardWorkflowId(ask.id) || undefined
+    ? cardStudioId(ask.id) || undefined
     : ask.deliveryId
-      ? deliveryFor({ action: 'implement', deliveryId: ask.deliveryId })?.workflow?.id
+      ? deliveryFor({ action: 'implement', deliveryId: ask.deliveryId })?.studio?.id
       : undefined)
 
 /** The agent one run is done by: a role's name, a specialist's own name, or nothing when the
@@ -53,13 +53,13 @@ export function agentForRun(ask: RunAsk = {}): string | undefined {
   if (!action) return undefined
   if (action === 'implement') {
     const delivery = deliveryFor({ action, id: ask.id, deliveryId: ask.deliveryId })
-    const flow = delivery?.workflow ? undefined : workflowFor(workflowForRun(ask))
-    const rows = delivery?.workflow?.land ?? (flow ? landAgents(flow) : [])
+    const flow = delivery?.studio ? undefined : studioFor(studioForRun(ask))
+    const rows = delivery?.studio?.land ?? (flow ? landAgents(flow) : [])
     return rows[delivery ? deliveryStep(delivery) : 0]?.agent
   }
   // A specialist runs as itself, whichever hook it is on; a sub-run as its parent's agent.
   if (SPECIALIST_ACTIONS.has(action) || action === 'sub') return specAgent
-  return roleForFlow(flowOf(ask, action), workflowForRun(ask))?.name
+  return roleForFlow(flowOf(ask, action), studioForRun(ask))?.name
 }
 
 // The flow this run belongs to. A pass belongs to the flow that spawned it, never to a flow

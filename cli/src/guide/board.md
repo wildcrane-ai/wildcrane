@@ -1,6 +1,6 @@
 # How this board works
 
-These rules apply to every card workflow. Read them once; each workflow's guide covers
+These rules apply to every card studio. Read them once; each studio's guide covers
 the remaining details.
 
 ## Layout
@@ -19,7 +19,7 @@ docs/kanban/
 │   └── agents/     one folder per agent that keeps memory, named after it —
 │                   `planner/` holds `decisions.md`, `rejected.md`, `redesign.md`
 ├── rules/          `<agent>.md` — the user's rule for one agent, appended to every run it
-│                   does; written from the web or `akb workflow instructions`
+│                   does; written from the web or `akb studio instructions`
 ├── triage/         items waiting to be sorted, one file each — not cards. Only
 │   │               Cloud's sort or Refine idea on the web's Triage page turns one
 │   │               into a card; `akb raw triage check <source-id>` finds an existing one

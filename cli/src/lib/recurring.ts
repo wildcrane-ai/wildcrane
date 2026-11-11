@@ -1,6 +1,6 @@
 // ---- recurring cards, retired (#1414) --------------------------------------
 //
-// Repeating work is a workflow's scheduled agent now. This module turns the cards an older
+// Repeating work is a studio's scheduled agent now. This module turns the cards an older
 // board still carries under `todo/recurring/` into those agents, by copying what each says.
 
 import fs from 'node:fs'
@@ -8,7 +8,7 @@ import path from 'node:path'
 
 import { adoptMemoryPruneCadence } from './agent/settings'
 import { ROLE_NAMES } from './agent/roles'
-import { adoptWorkflowScheduled, noWorkflowMessage, workflowById, workflows } from './agent/workflows'
+import { adoptStudioScheduled, noStudioMessage, studioById, studios } from './agent/studios'
 import { specAgentCatalog } from './agents/catalog'
 import { AGENT_NAME } from './agents/parse'
 import { parseCadence, parseStamp } from './cadence'
@@ -198,9 +198,9 @@ function migrateCard(card: LegacyCard): RecurringMigration['agents'][number] {
   const said = (key: string): string => (typeof raw[key] === 'string' ? (raw[key] as string).trim() : '')
   const cadence = parseCadence(said('cadence')) ? said('cadence') : ''
   const lastRun = parseStamp(said('last_run')) ? said('last_run') : ''
-  // A card naming none predates workflows, so it was a Coding card.
-  const flow = workflowById(meta.workflow || 'coding') ?? workflows()[0]
-  if (!flow) throw new Error(noWorkflowMessage(''))
+  // A card naming none predates studios, so it was a Coding card.
+  const flow = studioById(meta.studio || 'coding') ?? studios()[0]
+  if (!flow) throw new Error(noStudioMessage(''))
 
   const text = (name: string): string => agentText(name, meta.title || card.slug, body)
   const name = agentName(card, text)
@@ -211,7 +211,7 @@ function migrateCard(card: LegacyCard): RecurringMigration['agents'][number] {
   try {
     fs.mkdirSync(dir, { recursive: true })
     if (wrote) fs.writeFileSync(file, text(name))
-    const adopted = adoptWorkflowScheduled(flow.id, name, { cadence, lastRun })
+    const adopted = adoptStudioScheduled(flow.id, name, { cadence, lastRun })
     if (!adopted.ok) throw new Error(adopted.error)
     questionsToTriage(meta, name)
   } catch (e) {
@@ -222,11 +222,11 @@ function migrateCard(card: LegacyCard): RecurringMigration['agents'][number] {
   }
   if (card.folder) mergeInto(card.folder, dir, ['root.md'])
   removeCard(card)
-  return { card: rel(card.file), agent: name, workflow: flow.name, on: !!cadence, cadence }
+  return { card: rel(card.file), agent: name, studio: flow.name, on: !!cadence, cadence }
 }
 
 /**
- * Turn every recurring card into a scheduled agent of its workflow, and delete the card.
+ * Turn every recurring card into a scheduled agent of its studio, and delete the card.
  *
  * Safe to run again: a card that failed is still there and is tried again, and once none is
  * left there is nothing to do. The caller holds the board lock.
@@ -256,7 +256,7 @@ export function recurringMigrationLines(done: RecurringMigration): string[] {
   return [
     ...done.agents.map(
       (one) =>
-        `${one.card} is now the scheduled agent \`${one.agent}\` in the ${one.workflow} workflow — ` +
+        `${one.card} is now the scheduled agent \`${one.agent}\` in the ${one.studio} studio — ` +
         (one.on ? `on, cadence ${one.cadence}` : 'off: it had no cadence, so it runs only when you run it'),
     ),
     ...done.removed.map((card) => `removed ${card} — write a scheduled agent to pull triage items on a cadence (\`akb guide write-agent\`)`),

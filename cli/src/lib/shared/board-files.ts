@@ -2,13 +2,13 @@
 // both filter by the same rule. No imports, so either side can take it as it is.
 
 /** The board folders kept in Cloud; anything else on a board is this computer's own. */
-const ROOTS = ['todo/', '.archive/', 'memory/', 'workflows/', 'triage/', 'assets/', 'rules/']
+const ROOTS = ['todo/', '.archive/', 'memory/', 'studios/', 'triage/', 'assets/', 'rules/']
 
 /** The board's settings at its root (#2106): the module map and the project's settings. */
 export const SETTINGS = ['modules.md', 'config.md']
 
-/** A settings file: one of those, an agent's rule, or the rule for a workflow's cards. */
-export const isSettingsPath = (path: string) => SETTINGS.includes(path) || /^rules\/(?:workflows\/)?[^/]+\.md$/.test(path)
+/** A settings file: one of those, an agent's rule, or the rule for a studio's cards. */
+export const isSettingsPath = (path: string) => SETTINGS.includes(path) || /^rules\/(?:studios\/)?[^/]+\.md$/.test(path)
 
 /** A file over this goes up as an asset, not on the board. */
 export const BOARD_FILE_LIMIT = 256 * 1024
@@ -20,7 +20,7 @@ export function isBoardPath(path: string): boolean {
   // Rebuilt on every board, never kept: the index and the sync records. `next-id` and
   // `metrics.csv` sit outside every folder kept.
   if (path === 'todo/README.md' || path.split('/').includes('.sync')) return false
-  if (path.startsWith('workflows/')) return true
+  if (path.startsWith('studios/')) return true
   if (SETTINGS.includes(path)) return true
   if (path.startsWith('rules/')) return isSettingsPath(path)
   // An asset a card names sits beside it as an artifact's file, never a board file.
@@ -53,25 +53,25 @@ export const assetsFile = (task: string) => `assets/${task}.json`
 
 export const taskOfAssets = (path: string): string | null => /^assets\/(task_[0-9a-f]+)\.json$/.exec(path)?.[1] ?? null
 
-/** The board folder a workflow is written to: its id as a board names one (`wf_builtin_coding` →
- *  `wf-builtin-coding`), so it never takes the place of a workflow akb ships. */
-export const workflowFolder = (id: string) => id.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+/** The board folder a studio is written to: its id as a board names one (`wf_builtin_coding` →
+ *  `wf-builtin-coding`), so it never takes the place of a studio akb ships. */
+export const studioFolder = (id: string) => id.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 
-/** An account's own workflow's folder on a board, a built-in's and a builder draft's aside. */
+/** An account's own studio's folder on a board, a built-in's and a builder draft's aside. */
 export const OWN_FOLDER = /^wf-(?!builtin-)[a-z0-9-]+$/
 
-/** akb's name for a Cloud workflow: a built-in's own (`wf_builtin_coding` → `coding`), an
+/** akb's name for a Cloud studio: a built-in's own (`wf_builtin_coding` → `coding`), an
  *  account's own its folder. */
-export const workflowName = (id: string) =>
-  id.startsWith('wf_builtin_') ? id.slice('wf_builtin_'.length).replace(/_/g, '-') : workflowFolder(id)
+export const studioName = (id: string) =>
+  id.startsWith('wf_builtin_') ? id.slice('wf_builtin_'.length).replace(/_/g, '-') : studioFolder(id)
 
-/** The user's rule for every card on a workflow (#2152). */
-export const workflowRuleFile = (id: string) => `rules/workflows/${workflowName(id)}.md`
+/** The user's rule for every card on a studio (#2152). */
+export const studioRuleFile = (id: string) => `rules/studios/${studioName(id)}.md`
 
-/** The built-in whose task writes a workflow (#2004). */
-export const BUILDER = 'wf_builtin_workflow_builder'
+/** The built-in whose task writes a studio (#2004). */
+export const BUILDER = 'wf_builtin_studio_builder'
 
-/** Where a builder task's workflow is written on its project's board, until the approval saves it. */
+/** Where a builder task's studio is written on its project's board, until the approval saves it. */
 export const draftFolder = (task: string) => cardSlug(task)
 
 export interface CardFront {
@@ -105,4 +105,18 @@ export function cardFront(body: string): CardFront {
     }
   }
   return out
+}
+
+/** A board file written before #645, under its Studio names: its folder, its definition file, a
+ *  card's or triage item's field, a card's diagram tag and the two icons. `path` is the one
+ *  inside a project's board. */
+export function studioRenamed(path: string, content: string): { path: string; content: string } {
+  const to = path.replace(/^(rules\/)?workflows\//, '$1studios/').replace(/^(studios\/[^/]+)\/WORKFLOW\.md$/, '$1/STUDIO.md')
+  if (!to.endsWith('.md')) return { path: to, content }
+  if (to.startsWith('studios/')) return { path: to, content: content.replace(/^(icon:\s*["']?)workflow(-kit)?(["']?\s*)$/gm, '$1studio$2$3') }
+  const front = /^(?:todo|triage)\//.test(to) ? /^---\r?\n[\s\S]*?\r?\n---/.exec(content)?.[0] : undefined
+  if (!front) return { path: to, content }
+  const body = content.slice(front.length).replace(/^<Workflow(?=[\s/>])/gm, '<Studio')
+  const renamed = front.replace(/^workflow:[ \t]*(.*)$/m, (_, id: string) => `studio: ${id === 'workflow-builder' ? 'studio-builder' : id}`)
+  return { path: to, content: renamed + body }
 }

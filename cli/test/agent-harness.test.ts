@@ -111,7 +111,7 @@ describe('an agent with a runtime of its own', () => {
   beforeEach(() => config(board))
 
   it('spawns the row the board gave it, whole', () => {
-    const run = plan({ action: 'implement', workflow: 'coding' })
+    const run = plan({ action: 'implement', studio: 'coding' })
     assert.equal(run.agent, 'builder')
     assert.equal(run.harness, 'codex')
     assert.equal(run.runtime, 'cheap')
@@ -146,14 +146,14 @@ describe('an agent with a runtime of its own', () => {
   })
 
   it('calls the skill the way that row’s CLI expects', () => {
-    assert.equal(skillCall(agentForRun({ action: 'implement', workflow: 'coding' })), '$kanban')
+    assert.equal(skillCall(agentForRun({ action: 'implement', studio: 'coding' })), '$kanban')
     assert.equal(skillCall(agentForRun({ action: 'clarify' })), '/kanban')
   })
 
   it('says which agent runs each flow, for a front end that keeps no list', () => {
     const info = agentInfo()
     const flow = (command: string) => info.flows.find((f) => f.command === command)
-    // The build is its workflow's first land agent, so no board-wide agent runs it.
+    // The build is its studio's first land agent, so no board-wide agent runs it.
     assert.equal(flow('implement')?.agent, '')
     assert.deepEqual([flow('refine')?.agent, flow('refine')?.harness], ['planner', 'claude-code'])
     assert.equal(flow('review'), undefined)
@@ -161,7 +161,7 @@ describe('an agent with a runtime of its own', () => {
 
   it('falls back and says so when the pick is a row the board no longer has', () => {
     config({ ...board, agentRuntime: { builder: 'was-deleted' } })
-    const run = plan({ action: 'implement', workflow: 'coding' })
+    const run = plan({ action: 'implement', studio: 'coding' })
     assert.equal(run.runtime, 'global')
     assert.match(run.note ?? '', /was-deleted/)
     assert.equal(agentRun('builder').unknownRuntime, 'was-deleted')
@@ -182,7 +182,7 @@ describe('two runtimes on one harness', () => {
 
   it('sit on two gateways and sign with two keys, with nothing inherited between them', () => {
     const planner = openPlan(plan({ action: 'clarify' }))
-    const builder = openPlan(plan({ action: 'implement', workflow: 'coding' }))
+    const builder = openPlan(plan({ action: 'implement', studio: 'coding' }))
     assert.equal(planner.env.ANTHROPIC_BASE_URL, 'https://one.example')
     assert.equal(builder.env.ANTHROPIC_BASE_URL, 'https://two.example')
     assert.equal(planner.env.ANTHROPIC_AUTH_TOKEN, 'sk-one')
@@ -265,7 +265,7 @@ describe('writing the list', () => {
 describe('the raw arguments', () => {
   it('go after the settings’ flags and before the CLI’s own', () => {
     config({ runtimes: [runtime('global', 'claude-code', { model: 'claude-opus-5', args: '--foo --bar=1' })] })
-    const { argv } = plan({ action: 'implement', workflow: 'coding' })
+    const { argv } = plan({ action: 'implement', studio: 'coding' })
     const model = argv.indexOf('claude-opus-5')
     const foo = argv.indexOf('--foo')
     const session = argv.indexOf('--session-id')
@@ -368,7 +368,7 @@ describe('turning an older board into runtimes', () => {
     local({ agents: { builder: { codex: { model: 'gpt-5.1-codex' } } } })
     migrateRuntimes(['planner', 'builder', 'reviewer'], takeLocalModels(kanban()))
     setBoardRoot(root)
-    const run = openPlan(plan({ action: 'implement', workflow: 'coding' }))
+    const run = openPlan(plan({ action: 'implement', studio: 'coding' }))
     assert.ok(run.argv.includes('gpt-5.1-codex'))
     // …and the rest of what that block said about reaching the CLI came with it: the
     // provider Codex was set to, and the hand-edited command Global default ran.
@@ -391,7 +391,7 @@ describe('turning an older board into runtimes', () => {
       readRuntimes().map((r) => [r.id, r.harness]),
       [['global', 'claude-code']],
     )
-    assert.equal(plan({ action: 'implement', workflow: 'coding' }).harness, 'claude-code')
+    assert.equal(plan({ action: 'implement', studio: 'coding' }).harness, 'claude-code')
   })
 })
 
