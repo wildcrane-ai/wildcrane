@@ -13,13 +13,6 @@ export function runnerHome(): string {
   return process.env.WILDCRANE_HOME || path.join(os.homedir(), '.wildcrane')
 }
 
-/** Background children must not inherit a project or version directory an updater can remove. */
-export function runnerCwd(): string {
-  const dir = runnerHome()
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  return dir
-}
-
 /** The CLI's session code reads its folder from `AI4KANBAN_HOME`; point it here. Every entry calls this, so the proxy is re-read here too. */
 export function useRunnerHome(): void {
   process.env.AI4KANBAN_HOME = runnerHome()

@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
-import { runnerCwd, runnerHome } from './home'
+import { runnerHome } from './home'
 import { provenNewer } from './launcher'
 import { VERSION } from './protocol'
 import { openBrowser } from './settings-browser'
@@ -94,7 +94,7 @@ async function startNewer(action: SettingsAction, port = 0): Promise<boolean> {
   const version = helper ? null : newerPage()
   if (!version || version === refused) return false
   const entry = path.join(versionDir(version), 'dist', 'settings.mjs')
-  const child = spawn(process.execPath, [entry], { cwd: runnerCwd(), stdio: ['ignore', 'ignore', 'inherit', 'ipc'], env: { ...process.env, WILDCRANE_SETTINGS_CHILD: '1', WILDCRANE_SETTINGS_VERSION: version, WILDCRANE_SETTINGS_PORT: String(port) } })
+  const child = spawn(process.execPath, [entry], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], env: { ...process.env, WILDCRANE_SETTINGS_CHILD: '1', WILDCRANE_SETTINGS_VERSION: version, WILDCRANE_SETTINGS_PORT: String(port) } })
   const ready = await new Promise<boolean>((resolve) => {
     const timer = setTimeout(() => resolve(false), 10_000)
     child.once('message', (m: { type?: string }) => { clearTimeout(timer); resolve(m?.type === 'settings-ready') })
