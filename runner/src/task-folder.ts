@@ -870,9 +870,9 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
       }
       writeRecord(ws, record)
     }
-    for (const file of taskAssetFiles(ws)) {
+    const sendResource = async (file: string): Promise<api.Call<void>> => {
       const key = canonical(file)
-      if (refs[key]) continue
+      if (refs[key]) return { ok: true, value: undefined }
       // Apply the same real-path boundary as an explicit card reference.
       assetPath(ws, key, cardFile(ws))
       const sendFile = async (): Promise<api.Call<void>> => {
@@ -941,7 +941,22 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
         console.error(`runner: asset upload pending: ${sent.error}`)
         if (before[key]) refs[key] = before[key]!
       }
+      return { ok: true, value: undefined }
     }
+    const files = [...new Map(taskAssetFiles(ws).map(file => [canonical(file), file])).values()]
+    let next = 0
+    let failure: Extract<api.Call<void>, { ok: false }> | undefined
+    await Promise.all(Array.from({ length: Math.min(4, files.length) }, async () => {
+      while (!failure && next < files.length) {
+        try {
+          const sent = await sendResource(files[next++]!)
+          if (!sent.ok) failure ??= sent
+        } catch (error) {
+          failure ??= { ok: false, code: 'bad_request', error: renderError(error) }
+        }
+      }
+    }))
+    if (failure) return failure
   } catch (error) {
     return { ok: false, code: 'bad_request', error: error instanceof Error ? error.message : String(error) }
   }

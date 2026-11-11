@@ -1677,8 +1677,16 @@ describe('a task’s folder (#2037)', () => {
     fs.writeFileSync(path.join(privateDir, 'secret.json'), '{}')
     fs.mkdirSync(path.join(projectStateDir(board()), 'mockups'), { recursive: true })
     fs.symlinkSync(privateDir, path.join(projectStateDir(board()), 'mockups/1'))
+    const start = cloud.log.length
     const sent = await pushBoard(keptBoard(cached())!, MACHINE)
     assert.ok(sent.ok, JSON.stringify(sent))
+    let active = 0
+    let peak = 0
+    for (const line of cloud.log.slice(start)) {
+      if (line === 'POST /v1/tasks/task_1/artifacts') peak = Math.max(peak, ++active)
+      if (/^POST \/v1\/artifacts\/[^/]+\/versions$/.test(line)) active--
+    }
+    assert.ok(peak > 1 && peak <= 4, `ordinary resource upload concurrency: ${peak}`)
     const refs = JSON.parse(cloud.file('assets/task_1.json')!)
     for (const [name, bytes] of files) {
       const ref = refs[`../${name}`]
