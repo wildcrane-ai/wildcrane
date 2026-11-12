@@ -15,7 +15,6 @@
 // that agent's protocol says lives behind this one interface. The runner learns no
 // protocol and the client learns nothing about runs.
 
-import type { LocalReplyPart } from '../../shared/reply-parts'
 import type { Readable, Writable } from 'node:stream'
 
 import type { RunEvent } from './events'
@@ -51,14 +50,12 @@ export interface ClientTurn {
   gotModel: (model: string) => void
   /** Structured events as they complete (#2059), from a client that is `structured`. */
   event?: (event: RunEvent) => void
-  gotContext?: (context: ContextWindow) => void
 }
 
 /** How one turn ended. `ok` is the run's verdict — the command's exit code says nothing
  *  here, because the runner is the one that ends the process. */
 export interface TurnEnd {
   ok: boolean
-  replyParts?: LocalReplyPart[]
   /** The agent's closing message. */
   result?: string
   /** Why it stopped, in the agent's own words. Never our guess at one. */
@@ -80,6 +77,4 @@ export interface RunClient {
   turn(io: ClientTurn): Promise<TurnEnd>
   /** Reports everything it logs as events too, so its log text is not repeated as `log`. */
   structured?: boolean
-  /** Current background work, independently of the main reply. */
-  background?(): number | undefined
 }

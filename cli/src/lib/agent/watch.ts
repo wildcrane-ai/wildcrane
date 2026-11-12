@@ -32,8 +32,7 @@ import { endAgent, killMarked, runMark } from './stop'
 import { refineRunsAfter, specRunsAfter } from './follow'
 import { queueCompleted } from './propose'
 import { costLine, durationLine, modelLine, RESULT_MARKER, usageLine } from './log'
-import { backgroundWaitMessage as backgroundSaid } from './wire/background'
-import { createStderrFilter, streamFinished, type RunEvent } from './wire'
+import { createStderrFilter, type RunEvent } from './wire'
 import { contractRepairPrompt, restartPrompt, resumePrompt } from './prompts'
 import { openPlan } from './resolve'
 import { planRetry, retryLine } from './retry'
@@ -94,6 +93,9 @@ const STOP_FINISH_MS = 10_000
 // before it begins, and one that never says a word is still ended.
 const silenceSaid = (minutes: number): string =>
   `the agent said nothing for ${minutes} minute${minutes === 1 ? '' : 's'}, so the run was ended.`
+// And the wait on its background tasks (#1540), which outlasts the silence limit.
+const backgroundSaid = (minutes: number): string =>
+  `the agent's background tasks did not finish within ${minutes / 60} hours, so the run was ended.`
 
 const MAX_FORMAT_REPAIRS = 3
 
@@ -294,7 +296,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     const turns = renderer?.turns?.() ?? []
     if (turns.length === turnsSeen) return
     turnsSeen = turns.length
-    if (renderer && streamFinished(renderer)) endInput()
+    if (!turns.at(-1)!.background) endInput()
   }
   // Both ids are written into the record the first time the stream names them, and never
   // looked for again — every write takes the record's lock, and a run's output arrives in
@@ -437,7 +439,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       // Only Claude Code does (agent/wire/stream.ts) — read after the flush above, so the
       // closing event is in. A run that failed this way must not close as done: its card
       // would advance and the refinements behind it would run on work that never happened.
-      const failure = renderer?.failure?.() ?? (renderer?.background?.() ? 'The agent exited with unfinished background tasks.' : undefined)
+      const failure = renderer?.failure?.()
       const unfinished = blocker || failure
       const result = spoken ? spoken.result : renderer?.result()
 
@@ -745,7 +747,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     touch = () => {
       if (done || !silenceMs) return
       if (idle) clearTimeout(idle)
-      const background = client?.background?.() ?? renderer?.background?.() ?? 0
+      const background = renderer?.background?.() ?? 0
       idle = setTimeout(() => {
         if (done || stopped || silent) return
         // A run waiting on its sub-runs says nothing, and is not silent (#1421).
@@ -792,7 +794,6 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
             gotResumeId: (id, restarted) => gotResumeId(id, restarted),
             gotModel: (model) => gotModel(model),
             event,
-            gotContext,
           })
           .then((end) => {
             spoken = end

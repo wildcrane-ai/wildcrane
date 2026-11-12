@@ -25,6 +25,3 @@ export { createKimiStreamRenderer } from './kimi-stream'
 export { createAcpClient, type AcpOptions } from './acp'
 export { createZcodeClient, type ZcodeOptions } from './zcode'
 export type { ClientTurn, RunClient, TurnEnd } from './client'
-
-export { createCodexConnection } from './codex'
-export { streamFinished } from './background'

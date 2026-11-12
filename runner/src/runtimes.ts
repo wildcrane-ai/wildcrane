@@ -105,16 +105,14 @@ export function plan(runtime: Job['runtime'], prompt: string, cwd: string, resum
   const quiet = (line: string) => harness.quietStderr?.(line) ?? false
   // WILDCRANE_JOB keeps the Claude Code plugin a job's own session loads from serving it (#2161).
   const { argv, env, note } = withSystemLanguage(harness, [...base, ...extra], copyEnv(binary, { ...process.env, ...settingEnv(harness, values, given.secrets ?? {}, cwd), WILDCRANE_JOB: '1', [LANGUAGE_ENV]: language ?? '', [LANGUAGE_LINE_ENV]: undefined }), language)
-  const connection = harness.connection?.(argv)
-  if (connection || harness.client) {
-    const client = connection?.client ?? harness.client!(effectiveValues(harness, values))
-    const started = connection?.argv ?? argv
+  if (harness.client) {
+    const client = harness.client(effectiveValues(harness, values))
     let session: string | undefined
     let named: string | undefined
     return {
       startNote: note,
-      command: started[0]!,
-      args: started.slice(1),
+      command: argv[0]!,
+      args: argv.slice(1),
       env,
       converse: (child, event, restart = true) =>
         client.turn({

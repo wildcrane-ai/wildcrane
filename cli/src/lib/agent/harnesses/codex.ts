@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { AKB_DIR, KANBAN, REPO_ROOT } from '../../paths'
-import { createCodexConnection, createCodexStreamRenderer } from '../wire'
+import { createCodexStreamRenderer } from '../wire'
 import { byVersion, folders } from '../locate'
 import { arr, home, modelsIn, num, obj, str } from './models'
 import { git } from '../worktree'
@@ -211,7 +211,6 @@ export const CODEX: Harness = {
     'codex exec --json --sandbox workspace-write -c sandbox_workspace_write.network_access=true',
   ],
 
-  connection: createCodexConnection,
   installs: codexInstalls,
   pinned: () => process.env.CODEX_CLI_PATH?.trim() || undefined,
 

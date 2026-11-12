@@ -144,8 +144,6 @@ export interface Harness
    *
    *  `argv` is the run's command line without its prompt. */
   renderer?(cwd: string, binary?: string, argv?: string[]): StreamRenderer
-  /** Optional persistent transport for a supported command; unknown command shapes keep their renderer. */
-  connection?(argv: string[]): { argv: string[]; client: RunClient } | undefined
   /** How the prompt goes in on stdin, for a printing CLI whose `argv` asks it to read its
    *  turns there and keep going while stdin stays open (#1540). Undefined when this argv
    *  takes the prompt on the command line. */

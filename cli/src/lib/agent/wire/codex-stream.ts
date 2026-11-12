@@ -1,7 +1,6 @@
 // Codex JSONL becomes readable logs and structured events. The final message is the reply;
 // model, price and context facts come from the run's own rollout.
 
-import { createBackgroundTasks } from './background'
 import type { LocalReplyPart } from '../../shared/reply-parts'
 import { codexUsage, readCodexRunFacts, sameUsage, type CodexRunFacts, type CodexTurn } from './codex-session'
 import { createEventCollector, type EventCollector, type ToolKind } from './events'
@@ -142,31 +141,6 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
   let lookedAt = 0
   const events = createEventCollector()
   const started = new Set<string>()
-  const background = createBackgroundTasks()
-  const subagents = new Set<string>()
-  const collabItems = new Set<string>()
-  const collab = (item: Json, done: boolean) => {
-    if (item.type !== 'collab_tool_call') return
-    const key = `${str(item.id)}:${done}`
-    if (collabItems.has(key)) return
-    collabItems.add(key)
-    for (const [id, raw] of Object.entries(obj(item.agents_states))) {
-      const state = obj(raw)
-      const status = str(state.status)
-      if (!['pending_init', 'running', 'completed', 'interrupted', 'errored', 'shutdown', 'not_found'].includes(status)) continue
-      const previous = background.results().find(t => t.id === id)
-      if (['shutdown', 'not_found'].includes(status) && previous && previous.status !== 'running') continue
-      if (!subagents.has(id)) {
-        subagents.add(id)
-        events.subagent(`agent:${id}`, str(item.prompt) || 'Agent')
-      }
-      const running = status === 'pending_init' || status === 'running'
-      const failed = !running && status !== 'completed'
-      if (background.update(id, running ? 'running' : failed ? 'failed' : 'completed', str(state.message)) && !running) {
-        events.toolResult(`agent:${id}`, failed ? 'failed' : 'completed', str(state.message))
-      }
-    }
-  }
 
   // Look beside the stream for what the stream doesn't say. Nothing to look for until the
   // thread id arrives, and kept up after that rather than stopped once the model is known:
@@ -206,7 +180,6 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
         if (!threadId) threadId = str(ev.thread_id).trim() || undefined
         return ''
       case 'item.started':
-        collab(obj(ev.item), false)
         itemEvents(events, started, obj(ev.item), false)
         return renderStarted(obj(ev.item))
       case 'item.updated':
@@ -214,7 +187,6 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
         return ''
       case 'item.completed': {
         const item = obj(ev.item)
-        collab(item, true)
         // view_image is input to the tool, never an outward reply.
         if (item.type === 'mcp_tool_call' && !/view_image|read_image|open_image/.test(str(item.tool))) {
           const content = obj(item.result).content
@@ -292,8 +264,7 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
     // whose rates the board knows.
     costUsd: () => priceUsd(facts?.provider, turn()?.model ?? facts?.model, own()),
     resumeId: () => threadId,
-    failure: () => failure ?? background.failure(),
-    background: () => subagents.size ? background.count() : undefined,
+    failure: () => failure,
     events: events.events,
   }
 }

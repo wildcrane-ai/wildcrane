@@ -15,7 +15,6 @@ import { keepPresence } from '../src/presence'
 import { runnerHome, useRunnerHome } from '../src/home'
 import { mcpArgs, spentBy } from '../src/flow'
 import { createAcpClient, createStreamRenderer, createCodexStreamRenderer } from '../../cli/src/lib/agent/wire'
-import { createCodexClient } from '../../cli/src/lib/agent/wire/codex'
 import { CLAUDE_REPLY } from '../../cli/test/claude-reply'
 import { stopMark } from '../../cli/src/lib/agent/stop'
 import { HARNESSES } from '../../cli/src/lib/agent/harnesses'
@@ -171,78 +170,6 @@ afterEach(async () => {
 })
 
 describe('the Runner', () => {
-  for (const cancel of [false, true]) {
-    it(`Codex 后台工作${cancel ? '可取消' : '完成后在原回复回传'} (#682)`, async () => {
-      const gate = path.join(runnerHome(), 'background-done')
-      const script = `
-const out = m => console.log(JSON.stringify(m)); let starts = 0;
-const note = (method, params) => out({ method, params: { threadId: 'main', ...params } });
-require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
- const m = JSON.parse(line); if (m.id === undefined) return;
- const answer = result => out({ id: m.id, result });
- if (m.method === 'initialize') return answer({});
- if (m.method === 'thread/start') return answer({ thread: { id: 'main' } });
- if (m.method === 'turn/start') {
-  starts++; answer({ turn: { id: 't'+starts } });
-  if (starts === 1) note('item/completed', { item: { id: 'spawn', type: 'collabAgentToolCall', agentsStates: { child: { status: 'running' } } } });
-  note('item/completed', { item: { id: 'm'+starts, type: 'agentMessage', text: starts === 1 ? 'STARTED' : 'FINISHED' } });
-  note('turn/completed', { turn: { id: 't'+starts, status: 'completed', items: [] } }); return;
- }
- if (m.method === 'thread/read') {
-  const timer = setInterval(() => { if (require('fs').existsSync(${JSON.stringify(gate)})) {
-   clearInterval(timer); answer({ thread: { status: { type: 'idle' }, turns: [{ status: 'completed', items: [{ type: 'agentMessage', text: 'Background result' }] }] } });
-  } }, 10); return;
- }
- if (m.method === 'thread/backgroundTerminals/list') return answer({ data: [] });
- answer({});
-});`
-      const job = cloud.dispatch({ id: 'codex-background', runtime: 'codex' })
-      start('', { plan: (...args) => {
-        const p = fakeRuntime(script)(...args)
-        const client = createCodexClient()
-        return { ...p, renderer: undefined, converse: (child, event) => client.turn({
-          stdout: child.stdout!, stdin: child.stdin!, cwd: args[2], prompt: args[1],
-          log: () => {}, gotResumeId: () => {}, gotModel: () => {}, event,
-        }) }
-      } })
-      await until(() => job.events.some(e => e.kind === 'message' && e.data?.text === 'STARTED'))
-      assert.equal(job.state, 'claimed')
-      if (cancel) job.stop = true
-      else fs.writeFileSync(gate, '')
-      await until(() => job.state === 'finished')
-      assert.equal(job.outcome, 'done', job.reason)
-      if (cancel) assert.equal(job.report?.stopped, true)
-      if (!cancel) {
-        assert.equal(job.report?.reply, 'FINISHED')
-        assert.equal((job.report?.subagents as api.Subagents | undefined)?.items[0]?.state, 'done')
-        assert.equal(planned.length, 1)
-      }
-    })
-  }
-
-  it('Claude Code 首次回复后继续等待后台工作 (#682)', async () => {
-    const gate = path.join(runnerHome(), 'claude-background-done')
-    const script = `const out = e => console.log(JSON.stringify(e)); let read = false;
-process.stdin.on('data', () => { if (read) return; read = true;
- out({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'bg' }] });
- out({ type: 'assistant', message: { content: [{ type: 'text', text: 'STARTED' }] } });
- out({ type: 'result', result: 'STARTED' });
- const timer = setInterval(() => { if (require('fs').existsSync(${JSON.stringify(gate)})) {
-  clearInterval(timer); out({ type: 'system', subtype: 'background_tasks_changed', tasks: [] });
-  out({ type: 'assistant', message: { content: [{ type: 'text', text: 'FINISHED' }] } });
-  out({ type: 'result', result: 'FINISHED' });
- } }, 10);
-}); process.stdin.on('end', () => process.exit(0));`
-    const job = cloud.dispatch({ id: 'claude-background', runtime: 'claude-code' })
-    start('', { plan: (...args) => ({ ...fakeRuntime(script)(...args), stdin: 'start\n', renderer: createStreamRenderer() }) })
-    await until(() => job.events.some(e => e.kind === 'message' && e.data?.text === 'STARTED'))
-    assert.equal(job.state, 'claimed')
-    fs.writeFileSync(gate, '')
-    await until(() => job.state === 'finished')
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(job.report?.reply, 'FINISHED')
-  })
-
   it('retries a temporary registration refusal instead of stopping the Runner', async () => {
     cloud.registrationUnavailable = 1
     const job = cloud.dispatch({ id: 'registration-retry' })
@@ -4112,8 +4039,7 @@ describe('the real runtimes', () => {
       assert.equal(env.HTTPS_PROXY, p.env.HTTPS_PROXY)
       assert.equal(env.AI4KANBAN_LANGUAGE, language ?? '')
       assert.equal(env.AI4KANBAN_LANGUAGE_LINE, undefined)
-      assert.ok(p.converse)
-      assert.ok(!p.args.includes('任务正文'))
+      assert.equal(p.args.at(-1), '任务正文')
     }
   })
 
@@ -4194,7 +4120,7 @@ describe('the real runtimes', () => {
 
   it('picks the model the way each connector’s own setting does', () => {
     assert.ok(plan('claude-code', 'x', os.tmpdir(), null, 'haiku').args.join(' ').includes('--model haiku'))
-    assert.ok(plan('codex', 'x', os.tmpdir(), null, 'gpt-5-codex').args.includes('model="gpt-5-codex"'))
+    assert.ok(plan('codex', 'x', os.tmpdir(), null, 'gpt-5-codex').args.join(' ').includes('--model gpt-5-codex'))
     assert.ok(!plan('codex', 'x', os.tmpdir()).args.includes('--model'))
   })
 
@@ -4258,12 +4184,11 @@ describe('the real runtimes', () => {
     }
   })
 
-  it('keeps Codex connected and hands Claude Code its prompt on stdin', () => {
+  it('hands Codex its prompt last and Claude Code its prompt on stdin', () => {
     const codex = plan('codex', 'Build it', os.tmpdir())
     assert.equal(path.basename(codex.command), 'codex')
-    assert.equal(codex.args[0], 'app-server')
-    assert.ok(codex.converse && !codex.renderer)
-    assert.ok(!codex.args.includes('Build it'))
+    assert.ok(codex.args.includes('--json'))
+    assert.equal(codex.args.at(-1), 'Build it')
     const claude = plan('claude-code', 'Build it', os.tmpdir())
     assert.equal(path.basename(claude.command), 'claude')
     assert.ok(!claude.args.includes('Build it'))
