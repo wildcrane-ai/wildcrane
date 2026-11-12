@@ -31,7 +31,7 @@ try {
       XDG_CACHE_HOME: path.join(dir, 'cache'), XDG_STATE_HOME: path.join(dir, 'state') }
     const command = fs.readFileSync(executable).subarray(0, 80).toString().includes('/env node')
       ? [process.execPath, [executable]] : [executable, []]
-    const child = spawn(command[0], [...command[1], 'serve', '--hostname', '127.0.0.1', '--port', String(port)], { cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(command[0], [...command[1], 'serve', '--hostname', '127.0.0.1', '--port', String(port), '--print-logs', '--log-level', version === 'v1' ? 'DEBUG' : 'debug'], { cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'] })
     let logs = ''
     child.stdout.on('data', (x) => { logs += x })
     child.stderr.on('data', (x) => { logs += x })
