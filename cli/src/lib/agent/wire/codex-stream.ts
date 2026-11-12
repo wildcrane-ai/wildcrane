@@ -24,6 +24,7 @@
 // at that model's list rate are the price (../prices.ts). A model whose rates aren't
 // known gets no price, the way it did when nothing was worked out at all.
 
+import type { LocalReplyPart } from '../../shared/reply-parts'
 import { codexUsage, readCodexRunFacts, sameUsage, type CodexRunFacts, type CodexTurn } from './codex-session'
 import { createEventCollector, type EventCollector, type ToolKind } from './events'
 import { hint, obj, str, type Json } from './json'
@@ -33,6 +34,9 @@ import type { TokenUsage } from '../types'
 
 // A thing the agent started doing. Only the ones worth a line while they run: a
 // command can take minutes, and a log that waits for it to finish looks stalled.
+const imageSafeText = (text: string): string => text.replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, '[image]')
+  .replace(/!\[([^\]]*)\]\((?:<)?(?:\/|[A-Za-z]:[\\/]|file:)[^\n)]*\)/g, '[$1]')
+
 function renderStarted(item: Json): string {
   switch (item.type) {
     case 'command_execution':
@@ -52,7 +56,7 @@ function renderStarted(item: Json): string {
 function renderCompleted(item: Json): string {
   switch (item.type) {
     case 'agent_message': {
-      const said = str(item.text).trim()
+      const said = imageSafeText(str(item.text)).trim()
       return said ? `${said}\n\n` : ''
     }
     case 'file_change': {
@@ -106,7 +110,7 @@ function callResult(item: Json): string {
     const error = str(obj(item.error).message)
     if (error) return error
     const content = obj(item.result).content
-    return (Array.isArray(content) ? content : []).map((b) => str(obj(b).text)).filter(Boolean).join('\n')
+    return (Array.isArray(content) ? content : []).map((b) => imageSafeText(str(obj(b).text))).filter(Boolean).join('\n')
   }
   if (item.type === 'file_change') {
     return (Array.isArray(item.changes) ? item.changes : []).map((c) => `${str(obj(c).kind) || 'change'} ${str(obj(c).path)}`).join('\n')
@@ -117,7 +121,7 @@ function callResult(item: Json): string {
 function itemEvents(events: EventCollector, started: Set<string>, item: Json, done: boolean): void {
   const id = str(item.id)
   if (item.type === 'agent_message') {
-    if (done) events.message(str(item.text))
+    if (done) events.message(imageSafeText(str(item.text)))
     return
   }
   if (item.type === 'todo_list') {
@@ -152,6 +156,7 @@ const LOOK_EVERY_MS = 3_000
 /** `carried` is a run that resumes or forks a thread, whose stream total holds earlier turns. */
 export function createCodexStreamRenderer(carried = false): StreamRenderer {
   let final: string | undefined
+  const pictures: LocalReplyPart[] = []
   let total: TokenUsage | undefined
   let threadId: string | undefined
   let failure: string | undefined
@@ -205,13 +210,23 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
         return ''
       case 'item.completed': {
         const item = obj(ev.item)
+        // view_image is input to the tool, never an outward reply.
+        if (item.type === 'mcp_tool_call' && !/view_image|read_image/.test(str(item.tool))) {
+          const content = obj(item.result).content
+          for (const block of Array.isArray(content) ? content : []) {
+            const b = obj(block)
+            if (b.type === 'image' && pictures.length < 100) pictures.push(str(b.data).length <= 140_000_000
+              ? { type: 'image', data: str(b.data), mime: str(b.mimeType) } : { type: 'image' })
+          }
+        }
+        if (item.type === 'image_generation' && typeof item.path === 'string') pictures.push({ type: 'image', path: item.path })
         itemEvents(events, started, item, true)
         // The last thing the agent said is the run's result. The UI leads with
         // it and folds the events away; the streamed copy above is trimmed off
         // the tail by the registry.
         if (item.type === 'agent_message') {
           const said = str(item.text).trim()
-          if (said) final = said
+          if (said || pictures.length) final = said
         }
         return renderCompleted(item)
       }
@@ -249,6 +264,7 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
       return out
     },
     result: () => final,
+    replyParts: () => [...pictures, ...(final ? [{ type: 'text' as const, text: final }] : [])],
     usage: own,
     // Off the rollout, not the stream: no thread event carries a count, and the rollout
     // gains a `token_count` every time a request comes back — so a long run's ring climbs

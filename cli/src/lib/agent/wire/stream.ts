@@ -8,6 +8,7 @@
 // Non-JSON lines pass through untouched in every renderer, so a stray CLI warning still
 // lands in the log as-is.
 
+import type { LocalReplyPart } from '../../shared/reply-parts'
 import type { RunEvent } from './events'
 import type { ContextWindow, TokenUsage } from '../types'
 
@@ -18,6 +19,7 @@ export interface StreamRenderer {
   flush(): string
   /** The agent's final message, once the `result` event has arrived. */
   result(): string | undefined
+  replyParts?(): LocalReplyPart[]
   /** What this run cost in US dollars, once the `result` event has reported one.
    *  An ESTIMATE the agent works out on its own machine from token counts at list
    *  prices — not a bill (task #90). Only harnesses whose output reports a cost

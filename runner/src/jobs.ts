@@ -1,3 +1,4 @@
+import { saveReplyImages } from './reply-images'
 // 领取作业、运行并回写；断网只能运行到租约到期，失效后停止本地执行。
 
 import { cloudLanguage, cloudPrompt } from '../../cli/src/lib/agent/language'
@@ -852,6 +853,15 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
     measured = measure(report(job, plan))
   }
   const renderer = plan.renderer!
+  if (reply && job.runtime === 'codex' && !stream.asked() && !stream.lost() && ended.code === 0) {
+    const parts = await saveReplyImages(renderer.replyParts?.() ?? [{ type: 'text', text: measured.reply ?? '' }], cwd,
+      async (key, bytes, mime) => {
+        const result = await api.uploadReplyImage(deps.machineId, id, key, bytes, mime)
+        if (!result.ok) throw Error('image_upload_failed')
+        return result.value
+      })
+    if (parts) measured = { ...measured, parts, reply: parts.filter(p => p.type === 'text').map(p => p.text).join('') }
+  }
   const rawFailure = ended.error ?? renderer.failure?.() ?? (ended.code === 0 ? undefined : `Exited with code ${ended.code}.`)
   if (sessionMissing(rawFailure ?? '') && !replayable(checkpoint)) {
     checkpoint.session = undefined

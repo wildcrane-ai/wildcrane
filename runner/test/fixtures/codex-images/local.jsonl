@@ -1,0 +1,2 @@
+{"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": "I\u2019ll create `reply.png` using only Python\u2019s standard library.\n"}}
+{"type": "item.completed", "item": {"id": "item_2", "type": "agent_message", "text": "Before\n\n![reply.png](reply.png)\n\nAfter"}}
