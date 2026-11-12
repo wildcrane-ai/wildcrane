@@ -1,3 +1,4 @@
+import { bounded, CONVERSATION_MS } from '../../shared/conversation'
 // The board's side of the Agent Client Protocol (#225).
 //
 // ACP is a conversation over the command's own stdin and stdout, in JSON-RPC lines: we
@@ -197,6 +198,11 @@ export function createAcpClient(options: AcpOptions = {}): RunClient {
 
 async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
   const tail = createTail(io.log)
+  const preparingUntil = Math.min(io.prepareUntil ?? Infinity, Date.now() + CONVERSATION_MS.prepare)
+  const phase = (phase: import('../../shared/conversation').ConversationPhase) => io.event?.({ kind: 'phase', data: { phase, at: new Date().toISOString() } })
+  let started = false
+  let contentAt = 0
+  let currentSession = ''
   const events = createEventCollector()
   const emit = () => {
     for (const e of events.events()) io.event?.(e)
@@ -213,7 +219,12 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
     io.stdin,
     (msg) => {
       if (msg.method === 'session/update') {
-        if (live) {
+        if (live && (!obj(msg.params).sessionId || obj(msg.params).sessionId === currentSession)) {
+          const kind = str(obj(obj(msg.params).update).sessionUpdate)
+          if (!started && ['agent_message_chunk', 'tool_call', 'plan'].includes(kind)) { started = true; phase('started') }
+          if (kind === 'agent_message_chunk' && Date.now() - contentAt >= 1000) {
+            contentAt = Date.now(); io.event?.({ kind: 'phase', data: { phase: 'started', at: new Date().toISOString(), contentAt: new Date(contentAt).toISOString() } })
+          }
           update(obj(msg.params).update, tail, (usd) => (costUsd = usd), (window) => (context = window))
           events.update(obj(msg.params).update)
           emit()
@@ -245,11 +256,13 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
 
   try {
     const mcpServers = options.mcpConfig ? mcpServersIn(options.mcpConfig) : []
-    await rpc.call('initialize', {
+    phase('preparing')
+    await bounded(rpc.call('initialize', {
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: CLIENT_CAPABILITIES,
       clientInfo: { name: 'ai4kanban', version: SKILL_VERSION },
-    })
+    }), preparingUntil - Date.now(), 'ACP initialize timed out.')
+    phase('initialized')
 
     // A fresh conversation, or the one this run is carrying on. Loading replays the
     // history the session already holds, which is the whole point of resuming: the agent
@@ -263,10 +276,10 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
     let opened: Json
     if (sessionId) {
       try {
-        opened = await rpc.call('session/load', { sessionId, cwd: io.cwd, mcpServers })
+        opened = await bounded(rpc.call('session/load', { sessionId, cwd: io.cwd, mcpServers }), preparingUntil - Date.now(), 'ACP session/load timed out.')
       } catch (e) {
         if (!sessionGone(e) || !io.restartPrompt) throw e
-        const fresh = await newSession(rpc, io.cwd, mcpServers)
+        const fresh = await bounded(newSession(rpc, io.cwd, mcpServers), preparingUntil - Date.now(), 'ACP session/new timed out.')
         opened = fresh.opened
         sessionId = fresh.sessionId
         prompt = io.restartPrompt
@@ -278,7 +291,7 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
         emit()
       }
     } else {
-      const fresh = await newSession(rpc, io.cwd, mcpServers)
+      const fresh = await bounded(newSession(rpc, io.cwd, mcpServers), preparingUntil - Date.now(), 'ACP session/new timed out.')
       opened = fresh.opened
       sessionId = fresh.sessionId
       io.gotResumeId(sessionId)
@@ -297,13 +310,17 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
       const listed = obj(opened.models).currentModelId !== undefined
       const picked = listed ? pickedModel(opened, options.model) : undefined
       const set = listed
-        ? await rpc.call('session/set_model', { sessionId, modelId: picked?.modelId ?? options.model })
-        : await rpc.call('session/set_config_option', { sessionId, configId: 'model', value: options.model })
+        ? await bounded(rpc.call('session/set_model', { sessionId, modelId: picked?.modelId ?? options.model }), preparingUntil - Date.now(), 'ACP session/set_model timed out.')
+        : await bounded(rpc.call('session/set_config_option', { sessionId, configId: 'model', value: options.model }), preparingUntil - Date.now(), 'ACP session/set_config_option timed out.')
       model = picked?.name ?? modelOf(set) ?? options.model
     }
     if (model) io.gotModel(model)
 
+    if (Date.now() >= preparingUntil) throw Error('ACP preparation timed out.')
+    phase('ready')
+    currentSession = sessionId
     live = true
+    phase('submitted')
     const done = await rpc.call('session/prompt', {
       sessionId,
       prompt: [{ type: 'text', text: prompt }],

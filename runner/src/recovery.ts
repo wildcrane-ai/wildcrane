@@ -18,6 +18,7 @@ export interface Checkpoint {
   process?: { pid: number; since: number }
   updating?: boolean
   session?: string
+  submitted?: boolean
   started?: boolean
   opaque?: boolean
   effects?: boolean
@@ -53,6 +54,7 @@ export function clearCheckpoint(id: string): void {
 }
 
 export function checkpointEvent(checkpoint: Checkpoint, event: RunEvent): void {
+  if (event.kind === 'phase' && event.data.phase === 'submitted') checkpoint.submitted = true
   if (event.kind === 'tool_call') {
     const { toolCallId, status, kind } = event.data
     if (!['read', 'search', 'fetch'].includes(kind)) checkpoint.effects = true
@@ -88,7 +90,7 @@ export function replyRetry(checkpoint: Checkpoint, reason: string, now = Date.no
 }
 
 export function replayable(checkpoint: Checkpoint): boolean {
-  return (checkpoint.effects === false || checkpoint.started === false) && !checkpoint.pending.length && !checkpoint.opaque
+  return checkpoint.submitted !== true && (checkpoint.effects === false || checkpoint.started === false) && !checkpoint.pending.length && !checkpoint.opaque
 }
 
 export function resumable(checkpoint: Checkpoint): boolean {

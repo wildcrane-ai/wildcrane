@@ -6,6 +6,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
+const withoutTime = (raw: Record<string, unknown> | undefined) => { const { eventAt, ...data } = raw ?? {}; assert.equal(typeof eventAt, 'string'); return data }
+
 import * as api from '../src/api'
 import type { RuntimeReport } from '../src/api'
 import { readCheckpoint, saveCheckpoint, UNCERTAIN } from '../src/recovery'
@@ -432,7 +434,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     await until(() => job.state === 'finished')
     const kinds = job.events.map((e) => e.kind)
     assert.ok(kinds.includes('message') && kinds.includes('tool_call'))
-    assert.deepEqual(job.events.find((e) => e.kind === 'tool_call')!.data, { toolCallId: 'u1', title: 'Read', kind: 'read', status: 'in_progress', target: 'a.ts' })
+    assert.deepEqual(withoutTime(job.events.find((e) => e.kind === 'tool_call')!.data), { toolCallId: 'u1', title: 'Read', kind: 'read', status: 'in_progress', target: 'a.ts' })
     assert.match(job.events.filter((e) => e.kind === 'log').map((e) => e.text).join(''), /warn/)
     assert.doesNotMatch(job.events.map((e) => e.text).join(''), /Hi\./)
   })
@@ -442,8 +444,8 @@ process.stdin.on('data', () => { if (read) return; read = true;
     start('', { plan: acpRuntime() })
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'done', job.reason)
-    assert.deepEqual(job.events.map((e) => e.kind), ['plan', 'tool_call', 'message'])
-    assert.deepEqual(job.events.at(-1)!.data, { text: 'Two tiers.' })
+    assert.deepEqual(job.events.filter(e => e.kind !== 'phase').map((e) => e.kind), ['plan', 'tool_call', 'message'])
+    assert.deepEqual(withoutTime(job.events.at(-1)!.data), { text: 'Two tiers.' })
     assert.deepEqual(job.report, {
       reply: 'Two tiers.',
       session: 's1',
@@ -818,7 +820,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
         ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', ideas: [] } } : { chat: { message: 'm1', body: '原消息' } }) })
       let calls = 0
       start('', { plan: (...args) => {
-        const failed = ++calls < 3
+        const failed = ++calls < 2
         const p = fakeRuntime(failed ? 'process.exit(1)' : 'console.log("完成")')(...args)
         p.renderer!.events = () => []
         p.renderer!.failure = () => failed ? 'Selected model is at capacity' : undefined
@@ -833,9 +835,9 @@ process.stdin.on('data', () => { if (read) return; read = true;
       } })
       await until(() => job.state === 'finished')
       assert.equal(job.outcome, 'done', job.reason)
-      assert.equal(calls, 3)
-      assert.deepEqual(job.report?.usage, { input: 30, cacheCreation: 3, cacheRead: 6, output: 9 })
-      assert.equal(job.report?.costUsd, 0.75)
+      assert.equal(calls, 2)
+      assert.deepEqual(job.report?.usage, { input: 20, cacheCreation: 2, cacheRead: 4, output: 6 })
+      assert.equal(job.report?.costUsd, 0.5)
       assert.equal(job.claims, 1)
       assert.ok(planned.every(p => p.prompt.includes('shot.png') && p.prompt.includes('原消息与上下文')))
       await until(() => readCheckpoint(job.id) === null)
@@ -872,7 +874,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
   }
 
   for (const reason of ['quota exceeded', 'Please login first', 'unknown model error']) {
-    it(`模型失败共用三次预算 ${reason}`, async () => {
+    it(`明确的配置或协议失败不自动重试 ${reason}`, async () => {
       const job = cloud.dispatch({ id: 'model-failure', chat: { message: 'm1', body: '原消息' } })
       start('', { plan: (...args) => {
         const p = fakeRuntime('process.exit(1)')(...args)
@@ -881,7 +883,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
         return p
       } })
       await until(() => job.state === 'finished')
-      assert.equal(planned.length, 3)
+      assert.equal(planned.length, 1)
       assert.equal(job.reason, reason)
     })
   }
@@ -892,6 +894,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       let calls = 0
       start('', { plan: (...args) => {
         const p = fakeRuntime(++calls === 1 ? 'process.exit(1)' : 'console.log("已续接")')(...args)
+        p.renderer!.failure = () => calls === 1 ? 'Temporary network failure' : undefined
         if (state !== 'opaque') {
           let emitted = false
           p.renderer!.events = () => {
@@ -916,6 +919,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     const job = cloud.dispatch({ id: 'stop-wait', chat: { message: 'm1', body: '原消息' } })
     start('', { replyBackoff: () => 500, renewMs: 20, plan: (...args) => {
       const p = fakeRuntime('process.exit(1)')(...args)
+      p.renderer!.failure = () => 'Temporary network failure'
       p.renderer!.events = () => []
       return p
     } })
@@ -1071,7 +1075,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       return p
     } })
     await until(() => job.state === 'finished')
-    assert.equal(planned.length, 3)
+    assert.equal(planned.length, 2)
     assert.equal(job.reason, 'session_unavailable')
   })
 
@@ -1085,7 +1089,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       return p
     } })
     await until(() => job.state === 'finished')
-    assert.equal(planned.length, 3)
+    assert.equal(planned.length, 1)
     assert.equal(job.reason, 'Please login first')
   })
 
@@ -2936,7 +2940,7 @@ describe('flow jobs (#2020)', () => {
     assert.match(cloud.file('todo/2-pricing-page.md')!, /^---\ntitle: Pricing page\n[\s\S]*Two tiers, monthly and yearly\./)
     assert.match(job.events.map((e) => e.text).join(''), /working on #2/)
     assert.doesNotMatch(job.events.map((e) => e.text).join(''), /"ok":/)
-    assert.deepEqual(job.events.find((e) => e.kind === 'message')?.data, { text: 'Read #2.' })
+    assert.deepEqual(job.events.find((e) => e.kind === 'message')?.data?.text, 'Read #2.')
     assert.equal(fs.readFileSync(path.join(board(), '.fake', 'agent-board'), 'utf8'), board())
     assert.equal(spawnSync('git', ['-C', cached(), 'log', '--oneline'], { encoding: 'utf8' }).stdout.trim().split('\n').length, 1)
   })

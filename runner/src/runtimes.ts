@@ -40,7 +40,7 @@ export interface Plan {
   renderer?: StreamRenderer
   /** The one turn, held over the child's pipes. The turn's end is the job's: the child is a
    *  server and is ended after it. */
-  converse?: (child: ChildProcess, event: (e: RunEvent) => void, restart?: boolean) => Promise<TurnEnd>
+  converse?: (child: ChildProcess, event: (e: RunEvent) => void, restart?: boolean, prepareUntil?: number) => Promise<TurnEnd>
   /** True for stderr lines the runtime prints on every run and that say nothing. */
   quiet(line: string): boolean
   /** The id a later job resumes this session by, once known. */
@@ -116,11 +116,12 @@ export function plan(runtime: Job['runtime'], prompt: string, cwd: string, resum
       command: started[0]!,
       args: started.slice(1),
       env,
-      converse: (child, event, restart = true) =>
+      converse: (child, event, restart = true, prepareUntil) =>
         client.turn({
           stdout: child.stdout!,
           stdin: child.stdin!,
           prompt,
+          prepareUntil,
           restartPrompt: restart ? prompt : undefined,
           cwd,
           resumeId: resume ?? undefined,

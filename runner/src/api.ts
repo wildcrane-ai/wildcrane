@@ -253,7 +253,7 @@ export const claimJob = (machineId: string, job: string) =>
   move<{ claimed: true; job: Job } | { claimed: false; reason: string }>(job, 'claim', { machineId })
 
 /** `stop`: the user stopped the chat reply this job writes (#2133). */
-export const renewJob = (machineId: string, job: string) => move<{ renewed: boolean; stop?: boolean }>(job, 'renew', { machineId })
+export const renewJob = (machineId: string, job: string, progress?: { attempt?: number; phase?: string; contentAt?: string }) => move<{ renewed: boolean; stop?: boolean }>(job, 'renew', { machineId, ...(progress ? { progress } : {}) })
 
 /** One event as Cloud keeps it (#2059): a `log` carries its text, the rest their data. */
 export interface JobEvent {

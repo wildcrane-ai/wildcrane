@@ -4,7 +4,7 @@
 
 import { obj, str, type Json } from './json'
 
-export const EVENT_KINDS = ['message', 'tool_call', 'tool_call_update', 'plan', 'error', 'log', 'context'] as const
+export const EVENT_KINDS = ['message', 'tool_call', 'tool_call_update', 'plan', 'error', 'log', 'context', 'phase'] as const
 export type EventKind = (typeof EVENT_KINDS)[number]
 
 export const TOOL_KINDS = ['read', 'edit', 'delete', 'move', 'search', 'execute', 'fetch', 'other'] as const
@@ -17,6 +17,7 @@ export interface PlanEntry {
 }
 
 export type RunEvent =
+  | { kind: 'phase'; data: { phase: import('../../shared/conversation').ConversationPhase; at: string; contentAt?: string } }
   | { kind: 'message'; data: { text: string } }
   | { kind: 'tool_call'; data: { toolCallId: string; title: string; kind: ToolKind; status: string; target?: string; subagent?: true } }
   | { kind: 'tool_call_update'; data: { toolCallId: string; status: string; result?: string } }

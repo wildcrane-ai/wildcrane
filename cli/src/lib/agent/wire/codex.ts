@@ -1,3 +1,4 @@
+import { bounded, CONVERSATION_MS } from '../../shared/conversation'
 import type { RunClient, ClientTurn, TurnEnd } from './client'
 import { BACKGROUND_WAIT } from '../settings'
 import { createBackgroundTasks, createBackgroundWait, backgroundWaitMessage } from './background'
@@ -79,10 +80,19 @@ export function createCodexClient(options: Options = { images: [] }): RunClient 
 
 async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof createBackgroundTasks>): Promise<TurnEnd> {
   const renderer = createCodexStreamRenderer()
+  const preparingUntil = Math.min(io.prepareUntil ?? Infinity, Date.now() + CONVERSATION_MS.prepare)
+  const phase = (phase: import('../../shared/conversation').ConversationPhase) => io.event?.({ kind: 'phase', data: { phase, at: new Date().toISOString() } })
+  let submitted = false
+  let started = false
+  let contentAt = 0
+  let startupTimer: ReturnType<typeof setTimeout> | undefined
+  const began = () => { if (!submitted || started || ended) return; started = true; clearTimeout(startupTimer); phase('started') }
   const children = new Set<string>()
   const commands = new Set<string>()
   const seenItems = new Set<string>()
   const completedTurns = new Set<string>()
+  const historicalTurns = new Set<string>()
+  let currentTurn = ''
   let threadId = ''
   let active = true
   let waiting = false
@@ -106,6 +116,7 @@ async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof cr
     if (ended) return
     ended = true
     clearTimeout(timer)
+    clearTimeout(startupTimer)
     deadline.close()
     io.stdout.off('close', closed)
     io.log(renderer.flush())
@@ -135,10 +146,11 @@ async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof cr
       io.event?.({ kind: 'tool_call_update', data: { toolCallId: `agent:${id}`, status: failed ? 'failed' : 'completed', result: str(state.message) } })
     }
   }
-  const item = (raw: Json, completed: boolean) => {
+  const item = (raw: Json, completed: boolean, proof = true) => {
     if (ended) return
     const id = str(raw.id)
     if (raw.type === 'collabAgentToolCall') {
+      if (proof) began()
       const key = `${id}:${completed}`
       if (seenItems.has(key)) return
       seenItems.add(key)
@@ -166,6 +178,7 @@ async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof cr
     const types: Record<string, string> = { agentMessage: 'agent_message', commandExecution: 'command_execution', fileChange: 'file_change', mcpToolCall: 'mcp_tool_call', webSearch: 'web_search', imageGeneration: 'image_generation' }
     const type = types[str(raw.type)]
     if (!type) return
+    if (proof) began()
     emit(completed ? 'item.completed' : 'item.started', { item: {
       ...raw, type, ...(raw.type === 'imageGeneration' ? { path: raw.savedPath ?? raw.path } : {}),
       ...(raw.type === 'fileChange' ? { changes: list(raw.changes).map(c => ({ ...c, kind: str(obj(c.kind).type) || c.kind })) } : {}),
@@ -176,7 +189,12 @@ async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof cr
   const start = async (text: string, images: string[] = []) => {
     active = true
     waiting = false
-    await rpc.call('turn/start', { threadId, input: [{ type: 'text', text }, ...images.map(path => ({ type: 'localImage', path }))] })
+    submitted = true
+    currentTurn = ''
+    started = false
+    phase('submitted')
+    startupTimer = setTimeout(() => { if (!started) io.event?.({ kind: 'log', data: { text: '[conversation] start_unconfirmed' } }) }, CONVERSATION_MS.start)
+    await bounded(rpc.call('turn/start', { threadId, input: [{ type: 'text', text }, ...images.map(path => ({ type: 'localImage', path }))] }), CONVERSATION_MS.start, 'Codex turn/start timed out; submission outcome is unknown.').catch(error => { if (!started) throw error })
   }
   const schedule = () => {
     if (ended || timer) return
@@ -246,8 +264,13 @@ async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof cr
     }
     const p = obj(msg.params)
     if (str(p.threadId) !== threadId) return
-    if (msg.method === 'turn/started') { active = true; return }
-    if (msg.method === 'item/started' || msg.method === 'item/completed') item(obj(p.item), msg.method === 'item/completed')
+    const turnId = str(p.turnId) || str(obj(p.turn).id)
+    if (historicalTurns.has(turnId) || currentTurn && turnId && currentTurn !== turnId) return
+    if (msg.method === 'turn/started') { if (!submitted || completedTurns.has(turnId)) return; currentTurn = turnId; active = true; began(); return }
+    if (submitted && msg.method === 'item/agentMessage/delta' && Date.now() - contentAt >= 1000) {
+      began(); contentAt = Date.now(); io.event?.({ kind: 'phase', data: { phase: 'started', at: new Date().toISOString(), contentAt: new Date(contentAt).toISOString() } })
+    }
+    if (msg.method === 'item/started' || msg.method === 'item/completed') item(obj(p.item), msg.method === 'item/completed', !completedTurns.has(turnId))
     if (msg.method === 'thread/tokenUsage/updated') {
       const token = obj(p.tokenUsage)
       const counts = obj(token.total)
@@ -275,17 +298,20 @@ async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof cr
     }
   })
   try {
-    await rpc.call('initialize', { clientInfo: { name: 'wildcrane', version: '1' }, capabilities: { experimentalApi: true } })
+    phase('preparing')
+    await bounded(rpc.call('initialize', { clientInfo: { name: 'wildcrane', version: '1' }, capabilities: { experimentalApi: true } }), preparingUntil - Date.now(), 'Codex initialize timed out.')
+    phase('initialized')
     rpc.notify('initialized')
     const mode = options.mode ?? (io.resumeId ? 'resume' : undefined)
     let response: Json
     try {
-      response = await rpc.call(`thread/${mode ?? 'start'}`, { cwd: options.cwd ?? io.cwd, ...(mode ? { threadId: options.threadId ?? io.resumeId } : {}) })
+      response = await bounded(rpc.call(`thread/${mode ?? 'start'}`, { cwd: options.cwd ?? io.cwd, ...(mode ? { threadId: options.threadId ?? io.resumeId } : {}) }), preparingUntil - Date.now(), `Codex thread/${mode ?? 'start'} timed out.`)
     } catch (e) {
       if (mode && e instanceof RpcError && /no rollout found for thread id/i.test(e.message)) throw Error(`Thread not found: ${e.message}`)
       throw e
     }
     const thread = obj(response.thread)
+    for (const turn of list(thread.turns)) historicalTurns.add(str(turn.id))
     threadId = str(thread.id)
     if (!threadId) throw Error('Codex did not return a thread id.')
     provider = str(thread.modelProvider) || undefined
@@ -294,6 +320,8 @@ async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof cr
     io.gotResumeId(threadId)
     baseline = readCodexRunFacts(threadId)?.turns?.at(-1)?.total
     emit('thread.started', { thread_id: threadId })
+    if (Date.now() >= preparingUntil) throw Error('Codex preparation timed out.')
+    phase('ready')
     await start(io.prompt, options.images)
   } catch (e) { end(e instanceof Error ? e.message : String(e)) }
   return done

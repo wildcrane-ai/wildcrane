@@ -225,7 +225,7 @@ describe('what else an ACP session opens with and reports', () => {
       todos([{ id: '1', content: 'Read', status: 'in_progress' }, { id: '2', content: 'Write', status: 'pending' }], false),
       todos([{ id: '1', content: 'Read', status: 'completed' }], true),
     ])
-    assert.deepEqual(events.filter((e) => e.kind !== 'plan'), [])
+    assert.deepEqual(events.filter((e) => e.kind !== 'plan' && e.kind !== 'phase'), [])
     assert.deepEqual(events.at(-1), { kind: 'plan', data: { entries: [{ content: 'Read', status: 'completed' }, { content: 'Write', status: 'pending' }] } })
     assert.deepEqual(replies, [{}, {}])
   })

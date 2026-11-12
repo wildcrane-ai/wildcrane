@@ -30,3 +30,10 @@ test('恢复状态在活动流中独立成项，避免与错误日志拼接', ()
   ], 0)
   assert.deepEqual(wire.map(e => e.text), ['provider failure', '[chat-recovery] waiting', 'next attempt'])
 })
+
+
+test('prompt 已提交但启动结果未知时，不把没有工具事件当作可重放', () => {
+  const checkpoint: Checkpoint = { pending: [], effects: false, started: true, session: 'original' }
+  checkpointEvent(checkpoint, { kind: 'phase', data: { phase: 'submitted', at: new Date().toISOString() } })
+  assert.equal(replayable(checkpoint), false)
+})

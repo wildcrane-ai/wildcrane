@@ -1,3 +1,4 @@
+import { CONVERSATION_MS } from '../../cli/src/lib/shared/conversation'
 import { streamFinished, createBackgroundWait, backgroundWaitMessage } from '../../cli/src/lib/agent/wire/background'
 import { BACKGROUND_WAIT } from '../../cli/src/lib/agent/settings'
 import { saveReplyImages } from './reply-images'
@@ -167,7 +168,7 @@ export function toWire(events: RunEvent[], first: number): JobEvent[] {
       continue
     }
     endLog()
-    const data: Record<string, unknown> = { ...e.data }
+    const data: Record<string, unknown> = { ...e.data, eventAt: 'eventAt' in e.data ? e.data.eventAt : new Date().toISOString() }
     for (const key of ['text', 'result'] as const) if (typeof data[key] === 'string') data[key] = cut(data[key] as string)
     out.push({ seq: first + out.length, kind: e.kind, text: '', data })
   }
@@ -319,7 +320,7 @@ function streamOut(deps: Shared, id: string, lease: Lease) {
   const event = (e: RunEvent) => {
     if (!valid()) return
     if (e.kind === 'message') messages.push(e.data.text)
-    pending.push(e)
+    pending.push(Object.assign({}, e, { data: { ...e.data, eventAt: new Date().toISOString() } }))
     size += JSON.stringify(e.data).length
     if (log.watched && size >= FLUSH_CHARS) flush()
   }
@@ -381,6 +382,7 @@ function streamOut(deps: Shared, id: string, lease: Lease) {
       return true
     },
     stop: loseLease,
+    requestStop: ask,
     lost: () => !valid(),
     asked: () => asked,
     whenAsked: askedOnce,
@@ -635,7 +637,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
 
   if (deps.authorize && !await deps.authorize(job)) return finishClaimed('failed', '项目目录授权已变化，请重新确认后重试。')
   if (!held(deps, lease)) return
-  if (reply && recovering) {
+  if (reply) {
     const renewed = await deps.api.renewJob(deps.machineId, id)
     if (!renewed.ok || !renewed.value.renewed) return
     if (renewed.value.stop) return finishClaimed('stopped', '', { stopped: true })
@@ -658,10 +660,23 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     return { ...rest, ...replySpent(checkpoint, job.runtime) }
   }
   let replyProgress = false
+  let evidence = Promise.resolve()
+  let lastEvidence = 0
   const subagents = trackSubagents()
   const remember = (event: RunEvent) => {
     if (['message', 'tool_call', 'tool_call_update'].includes(event.kind)) replyProgress = true
     if (stream.lost()) return
+    const content = ['message', 'tool_call', 'tool_call_update', 'plan'].includes(event.kind) || event.kind === 'phase' && !!event.data.contentAt
+    if (reply && (event.kind === 'phase' && !event.data.contentAt || content && Date.now() - lastEvidence >= 5_000)) {
+      if (content) lastEvidence = Date.now()
+      const progress = { attempt: checkpoint.retry?.attempt ?? 1, ...(event.kind === 'phase' ? { phase: event.data.phase } : {}), ...(content ? { contentAt: new Date().toISOString() } : {}) }
+      evidence = evidence.then(async () => {
+        if (stream.asked() || stream.lost()) return
+        const result = await deps.api.renewJob(deps.machineId, id, progress)
+        if (result.ok && !result.value.renewed) await stream.stop()
+        else if (result.ok && result.value.stop) stream.requestStop()
+      }).catch(() => {})
+    }
     subagents.event(event)
     checkpointEvent(checkpoint, event)
     const session = run?.session()
@@ -672,6 +687,8 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   }
   const retry = async (reason: string | undefined): Promise<boolean> => {
     if (!reply || !reason || stream.asked() || stream.lost()) return false
+    if ((checkpoint.retry?.attempt ?? 1) >= 2 || !/timed out|ECONNRESET|ETIMEDOUT|temporar|overload|capacity|rate.limit|429|503|network|connection.*(reset|closed)/i.test(reason)) return false
+    if (/timed out|start_unconfirmed/i.test(reason) && (!/initialize|session\/(new|load)|thread\/(start|resume|fork)/i.test(reason) || Date.now() >= checkpoint.retry!.since + CONVERSATION_MS.prepare)) return false
     checkpoint.approvalCancelled = true
     persist()
     if (job.chat && checkpoint.approvalRequested) await api.cancelReplyApproval(deps.machineId, id)
@@ -790,7 +807,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     child.stderr.on('data', (chunk: string) => stream.out(quietLines(plan, chunk)))
     const spawned = new Promise<string>((resolve) => child.on('error', (e) => resolve(e.message)))
     const end = await Promise.race([
-      converse(child, remember, false),
+      converse(child, remember, false, reply ? checkpoint.retry!.since + CONVERSATION_MS.prepare : undefined),
       spawned.then((error): TurnEnd => ({ ok: false, error })),
       // Killed, the turn ends with what it said so far; one that never does is not waited on.
       stream.whenAsked.then(() => wait(KILL_GRACE_MS * 2)).then((): TurnEnd => ({ ok: true })),
@@ -824,9 +841,11 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       persist()
     }
     if (await retry(end.ok ? undefined : end.error)) return
+    await evidence
     const stopped = await stopReply(id, deps.stopMs)
 
     stop(child)
+    if (stream.asked() && (!stopped || !await stream.confirmed())) { await stream.end(); return }
     const ok = end.ok || stream.asked()
     const unsafe = reply && !ok && (!stopped || !replayable(checkpoint) && !resumable(checkpoint))
     const said = {
@@ -925,6 +944,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   }
   if (await retry(rawFailure)) return
   const stopped = await stopReply(id, deps.stopMs)
+  if (stream.asked() && (!stopped || !await stream.confirmed())) { await stream.end(); return }
   const unsafe = reply && !!rawFailure && (!stopped || !replayable(checkpoint) && !resumable(checkpoint))
   const failure = stream.asked() ? undefined : unsafe ? 'recovery_unsafe' : replyReason(ended.error ?? renderer.failure?.() ?? (ended.code === 0 ? undefined : `Exited with code ${ended.code}.`), job)
   const said = {

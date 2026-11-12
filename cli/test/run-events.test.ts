@@ -118,8 +118,8 @@ describe('ACP', () => {
     await createAcpClient().turn({
       stdout, stdin, prompt: 'go', cwd: '/tmp', log: () => {}, gotResumeId: () => {}, gotModel: () => {}, event: (e) => got.push(e),
     })
-    assert.deepEqual(got.map((e) => e.kind), ['plan', 'message', 'tool_call', 'tool_call_update', 'error'])
-    assert.deepEqual(got[2]!.data, { toolCallId: 'c', title: 'ls', kind: 'execute', status: 'pending', target: 'ls' })
+    assert.deepEqual(got.filter(e => e.kind !== 'phase').map((e) => e.kind), ['plan', 'message', 'tool_call', 'tool_call_update', 'error'])
+    assert.deepEqual(got.find(e => e.kind === 'tool_call')!.data, { toolCallId: 'c', title: 'ls', kind: 'execute', status: 'pending', target: 'ls' })
   })
 })
 

@@ -29,6 +29,7 @@ export interface ClientTurn {
   stdout: Readable
   stdin: Writable
   /** What to ask the agent to do. */
+  prepareUntil?: number
   prompt: string
   /** The folder the work happens in. */
   cwd: string

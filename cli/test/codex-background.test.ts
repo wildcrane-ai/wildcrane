@@ -231,3 +231,37 @@ for (const mode of ['resume', 'fork'] as const) {
     assert.equal(s.calls.some(c => c.method === 'turn/start'), false)
   })
 }
+
+
+it('confirms a new turn without waiting for its first content, ignoring resume history', async () => {
+  const s = server(method => method === 'thread/resume' ? { thread: { id: 'main', turns: [{ id: 'old' }] } } : {} , { mode: 'resume', threadId: 'main', images: [] })
+  await tick()
+  s.notify('turn/started', { threadId: 'main', turn: { id: 'old' } })
+  assert.equal(s.events.some(e => e.kind === 'phase' && e.data.phase === 'started'), false)
+  s.notify('turn/started', { threadId: 'main', turn: { id: 't1' } })
+  assert.equal(s.events.some(e => e.kind === 'phase' && e.data.phase === 'started'), true)
+  assert.equal(s.events.some(e => e.kind === 'message'), false)
+  s.reply('DONE', 'answer'); s.complete()
+  assert.equal((await s.end).ok, true)
+})
+
+it('bounds initialize and never submits a prompt after its timeout', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  const s = server(() => new Promise(() => {}))
+  t.mock.timers.tick(60_001)
+  const end = await s.end
+  assert.match(end.error!, /initialize timed out/)
+  assert.equal(s.calls.some(c => c.method === 'turn/start'), false)
+  s.stdout.destroy()
+})
+
+it('does not repeat a prompt whose start response is lost', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : method === 'turn/start' ? new Promise(() => {}) : {})
+  await tick()
+  t.mock.timers.tick(15_001)
+  const end = await s.end
+  assert.match(end.error!, /submission outcome is unknown/)
+  assert.equal(s.calls.filter(c => c.method === 'turn/start').length, 1)
+  s.stdout.destroy()
+})
