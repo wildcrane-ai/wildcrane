@@ -42,3 +42,5 @@ Build with `npm run build` in `runner/`, then `npm pack` here. Shared skills are
 Official references: [plugin configuration](https://opencode.ai/docs/plugins/), [V1/V2 compatibility](https://opencode.ai/docs/build/plugins/migrate-v1), [native tools, skills and cleanup](https://opencode.ai/docs/build/plugins/server/).
 
 [中文](README.zh-CN.md)
+
+Validated with OpenCode 1.18.30 and 2.2.7 on macOS, Linux and Windows (Node 22); native package discovery and adapter regressions pass.

@@ -15,6 +15,9 @@ try {
     const executable = path.resolve(option(`--${version}`))
     const dir = path.join(root, version)
     fs.mkdirSync(dir, { recursive: true })
+    const localSkill = path.join(dir, '.opencode/skills/wildcrane-tasks')
+    fs.mkdirSync(localSkill, { recursive: true })
+    fs.writeFileSync(path.join(localSkill, 'SKILL.md'), '---\nname: wildcrane-tasks\ndescription: User-owned skill\n---\nPreserve this project skill.\n')
     const config = path.join(dir, 'opencode.json')
     const entry = version === 'v1' ? path.join(pkg, 'dist/index.mjs') : pkg
     fs.writeFileSync(config, JSON.stringify({ [version === 'v1' ? 'plugin' : 'plugins']: [pathToFileURL(entry).href] }))
@@ -60,6 +63,7 @@ try {
       const skills = await get(version === 'v1' ? '/skill' : '/api/skill')
       const found = version === 'v1' ? skills : skills.data
       for (const name of ['wildcrane', 'wildcrane-discuss-goal', 'wildcrane-tasks']) assert.ok(found.some((s) => s.name === name), `${version}: missing ${name}; skills=${JSON.stringify(found.map((s) => s.name))}; logs=${logs.replace(/server password .+/g, '[redacted]')}`)
+      assert.match(found.find((s) => s.name === 'wildcrane-tasks').content, /Preserve this project skill/)
       if (version === 'v1') {
         const tools = await get('/experimental/tool/ids')
         assert.equal(tools.filter((id) => id.startsWith('wildcrane_')).length, 6)

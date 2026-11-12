@@ -22,8 +22,10 @@ it('loads both native adapters, preserves config and permissions, and disposes c
     const config = { skills: { paths: ['/existing'], urls: ['https://example.com/skills'] }, permission: { edit: 'deny' } }
     v1.config(config)
     v1.config(config)
-    assert.equal(config.skills.paths.length, 2)
-    assert.equal(config.skills.paths[0], '/existing')
+    const paths = [...config.skills.paths]
+    v1.config(config)
+    assert.deepEqual(config.skills.paths, paths)
+    assert.ok(config.skills.paths.includes('/existing'))
     assert.deepEqual(config.permission, { edit: 'deny' })
     assert.deepEqual(config.skills.urls, ['https://example.com/skills'])
     const read = v1.tool.wildcrane_draft_read

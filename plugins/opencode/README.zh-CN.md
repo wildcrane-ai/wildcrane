@@ -34,3 +34,5 @@ V2 运行 `opencode plugin remove wildcrane-opencode`；固定版本时使用配
 后续升级可固定 `wildcrane-opencode@<版本>` 回退。首版可通过移除插件停用。任务、讨论和登录会保留；服务端回退仍须兼容读取 `opencode` 数据。
 
 接口、构建、发布顺序和官方依据见 [English README](README.md)。npm 发布与生态目录 PR 合并分别记录；提交不代表已收录。
+
+已在 macOS、Linux、Windows（Node 22）验证 OpenCode 1.18.30 和 2.2.7 的原生包加载及适配器回归。

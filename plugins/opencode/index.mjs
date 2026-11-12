@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -77,11 +78,30 @@ function skills() {
   })
 }
 
+// V1 reads configured paths after native folders. Keep user skills ahead of ours.
+function userSkillPaths(directory, worktree) {
+  const home = os.homedir()
+  const roots = [process.env.OPENCODE_CONFIG_DIR ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(home, '.config'), 'opencode')]
+  const external = !['1', 'true'].includes(process.env.OPENCODE_DISABLE_EXTERNAL_SKILLS)
+  const names = external ? [...(['1', 'true'].includes(process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS) ? [] : ['.claude']), '.agents'] : []
+  const paths = names.map((name) => path.join(home, name, 'skills'))
+  const directories = []
+  for (let dir = directory; ; dir = path.dirname(dir)) {
+    directories.unshift(dir)
+    if (dir === worktree || path.dirname(dir) === dir) break
+  }
+  for (const dir of directories) {
+    roots.push(path.join(dir, '.opencode'))
+    paths.push(...names.map((name) => path.join(dir, name, 'skills')))
+  }
+  return [...paths, ...roots.flatMap((root) => ['skill', 'skills'].map((name) => path.join(root, name)))].filter((dir) => fs.existsSync(dir))
+}
+
 const output = (result) => result.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n')
 
 export default {
   id: 'wildcrane',
-  async server() {
+  async server({ directory = process.cwd(), worktree = directory } = {}) {
     const bridge = connection()
     try {
       const definitions = await bridge.tools()
@@ -101,7 +121,7 @@ export default {
         tool: native,
         config(config) {
           config.skills ??= {}
-          config.skills.paths = [...new Set([...(config.skills.paths ?? []), path.join(root, 'v1-skills')])]
+          config.skills.paths = [...new Set([path.join(root, 'v1-skills'), ...userSkillPaths(directory, worktree), ...(config.skills.paths ?? [])])]
         },
         dispose: () => bridge.close(),
       }
