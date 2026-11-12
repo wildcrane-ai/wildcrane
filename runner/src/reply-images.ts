@@ -9,14 +9,13 @@ import { ASSET_FILE_LIMIT } from '../../cli/src/lib/shared/file-limits'
 const inside = (root: string, file: string) => { const p = path.relative(root, file); return p !== '..' && !p.startsWith(`..${path.sep}`) && !path.isAbsolute(p) }
 
 /** Only explicit reply references are opened; no directory or rollout is scanned. */
-export function collectReplyImages(parts: LocalReplyPart[], cwd: string): { parts: ReplyPart[]; files: Map<string, { bytes: Uint8Array; mime: string }> } {
-  const files = new Map<string, { bytes: Uint8Array; mime: string }>()
+export function collectReplyImages(parts: LocalReplyPart[], cwd: string): { parts: ReplyPart[]; files: Map<string, { read: () => Uint8Array; mime: string }> } {
+  const files = new Map<string, { read: () => Uint8Array; mime: string }>()
   const tools: ReplyPart[] = []
   const output: ReplyPart[] = []
   const roots = [cwd, path.join(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex'), 'generated_images')].flatMap(p => { try { return [fs.realpathSync(p)] } catch { return [] } })
-  let total = 0
   const image = (p: Extract<LocalReplyPart, { type: 'image' }>): ReplyPart => {
-    try {
+    const read = (): Uint8Array => {
       let bytes: Uint8Array
       if (p.data !== undefined) {
         if (p.data.length > ASSET_FILE_LIMIT * 4 / 3 + 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(p.data)) throw Error()
@@ -35,10 +34,14 @@ export function collectReplyImages(parts: LocalReplyPart[], cwd: string): { part
           bytes = fs.readFileSync(fd)
         } finally { fs.closeSync(fd) }
       }
+      return bytes
+    }
+    try {
+      const bytes = read()
       const mime = imageMime(bytes)
-      if (!mime || p.mime && p.mime !== mime || bytes.length > ASSET_FILE_LIMIT || total + bytes.length > ASSET_FILE_LIMIT * 4) throw Error()
+      if (!mime || p.mime && p.mime !== mime || bytes.length > ASSET_FILE_LIMIT) throw Error()
       const id = `rim_${createHash('sha256').update(bytes).digest('hex')}`
-      if (!files.has(id)) { files.set(id, { bytes, mime }); total += bytes.length }
+      if (!files.has(id)) files.set(id, { read, mime })
       return { type: 'image', id, mime, status: 'saved' }
     } catch { return { type: 'image', status: 'unavailable' } }
   }
@@ -84,8 +87,13 @@ export async function saveReplyImages(parts: LocalReplyPart[], cwd: string,
   if (!read.parts.some(p => p.type === 'image')) return undefined
   const saved = new Map<string, { id?: string; status: 'saved' | 'not_saved' }>()
   for (const [key, f] of read.files) {
+    let bytes: Uint8Array
+    try {
+      bytes = f.read()
+      if (`rim_${createHash('sha256').update(bytes).digest('hex')}` !== key || imageMime(bytes) !== f.mime) continue
+    } catch { continue }
     for (let attempt = 0; attempt < 2; attempt++) {
-      try { saved.set(key, await upload(key.slice(4), f.bytes, f.mime)); break } catch { /* Bounded retry; the model is never rerun. */ }
+      try { saved.set(key, await upload(key.slice(4), bytes, f.mime)); break } catch { /* Bounded retry; the model is never rerun. */ }
     }
   }
   return read.parts.map(p => {

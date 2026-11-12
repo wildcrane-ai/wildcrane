@@ -1,28 +1,5 @@
-// Turns `codex exec --json`'s JSONL stream into the same readable log the Claude
-// renderer writes (#69). Codex prints only its final message by default, so the
-// harness asks for the event stream (see harnesses/codex.ts) and
-// this renders it.
-//
-// The events are Codex's `ThreadEvent`s. Four matter here:
-//   • `thread.started` — carries `thread_id`, the id `codex exec resume` takes.
-//     It is the run's FIRST event, which is how a Codex run gets a resumable id
-//     at all: Codex mints its own and can't be handed ours.
-//   • `item.started` / `item.completed` — one per thing the agent did. A command
-//     is logged when it starts (a long build should show up while it runs, not
-//     after), everything else when it completes and is final.
-//   • `turn.completed` — the THREAD's running token total, not the turn's: a resumed or
-//     forked thread carries everything spent before it.
-//
-// What a reader wants is what the agent said, the commands it ran and the files
-// it changed, so those are rendered and the rest (its reasoning summaries, its
-// to-do list, the turn markers) is dropped.
-//
-// Neither the model nor a cost is on this stream: Codex prices nothing, and its
-// events never name what ran them. Both are still shown, from beside the stream
-// rather than invented — the thread id above finds the session's rollout on disk,
-// that names the model and its provider (codex-session.ts), and the run's tokens
-// at that model's list rate are the price (../prices.ts). A model whose rates aren't
-// known gets no price, the way it did when nothing was worked out at all.
+// Codex JSONL becomes readable logs and structured events. The final message is the reply;
+// model, price and context facts come from the run's own rollout.
 
 import type { LocalReplyPart } from '../../shared/reply-parts'
 import { codexUsage, readCodexRunFacts, sameUsage, type CodexRunFacts, type CodexTurn } from './codex-session'

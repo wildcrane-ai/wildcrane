@@ -853,12 +853,13 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
     measured = measure(report(job, plan))
   }
   const renderer = plan.renderer!
-  if (reply && job.runtime === 'codex' && !stream.asked() && !stream.lost() && ended.code === 0) {
+  if (reply && job.runtime === 'codex') {
     const parts = await saveReplyImages(renderer.replyParts?.() ?? [{ type: 'text', text: measured.reply ?? '' }], cwd,
       async (key, bytes, mime) => {
+        if (stream.asked() || stream.lost() || ended.code !== 0) return { status: 'not_saved' as const }
         const result = await api.uploadReplyImage(deps.machineId, id, key, bytes, mime)
         if (!result.ok) throw Error('image_upload_failed')
-        return result.value
+        return stream.asked() || stream.lost() ? { status: 'not_saved' as const } : result.value
       })
     if (parts) measured = { ...measured, parts, reply: parts.filter(p => p.type === 'text').map(p => p.text).join('') }
   }

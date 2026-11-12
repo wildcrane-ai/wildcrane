@@ -63,3 +63,19 @@ test('quota refusal never sends the local digest as a cloud image ID', async () 
   const parts = await saveReplyImages([{ type: 'image', path: 'reply.png' }], root, async () => ({ status: 'not_saved' }))
   assert.deepEqual(parts, [{ type: 'image', id: undefined, status: 'not_saved', mime: 'image/png' }])
 })
+
+
+test('a referenced file changed before upload is not attached as the original image', async () => {
+  const png = fs.readFileSync(path.join(fixtures, 'reply.png'))
+  const second = path.join(root, 'changed.png')
+  fs.writeFileSync(second, Buffer.concat([png, Buffer.from([1])]))
+  let uploads = 0
+  const parts = await saveReplyImages([{ type: 'text', text: '![a](reply.png) ![b](changed.png)' }], root, async () => {
+    uploads++
+    fs.writeFileSync(second, Buffer.concat([png, Buffer.from([2])]))
+    return { id: 'rim_cloud', status: 'saved' }
+  })
+  assert.equal(uploads, 1)
+  assert.equal(parts?.at(-1)?.type, 'image')
+  assert.equal(parts?.at(-1)?.status, 'not_saved')
+})
