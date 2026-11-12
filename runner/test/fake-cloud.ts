@@ -113,6 +113,7 @@ export class FakeCloud {
   beforeNextCommit: (() => void) | null = null
   /** Every call fails as if Cloud could not be reached. */
   offline = false
+  registrationUnavailable = 0
   uploads = new Map<string, Buffer>()
   uploadFailure: { after: number; code: string } | null = null
   beforeNextUpload: (() => void) | null = null
@@ -327,6 +328,10 @@ export class FakeCloud {
     if (route === '/v1/runner/presence' && this.presence) return refuse(400, 'bad_request', 'Open this as a WebSocket.')
     if (route === '/v1/runner' && req.method === 'GET') return send(200, { runner: this.runner })
     if (route === '/v1/runner') {
+      if (this.registrationUnavailable > 0) {
+        this.registrationUnavailable--
+        return refuse(503, 'service_unavailable', 'Cloud is not answering right now. Try again shortly.')
+      }
       if (!(body.protocol >= this.minProtocol)) return refuse(426, 'runner_outdated', 'Restart to update.')
       if (this.runner?.live && this.runner.machineId !== body.machineId) {
         return refuse(409, 'runner_elsewhere', `Your WildCrane Runner is already connected on ${this.runner.machineName}.`)

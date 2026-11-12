@@ -170,6 +170,15 @@ afterEach(async () => {
 })
 
 describe('the Runner', () => {
+  it('retries a temporary registration refusal instead of stopping the Runner', async () => {
+    cloud.registrationUnavailable = 1
+    const job = cloud.dispatch({ id: 'registration-retry' })
+    let stopped = false
+    start().stopped.then(() => { stopped = true })
+    await until(() => job.state === 'finished')
+    assert.equal(stopped, false)
+    assert.equal(job.outcome, 'done')
+  })
   for (const failed of [false, true]) {
     it(`Codex 重连后${failed ? '最终失败' : '成功'}同步云端并关闭执行`, async () => {
       const events = [
@@ -2093,6 +2102,34 @@ describe('a task’s folder (#2037)', () => {
       assert.equal(assets[name].error, undefined, name)
       assert.ok(assets[name].version, name)
     }
+  })
+
+  it('does not rewrite unchanged asset records or reorder their index', async (t) => {
+    const first = await runTask('j1', `
+      const fs = require('fs')
+      fs.mkdirSync('assets/1', { recursive: true })
+      for (let n = 0; n < 30; n++) fs.writeFileSync('assets/1/' + n + '.txt', String(n))
+      fs.writeFileSync('todo/icon.svg', '<svg/>')
+      fs.writeFileSync('${CARD}', ${JSON.stringify(BODY)} + '\\n<Asset src="icon.svg" />\\n')
+    `)
+    assert.equal(first.outcome, 'done', first.reason)
+    const record = path.join(board(), '.sync', 'task_1.json')
+    const index = path.join(board(), 'assets', 'task_1.json')
+    const ordered = JSON.parse(fs.readFileSync(index, 'utf8'))
+    fs.writeFileSync(index, JSON.stringify(Object.fromEntries(Object.entries(ordered).reverse())))
+    const indexBefore = fs.readFileSync(index, 'utf8')
+    let writes = 0
+    const write = fs.writeFileSync
+    t.mock.method(fs, 'writeFileSync', (...args: Parameters<typeof fs.writeFileSync>) => {
+      if (String(args[0]) === record) writes++
+      return write(...args)
+    })
+    const uploadsBefore = cloud.log.filter(l => l.startsWith('PUT /v1/uploads/')).length
+    const sent = await pushBoard(keptBoard(cached())!, MACHINE)
+    assert.equal(sent.ok, true)
+    assert.equal(writes, 0, 'unchanged assets rewrote the entire sync record')
+    assert.equal(fs.readFileSync(index, 'utf8'), indexBefore, 'key order alone rewrote the index')
+    assert.equal(cloud.log.filter(l => l.startsWith('PUT /v1/uploads/')).length, uploadsBefore)
   })
 
   it('同步全部语言、对比分镜和依赖，叶子变化更新固定版本且不覆盖本地 JSON（#321）', async () => {

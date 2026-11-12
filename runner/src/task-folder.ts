@@ -9,6 +9,7 @@ import { ASSET_FILE_LIMIT } from '../../cli/src/lib/shared/file-limits.ts'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 
 import { diff3Merge } from 'node-diff3'
 
@@ -23,6 +24,7 @@ import type { Assets, Job } from './api'
 import { busy, markUsed, markUnsent } from './cache'
 import { keepOutOfGit } from './kanban-skill'
 import { sharedMemory, type Shared } from './memory-files'
+import { countSync, logSync, syncDebug } from './sync-debug'
 
 export { studioFolder }
 
@@ -148,7 +150,14 @@ const turns = new Map<string, Promise<unknown>>()
 
 /** One read or write of a folder's board at a time. */
 function inFolder<T>(dir: string, work: () => Promise<T>): Promise<T> {
-  const next = (turns.get(dir) ?? Promise.resolve()).then(work, work)
+  const queued = performance.now()
+  const run = async () => {
+    const started = performance.now()
+    logSync('board.start', { dir, waitMs: Math.round(started - queued) })
+    try { return await work() }
+    finally { logSync('board.end', { dir, ms: Math.round(performance.now() - started) }) }
+  }
+  const next = (turns.get(dir) ?? Promise.resolve()).then(run, run)
   const held = next.catch(() => {})
   turns.set(dir, held)
   void held.then(() => turns.get(dir) === held && turns.delete(dir))
@@ -206,8 +215,12 @@ function readRecord(ws: TaskFolder): Record_ {
 }
 
 function writeRecord(ws: TaskFolder, record: Record_): void {
+  const content = `${JSON.stringify(record, null, 2)}\n`
+  if (readText(recordFile(ws)) === content) return
+  countSync('recordWrites')
+  if (syncDebug) countSync('recordBytes', Buffer.byteLength(content))
   fs.mkdirSync(path.dirname(recordFile(ws)), { recursive: true })
-  fs.writeFileSync(recordFile(ws), `${JSON.stringify(record, null, 2)}\n`)
+  fs.writeFileSync(recordFile(ws), content)
 }
 
 const baseFile = (ws: Pick<TaskFolder, 'cwd'>) => path.join(ws.cwd, '.akb', 'base.json')
@@ -473,7 +486,7 @@ function taskAssetFiles(ws: TaskFolder): string[] {
     .map(p => path.join(root, p)))
 }
 
-const assetsText = (assets: Assets) => `${JSON.stringify(assets, null, 2)}\n`
+const assetsText = (assets: Assets) => `${JSON.stringify(Object.fromEntries(Object.entries(assets).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)), null, 2)}\n`
 
 /** Bring the folder up to Cloud: what changed here goes first, then what changed since the base,
  *  in one call, and the board's files reset to it. Nothing here is overwritten while it cannot
@@ -743,8 +756,12 @@ async function uploadAsset(artifact: string, { bytes, type }: Sent): Promise<api
 
 /** 每次成功上传即记账，失败重试可复用。任一预览处理失败都不阻塞推送：沿用旧版本或建空记录，并在清单里记下原因（#456, #457）。 */
 async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Promise<api.Call<{ errors: { error: string; offline?: boolean }[] }>> {
+  const started = performance.now()
+  logSync('assets.start', { project: ws.project, task: ws.task, entries: Object.keys(record.assets).length })
   const errors: { error: string; offline?: boolean }[] = []
-  if (ws.cloudTask && ws.number) { record.task = ws.cloudTask; record.number = ws.number; writeRecord(ws, record) }
+  if (ws.cloudTask && ws.number && (record.task !== ws.cloudTask || record.number !== ws.number)) {
+    record.task = ws.cloudTask; record.number = ws.number; writeRecord(ws, record)
+  }
   const file = cardFile(ws)
   const body = readText(file)
   if (body === null) return { ok: true, value: { errors } }
@@ -863,12 +880,16 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
         entry = { artifact, version: sent.value, hash, kind: out.kind }
       }
       entry = { ...entry, localHash: localHash ?? undefined, dependencies: [...node.dependencies.values()] }
+      let changed = false
       for (const alias of node.aliases) {
-        record.assets[alias] = entry
-        record.pendingAssets = record.pendingAssets?.filter(key => key !== alias)
+        if (!isDeepStrictEqual(record.assets[alias], entry) || record.pendingAssets?.includes(alias)) {
+          record.assets[alias] = entry
+          record.pendingAssets = record.pendingAssets?.filter(key => key !== alias)
+          changed = true
+        }
         refs[alias] = { artifact: entry.artifact, version: entry.version }
       }
-      writeRecord(ws, record)
+      if (changed) writeRecord(ws, record)
     }
     const sendResource = async (file: string): Promise<api.Call<void>> => {
       const key = canonical(file)
@@ -924,10 +945,12 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
           if (!sent.ok) return { ...sent, error: `${key}: ${sent.error}` }
           entry = { artifact, version: sent.value.version, hash, localHash: hash, kind: 'asset' }
         }
-        record.assets[key] = entry
         refs[key] = { artifact: entry.artifact, version: entry.version }
-        record.pendingAssets = record.pendingAssets?.filter(p => p !== key)
-        writeRecord(ws, record)
+        if (record.assets[key] !== entry || record.pendingAssets?.includes(key)) {
+          record.assets[key] = entry
+          record.pendingAssets = record.pendingAssets?.filter(p => p !== key)
+          writeRecord(ws, record)
+        }
         return { ok: true, value: undefined }
       }
       let sent: api.Call<void>
@@ -944,6 +967,7 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
       return { ok: true, value: undefined }
     }
     const files = [...new Map(taskAssetFiles(ws).map(file => [canonical(file), file])).values()]
+    logSync('assets.files', { project: ws.project, task: ws.task, graph: graph.length, files: files.length, ms: Math.round(performance.now() - started) })
     let next = 0
     let failure: Extract<api.Call<void>, { ok: false }> | undefined
     await Promise.all(Array.from({ length: Math.min(4, files.length) }, async () => {
@@ -962,8 +986,9 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
   }
   const list = path.join(ws.board, assetsFile(ws.task))
   if (Object.keys(refs).length || fs.existsSync(list)) {
-    if (JSON.stringify(assetsOf(readText(list))) !== JSON.stringify(refs)) write(list, assetsText(refs))
+    if (!isDeepStrictEqual(assetsOf(readText(list)), refs)) write(list, assetsText(refs))
   }
+  logSync('assets.end', { project: ws.project, task: ws.task, ms: Math.round(performance.now() - started) })
   return { ok: true, value: { errors } }
 }
 
@@ -1058,6 +1083,7 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
   const processed = new Set<string>()
   for (const item of tasks) {
     processed.add(item.folder.task)
+    if (processed.size === 1 || processed.size % 25 === 0) logSync('board.progress', { project: ws.project, processed: processed.size, total: tasks.length })
     const card = path.relative(ws.board, cardFile(item.folder)).split(path.sep).join('/')
     const archived = boardSync && card.startsWith('.archive/') && base.files[rootOf(ws) + card]
     if (!archived) {
@@ -1148,7 +1174,10 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
       }
       // Where an item sits is Cloud's to say: a sort or a move there wins (#2107).
       if (at < 0) continue
+      const started = performance.now()
+      logSync('merge.start', { project: ws.project, path: p, baseBytes: base.files[theirs.path]?.content.length, localBytes: changes[at]!.content?.length, remoteBytes: theirs.content?.length })
       const merged = itemAt(p) ? { content: theirs.content } : mergeFile(base.files[theirs.path]?.content ?? null, changes[at]!.content, theirs.content)
+      logSync('merge.end', { project: ws.project, path: p, ms: Math.round(performance.now() - started) })
       changes[at] = { path: theirs.path, content: merged.content, base_seq: theirs.seq }
       if (merged.content === null) fs.rmSync(path.join(ws.board, p), { force: true })
       else write(path.join(ws.board, p), merged.content)

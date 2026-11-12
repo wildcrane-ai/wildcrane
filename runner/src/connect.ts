@@ -27,6 +27,7 @@ import { STOP_MS, defaultDeps, folderFor, runJob, type Deps } from './jobs'
 import { keepPresence, type Presence } from './presence'
 import { refreshModels } from './runtimes'
 import { akbCardOf, openTaskFolder } from './task-folder'
+import { logSync } from './sync-debug'
 
 /** Re-register this often: it is what keeps the computer counted as connected, inside Cloud's
  *  15-minute lease. */
@@ -104,6 +105,7 @@ export function startRunner(options: Options): Runner {
   /** Tell Cloud where things stand, and hear which akb to run. */
   const register = async () => {
     const answer = await api.register(registration!)
+    logSync('registration', { ok: answer.ok, ...(!answer.ok ? { code: answer.code, error: answer.error } : {}) })
     if (answer.ok) void followAkb(answer.value.akb)
     return answer
   }
@@ -193,7 +195,7 @@ export function startRunner(options: Options): Runner {
         return finish({ reason: 'elsewhere', machine: (held.ok && held.value.runner?.machineName) || '?' })
       }
       if (answer.code === 'runner_outdated') return finish({ reason: 'outdated' })
-      if (answer.code) return finish({ reason: 'refused', message: answer.error })
+      if (answer.code && answer.code !== 'service_unavailable') return finish({ reason: 'refused', message: answer.error })
       connected = false
       status(t.reconnecting())
       return schedule(BACKOFF_MS[Math.min(attempts++, BACKOFF_MS.length - 1)]!)
