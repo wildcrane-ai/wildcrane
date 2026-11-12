@@ -9,7 +9,7 @@ on first start, and the Runner updates itself.
 - **Needs**: Codex 0.159 or later, and Node 22 or later (found on the PATH or in the usual nvm,
   Volta, Homebrew, fnm, asdf and mise places).
 - **Goals**: tell Codex what you want to build; it asks in the conversation and saves the goals,
-  replying with one line and a link per goal. Review, change the workflow, discard and **Start** on
+  replying with one line and a link per goal. Review, change the studio, discard and **Start** on
   the web: Codex never starts a task.
 - **Settings**: `$wildcrane` opens this computer's settings in the browser — sign-in, project
   folders and AI tools.

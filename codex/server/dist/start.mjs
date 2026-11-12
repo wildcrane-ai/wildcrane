@@ -1,4 +1,4 @@
-// wildcrane-runner 0.6.38 — built by runner/scripts/build.mjs. Do not edit.
+// wildcrane-runner 0.6.54 — built by runner/scripts/build.mjs. Do not edit.
 import { createRequire as __ai4kanbanRequire } from 'node:module'
 const require = __ai4kanbanRequire(import.meta.url)
 var __create = Object.create;
@@ -13,12 +13,24 @@ var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require
   if (typeof require !== "undefined") return require.apply(this, arguments);
   throw Error('Dynamic require of "' + x + '" is not supported');
 });
+var __esm = (fn, res, err) => function __init() {
+  if (err) throw err[0];
+  try {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  } catch (e) {
+    throw err = [e], e;
+  }
+};
 var __commonJS = (cb, mod) => function __require2() {
   try {
     return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
   } catch (e) {
     throw mod = 0, e;
   }
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
@@ -26670,22 +26682,8 @@ ${captureLines}` : capture.stack;
   }
 });
 
-// src/plugin-start.ts
-import { pathToFileURL } from "node:url";
-
-// src/home.ts
-import crypto from "node:crypto";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { parseEnv } from "node:util";
-
-// src/proxy.ts
-var import_undici = __toESM(require_undici(), 1);
-
 // ../cli/src/lib/agent/proxy.ts
 import { execFileSync } from "node:child_process";
-var PROXY_KEYS = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"];
 function withSystemProxy(env = process.env, platform = process.platform, read2 = () => execFileSync("/usr/sbin/scutil", ["--proxy"], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] })) {
   const out = { ...env };
   if (platform !== "darwin" || PROXY_KEYS.some((key) => env[key] !== void 0)) return out;
@@ -26716,13 +26714,15 @@ function withSystemProxy(env = process.env, platform = process.platform, read2 =
   }
   return out;
 }
+var PROXY_KEYS;
+var init_proxy = __esm({
+  "../cli/src/lib/agent/proxy.ts"() {
+    "use strict";
+    PROXY_KEYS = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"];
+  }
+});
 
 // src/proxy.ts
-var LOOPBACK = "localhost,127.0.0.1,[::1]";
-var HOST_PROXY_ENV = "WILDCRANE_HOST_PROXY";
-var HOST = null;
-var current = {};
-var applied = null;
 function hostProxy() {
   if (HOST) return HOST;
   try {
@@ -26749,10 +26749,41 @@ function followProxy(read2) {
   }
   return current;
 }
+var import_undici, LOOPBACK, HOST_PROXY_ENV, HOST, current, applied;
+var init_proxy2 = __esm({
+  "src/proxy.ts"() {
+    "use strict";
+    import_undici = __toESM(require_undici(), 1);
+    init_proxy();
+    LOOPBACK = "localhost,127.0.0.1,[::1]";
+    HOST_PROXY_ENV = "WILDCRANE_HOST_PROXY";
+    HOST = null;
+    current = {};
+    applied = null;
+  }
+});
 
 // src/home.ts
+var home_exports = {};
+__export(home_exports, {
+  machineId: () => machineId,
+  machineName: () => machineName,
+  runnerCwd: () => runnerCwd,
+  runnerHome: () => runnerHome,
+  useRunnerHome: () => useRunnerHome
+});
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os2 from "node:os";
+import path from "node:path";
+import { parseEnv } from "node:util";
 function runnerHome() {
-  return process.env.WILDCRANE_HOME || path.join(os.homedir(), ".wildcrane");
+  return process.env.WILDCRANE_HOME || path.join(os2.homedir(), ".wildcrane");
+}
+function runnerCwd() {
+  const dir = runnerHome();
+  fs.mkdirSync(dir, { recursive: true, mode: 448 });
+  return dir;
 }
 function useRunnerHome() {
   process.env.AI4KANBAN_HOME = runnerHome();
@@ -26785,16 +26816,16 @@ function machineId() {
 `);
   return id;
 }
-
-// src/launcher.ts
-import fs4 from "node:fs";
-import path4 from "node:path";
+var machineName;
+var init_home = __esm({
+  "src/home.ts"() {
+    "use strict";
+    init_proxy2();
+    machineName = () => os2.hostname().replace(/\.local$/, "");
+  }
+});
 
 // ../cli/src/lib/cloud/config.ts
-var SUPABASE_URL = "https://yajrbpprmdvtkvjjfpbk.supabase.co";
-var SUPABASE_ANON_KEY = "sb_publishable_ioUQ23BTtoj8NKqndp0Jrw_omVR3m4n";
-var API_URL = "https://api.ai4kanban.dev";
-var trimSlash = (url) => url.replace(/\/+$/, "");
 function cloudEndpoints() {
   return {
     supabaseUrl: trimSlash(process.env.AI4KANBAN_SUPABASE_URL || SUPABASE_URL),
@@ -26802,61 +26833,83 @@ function cloudEndpoints() {
     api: trimSlash(process.env.AI4KANBAN_CLOUD_URL || API_URL)
   };
 }
+var SUPABASE_URL, SUPABASE_ANON_KEY, API_URL, trimSlash;
+var init_config = __esm({
+  "../cli/src/lib/cloud/config.ts"() {
+    "use strict";
+    SUPABASE_URL = "https://yajrbpprmdvtkvjjfpbk.supabase.co";
+    SUPABASE_ANON_KEY = "sb_publishable_ioUQ23BTtoj8NKqndp0Jrw_omVR3m4n";
+    API_URL = "https://api.ai4kanban.dev";
+    trimSlash = (url) => url.replace(/\/+$/, "");
+  }
+});
 
 // src/i18n.ts
-var ZH_HOLDER = { "claude-code": "Claude Code", codex: "Codex", cursor: "Cursor", dsh: "dsh", zcode: "ZCode", kimi: "Kimi Code", terminal: "\u672C\u673A\u7EC8\u7AEF" };
-var EN_HOLDER = { "claude-code": "Claude Code", codex: "Codex", cursor: "Cursor", dsh: "dsh", zcode: "ZCode", kimi: "Kimi Code", terminal: "the terminal" };
-var ZH = {
-  signIn: (url) => `\u8BF7\u5728\u6D4F\u89C8\u5668\u4E2D\u767B\u5F55 WildCrane\uFF1A
-${url}`,
-  signedIn: () => "\u5DF2\u767B\u5F55",
-  signInFailed: (why) => `\u767B\u5F55\u672A\u5B8C\u6210\uFF1A${why}`,
-  connected: (machine) => `\u5DF2\u8FDE\u63A5\uFF08${machine}\uFF09\uFF0C\u7B49\u5F85\u4EFB\u52A1`,
-  running: (count) => `\u6B63\u5728\u8FD0\u884C ${count} \u4E2A\u4EFB\u52A1`,
-  reconnecting: () => "\u5DF2\u65AD\u5F00\uFF0C\u6B63\u5728\u91CD\u8FDE\u2026",
-  elsewhere: (machine) => `\u4F60\u7684 Runner \u5DF2\u5728\u300C${machine}\u300D\u4E0A\u8FDE\u63A5\u3002\u8BF7\u5148\u5728\u90A3\u53F0\u7535\u8111\u4E0A\u9000\u51FA\uFF0C\u518D\u5728\u8FD9\u91CC\u542F\u52A8\u3002`,
-  outdated: () => "\u6B64\u7248\u672C\u5DF2\u8FC7\u65E7\uFF0C\u8BF7\u91CD\u542F\u4EE5\u66F4\u65B0\u3002",
-  refused: (why) => `WildCrane \u62D2\u7EDD\u4E86\u8FDE\u63A5\uFF1A${why}`,
-  updated: (version) => `\u5DF2\u66F4\u65B0\u5230 ${version}`,
-  rolledBack: (version) => `\u65B0\u7248\u672C\u672A\u80FD\u542F\u52A8\uFF0C\u5DF2\u9000\u56DE ${version}`,
-  nodeTooOld: (range) => `\u65B0\u7248\u672C\u9700\u8981 Node ${range}\uFF0C\u8BF7\u5347\u7EA7 Node\u3002\u672C\u6B21\u7EE7\u7EED\u4F7F\u7528\u5F53\u524D\u7248\u672C\u3002`,
-  waitingHere: (holder) => {
-    const who = holder ? ZH_HOLDER[holder] : "\u672C\u673A\u53E6\u4E00\u4E2A\u7A0B\u5E8F";
-    return `${who}\u5DF2\u5728\u8FD0\u884C\u4E00\u4E2A WildCrane \u5B9E\u4F8B\uFF0C\u8D1F\u8D23\u63A5\u6536\u6240\u6709\u8FD0\u884C\u4EFB\u52A1\u3002\u5F53\u524D\u5B9E\u4F8B\u5DF2\u6682\u505C\uFF0C${who}\u5173\u95ED\u540E\u5C06\u7531\u5F53\u524D\u5B9E\u4F8B\u63A5\u66FF\u3002`;
-  },
-  stopped: () => "\u5DF2\u505C\u6B62"
-};
-var EN = {
-  signIn: (url) => `Sign in to WildCrane in your browser:
-${url}`,
-  signedIn: () => "Signed in",
-  signInFailed: (why) => `Sign-in did not finish: ${why}`,
-  connected: (machine) => `Connected (${machine}) \u2014 waiting for tasks`,
-  running: (count) => `Running ${count} ${count === 1 ? "task" : "tasks"}`,
-  reconnecting: () => "Disconnected \u2014 reconnecting\u2026",
-  elsewhere: (machine) => `Your Runner is already connected on "${machine}". Quit it there first, then start it here.`,
-  outdated: () => "This version is out of date. Restart to update.",
-  refused: (why) => `WildCrane refused the connection: ${why}`,
-  updated: (version) => `Updated to ${version}`,
-  rolledBack: (version) => `The new version did not start \u2014 back on ${version}`,
-  nodeTooOld: (range) => `The new version needs Node ${range}. Update Node; running the current version for now.`,
-  waitingHere: (holder) => {
-    const who = holder ? EN_HOLDER[holder] : "another app on this computer";
-    return `${who[0].toUpperCase()}${who.slice(1)} is already running a WildCrane instance that takes all run tasks. This instance is paused and takes over when ${who} closes.`;
-  },
-  stopped: () => "Stopped"
-};
 function isChinese(env = process.env) {
   const lang = env.LC_ALL || env.LC_MESSAGES || env.LANG || Intl.DateTimeFormat().resolvedOptions().locale;
   return /^zh/i.test(lang ?? "");
 }
-var linesFor = (chinese) => chinese ? ZH : EN;
-var t = linesFor(isChinese());
+function status(line) {
+  if (line === last) return;
+  last = line;
+  process.stdout.write(`${line}
+`);
+}
+var ZH_HOLDER, EN_HOLDER, ZH, EN, linesFor, t, last;
+var init_i18n = __esm({
+  "src/i18n.ts"() {
+    "use strict";
+    ZH_HOLDER = { "claude-code": "Claude Code", codex: "Codex", cursor: "Cursor", dsh: "dsh", zcode: "ZCode", kimi: "Kimi Code", terminal: "\u672C\u673A\u7EC8\u7AEF" };
+    EN_HOLDER = { "claude-code": "Claude Code", codex: "Codex", cursor: "Cursor", dsh: "dsh", zcode: "ZCode", kimi: "Kimi Code", terminal: "the terminal" };
+    ZH = {
+      signIn: (url) => `\u8BF7\u5728\u6D4F\u89C8\u5668\u4E2D\u767B\u5F55 WildCrane\uFF1A
+${url}`,
+      signedIn: () => "\u5DF2\u767B\u5F55",
+      signInFailed: (why) => `\u767B\u5F55\u672A\u5B8C\u6210\uFF1A${why}`,
+      connected: (machine) => `\u5DF2\u8FDE\u63A5\uFF08${machine}\uFF09\uFF0C\u7B49\u5F85\u4EFB\u52A1`,
+      running: (count) => `\u6B63\u5728\u8FD0\u884C ${count} \u4E2A\u4EFB\u52A1`,
+      reconnecting: () => "\u5DF2\u65AD\u5F00\uFF0C\u6B63\u5728\u91CD\u8FDE\u2026",
+      elsewhere: (machine) => `\u4F60\u7684 Runner \u5DF2\u5728\u300C${machine}\u300D\u4E0A\u8FDE\u63A5\u3002\u8BF7\u5148\u5728\u90A3\u53F0\u7535\u8111\u4E0A\u9000\u51FA\uFF0C\u518D\u5728\u8FD9\u91CC\u542F\u52A8\u3002`,
+      outdated: () => "\u6B64\u7248\u672C\u5DF2\u8FC7\u65E7\uFF0C\u8BF7\u91CD\u542F\u4EE5\u66F4\u65B0\u3002",
+      refused: (why) => `WildCrane \u62D2\u7EDD\u4E86\u8FDE\u63A5\uFF1A${why}`,
+      updated: (version) => `\u5DF2\u66F4\u65B0\u5230 ${version}`,
+      rolledBack: (version) => `\u65B0\u7248\u672C\u672A\u80FD\u542F\u52A8\uFF0C\u5DF2\u9000\u56DE ${version}`,
+      nodeTooOld: (range) => `\u65B0\u7248\u672C\u9700\u8981 Node ${range}\uFF0C\u8BF7\u5347\u7EA7 Node\u3002\u672C\u6B21\u7EE7\u7EED\u4F7F\u7528\u5F53\u524D\u7248\u672C\u3002`,
+      waitingHere: (holder) => {
+        const who = holder ? ZH_HOLDER[holder] : "\u672C\u673A\u53E6\u4E00\u4E2A\u7A0B\u5E8F";
+        return `${who}\u5DF2\u5728\u8FD0\u884C\u4E00\u4E2A WildCrane \u5B9E\u4F8B\uFF0C\u8D1F\u8D23\u63A5\u6536\u6240\u6709\u8FD0\u884C\u4EFB\u52A1\u3002\u5F53\u524D\u5B9E\u4F8B\u5DF2\u6682\u505C\uFF0C${who}\u5173\u95ED\u540E\u5C06\u7531\u5F53\u524D\u5B9E\u4F8B\u63A5\u66FF\u3002`;
+      },
+      stopped: () => "\u5DF2\u505C\u6B62"
+    };
+    EN = {
+      signIn: (url) => `Sign in to WildCrane in your browser:
+${url}`,
+      signedIn: () => "Signed in",
+      signInFailed: (why) => `Sign-in did not finish: ${why}`,
+      connected: (machine) => `Connected (${machine}) \u2014 waiting for tasks`,
+      running: (count) => `Running ${count} ${count === 1 ? "task" : "tasks"}`,
+      reconnecting: () => "Disconnected \u2014 reconnecting\u2026",
+      elsewhere: (machine) => `Your Runner is already connected on "${machine}". Quit it there first, then start it here.`,
+      outdated: () => "This version is out of date. Restart to update.",
+      refused: (why) => `WildCrane refused the connection: ${why}`,
+      updated: (version) => `Updated to ${version}`,
+      rolledBack: (version) => `The new version did not start \u2014 back on ${version}`,
+      nodeTooOld: (range) => `The new version needs Node ${range}. Update Node; running the current version for now.`,
+      waitingHere: (holder) => {
+        const who = holder ? EN_HOLDER[holder] : "another app on this computer";
+        return `${who[0].toUpperCase()}${who.slice(1)} is already running a WildCrane instance that takes all run tasks. This instance is paused and takes over when ${who} closes.`;
+      },
+      stopped: () => "Stopped"
+    };
+    linesFor = (chinese) => chinese ? ZH : EN;
+    t = linesFor(isChinese());
+    last = "";
+  }
+});
 
 // src/preferences.ts
 import fs2 from "node:fs";
 import path2 from "node:path";
-var file = () => path2.join(runnerHome(), "preferences.json");
 function read() {
   try {
     const value = JSON.parse(fs2.readFileSync(file(), "utf8"));
@@ -26865,21 +26918,32 @@ function read() {
     return {};
   }
 }
-var acceptAlphaUpdates = () => read().acceptAlphaUpdates === true;
+var file, acceptAlphaUpdates;
+var init_preferences = __esm({
+  "src/preferences.ts"() {
+    "use strict";
+    init_home();
+    file = () => path2.join(runnerHome(), "preferences.json");
+    acceptAlphaUpdates = () => read().acceptAlphaUpdates === true;
+  }
+});
+
+// src/protocol.ts
+var EXIT_REFUSED, EXIT_OUTDATED, EXIT_UPDATE;
+var init_protocol = __esm({
+  "src/protocol.ts"() {
+    "use strict";
+    EXIT_REFUSED = 10;
+    EXIT_OUTDATED = 11;
+    EXIT_UPDATE = 12;
+  }
+});
 
 // src/update.ts
 import crypto2 from "node:crypto";
 import fs3 from "node:fs";
 import path3 from "node:path";
 import zlib from "node:zlib";
-var PACKAGE = "wildcrane-runner";
-var TIMEOUT_MS = 6e4;
-var versionsDir = () => path3.join(runnerHome(), "bin", "runner");
-var versionDir = (version) => path3.join(versionsDir(), version);
-var entryOf = (dir) => path3.join(dir, "dist", "runner.mjs");
-var RUNNER = { name: PACKAGE, dirOf: versionDir, entryOf };
-var registry = () => (process.env.npm_config_registry || "https://registry.npmjs.org").replace(/\/+$/, "");
-var install2 = (version, nodeVersion) => installPackage(RUNNER, version, nodeVersion);
 async function installPackage(pkg, version, nodeVersion = process.versions.node) {
   const dir = pkg.dirOf(version);
   if (fs3.existsSync(pkg.entryOf(dir))) return { ok: true, dir };
@@ -26948,10 +27012,6 @@ function extract(tar, into) {
     }
   }
 }
-var parse = (v) => {
-  const m = /^v?(\d+)(?:\.(\d+|x|\*))?(?:\.(\d+|x|\*))?/.exec(v.trim());
-  return m ? [Number(m[1]), Number(m[2]) || 0, Number(m[3]) || 0] : null;
-};
 function compare(a, b) {
   const [x, y] = [parse(a) ?? [0, 0, 0], parse(b) ?? [0, 0, 0]];
   for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i];
@@ -27001,11 +27061,40 @@ function meets(version, comparator) {
     }
   }
 }
+var PACKAGE, TIMEOUT_MS, versionsDir, legacyVersionsDir, versionDir, entryOf, RUNNER, registry, install2, parse;
+var init_update = __esm({
+  "src/update.ts"() {
+    "use strict";
+    init_home();
+    PACKAGE = "wildcrane-runner";
+    TIMEOUT_MS = 6e4;
+    versionsDir = () => path3.join(runnerHome(), "bin", "runner");
+    legacyVersionsDir = () => path3.join(runnerHome(), "runner");
+    versionDir = (version) => path3.join(versionsDir(), version);
+    entryOf = (dir) => path3.join(dir, "dist", "runner.mjs");
+    RUNNER = { name: PACKAGE, dirOf: versionDir, entryOf };
+    registry = () => (process.env.npm_config_registry || "https://registry.npmjs.org").replace(/\/+$/, "");
+    install2 = (version, nodeVersion) => installPackage(RUNNER, version, nodeVersion);
+    parse = (v) => {
+      const m = /^v?(\d+)(?:\.(\d+|x|\*))?(?:\.(\d+|x|\*))?/.exec(v.trim());
+      return m ? [Number(m[1]), Number(m[2]) || 0, Number(m[3]) || 0] : null;
+    };
+  }
+});
 
 // src/launcher.ts
-var ASK_MS = 5e3;
-var CONNECT_MS = 2 * 6e4;
-var stateFile = () => path4.join(versionsDir(), "state.json");
+var launcher_exports = {};
+__export(launcher_exports, {
+  candidates: () => candidates,
+  launch: () => launch,
+  pluginEntry: () => pluginEntry,
+  pluginOf: () => pluginOf,
+  provenNewer: () => provenNewer,
+  readState: () => readState
+});
+import { spawn } from "node:child_process";
+import fs4 from "node:fs";
+import path4 from "node:path";
 function readState() {
   try {
     const held = JSON.parse(fs4.readFileSync(stateFile(), "utf8"));
@@ -27018,6 +27107,21 @@ function writeState(state) {
   fs4.mkdirSync(versionsDir(), { recursive: true });
   fs4.writeFileSync(stateFile(), `${JSON.stringify(state, null, 2)}
 `);
+}
+function markGood(version) {
+  const state = readState();
+  state.good = [version, ...state.good.filter((v) => v !== version)].slice(0, KEEP);
+  writeState(state);
+  for (const name of fs4.readdirSync(versionsDir())) {
+    if (name === "state.json" || state.good.includes(name) || name.endsWith(".tmp")) continue;
+    fs4.rmSync(path4.join(versionsDir(), name), { recursive: true, force: true });
+  }
+}
+function markBad(version) {
+  const state = readState();
+  state.bad = [.../* @__PURE__ */ new Set([...state.bad, version])];
+  state.good = state.good.filter((v) => v !== version);
+  writeState(state);
 }
 async function askTarget(machine) {
   const alpha = acceptAlphaUpdates();
@@ -27033,13 +27137,46 @@ async function askTarget(machine) {
     return null;
   }
 }
+function waiting(target, current2) {
+  const state = readState();
+  return !target.alpha && !!state.alpha?.includes(current2) && compare(target.version, current2) < 0 && (target.rollback === void 0 || target.rollback === (state.rollbackAt?.[current2] ?? 0));
+}
 function remember(target) {
   const state = readState();
   if (target.alpha) state.alpha = [.../* @__PURE__ */ new Set([...state.alpha ?? [], target.version])];
   if (target.rollback !== void 0) state.rollbackAt = { ...state.rollbackAt, [target.version]: target.rollback };
   writeState(state);
 }
-var pluginOf = (dir) => path4.join(dir, "dist", "plugin.mjs");
+function provenNewer(own) {
+  const proven = readState().good.find((v) => fs4.existsSync(entryOf(versionDir(v))));
+  return proven && compare(proven, own) > 0 ? proven : null;
+}
+async function candidates(own) {
+  const state = readState();
+  const proven = provenNewer(own.version);
+  const current2 = proven ? { version: proven, entry: entryOf(versionDir(proven)) } : own;
+  const desired = await askTarget(machineId());
+  const target = desired?.version;
+  if (!desired || !target || waiting(desired, current2.version) || state.bad.includes(target)) return [current2];
+  if (target === current2.version) {
+    remember(desired);
+    return [current2];
+  }
+  if (target === own.version) {
+    remember(desired);
+    return [own, current2];
+  }
+  const got = await install2(target);
+  if (got.ok) {
+    const latest = await askTarget(machineId());
+    if (!latest || latest.version !== target || waiting(latest, current2.version)) return [current2];
+    remember(latest);
+    const known = state.good.includes(target);
+    return [{ version: target, entry: entryOf(got.dir), fresh: !known }, current2];
+  }
+  if (got.why === "node") status(t.nodeTooOld(got.detail));
+  return [current2];
+}
 async function pluginEntry(min) {
   if (process.env.WILDCRANE_RUNNER_DIR) return pluginOf(process.env.WILDCRANE_RUNNER_DIR);
   const { bad } = readState();
@@ -27057,11 +27194,168 @@ async function pluginEntry(min) {
   remember(target);
   return pluginOf(got.dir);
 }
+function runOnce(candidate, options) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [candidate.entry], {
+      cwd: runnerCwd(),
+      stdio: ["ignore", options.quiet ? 2 : "inherit", "inherit", "ipc"],
+      env: { ...process.env, WILDCRANE_RUNNER_VERSION: candidate.version, WILDCRANE_RUNNER_KIND: options.kind ?? "terminal" }
+    });
+    options.onSpawn?.((type) => {
+      if (child.connected) child.send({ type }, () => {
+      });
+    });
+    let update = null;
+    let checking = false;
+    const check = async () => {
+      if (checking || stopping || update) return;
+      checking = true;
+      try {
+        const desired = await askTarget(machineId());
+        if (!desired?.restartable || waiting(desired, candidate.version)) return;
+        const target = desired.version;
+        if (!target || target === candidate.version || readState().bad.includes(target)) return;
+        const got = await install2(target);
+        if (!got.ok) {
+          status("Runner \u66F4\u65B0\u4E0B\u8F7D\u5931\u8D25\uFF0C\u7EE7\u7EED\u8FD0\u884C\u5F53\u524D\u7248\u672C\uFF0C\u7A0D\u540E\u91CD\u8BD5\u3002");
+          return;
+        }
+        if (stopping || child.exitCode !== null || child.signalCode !== null) return;
+        const latest = await askTarget(machineId());
+        if (!latest?.restartable || latest.version !== target || waiting(latest, candidate.version)) return;
+        remember(latest);
+        update = { version: target, entry: entryOf(got.dir), fresh: !readState().good.includes(target) };
+        child.send({ type: "update" }, () => {
+        });
+      } finally {
+        checking = false;
+      }
+    };
+    const poll = setInterval(() => {
+      if (connected) void check().catch(() => {
+      });
+    }, Number(process.env.WILDCRANE_UPDATE_MS) || 6e4);
+    let connected = false;
+    let timer = null;
+    let timedOut = false;
+    let stopping = false;
+    let forceKill;
+    if (candidate.fresh) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+        forceKill = setTimeout(() => child.kill("SIGKILL"), 5e3);
+      }, Number(process.env.WILDCRANE_CONNECT_MS) || CONNECT_MS);
+    }
+    const forward = (signal) => () => {
+      stopping = true;
+      child.kill(signal);
+    };
+    const onInt = forward("SIGINT");
+    const onTerm = forward("SIGTERM");
+    process.on("SIGINT", onInt);
+    process.on("SIGTERM", onTerm);
+    options.signal?.addEventListener("abort", onTerm, { once: true });
+    if (options.signal?.aborted) onTerm();
+    child.on("message", (message) => {
+      options.onMessage?.(message);
+      if (message.type === "update-deferred") update = null;
+      if (message.type === "waiting" && timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (message.type === "connected" && !connected) {
+        connected = true;
+        if (timer) clearTimeout(timer);
+        if (candidate.entry.startsWith(versionsDir() + path4.sep)) fs4.rmSync(legacyVersionsDir(), { recursive: true, force: true });
+        const installed = candidate.entry.startsWith(versionsDir() + path4.sep);
+        if (candidate.fresh || installed && !readState().good.includes(candidate.version)) markGood(candidate.version);
+        if (candidate.fresh) status(t.updated(candidate.version));
+      }
+    });
+    let spawnError;
+    child.once("error", (error) => {
+      spawnError = error;
+    });
+    child.once("close", (code, signal) => {
+      clearInterval(poll);
+      clearTimeout(forceKill);
+      if (timer) clearTimeout(timer);
+      process.off("SIGINT", onInt);
+      process.off("SIGTERM", onTerm);
+      options.signal?.removeEventListener("abort", onTerm);
+      if (spawnError) {
+        status(`Runner \u65E0\u6CD5\u542F\u52A8\uFF1A${spawnError.message}`);
+        return resolve({ exit: 1 });
+      }
+      if (code === EXIT_UPDATE && update && !stopping) return resolve({ update });
+      if (connected || !candidate.fresh || stopping) return resolve({ exit: code ?? (signal ? 1 : 0) });
+      if (timedOut) return resolve({ failed: "timeout" });
+      if (code === 0 || code === EXIT_REFUSED || code === EXIT_OUTDATED) return resolve({ exit: code });
+      resolve({ failed: "crashed" });
+    });
+  });
+}
+async function launch(own, options = {}) {
+  const list = await candidates(own);
+  for (let i = 0; i < list.length; i++) {
+    if (options.signal?.aborted) return 0;
+    const candidate = list[i];
+    const outcome = await runOnce(candidate, options);
+    if ("exit" in outcome) return outcome.exit;
+    if ("update" in outcome) {
+      const latest = await askTarget(machineId());
+      if (!latest || latest.version !== outcome.update.version || waiting(latest, candidate.version)) {
+        list.splice(i + 1, list.length, candidate);
+        continue;
+      }
+      list.splice(i + 1, list.length, outcome.update, candidate);
+      continue;
+    }
+    markBad(candidate.version);
+    const next = list[i + 1];
+    if (next) status(t.rolledBack(next.version));
+  }
+  return 1;
+}
+var ASK_MS, CONNECT_MS, KEEP, stateFile, pluginOf;
+var init_launcher = __esm({
+  "src/launcher.ts"() {
+    "use strict";
+    init_config();
+    init_home();
+    init_i18n();
+    init_preferences();
+    init_protocol();
+    init_update();
+    ASK_MS = 5e3;
+    CONNECT_MS = 2 * 6e4;
+    KEEP = 2;
+    stateFile = () => path4.join(versionsDir(), "state.json");
+    pluginOf = (dir) => path4.join(dir, "dist", "plugin.mjs");
+  }
+});
+
+// src/startup.ts
+import os from "node:os";
+try {
+  process.cwd();
+} catch (error) {
+  if (error.code !== "ENOENT") throw error;
+  process.chdir(os.homedir());
+}
 
 // src/plugin-start.ts
-var FIRST = { kimi: "0.6.35" };
-useRunnerHome();
-var entry = await pluginEntry(FIRST[process.argv[2] ?? ""]);
+import { pathToFileURL } from "node:url";
+if (Number(process.versions.node.split(".")[0]) < 22) {
+  process.stderr.write("WildCrane needs Node.js 22 or later. Install it from https://nodejs.org, then restart.\n");
+  process.exit(1);
+}
+var { useRunnerHome: useRunnerHome2 } = await Promise.resolve().then(() => (init_home(), home_exports));
+var { pluginEntry: pluginEntry2 } = await Promise.resolve().then(() => (init_launcher(), launcher_exports));
+var FIRST = { kimi: "0.6.35", grok: "0.6.53" };
+useRunnerHome2();
+var entry = await pluginEntry2(FIRST[process.argv[2] ?? ""]);
 if (entry) await import(pathToFileURL(entry).href);
 else {
   process.stderr.write("WildCrane could not download its Runner. Check the network, then restart.\n");
