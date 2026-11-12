@@ -802,6 +802,15 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal(job.report!.stopped, true)
   })
 
+  it('records a stopped Antigravity reply without reporting success or retrying (#687)', async () => {
+    const job = cloud.dispatch({ id: 'j1', runtime: 'antigravity', stop: true })
+    start('setInterval(() => console.log("tick"), 20)')
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'stopped', job.reason)
+    assert.equal(job.report!.stopped, true)
+    assert.equal(planned.length, 1)
+  })
+
   it('reconnects after Cloud drops away, and picks up what arrived meanwhile', async () => {
     start()
     await until(() => cloud.registrations > 0)

@@ -954,6 +954,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   if (!stream.asked()) complete(failure ? 'failed' : 'done', said, failure)
   await stream.end()
   if (stream.lost()) return
+  if (stream.asked() && job.runtime === 'antigravity') return finishClaimed('stopped', '', said)
   if (failure || !ws) return finishClaimed(failure ? 'failed' : 'done', failure, said)
   return await sendBack(deps, id, lease, ws, said, () => keepChat(job, said.reply))
 }

@@ -21,11 +21,12 @@ This integration does not install a WildCrane plugin in Antigravity or use remot
 
 ## Execution
 
-- **Protocol**: tested with agy 1.5.6; [headless NDJSON](https://antigravity.google/docs/cli/headless/) is parsed independently of Gemini CLI.
+- **Protocol**: tested with agy 1.5.6 and 1.5.7; [headless NDJSON](https://antigravity.google/docs/cli/headless/) is parsed independently of Gemini CLI.
 - **Permissions**: unattended runs use `--dangerously-skip-permissions`, subject to the CLI's deny rules. Denied actions fail even when agy exits zero with `SUCCESS`.
 - **Context**: resume uses only `--conversation <id>`. The local `.gemini/antigravity-cli/conversations/<id>.db` must exist; a mismatched returned ID fails without replacing the known ID. No latest-session fallback.
 - **Usage**: result counters cover the conversation. The first resumed prompt uses its own completed-step counts; subsequent results subtract previous cumulative counts. No inferred price or context estimate.
 - **Customization**: existing `.agents/skills` and project instructions remain available. Language rules use a generated rules directory added with `--add-dir`; no business prompt is replaced.
+- **Stopping**: terminates the process tree, records `stopped`, and does not retry or report success.
 - **Failures**: missing final results, non-success states, denied actions and process failures remain failures. Authentication, model, network and quota errors include retry guidance. Model discovery failure leaves saved selections intact and does not imply signed out.
 - **Brand**: the unmodified SVG comes from [official press assets](https://antigravity.google/press).
 
