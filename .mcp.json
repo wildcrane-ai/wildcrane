@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "wildcrane": {
+      "command": "${GROK_PLUGIN_ROOT}/server/bin/wildcrane",
+      "args": [
+        "grok"
+      ]
+    }
+  }
+}
