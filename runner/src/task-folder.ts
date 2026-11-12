@@ -13,7 +13,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 import { diff3Merge } from 'node-diff3'
 
-import { BOARD_FILE_LIMIT, BUILDER, assetsFile, cardFront, draftFolder, isBoardPath, isSettingsPath, numberOfCard, studioFolder, studioName } from '../../cli/src/lib/shared/board-files.ts'
+import { BOARD_FILE_LIMIT, assetsFile, cardFront, isBoardPath, isSettingsPath, numberOfCard, studioFolder, studioName } from '../../cli/src/lib/shared/board-files.ts'
 import { itemAt, stampItem } from '../../cli/src/lib/shared/triage-files.ts'
 import { projectStateDir } from '../../cli/src/lib/machine/project'
 import { readPin, readVersion, savePin, saveVersion } from '../../cli/src/lib/agent/cloud-studios'
@@ -59,7 +59,7 @@ interface Record_ {
   /** `kind` is the artifact's type (#2003); an `html` one is the page a mockup draws, and its
    *  hash is the page's. */
   assets: { [path: string]: Entry & { artifact: string; kind?: Kind; dependencies?: string[] } }
-  /** The agents a Studio builder task's draft copied to the board's `agents/`, by file hash. */
+  /** Legacy agents placed on the board, by file hash. */
   agents?: { [path: string]: string }
   /** Its skills written into the project, by file hash, and the MCP servers its runs get (#2030). */
   tools?: { skills: { [path: string]: string }; mcp: McpServers }
@@ -387,7 +387,6 @@ async function pullStudio(ws: TaskFolder, record: Record_): Promise<api.Call<voi
     if (files.ok) pullTools(ws, record, files.value)
   }
   dropPlacedAgents(ws)
-  // A draft's agents are put back by `pullDraftAgents`.
   for (const name of Object.keys(record.agents ?? {})) fs.rmSync(path.join(ws.board, name), { force: true })
   record.agents = {}
   return { ok: true, value: undefined }
@@ -410,19 +409,6 @@ function dropPlacedAgents(ws: TaskFolder): void {
   const placed = readPlaced(ws)
   for (const name of Object.keys(placed)) if (hashFile(path.join(ws.board, name)) === placed[name]) fs.rmSync(path.join(ws.board, name), { force: true })
   fs.rmSync(agentsRecord(ws), { force: true })
-}
-
-/** A Studio builder task's draft keeps the agents it writes (#2004); akb reads them in `agents/`. */
-function pullDraftAgents(ws: TaskFolder, record: Record_): void {
-  if (ws.studio !== BUILDER) return
-  const root = path.join(ws.board, 'studios', draftFolder(ws.task), 'agents')
-  record.agents ??= {}
-  for (const name of filesUnder(root)) {
-    const text = fs.readFileSync(path.join(root, name))
-    const at = `agents/${name}`
-    record.agents[at] = hashOf(text)
-    if (hashFile(path.join(ws.board, at)) !== record.agents[at]) write(path.join(ws.board, at), text)
-  }
 }
 
 /** An asset path the body names: akb's `.assets/` and `.mockups/` in the board's state folder,
@@ -568,7 +554,6 @@ async function readCloud(ws: TaskFolder): Promise<api.Call<void>> {
   const record = readRecord(ws)
   const studio = await pullStudio(ws, record)
   if (!studio.ok) return studio
-  pullDraftAgents(ws, record)
   // The studio's agents may share more than the board's did.
   reset(viewOf(ws, base, sharedMemory(ws.board)))
   const assets = await pullAssets(ws, record, assetsOf(assetsListOf(ws, base)))

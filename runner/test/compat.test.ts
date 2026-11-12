@@ -8,8 +8,6 @@ import { after, before, describe, it } from 'node:test'
 import { prepareKanbanSkill } from '../src/kanban-skill'
 import { installCommitHook } from '../../cli/src/lib/skill/hook'
 import { answerOf, runAkb, type Akb, type Ran } from '../src/akb'
-import { builtStudio } from '../src/built'
-import { BUILDER, draftFolder } from '../../cli/src/lib/shared/board-files'
 
 // The real built akb, driven the way the Runner drives it: every command flow.ts and built.ts
 // run, and every field they read. A failure here after an akb change means restore compatibility
@@ -93,17 +91,6 @@ describe('the akb the Runner carries (#171)', () => {
     ok(await onBoard(['raw', 'agent', 'set', 'model']))
     ok(await onBoard(['raw', 'agent', 'set', 'args', '--', '--verbose']))
     ok(await onBoard(['raw', 'agent', 'set', 'args']))
-  })
-
-  it('packs a drafted studio landing with the built-in builder, its version note dropped (#494, #564)', async () => {
-    const ws = { task: 'task_9', cloudTask: 'task_9', board, cwd: project, project, number: 9, studio: BUILDER }
-    const dir = path.join(board, 'studios', draftFolder(ws.task))
-    fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, 'STUDIO.md'), '---\nname: Site\nneedsArtifact: false\nland: [builder]\n---\n')
-    fs.writeFileSync(path.join(dir, 'version.json'), '{"id":"wf_1","version":2}\n')
-    const built = await builtStudio(ws, akb)
-    assert.match(built?.['agents/builder/AGENT.md'] ?? '', /^name: builder$/m)
-    assert.equal(built?.['version.json'], undefined)
   })
 
   it('makes a card with the task’s number, keeps a retry to that card, and names what it refuses', async () => {

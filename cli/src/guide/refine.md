@@ -2,10 +2,6 @@
 
 Plan one card in this session until it can be built.
 
-- **重复卡片**: 若发现另一张任务完整覆盖本卡，即使对方尚未实施，也先将其缺少的有用信息补入并确认保存成功；
-  保存失败则保留本卡并停止。没有信息需要补充或已保存成功后，运行
-  `akb raw reject <id> --reason "<承接任务编号及完整覆盖原因>"` 并停止。
-  不请求确认，不运行预览；仅部分重叠不丢弃。
 - **Unchecked card**: a card with `triage:` set and an empty `## Scope` was never checked
   against the project. Check it first; when the project already does
   the work, or what it concerns no longer exists, run

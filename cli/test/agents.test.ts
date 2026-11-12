@@ -183,7 +183,7 @@ describe('the agents this command ships', () => {
     assert.deepEqual(problems, [])
     assert.deepEqual(
       agents.map((a) => a.name),
-      ['api-designer', 'blog-illustrator', 'blog-planner', 'blog-writer', 'builder', 'carousel-planner', 'carousel-renderer', 'competitor-research', 'copywriting', 'cover-designer', 'deck-builder', 'deck-planner', 'demo-rehearser', 'email-planner', 'hyperframes-editor', 'illustrator', 'prompt-writer', 'qa-manager', 'schema-designer', 'scriptwriter', 'social-illustrator', 'studio-writer', 'tech-stack-advisor', 'ui-designer', 'video-cloner', 'video-template-builder'],
+      ['api-designer', 'blog-illustrator', 'blog-planner', 'blog-writer', 'builder', 'carousel-planner', 'carousel-renderer', 'competitor-research', 'copywriting', 'cover-designer', 'deck-builder', 'deck-planner', 'demo-rehearser', 'email-planner', 'hyperframes-editor', 'illustrator', 'prompt-writer', 'qa-manager', 'schema-designer', 'scriptwriter', 'social-illustrator', 'studio-publisher', 'studio-writer', 'tech-stack-advisor', 'ui-designer', 'video-cloner', 'video-template-builder'],
     )
     const ui = findSpecAgent('ui-designer')!
     assert.match(ui.description, /^Draws the screens/)

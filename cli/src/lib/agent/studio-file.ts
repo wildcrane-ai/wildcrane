@@ -1,21 +1,9 @@
-// One studio's `STUDIO.md` (#1890), and where a board finds its studios (#409): Cloud's,
-// through ./cloud-studios.ts, and the draft a Studio builder task writes on the board under
-// `studios/<draft>/`. What a board saved on a studio's scheduled agents stays in
-// `ui.config.json` (./studios.ts).
+// Studio definitions read from Cloud.
 
-import fs from 'node:fs'
-import path from 'node:path'
-import { forgetFileMemos } from '../file-memo'
-
-import { draftFolder } from '../shared/board-files.ts'
-import { workspaceTask } from '../cloud/tasks'
-import { STUDIOS, rel } from '../paths'
 import { cloudFlows } from './cloud-studios'
-import { groupLines, parseStudioFile, scalar, type StudioDef } from './studio-def'
+import { groupLines, scalar, type StudioDef } from './studio-def'
 
 export { STUDIO_ID, parseStudioFile, stagesOf, type StudioDef } from './studio-def'
-
-const STUDIO_FILE = 'STUDIO.md'
 
 /** One `STUDIO.md`, written the way the built-ins are; each group left out when empty. */
 export function studioFileText(def: StudioDef): string {
@@ -43,50 +31,7 @@ export function studioFileText(def: StudioDef): string {
 /** The official studios this board runs, read-only. */
 export const builtinDefs = (): StudioDef[] => cloudFlows().filter((f) => f.builtIn).map((f) => f.def)
 
-// ---- the board's: a Studio builder draft ------------------------------------
-
-const fileOf = (id: string): string => path.join(STUDIOS, id, STUDIO_FILE)
-
-/** The draft this process's Studio builder task writes, when there is one: Runner places it
- *  before the task's first job. */
-export function draftId(): string | null {
-  const task = workspaceTask()
-  if (!task) return null
-  const id = draftFolder(task)
-  return fs.existsSync(fileOf(id)) ? id : null
-}
-
-export function readFolder(id: string, problems: string[]): StudioDef | null {
-  let source: string
-  try {
-    source = fs.readFileSync(fileOf(id), 'utf8')
-  } catch {
-    problems.push(`${rel(fileOf(id))} is missing`)
-    return null
-  }
-  const read = parseStudioFile(id, source, rel(fileOf(id)))
-  if ('problem' in read) {
-    problems.push(read.problem)
-    return null
-  }
-  return read.def
-}
-
-/** The workspace's own studios, then this task's draft, and one line for each that could not
- *  be used. */
+/** Workspace studios are read from Cloud. Drafts are ordinary local folders. */
 export function boardStudioDefs(): { defs: StudioDef[]; problems: string[] } {
-  const problems: string[] = []
-  const defs = cloudFlows().filter((f) => !f.builtIn).map((f) => f.def)
-  const draft = draftId()
-  const mine = draft ? readFolder(draft, problems) : null
-  return { defs: mine ? [...defs, mine] : defs, problems }
+  return { defs: cloudFlows().filter((f) => !f.builtIn).map((f) => f.def), problems: [] }
 }
-
-/** Write the builder draft. */
-export function writeStudioDef(def: StudioDef): void {
-  const file = fileOf(def.id)
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, studioFileText(def))
-  forgetFileMemos()
-}
-

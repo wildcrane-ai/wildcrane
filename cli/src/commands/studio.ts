@@ -3,6 +3,7 @@
 // The studios this board runs, from a terminal (#715). They are Cloud's (#409); `pull` and
 // `push` edit the workspace's own as a folder (#544).
 
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -19,7 +20,6 @@ import {
   previewMembers,
   scheduledMembers,
   listedScheduled,
-  renameStudio,
   studioById,
   studioFileProblems,
   studioProblems,
@@ -28,7 +28,7 @@ import {
 } from '../lib/agent/studios'
 import type { MoveResult } from '../lib/types'
 import { readStudioFolder } from '../lib/agent/studio-folder'
-import { checkStudioFiles, isAboutFile, VERSION_FILE, versionText, STUDIO_FILE, studioFilesProblems } from '../lib/shared/studio-files'
+import { checkStudioFiles, isAboutFile, VERSION_FILE, versionText, STUDIO_FILE, studioFilesProblems, hashInput, diagramFrom } from '../lib/shared/studio-files'
 import { parseStudioFile } from '../lib/agent/studio-def'
 import { studioName } from '../lib/shared/board-files'
 import { call, type CloudCall } from '../lib/cloud/tasks'
@@ -42,10 +42,6 @@ const found = (id: string) => {
     })
   }
   return flow!
-}
-
-const done = (res: { ok: boolean; error?: string; reason?: string }): void => {
-  if (!res.ok) die(res.error ?? 'the board refused that change', res.reason === 'studioReadOnly' ? 'studio-read-only' : undefined)
 }
 
 const names = (rows: StudioHelper[]): string => rows.map((h) => `${h.agent}${h.off ? ' (off)' : ''}`).join(', ')
@@ -82,17 +78,14 @@ export function cmdStudioList(): MoveResult {
   }
 }
 
-export function cmdStudioRename(id: string, name: string): MoveResult {
-  done(renameStudio(id, name))
-  say(`renamed ${id} to "${name.trim()}"`)
-  return { id, name: name.trim() }
-}
-
-export function cmdStudioDiagram(id: string, card: string): MoveResult {
-  const flow = found(id)
+export function cmdStudioDiagram(id: string, card: string, folder?: string): MoveResult {
+  const files = folder ? readStudioFolder(path.resolve(folder)) : null
+  const local = files ? parseStudioFile('studio', files[STUDIO_FILE] ?? '', STUDIO_FILE) : null
+  if (local && 'problem' in local) die(local.problem, 'bad-studio')
+  const flow = local && 'def' in local ? local.def : found(id)
   const cardId = Number(card)
   if (!Number.isInteger(cardId) || !locate(cardId)) die(`no card #${card} on this board`, 'no-such-card')
-  const diagram = studioDiagram({ previews: previewMembers(flow), land: flow.land, scheduled: scheduledMembers(flow) }, (name) => {
+  const diagram = files ? diagramFrom(files) : studioDiagram({ previews: previewMembers(found(id)), land: flow.land, scheduled: scheduledMembers(found(id)) }, (name) => {
     const agent = findSpecAgent(name)
     return agent ? { ...agent, after: agentAfter(name) } : null
   })
@@ -124,7 +117,9 @@ export function cmdStudioValidate(folder: string): MoveResult {
   const problems = studioFilesProblems(files).map((p) => `${p.file} ${p.reason}`)
   if (problems.length) die(problems.map((p) => `! ${p}`).join('\n'), { kind: 'studio-problems', bare: true, problems })
   say(`${folder}: no problems`)
-  return { folder: dir, problems }
+  const checked = checkStudioFiles(files)
+  const fingerprint = checked.ok ? crypto.createHash('sha256').update(hashInput({ ...checked.files, ...(files[VERSION_FILE] ? { [VERSION_FILE]: files[VERSION_FILE] } : {}) })).digest('hex') : null
+  return { folder: dir, problems, fingerprint }
 }
 
 const cloudIdOf = (id: string): string | undefined => cloudFlows().find((f) => studioName(f.cloudId) === id)?.cloudId
@@ -149,44 +144,74 @@ export async function cmdStudioPull(id: string, folder?: string): Promise<MoveRe
   return { id, version, folder: dir }
 }
 
-/** `akb studio push <folder>` (#544): a pulled folder as the studio's next version. */
-export async function cmdStudioPush(folder: string, opts: { dryRun?: boolean }): Promise<MoveResult> {
+interface PublishOptions { dryRun?: boolean; requestId?: string; workspace?: string }
+
+function publicationFiles(dir: string): StudioFiles {
+  const checked = checkStudioFiles(readStudioFolder(dir))
+  if (!checked.ok) die(`${checked.file} ${checked.reason}`, 'bad-studio')
+  return (checked as { files: StudioFiles }).files
+}
+
+interface Publication {
+  requestId: string
+  hash: string
+  body: { files: StudioFiles; expectedVersion?: number; workspace?: string }
+  route: string
+  resultVersion?: number
+}
+
+async function publishFolder(dir: string, route: string, body: Publication['body'], requestId?: string): Promise<MoveResult> {
+  const pendingFile = path.join(dir, '.publication.json')
+  const hash = crypto.createHash('sha256').update(JSON.stringify({ route, files: body.files, workspace: body.workspace })).digest('hex')
+  let held: Publication | undefined
+  try { held = JSON.parse(fs.readFileSync(pendingFile, 'utf8')) } catch {}
+  if (requestId && held?.requestId === requestId && held.hash !== hash) die('This request ID already names different files; use a new request ID.', 'bad-args')
+  const replay = held?.hash === hash && held.route === route && (!requestId || held.requestId === requestId)
+    && (body.expectedVersion === held.body.expectedVersion || body.expectedVersion === held.resultVersion)
+  const pending: Publication = replay ? held! : { requestId: requestId ?? crypto.randomUUID(), hash, body, route }
+  fs.writeFileSync(pendingFile, JSON.stringify(pending, null, 2) + '\n')
+  const res = await call<{ id: string; version: number }>(route === '/v1/studios' ? 'POST' : 'PATCH', route, pending.body, pending.requestId)
+  if (!res.ok) die(res.error, res.code === 'version_conflict' || res.code === 'conflict' ? 'studio-moved' : 'cloud-refused')
+  const { id, version } = res.value
+  pending.resultVersion = version
+  fs.writeFileSync(pendingFile, JSON.stringify(pending, null, 2) + '\n')
+  fs.writeFileSync(path.join(dir, VERSION_FILE), versionText(id, version))
+  say(`Saved ${studioName(id)} v${version}. New tasks take it.`)
+  return { id, version, changed: true, requestId: pending.requestId }
+}
+
+/** Create a workspace studio from an ordinary local folder. */
+export async function cmdStudioCreate(folder: string, opts: PublishOptions): Promise<MoveResult> {
+  if (!opts.requestId) die('--request-id is required', 'bad-args')
+  const dir = path.resolve(folder)
+  const files = publicationFiles(dir)
+  const workspace = opts.workspace ?? (await cloudScope()).workspace
+  return publishFolder(dir, '/v1/studios', { files, workspace }, opts.requestId)
+}
+
+/** Publish against the pulled version; the server compares it under its row lock. */
+export async function cmdStudioPush(folder: string, opts: PublishOptions): Promise<MoveResult> {
   const dir = path.resolve(folder)
   let pulled: { id: string; version: number } | null = null
-  try {
-    pulled = JSON.parse(fs.readFileSync(path.join(dir, VERSION_FILE), 'utf8'))
-  } catch {}
-  if (!pulled?.id || !Number.isInteger(pulled.version)) die(`${folder} was not written by \`akb studio pull\``, 'bad-args')
-  const { id: cloudId, version } = pulled!
-  const id = studioName(cloudId)
-  const readOnly = () => die(`${id} is not this workspace's own; copy it on the web first.`, 'studio-read-only')
-  if (cloudId.startsWith('wf_builtin_')) readOnly()
-  const read = readStudioFolder(dir)
-  const problems = studioFilesProblems(read).map((p) => `${p.file} ${p.reason}`)
-  if (problems.length) die(problems.map((p) => `! ${p}`).join('\n'), { kind: 'bad-studio', bare: true, problems })
-  const checked = checkStudioFiles(read)
-  const { files } = checked as { files: StudioFiles }
-  const now = await call<{ version: number; files: StudioFiles }>('GET', `/v1/studios/${encodeURIComponent(cloudId)}`)
-  if (!now.ok) die(now.error, now.code === 'not_found' ? 'no-such-studio' : 'cloud-refused')
-  if (now.value.version !== version) die(`${id} is at v${now.value.version} now; pull again and redo the change.`, 'studio-moved')
-  if (JSON.stringify(files) === JSON.stringify(Object.fromEntries(Object.entries(now.value.files).filter(([f]) => f !== VERSION_FILE).sort()))) {
-    say(`${id} is unchanged (v${version}).`)
-    return { id, version, changed: false, ...(opts.dryRun ? { dryRun: true } : {}) }
+  try { pulled = JSON.parse(fs.readFileSync(path.join(dir, VERSION_FILE), 'utf8')) } catch {}
+  if (!pulled?.id || !Number.isInteger(pulled.version) || pulled.version < 1) die(`${folder} has no valid version.json; pull again.`, 'bad-args')
+  const { id, version } = pulled!
+  if (id.startsWith('wf_builtin_')) die('Copy this studio before editing it.', 'studio-read-only')
+  const files = publicationFiles(dir)
+  if (!fs.existsSync(path.join(dir, '.publication.json')) && !opts.requestId) {
+    const now = await call<{ version: number; files: StudioFiles }>('GET', `/v1/studios/${encodeURIComponent(id)}`)
+    if (now.ok && now.value.version === version && JSON.stringify(files) === JSON.stringify(Object.fromEntries(Object.entries(now.value.files).filter(([f]) => f !== VERSION_FILE).sort()))) {
+      say(`${studioName(id)} is unchanged (v${version}).`)
+      return { id: studioName(id), version, changed: false, ...(opts.dryRun ? { dryRun: true } : {}) }
+    }
   }
   if (opts.dryRun) {
-    say(`${id} would push v${version + 1}.`)
-    return { id, version: version + 1, changed: true, dryRun: true }
+    const now = cloudOk(await call<{ version: number }>('GET', `/v1/studios/${encodeURIComponent(id)}`))
+    if (now.version !== version) die(`The studio is at v${now.version}; pull again.`, 'studio-moved')
+    say(`${studioName(id)} would push v${version + 1}.`)
+    return { id: studioName(id), version: version + 1, changed: true, dryRun: true }
   }
-  const res = await call<{ version: number }>('PATCH', `/v1/studios/${encodeURIComponent(cloudId)}`, { files })
-  if (!res.ok) {
-    // Installed from the marketplace: another workspace's, so Cloud does not find it to change.
-    if (res.code === 'read_only' || res.code === 'not_found') readOnly()
-    die(res.error, res.code === 'bad_request' || res.code === 'payload_too_large' ? 'bad-studio' : 'cloud-refused')
-  }
-  const next = res.value.version
-  fs.writeFileSync(path.join(dir, VERSION_FILE), versionText(cloudId, next))
-  say(`Pushed ${id} v${next}. New tasks take it.`)
-  return { id, version: next, changed: true }
+  return publishFolder(dir, `/v1/studios/${encodeURIComponent(id)}`, { files, expectedVersion: version }, opts.requestId)
 }
 
 // ---- rules and instructions, saved to Cloud the way the web saves them (#585) ----

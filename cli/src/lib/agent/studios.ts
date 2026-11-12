@@ -28,7 +28,7 @@ import { checkAgentKeys, specAgentCatalog, type AgentPlaces, type RefusedAgent }
 import { canonicalSpecAgent } from '../spec-agent-names'
 import { cloudStudioSources, heldStudioName } from './cloud-studios'
 import { translating } from './language'
-import { boardStudioDefs, builtinDefs, draftId, stagesOf, writeStudioDef, type StudioDef } from './studio-file'
+import { boardStudioDefs, builtinDefs, stagesOf, type StudioDef } from './studio-file'
 import { refusal, type FrozenStudio, type RunRefusal, type StudioHelper, type StudioScheduled } from './types'
 
 export type { StudioHelper }
@@ -349,11 +349,7 @@ function landRefused(flow: Studio, agent: string, found: RefusedAgent): RunRefus
   })
 }
 
-// ---- writing: a Studio builder draft ----------------------------------------
-//
-// Outside `pull`/`push` (#544), inside a Studio builder task's run, the draft it
-// writes on the board takes a name, a copy of another studio, or a new name; approving the
-// task saves it.
+// ---- saved run settings -----------------------------------------------------
 
 type Write = { ok: boolean } & Partial<RunRefusal>
 
@@ -365,40 +361,7 @@ const save = (change: (block: Record<string, unknown>) => void): Write =>
     else cfg.studios = block
   })
 
-function writeDraft(def: StudioDef, settings?: (block: Record<string, unknown>) => void): Write {
-  try {
-    writeStudioDef(def)
-  } catch (e) {
-    const why = e instanceof Error ? e.message : String(e)
-    return { ok: false, ...refusal('fileWrite', `couldn't write the "${def.name}" studio: ${why}`, { path: def.id, details: why }) }
-  }
-  return settings ? save(settings) : { ok: true }
-}
-
-const draftDef = (id: string): StudioDef | undefined => boardStudioDefs().defs.find((d) => d.id === id)
-
 const notFound = (id: string): Write => ({ ok: false, ...refusal('studioNotFound', `this board has no \`${id}\` studio`, { id }) })
-
-const readOnly = (): Write => ({ ok: false, ...refusal('studioReadOnly', 'Only a Studio builder draft is renamed here; change a studio with `akb studio pull` and `push`.') })
-
-const trimmedName = (name: string): string => name.replace(/\s+/g, ' ').trim()
-
-// A number written onto the end of a name. No space after a Han, Kana or Hangul character:
-// "软件开发2" is how that name is written and "Coding 2" is how this one is.
-const nameTaken = (name: string, except = ''): boolean =>
-  studios().some((w) => w.id !== except && trimmedName(w.name).toLowerCase() === trimmedName(name).toLowerCase())
-
-/** Rename the draft. */
-export function renameStudio(id: string, name: string): Write {
-  const draft = draftId()
-  if (!draft) return readOnly()
-  if (id !== draft) return { ok: false, ...refusal('studioReadOnly', `only the draft, \`${draft}\`, is renamed here`, { id }) }
-  const wanted = trimmedName(name)
-  if (!wanted) return { ok: false, ...refusal('studioUnnamed', 'a studio needs a name') }
-  if (nameTaken(wanted, id)) return { ok: false, ...refusal('studioTaken', `this workspace already has a studio called "${wanted}"`, { name: wanted }) }
-  const def = draftDef(id)
-  return def ? writeDraft({ ...def, name: wanted }) : notFound(id)
-}
 
 // Refused when the agent belongs to another studio (#1095).
 function elsewhere(agent: string, id: string): Write | null {
@@ -418,16 +381,6 @@ function elsewhere(agent: string, id: string): Write | null {
 /** Drop a deleted agent from the draft and the saved run state, so a later agent of the same
  *  name starts in no studio. */
 export function forgetStudioAgent(agent: string): Write {
-  const id = draftId()
-  const def = id ? draftDef(id) : undefined
-  if (def) {
-    const keep = (rows: StudioHelper[]) => rows.filter((h) => h.agent !== agent)
-    try {
-      writeStudioDef({ ...def, previews: keep(def.previews), land: keep(def.land), scheduled: def.scheduled.filter((s) => s.agent !== agent) })
-    } catch {
-      // Left listing it: an agent no board has drops out of every studio it is read into.
-    }
-  }
   return save((block) => {
     const all = configBlock(block.stages)
     for (const [id, flow] of Object.entries(all)) {

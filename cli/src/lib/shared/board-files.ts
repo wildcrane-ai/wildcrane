@@ -68,12 +68,6 @@ export const studioName = (id: string) =>
 /** The user's rule for every card on a studio (#2152). */
 export const studioRuleFile = (id: string) => `rules/studios/${studioName(id)}.md`
 
-/** The built-in whose task writes a studio (#2004). */
-export const BUILDER = 'wf_builtin_studio_builder'
-
-/** Where a builder task's studio is written on its project's board, until the approval saves it. */
-export const draftFolder = (task: string) => cardSlug(task)
-
 export interface CardFront {
   title?: string
   status?: string

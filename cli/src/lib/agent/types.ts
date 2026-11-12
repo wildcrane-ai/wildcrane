@@ -274,7 +274,7 @@ export type RunRefusalKind =
   | 'studioUnnamed'
   | 'studioTaken'
   | 'studioNotFound'
-  /** Only a Studio builder draft is written on the board; studios change by `pull`/`push`. */
+  /** Studios are edited through ordinary local folders and published to Cloud. */
   | 'studioReadOnly'
   /** Studios are Cloud's (#409): not signed in, or the board is linked to no project. */
   | 'needsCloud'

@@ -25,7 +25,6 @@ import { studioName } from '../../cli/src/lib/shared/board-files.ts'
 import { clearLaid, layOut } from './triage'
 import { prepareKanbanSkill } from './kanban-skill'
 import { installCommitHook } from '../../cli/src/lib/skill/hook'
-import { draftLine, isBuilder, placeDraft } from './built'
 
 /** Why the runtime a job names cannot run here; null when it can. */
 export function unavailable(wanted: Job['runtime'], reports: RuntimeReport[]): string | null {
@@ -523,10 +522,8 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     fs.mkdirSync(path.dirname(body), { recursive: true })
     // The card takes the task's number (#2063), and no other.
     if (!ws.number) return fail('This task has no number yet.')
-    fs.writeFileSync(body, `${said.request || title}\n${isBuilder(ws) ? `\n${draftLine(ws)}\n` : ''}${pictures(job, ws, ws.number)}`)
-    // Created and sent in one turn on the board: another task's pull in between would remove
-    // a card Cloud does not hold yet (#575). A builder's draft is placed after, so it goes only
-    // once it checks out.
+    fs.writeFileSync(body, `${said.request || title}\n${pictures(job, ws, ws.number)}`)
+    // Publish the new card before another task can pull the board (#575).
     const created = await withBoard(ws, async (push): Promise<api.Call<number>> => {
       const card = made(await akb(['raw', 'create', '--title', title, '--studio', studioName(flow.studio), '--body-file', body,
         '--id', String(ws.number), ...cardFlags(ws, flow.metadata), '--json']))
@@ -534,14 +531,11 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       if (!card.ok) return card
       const sent = await push({ id: job.id, machineId: deps.machineId })
       if (!sent.ok) return { ok: false, error: sent.error }
-      const placed = isBuilder(ws) ? await placeDraft(ws, deps.api) : card
-      return placed.ok ? card : placed
+      return card
     })
     if (!created.ok) return fail(created.error)
     id = created.value
-  } else if (id && isBuilder(ws)) {
-    const placed = await withBoard(ws, () => placeDraft(ws, deps.api))
-    if (!placed.ok) return fail(placed.error)
+
   }
   if (!id) return fail('This task has no card on this computer.')
   const card = id

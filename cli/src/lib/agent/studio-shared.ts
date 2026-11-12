@@ -6,25 +6,16 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { STUDIO_MEMORY_DIR } from '../memory'
-import { MEMORY, STUDIOS, rel } from '../paths'
+import { MEMORY, rel } from '../paths'
 import { RULES_FILE, SHARED_DIR } from '../shared/studio-files'
 import { rawMove } from './command'
 import { cloudFlows, type StudioFiles } from './cloud-studios'
-import { draftId } from './studio-file'
-import { readStudioFolder } from './studio-folder'
 
 /** One studio's files by akb's name for it (`blog-post`, `wf-…`) or Cloud's id; null when this
  *  board has no such studio. */
 export function studioFiles(studio: string): StudioFiles | null {
   const flow = cloudFlows().find((f) => f.def.id === studio || f.cloudId === studio)
   if (flow) return flow.files
-  if (studio && draftId() === studio) {
-    try {
-      return readStudioFolder(path.join(STUDIOS, studio))
-    } catch {
-      return null
-    }
-  }
   return null
 }
 

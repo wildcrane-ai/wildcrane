@@ -153,7 +153,7 @@ export interface SettingDecl {
 
 /** Raised by Cloud when it no longer takes this Runner's protocol. 9 keeps keys (#2135); 10 stops
  *  a flow job, pausing its board runs (#2128); 11 holds the computer's lock (#2161); 14 shares local settings and account revocation; 18 says Studio (#645). */
-export const PROTOCOL = 18
+export const PROTOCOL = 19
 
 const TIMEOUT_MS = 20_000
 
@@ -322,8 +322,6 @@ export interface JobReport {
   /** 讨论结束时的目标；写入只选择 goals 或兼容 ideas。 */
   goals?: Goal[]
   ideas?: Goal[]
-  /** A Studio builder task's studio, checked (#2004). */
-  studio?: { files: Record<string, string>; base?: number }
   /** The commit a build landed as, on the branch checked out in the project (#2109). */
   landing?: { commit: string; branch: string }
   subagents?: Subagents
@@ -511,7 +509,7 @@ export interface Studio {
 export const listStudios = (workspace: string, after?: string | null) =>
   request<{ data: Studio[]; next: string | null }>('GET', `/v1/studios?workspace=${q(workspace)}&limit=100${after ? `&after=${q(after)}` : ''}`)
 
-/** `context.studio`: the own studio a Studio builder task changes (#2004). */
+/** Read the current files of a workspace Studio. */
 export const readTask = (task: string) =>
   request<{ key?: string; title: string; request: string; status?: string; card_version?: number; review?: { revision: number } | null; context?: { studio?: string } }>('GET', `/v1/tasks/${q(task)}`)
 

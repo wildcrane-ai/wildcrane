@@ -22,7 +22,6 @@ import * as api from './api'
 import type { AgentJob, Flow, Job, JobEvent, JobReport, RuntimeReport } from './api'
 import { keepChat, keepCloudChat, keepDecisions, markReviewed, reviewMarks } from './chats'
 import { confirmFlowStopped, runAgent, runFlow, runReview, writeTranscript } from './flow'
-import { builtStudio, draftBase } from './built'
 import { hold } from './cache'
 import { allowedProjects } from './folders'
 import { goalsFileOf, readGoals, writeGoals } from './goals'
@@ -1075,8 +1074,7 @@ async function finish(deps: Shared, id: string, lease: Lease, outcome: Outcome, 
 
 /** What the job changed goes back, then how it ended; `landed` once both were taken. */
 async function sendBack(deps: StepDeps, id: string, lease: Lease, ws: TaskFolder, said: JobReport, landed = () => {}): Promise<void> {
-  const built = await builtStudio(ws, deps.akb)
-  const report = built ? { ...said, studio: { files: built, base: draftBase(ws) } } : said
+  const report = said
   const pushed = await whileOffline<Pushed>(deps, id, lease, () => push(ws, { id, machineId: deps.machineId }))
   if (!pushed) return
   if (pushed.ok) {

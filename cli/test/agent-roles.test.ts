@@ -142,13 +142,14 @@ describe('the roles', () => {
       'schema-designer',
       'scriptwriter',
       'social-illustrator',
+      'studio-publisher',
       'studio-writer',
       'tech-stack-advisor',
       'ui-designer',
       'video-cloner',
       'video-template-builder',
     ])
-    assert.deepEqual(agentRoster().map((a) => a.kind), [...Array(6).fill('role'), ...Array(26).fill('agent')])
+    assert.deepEqual(agentRoster().map((a) => a.kind), [...Array(6).fill('role'), ...Array(27).fill('agent')])
     // A role says which work it runs; a specialist is asked for by name and runs none.
     assert.ok(agentRoster()[0]!.flows.length > 0)
     assert.deepEqual(agentRoster()[7]!.flows, [])

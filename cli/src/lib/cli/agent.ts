@@ -3,7 +3,7 @@ import { queryPreviews, externalGoalSession, cloudGoal, cloudGoalStudios } from 
 //
 //   declareRuns  onto `akb` (./akb.ts): Cloud tasks and goals, the account, generation, guides
 //   declareRaw   onto `akb raw` (./board.ts): the local board and in-run commands —
-//                card, delivery, run, triage, memory, previews, agent, studio validate|rename|diagram
+//                card, delivery, run, triage, memory, previews, agent, studio validate|diagram
 //
 // The flow commands come from ../agent/flows.ts, so a new flow is a command and a help entry at once.
 
@@ -47,7 +47,7 @@ import {
   workspaceList,
 } from '../../commands/task'
 import { cmdGuide } from '../../commands/guide'
-import { cmdStudioDiagram, cmdStudioInstructions, cmdStudioList, cmdStudioRule, cmdStudioPull, cmdStudioPush, cmdStudioRename, cmdStudioValidate } from '../../commands/studio'
+import { cmdStudioDiagram, cmdStudioInstructions, cmdStudioList, cmdStudioRule, cmdStudioPull, cmdStudioPush, cmdStudioCreate, cmdStudioValidate } from '../../commands/studio'
 import {
   cmdAnswered,
   cmdCancel,
@@ -257,26 +257,20 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
       await boardless(this, cli, () => cmdComponents(this.opts()))
     })
 
-  const studio = noun('studio', "check a studio folder, or rename a draft or draw a diagram inside a run")
+  const studio = noun('studio', "check a studio folder or draw its diagram")
   withShared(studio.command('validate'))
     .argument('<folder>', 'a studio folder: STUDIO.md and agents/')
     .summary('report every problem in a studio folder; agents it names but lacks are read from the board')
     .action(async function (this: Command, folder: string) {
       await onBoard(this, cli, () => cmdStudioValidate(folder))
     })
-  withShared(studio.command('rename'))
-    .argument('<id>', 'the draft, from `studio list`')
-    .argument('<name...>', 'what to call it now')
-    .summary('rename the Studio builder draft. Only inside that task\'s run.')
-    .action(async function (this: Command, id: string, name: string[]) {
-      await onBoard(this, cli, () => cmdStudioRename(id, name.join(' ')))
-    })
   withShared(studio.command('diagram'))
-    .argument('<id>', 'the studio, from `studio list`')
-    .argument('<card>', 'the card whose asset folder gets studio.json')
+    .argument('<id-or-card>', 'studio id, or card number with --folder')
+    .argument('[card]', 'the card whose asset folder gets studio.json')
+    .option('--folder <folder>', 'read a local studio folder')
     .summary('write the studio\'s diagram to .assets/<card>/studio.json and print the <Studio> tag that shows it')
     .action(async function (this: Command, id: string, card: string) {
-      await onBoard(this, cli, () => cmdStudioDiagram(id, card))
+      await onBoard(this, cli, () => cmdStudioDiagram(id, this.opts().folder ? id : card, this.opts().folder))
     })
 }
 
@@ -590,7 +584,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .allowUnknownOption()
     .action(async function (this: Command) {
       const word = this.args[0]
-      if (word === 'rename' || word === 'diagram') {
+      if (word === 'diagram') {
         this.error(`\`${cli.program} studio ${word}\` is now \`${cli.program} raw studio ${word}\`.`, { code: 'commander.unknownCommand' })
       }
       if (word) this.error(`unknown command '${word}'`, { code: 'commander.unknownCommand' })
@@ -613,8 +607,18 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       await onBoard(this, cli, () => cmdStudioPull(id, folder))
     })
 
+  flowWord('create')
+    .argument('<folder>', 'the studio files to create')
+    .requiredOption('--request-id <id>', 'the publication request, reused on retry')
+    .option('--workspace <id>', 'the target workspace; otherwise use the linked project')
+    .summary('create a workspace studio from a local folder')
+    .action(async function (this: Command, folder: string) {
+      await boardless(this, cli, () => cmdStudioCreate(folder, this.opts()))
+    })
+
   flowWord('push')
     .argument('<folder>', 'a folder `studio pull` wrote')
+    .option('--request-id <id>', 'reuse this publication request after a timeout')
     .option('--dry-run', 'check the folder and print what would happen, saving nothing')
     .summary('save the edited folder as the studio\'s next version, which new tasks take')
     .action(async function (this: Command, folder: string) {

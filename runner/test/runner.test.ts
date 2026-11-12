@@ -1297,10 +1297,10 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.deepEqual(stop, { reason: 'elsewhere', machine: 'laptop' })
   })
 
-  it('registers with protocol 18', async () => {
+  it('registers with protocol 19', async () => {
     start()
     await until(() => cloud.registrations > 0)
-    assert.equal(cloud.protocol, 18)
+    assert.equal(cloud.protocol, 19)
   })
 
   it('stops as outdated when Cloud no longer takes its protocol', async () => {
@@ -3576,62 +3576,17 @@ describe('flow jobs (#2020)', () => {
     assert.equal(spawnSync('git', ['-C', project, 'status', '--porcelain'], { encoding: 'utf8' }).stdout, '', 'the skill or board reached git')
   })
 
-  describe('a Studio builder task (#2004)', () => {
-    const BUILDER = 'wf_builtin_studio_builder'
-    const DRAFT = 'studios/task-1/'
-    const STUDIO = '---\nname: Report\npreviews: [writer]\n---\n'
-    const AGENT = '---\nname: writer\ndescription: Writes it.\n---\n\nWrite it.\n'
-    const written = { [`${DRAFT}STUDIO.md`]: STUDIO, 'agents/writer/AGENT.md': AGENT }
-
-    it('places a new one, names its folder on the card, and sends it back with its agents', async () => {
-      process.env.FAKE_AKB = JSON.stringify({ refine: { result: 'Wrote it.', writes: written } })
-      cloud.task.title = '每周竞品周报'
-      const job = await flowJob('j1', { verb: 'create', studio: BUILDER })
+  it('runs studio authoring like any other studio, without a hidden draft or publication report', async () => {
+    for (const studio of ['wf_builtin_studio_builder', 'wf_own_authoring']) {
+      process.env.FAKE_AKB = JSON.stringify({ refine: { result: 'Draft ready.' } })
+      const job = await flowJob(`author-${studio}`, { verb: 'create', studio })
       assert.equal(job.outcome, 'done', job.reason)
-      assert.match(cloud.file('todo/2-task.md')!, /<!-- studio folder: \.akb\/kanban\/studios\/task-1\/ -->/)
-      const files = { 'STUDIO.md': STUDIO, 'agents/writer/AGENT.md': AGENT }
-      assert.deepEqual((job.report?.studio as { files: unknown }).files, files)
-      assert.equal(cloud.file(`${DRAFT}agents/writer/AGENT.md`), AGENT)
-    })
-
-    it('starts a new one as the task\'s title with no agents', async () => {
-      process.env.FAKE_AKB = JSON.stringify({ refine: { result: 'Left it.' } })
-      cloud.task.title = 'Job posts'
-      const job = await flowJob('j1', { verb: 'create', studio: BUILDER })
-      assert.equal(job.outcome, 'done', job.reason)
-      assert.match(cloud.file(`${DRAFT}STUDIO.md`)!, /^---\nname: Job posts\nneedsArtifact: false\n---\n$/)
-    })
-
-    it('changes one of the user\'s own in place, its agents laid out for akb', async () => {
-      cloud.task.context = { studio: 'wf_own' }
-      cloud.studios.wf_own = { 'STUDIO.md': STUDIO, 'agents/writer/AGENT.md': AGENT }
-      process.env.FAKE_AKB = JSON.stringify({ refine: { result: 'Changed it.', writes: { 'agents/writer/AGENT.md': AGENT.replace('Write it.', 'Write it short.') } } })
-      const job = await flowJob('j1', { verb: 'create', studio: BUILDER })
-      assert.equal(job.outcome, 'done', job.reason)
-      assert.match((job.report?.studio as { files: Record<string, string> }).files['agents/writer/AGENT.md']!, /Write it short\./)
-
-      fs.rmSync(path.join(board(), 'agents'), { recursive: true, force: true })
-      process.env.FAKE_AKB = JSON.stringify({ revise: { result: 'Again.' } })
-      const again = await flowJob('j2', { verb: 'revise', studio: BUILDER, card: 2, text: 'Shorter' })
-      assert.equal(again.outcome, 'done', again.reason)
-      assert.match(fs.readFileSync(path.join(board(), 'agents', 'writer', 'AGENT.md'), 'utf8'), /Write it short\./)
-    })
-
-    it('sends the draft back as written, whatever akb finds in it (#622)', async () => {
-      process.env.FAKE_AKB = JSON.stringify({ refine: { writes: written }, specProblems: ['.akb/kanban/agents/writer/AGENT.md: no description'] })
-      const job = await flowJob('j1', { verb: 'create', studio: BUILDER })
-      assert.equal(job.outcome, 'done', job.reason)
-      assert.ok((job.report?.studio as { files: Record<string, string> }).files['STUDIO.md'])
-    })
-
-    it('sends its card to Cloud before planning, without the draft (#577)', async () => {
-      process.env.FAKE_AKB = JSON.stringify({ refine: { refuse: 'stopped' } })
-      const job = await flowJob('j1', { verb: 'create', studio: BUILDER })
-      assert.equal(job.outcome, 'failed')
-      assert.match(cloud.file('todo/2-pricing-page.md') ?? '', /studio folder: \.akb\/kanban\/studios\/task-1\//)
-      assert.equal(cloud.file(`${DRAFT}STUDIO.md`), null)
-    })
+      assert.equal(job.report?.studio, undefined)
+      assert.equal(cloud.file('studios/task-1/STUDIO.md'), null)
+      assert.doesNotMatch(cloud.file('todo/2-task.md') ?? '', /studio folder:/)
+    }
   })
+
 })
 
 describe('periodic agents on the Runner (#2068)', () => {
