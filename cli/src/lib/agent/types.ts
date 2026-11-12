@@ -374,6 +374,7 @@ export interface RunRecord {
   /** What this run cost in US dollars, as its own output reported it at close. An
    *  estimate the agent worked out from tokens at list prices — not a bill. */
   costUsd?: number
+  costIncomplete?: boolean
   /** The session's running total behind `costUsd`, on a connector that reports one (#1480). */
   sessionCostUsd?: number
   /** The session total this run started from, taken off `sessionCostUsd` for `costUsd` (#1483). */

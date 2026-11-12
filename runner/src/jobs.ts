@@ -653,7 +653,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   }
   const measure = (said: JobReport): JobReport => {
     if (!attempt || stream.lost()) return said
-    Object.assign(attempt, { session: said.session, usage: said.usage, costUsd: said.costUsd })
+    Object.assign(attempt, { session: said.session, usage: said.usage, costUsd: said.costUsd, costIncomplete: said.costIncomplete })
     persist()
     const { usage: _usage, costUsd: _cost, ...rest } = said
     return { ...rest, ...replySpent(checkpoint, job.runtime) }
@@ -1181,6 +1181,7 @@ function report(job: Job, run: Plan, turn?: TurnEnd): JobReport {
     session: run.session(),
     ...(usage ? { usage } : {}),
     ...(costUsd !== undefined ? { costUsd } : {}),
+    ...((turn ? turn.costIncomplete : run.renderer?.costIncomplete?.()) ? { costIncomplete: true } : {}),
     ...(context?.used !== undefined && limit ? { context: { used: context.used, limit } } : {}),
   }
 }

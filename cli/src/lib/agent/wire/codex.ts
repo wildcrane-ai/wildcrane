@@ -3,7 +3,8 @@ import type { RunClient, ClientTurn, TurnEnd } from './client'
 import { BACKGROUND_WAIT } from '../settings'
 import { createBackgroundTasks, createBackgroundWait, backgroundWaitMessage } from './background'
 import { createCodexStreamRenderer } from './codex-stream'
-import { readCodexRunFacts } from './codex-session'
+import { childSpend, readCodexRunFacts } from './codex-session'
+import { addUsage, ownUsage, ZERO_USAGE } from './usage'
 import { obj, str, type Json } from './json'
 import { targetOf } from './events'
 import { connect, RpcError } from './rpc'
@@ -79,6 +80,7 @@ export function createCodexClient(options: Options = { images: [] }): RunClient 
 }
 
 async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof createBackgroundTasks>): Promise<TurnEnd> {
+  const since = Date.now()
   const renderer = createCodexStreamRenderer()
   const preparingUntil = Math.min(io.prepareUntil ?? Infinity, Date.now() + CONVERSATION_MS.prepare)
   const phase = (phase: import('../../shared/conversation').ConversationPhase) => io.event?.({ kind: 'phase', data: { phase, at: new Date().toISOString() } })
@@ -120,13 +122,14 @@ async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof cr
     deadline.close()
     io.stdout.off('close', closed)
     io.log(renderer.flush())
-    const usage = total && (!options.threadId && !io.resumeId ? total : baseline ? {
-      input: Math.max(0, total.input - baseline.input), cacheRead: Math.max(0, total.cacheRead - baseline.cacheRead),
-      cacheCreation: Math.max(0, total.cacheCreation - baseline.cacheCreation), output: Math.max(0, total.output - baseline.output),
-    } : undefined)
+    const usage = ownUsage(total, baseline)
+    const child = childSpend(children, since)
+    const cost = priceUsd(provider, model, usage)
+    const combinedUsage = usage && child.usage ? addUsage(usage, child.usage) : usage ?? child.usage
+    const costUsd = cost === undefined ? child.costUsd : cost + (child.costUsd ?? 0)
     const failure = error || tasks.failure()
     if (failure) io.event?.({ kind: 'error', data: { text: failure } })
-    resolve({ ok: !failure, error: failure, result: renderer.result(), replyParts: renderer.replyParts?.(), usage, context, costUsd: priceUsd(provider, model, usage) })
+    resolve({ ok: !failure, error: failure, result: renderer.result(), replyParts: renderer.replyParts?.(), usage: combinedUsage, context, costUsd, costIncomplete: child.costIncomplete || (cost === undefined && child.costUsd !== undefined) || undefined })
   }
   const closed = () => end('Codex closed the connection before all work and results finished.')
   io.stdout.once('close', closed)
@@ -272,6 +275,7 @@ async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof cr
     }
     if (msg.method === 'item/started' || msg.method === 'item/completed') item(obj(p.item), msg.method === 'item/completed', !completedTurns.has(turnId))
     if (msg.method === 'thread/tokenUsage/updated') {
+      if (!submitted) return
       const token = obj(p.tokenUsage)
       const counts = obj(token.total)
       const input = Number(counts.inputTokens) || 0
@@ -279,6 +283,11 @@ async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof cr
       const write = Number(counts.cacheWriteInputTokens) || 0
       total = { input: Math.max(0, input - read - write), cacheRead: read, cacheCreation: write, output: Number(counts.outputTokens) || 0 }
       const last = obj(token.last)
+      if (!baseline && Object.keys(last).length) {
+        const cached = Number(last.cachedInputTokens) || 0
+        const written = Number(last.cacheWriteInputTokens) || 0
+        baseline = ownUsage(total, { input: Math.max(0, (Number(last.inputTokens) || 0) - cached - written), cacheRead: cached, cacheCreation: written, output: Number(last.outputTokens) || 0 })
+      }
       context = { used: (Number(last.inputTokens) || 0) + (Number(last.outputTokens) || 0), ...(Number(token.modelContextWindow) > 0 ? { limit: Number(token.modelContextWindow) } : {}) }
       io.gotContext?.(context)
     }
@@ -319,6 +328,7 @@ async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof cr
     if (model) io.gotModel(model)
     io.gotResumeId(threadId)
     baseline = readCodexRunFacts(threadId)?.turns?.at(-1)?.total
+      ?? (!options.threadId && !io.resumeId ? ZERO_USAGE : undefined)
     emit('thread.started', { thread_id: threadId })
     if (Date.now() >= preparingUntil) throw Error('Codex preparation timed out.')
     phase('ready')

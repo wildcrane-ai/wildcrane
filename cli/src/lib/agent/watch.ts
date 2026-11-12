@@ -603,6 +603,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
 
       patch(sessionId, (r) => {
         if (totalCost !== undefined) r.costUsd = totalCost
+        r.costIncomplete = (spoken ? spoken.costIncomplete : renderer?.costIncomplete?.()) || undefined
         if (sessionTotal !== undefined) r.sessionCostUsd = sessionTotal
         if (typeof totalFrom === 'number') r.sessionCostFrom = totalFrom
         if (usage) r.usage = usage

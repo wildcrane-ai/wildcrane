@@ -177,7 +177,7 @@ export function splitLog(logText: string): {
     }
     if (line.startsWith(COST_MARKER)) {
       const usd = Number(line.slice(COST_MARKER.length).trim())
-      if (Number.isFinite(usd) && usd > 0) costUsd = usd
+      if (Number.isFinite(usd) && usd >= 0) costUsd = usd
       continue
     }
     if (line.startsWith(MODEL_MARKER)) {

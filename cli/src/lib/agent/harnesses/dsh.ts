@@ -157,7 +157,7 @@ export const DSH: Harness = {
 
   stopsOnRateLimit: false,
 
-  client: (values) => createAcpClient({ model: values.model, mcpConfig: values.mcpConfig }),
+  client: (values) => createAcpClient({ tool: 'dsh', model: values.model, mcpConfig: values.mcpConfig }),
 
   // The conversation names its own session, on the first thing it answers, and the record
   // saves the id there — so a run that dies a minute later can still be picked up.

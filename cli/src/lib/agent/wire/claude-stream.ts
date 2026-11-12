@@ -194,7 +194,7 @@ export function createStreamRenderer(): StreamRenderer {
         // plan still reports one even though nothing was charged for it, which is exactly
         // why the UI calls it an estimate. Only a positive, finite number counts; anything
         // else means the run has no cost to show (task #90).
-        if (typeof ev.total_cost_usd === 'number' && Number.isFinite(ev.total_cost_usd) && ev.total_cost_usd > 0) {
+        if (typeof ev.total_cost_usd === 'number' && Number.isFinite(ev.total_cost_usd) && ev.total_cost_usd >= 0) {
           cost = ev.total_cost_usd
         }
         // The same event carries this turn's token counts. All-zero counts read as

@@ -309,6 +309,7 @@ export interface JobReport {
   context?: { used: number; limit: number }
   usage?: Usage
   costUsd?: number
+  costIncomplete?: boolean
   /** `costUsd` by the runtime each part ran on (#629); a null id is the job's own. */
   runtimeCosts?: { runtimeId: string | null; runtime: string; costUsd: number }[]
   /** Claude session totals for each attempt, in execution order. */

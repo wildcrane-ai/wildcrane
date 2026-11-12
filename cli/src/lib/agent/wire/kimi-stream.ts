@@ -19,6 +19,7 @@
 // out of the session Kimi wrote — the one `session.resume_hint` names, or, for a run that
 // died before printing it, the newest one opened in this folder since (./kimi-session).
 
+import { ownUsage, ZERO_USAGE } from './usage'
 import { createEventCollector, type ToolKind } from './events'
 import { argHint, num, obj, str } from './json'
 import { createLineReader, frame, type StreamRenderer } from './stream'
@@ -73,12 +74,13 @@ function retry(row: Record<string, unknown>): string {
 // panel names the model while the run is still working.
 const LOOK_EVERY_MS = 3_000
 
-export function createKimiStreamRenderer(cwd: string): StreamRenderer {
+export function createKimiStreamRenderer(cwd: string, resumeId?: string): StreamRenderer {
+  const before = resumeId ? readKimiRunFacts(resumeId)?.usage : ZERO_USAGE
   // A crashed run's session is looked for among the ones opened SINCE this renderer was
   // built, so it can never settle on the previous run's (./kimi-session).
   const startedAt = Date.now()
   let final: string | undefined
-  let sessionId: string | undefined
+  let sessionId: string | undefined = resumeId
   let facts: KimiRunFacts | undefined
   let lookedAt = 0
   const events = createEventCollector()
@@ -153,7 +155,7 @@ export function createKimiStreamRenderer(cwd: string): StreamRenderer {
     },
     result: () => final,
     events: events.events,
-    usage: () => facts?.usage,
+    usage: () => ownUsage(facts?.usage, before),
     context: () => {
       look(false)
       return facts?.context

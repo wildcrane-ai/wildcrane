@@ -134,7 +134,7 @@ export const GROK: Harness = {
   // made-up variable.
   stopsOnRateLimit: false,
 
-  client: (values) => createAcpClient({ model: values.model, mcpConfig: values.mcpConfig }),
+  client: (values) => createAcpClient({ tool: 'grok', model: values.model, mcpConfig: values.mcpConfig }),
 
   // The conversation names its own session, in the answer to the first thing we ask, and
   // the record saves the id there — so a run that dies a minute later can still be picked

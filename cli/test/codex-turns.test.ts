@@ -7,6 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { after, beforeEach, describe, it } from 'node:test'
 
+import { childSpend } from '../src/lib/agent/wire/codex-session.ts'
 import { priceUsd } from '../src/lib/agent/prices.ts'
 import { createCodexStreamRenderer } from '../src/lib/agent/wire/codex-stream.ts'
 import { SESSIONS_DIR, setBoardRoot } from '../src/lib/paths.ts'
@@ -52,7 +53,7 @@ function writeRollout(id: string, turns: Raw[][], from: Raw = { input: 0, cached
   const lines = [{ type: 'session_meta', payload: { id, forked_from_id: forkedFrom ?? null, source: 'exec', model_provider: 'openai' } }]
   let prev = from
   for (const requests of turns) {
-    lines.push({ type: 'event_msg', payload: { type: 'task_started' } } as never)
+    lines.push({ timestamp: new Date().toISOString(), type: 'event_msg', payload: { type: 'task_started' } } as never)
     lines.push({ type: 'turn_context', payload: { model: MODEL } } as never)
     for (const total of requests) {
       const last = { input: total.input - prev.input, cached: total.cached - prev.cached, output: total.output - prev.output }
@@ -117,4 +118,14 @@ describe('a turn is billed its own share', () => {
       .reduce((a, r) => a + r.costUsd!, 0)
     assert.ok(Math.abs(sum - priceUsd('openai', MODEL, board(T5))!) < 1e-9)
   })
+})
+
+it('counts a child fork once and marks missing child data partial (#689)', () => {
+  const since = Date.now() - 1000
+  writeRollout(FORK, [[T5]], T4, THREAD)
+  const spent = childSpend([FORK, FORK], since)
+  assert.deepEqual(spent.usage, OWN5)
+  assert.equal(spent.costUsd, priceUsd('openai', MODEL, OWN5))
+  assert.equal(spent.costIncomplete, undefined)
+  assert.equal(childSpend([FORK, 'unknown'], since).costIncomplete, true)
 })

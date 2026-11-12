@@ -72,6 +72,7 @@ export interface TurnEnd {
   context?: ContextWindow
   /** What it cost in US dollars, when the agent priced it. */
   costUsd?: number
+  costIncomplete?: boolean
 }
 
 /** A connector the board talks to rather than only reads. */

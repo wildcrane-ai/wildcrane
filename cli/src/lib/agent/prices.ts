@@ -86,5 +86,5 @@ export function priceUsd(
       usage.cacheRead * price.cachedInput +
       usage.output * price.output) /
     1_000_000
-  return usd > 0 ? usd : undefined
+  return Number.isFinite(usd) && usd >= 0 ? usd : undefined
 }

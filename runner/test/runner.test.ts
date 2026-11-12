@@ -2902,6 +2902,14 @@ describe('flow jobs (#2020)', () => {
     assert.equal(job.report?.costUsd, 0.5)
   })
 
+  it('marks partial costs without turning a known zero into unknown (#689)', () => {
+    const job = { runtime: 'codex' as const }
+    assert.equal(spentBy([{ sessionId: 'a', costUsd: 0 }], job).costIncomplete, undefined)
+    const partial = spentBy([{ sessionId: 'a', costUsd: 0 }, { sessionId: 'b' }], job)
+    assert.equal(partial.costUsd, 0)
+    assert.equal(partial.costIncomplete, true)
+  })
+
   it('splits a step\'s cost by the runtime each agent ran on (#629)', () => {
     const pick = { id: 'rt_cx', name: 'Codex', runtime: 'codex', model: null, settings: {}, runner: 'm' }
     const job = { runtime: 'claude-code' as const, runtimeId: 'rt_cc', agentRuntimes: { reviewer: pick } }

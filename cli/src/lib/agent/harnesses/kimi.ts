@@ -229,7 +229,10 @@ export const KIMI: Harness = {
   // Kimi fails that one at once, because it cannot succeed until the account is topped up.
   stopsOnRateLimit: false,
 
-  renderer: createKimiStreamRenderer,
+  renderer: (cwd, _command, argv = []) => {
+    const at = argv.findIndex(a => ['--session', '-S', '--resume', '-r'].includes(a))
+    return createKimiStreamRenderer(cwd, at >= 0 ? argv[at + 1] : undefined)
+  },
 
   // Kimi names its own session, and prints the id as its closing row.
   adoptsSessionId: false,

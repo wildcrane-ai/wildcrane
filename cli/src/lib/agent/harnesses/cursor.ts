@@ -60,7 +60,7 @@ export const CURSOR: Harness = {
 
   stopsOnRateLimit: false,
 
-  client: (values) => createAcpClient({ model: values.model, mcpConfig: values.mcpConfig }),
+  client: (values) => createAcpClient({ tool: 'cursor', model: values.model, mcpConfig: values.mcpConfig }),
 
   adoptsSessionId: false,
 

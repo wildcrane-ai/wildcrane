@@ -26,6 +26,7 @@ export interface StreamRenderer {
    *  prices — not a bill (task #90). Only harnesses whose output reports a cost
    *  implement this; the rest leave it out and the UI shows no number. */
   costUsd?(): number | undefined
+  costIncomplete?(): boolean | undefined
   /** The tokens the run consumed, once the `result` event has reported them —
    *  fresh input, cache writes, cache reads, and output, the same counts the
    *  cost above is worked out from. Only harnesses whose output reports usage

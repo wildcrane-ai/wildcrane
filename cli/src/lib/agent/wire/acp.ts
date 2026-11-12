@@ -1,3 +1,4 @@
+import { acpCostFile, readAcpCost, saveAcpCost } from './acp-cost'
 import { bounded, CONVERSATION_MS } from '../../shared/conversation'
 // The board's side of the Agent Client Protocol (#225).
 //
@@ -96,10 +97,7 @@ function pickedModel(answer: Json, wanted: string): AcpModel | undefined {
     ?? list.find((m) => m.name === wanted || m.modelId.split('[')[0] === wanted)
 }
 
-// The tokens a turn reported, in the four counts the board keeps. The agent counts them
-// for the session rather than for one turn, so a run that continued an earlier
-// conversation reports what that whole conversation has used — the agent's own number
-// either way, and never one the board added up itself.
+// DSH and Grok return per-prompt tokens. Only usage_update costs are session totals.
 //
 // `grossInput` is for an agent whose `inputTokens` is the whole prompt with the cache
 // already in it, as grok's is: the two cached counts come back out so `input` stays the
@@ -155,7 +153,7 @@ const TICKS_PER_USD = 1e10
 
 function ticksUsd(value: unknown): number | undefined {
   const ticks = num(value)
-  return ticks > 0 ? ticks / TICKS_PER_USD : undefined
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? ticks / TICKS_PER_USD : undefined
 }
 
 // Why a turn that didn't simply end stopped, in plain words. `end_turn` is the one that
@@ -170,6 +168,7 @@ const STOPPED: Record<string, string> = {
 // ---- one turn --------------------------------------------------------------
 
 export interface AcpOptions {
+  tool?: string
   /** The model to work with, chosen as the session opens. Empty leaves the agent on its
    *  own default. */
   model?: string
@@ -212,6 +211,7 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
   // work, and both would bury it.
   let live = false
   let costUsd: number | undefined
+  let costBefore: number | undefined = io.resumeId ? readAcpCost(acpCostFile(options.tool ?? 'acp', io.cwd, io.resumeId)) : 0
   let context: TurnEnd['context']
 
   const rpc = connect(
@@ -219,6 +219,10 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
     io.stdin,
     (msg) => {
       if (msg.method === 'session/update') {
+        const params = obj(msg.params)
+        if (!live && (!params.sessionId || params.sessionId === io.resumeId)) {
+          update(params.update, createTail(() => {}), usd => { costBefore = usd }, () => {})
+        }
         if (live && (!obj(msg.params).sessionId || obj(msg.params).sessionId === currentSession)) {
           const kind = str(obj(obj(msg.params).update).sessionUpdate)
           if (!started && ['agent_message_chunk', 'tool_call', 'plan'].includes(kind)) { started = true; phase('started') }
@@ -282,6 +286,7 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
         const fresh = await bounded(newSession(rpc, io.cwd, mcpServers), preparingUntil - Date.now(), 'ACP session/new timed out.')
         opened = fresh.opened
         sessionId = fresh.sessionId
+        costBefore = 0
         prompt = io.restartPrompt
         // Over the dead id, not beside it: the next resume has to reach a session that is
         // really there.
@@ -332,7 +337,9 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
     // grok under ACP's `_meta`, with the price in ticks and no `usage_update` before it.
     const spent = obj(obj(done._meta).usage)
     const usage = usageOf(done.usage) ?? usageOf(spent, true)
-    costUsd ??= ticksUsd(spent.costUsdTicks)
+    saveAcpCost(acpCostFile(options.tool ?? 'acp', io.cwd, sessionId), costUsd)
+    costUsd = costUsd === undefined ? ticksUsd(spent.costUsdTicks)
+      : costBefore === undefined ? undefined : costUsd < costBefore ? costUsd : costUsd - costBefore
     if (stopReason && stopReason !== 'end_turn') {
       const why = STOPPED[stopReason] ?? `the agent stopped: ${stopReason}`
       io.log(`[error] ${why}\n`)
@@ -351,7 +358,8 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
     io.log(`[error] ${error}\n`)
     events.error(error)
     emit()
-    return { ok: false, result, error, usage: undefined, costUsd }
+    if (currentSession) saveAcpCost(acpCostFile(options.tool ?? 'acp', io.cwd, currentSession), costUsd)
+    return { ok: false, result, error, usage: undefined, costUsd: costUsd === undefined || costBefore === undefined ? undefined : costUsd < costBefore ? costUsd : costUsd - costBefore }
   }
 }
 
@@ -387,7 +395,7 @@ function update(raw: unknown, tail: Tail, gotCost: (usd: number) => void, gotCon
       // converting one is not the board's business.
       const cost = obj(change.cost)
       const amount = cost.amount
-      if (str(cost.currency).toUpperCase() === 'USD' && typeof amount === 'number' && Number.isFinite(amount) && amount > 0) {
+      if (str(cost.currency).toUpperCase() === 'USD' && typeof amount === 'number' && Number.isFinite(amount) && amount >= 0) {
         gotCost(amount)
       }
       return

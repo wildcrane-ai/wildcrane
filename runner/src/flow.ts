@@ -63,6 +63,7 @@ interface Run {
   startedAt?: number
   usage?: api.Usage
   costUsd?: number
+  costIncomplete?: boolean
   context?: { used?: number; limit?: number }
   /** The board runtime it ran on: a step's pick by its Cloud id, otherwise the board's own. */
   runtime?: string
@@ -70,7 +71,7 @@ interface Run {
 
 /** What the runs this job started spent, summed and split by runtime (#629), and the context window
  *  the latest one counting it left (#52); each part left out when none reported it. */
-export function spentBy(runs: Run[], job: Pick<Job, 'runtime' | 'runtimeId' | 'agentRuntimes'>): Pick<JobReport, 'usage' | 'costUsd' | 'context' | 'runtimeCosts'> {
+export function spentBy(runs: Run[], job: Pick<Job, 'runtime' | 'runtimeId' | 'agentRuntimes'>): Pick<JobReport, 'usage' | 'costUsd' | 'context' | 'runtimeCosts' | 'costIncomplete'> {
   const used = runs.filter((r) => r.usage)
   const costed = runs.filter((r) => typeof r.costUsd === 'number')
   const sum = (key: keyof api.Usage) => used.reduce((n, r) => n + (r.usage![key] || 0), 0)
@@ -80,6 +81,7 @@ export function spentBy(runs: Run[], job: Pick<Job, 'runtime' | 'runtimeId' | 'a
   return {
     ...(used.length ? { usage: { input: sum('input'), cacheCreation: sum('cacheCreation'), cacheRead: sum('cacheRead'), output: sum('output') } } : {}),
     ...(costed.length ? { costUsd: costed.reduce((n, r) => n + r.costUsd!, 0), runtimeCosts: runtimeCosts(costed, job) } : {}),
+    ...(costed.length && runs.some(r => r.costUsd === undefined || r.costIncomplete) ? { costIncomplete: true } : {}),
     ...(context ? { context: { used: context.used!, limit: context.limit! } } : {}),
   }
 }
@@ -615,7 +617,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     // `implement` returns once the delivery landed and the card is archived.
     const fresh = () => {
       const carry = carryArgs(verb)
-      const costFrom = carry.includes('--session') && job.resumeCostUsd ? { [SESSION_COST_ENV]: String(job.resumeCostUsd) } : undefined
+      const costFrom = carry.includes('--session') && typeof job.resumeCostUsd === 'number' ? { [SESSION_COST_ENV]: String(job.resumeCostUsd) } : undefined
       return akb(['raw', 'card', verb, String(id), '--follow', '--events', '--json', ...carry, ...(note ? ['--', note] : [])], true, costFrom)
     }
     ran ??= await (continuation ? akb([...continuation, '--follow', '--events', '--json'], true) : fresh())

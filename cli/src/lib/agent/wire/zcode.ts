@@ -1,3 +1,4 @@
+import { ownUsage, ZERO_USAGE } from './usage'
 // The board's side of the ZCode Protocol (#258).
 //
 // ZCode holds a conversation over `zcode app-server`'s own stdin and stdout, in JSON lines
@@ -341,6 +342,7 @@ async function oneTurn(io: ClientTurn, options: ZcodeOptions): Promise<TurnEnd> 
       includeSnapshot: false,
     })
 
+    const before = io.resumeId ? await tokensOf(rpc, sessionId) : ZERO_USAGE
     live = true
     const accepted = await rpc.call('session/send', { sessionId, content: io.prompt })
     if (accepted.accepted === false) throw new Error('the agent would not take the prompt')
@@ -351,7 +353,7 @@ async function oneTurn(io: ClientTurn, options: ZcodeOptions): Promise<TurnEnd> 
     // The message the log ends on, or — on a build that streamed nothing we could render —
     // the one the ending event repeats. Never both, and never nothing when the agent spoke.
     const result = tail.end() || done.response || undefined
-    const usage = done.usage ?? (await tokensOf(rpc, sessionId))
+    const usage = done.usage ?? ownUsage(await tokensOf(rpc, sessionId), before)
     const context = await contextOf(rpc, sessionId)
     if (!done.ok) {
       const why = done.error ?? 'the agent stopped without saying why'

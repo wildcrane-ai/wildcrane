@@ -43,6 +43,7 @@ interface DeliverySessionEntry {
   harness?: string
   model?: string
   costUsd?: number
+  costIncomplete?: boolean
   resumedFrom?: string
   /** On a review after the first: why it started (#417). Kept here so the reason outlives
    *  the live record's window, which forgets a run long before the delivery is history. */
@@ -74,6 +75,7 @@ export function writeAudit(delivery: DeliveryRecord, runs: RunRecord[]): void {
         harness: run.harness || undefined,
         model: run.model,
         costUsd: run.costUsd,
+        costIncomplete: run.costIncomplete,
         resumedFrom: run.resumedFrom,
         log: rel(run.logPath),
       },

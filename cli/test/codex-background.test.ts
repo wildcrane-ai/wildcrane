@@ -266,6 +266,18 @@ it('does not repeat a prompt whose start response is lost', async t => {
   s.stdout.destroy()
 })
 
+it('prices a discussion fork from its first new usage reading without a completed baseline (#689)', async () => {
+  const s = server(method => method === 'thread/fork' ? { thread: { id: 'main', modelProvider: 'openai' }, model: 'gpt-6.1-sol' } : {}, { mode: 'fork', threadId: 'missing-rollout', images: [] })
+  await tick()
+  s.notify('thread/tokenUsage/updated', { threadId: 'main', tokenUsage: {
+    total: { inputTokens: 1200, cachedInputTokens: 800, outputTokens: 150 },
+    last: { inputTokens: 200, cachedInputTokens: 100, outputTokens: 50 },
+  } })
+  s.reply('done', 'r'); s.complete()
+  const end = await s.end
+  assert.deepEqual(end.usage, { input: 100, cacheRead: 100, cacheCreation: 0, output: 50 })
+  assert.ok(Math.abs(end.costUsd! - 0.00071) < 1e-10)
+})
 
 it('returns a startup failure when the agent closes its input pipe', async () => {
   const stdout = new PassThrough()

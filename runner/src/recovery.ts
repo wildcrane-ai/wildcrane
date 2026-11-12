@@ -23,7 +23,7 @@ export interface Checkpoint {
   opaque?: boolean
   effects?: boolean
   retry?: { since: number; attempt: number; at?: number }
-  attempts?: (Pick<JobReport, 'session' | 'usage' | 'costUsd'> & { resume?: string | null })[]
+  attempts?: (Pick<JobReport, 'session' | 'usage' | 'costUsd' | 'costIncomplete'> & { resume?: string | null })[]
   pending: string[]
   completed?: { outcome: 'done' | 'failed'; reason?: string; report: JobReport }
 }
@@ -98,17 +98,20 @@ export function resumable(checkpoint: Checkpoint): boolean {
 }
 
 /** Tokens are per attempt; Claude's prices remain session totals for Cloud to subtract. */
-export function replySpent(checkpoint: Checkpoint, runtime: string): Pick<JobReport, 'usage' | 'costUsd' | 'attemptCosts'> {
+export function replySpent(checkpoint: Checkpoint, runtime: string): Pick<JobReport, 'usage' | 'costUsd' | 'attemptCosts' | 'costIncomplete'> {
   const attempts = checkpoint.attempts ?? []
   const used = attempts.filter(a => a.usage)
   const costed = attempts.filter(a => a.costUsd !== undefined)
   const sum = (key: keyof NonNullable<JobReport['usage']>) => used.reduce((n, a) => n + a.usage![key], 0)
+  const incomplete = costed.length > 0 && attempts.some(a => a.costUsd === undefined || a.costIncomplete)
   const spent = {
+    ...(incomplete ? { costIncomplete: true } : {}),
     ...(used.length ? { usage: { input: sum('input'), cacheCreation: sum('cacheCreation'), cacheRead: sum('cacheRead'), output: sum('output') } } : {}),
     ...(costed.length ? { costUsd: costed.reduce((n, a) => n + a.costUsd!, 0) } : {}),
   }
   if (runtime !== 'claude-code' || !attempts.length) return spent
   return {
+    ...(incomplete ? { costIncomplete: true } : {}),
     ...(spent.usage ? { usage: spent.usage } : {}),
     ...(attempts.at(-1)?.costUsd !== undefined ? { costUsd: attempts.at(-1)!.costUsd } : {}),
     attemptCosts: attempts.map(({ resume, session, costUsd }) => ({ resume, session, costUsd })),

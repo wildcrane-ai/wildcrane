@@ -27,7 +27,7 @@ async function turnAgainst(
   opened: Record<string, unknown>,
   done: Record<string, unknown>,
   model?: string,
-  resume?: { id: string; missing?: boolean },
+  resume?: { id: string; missing?: boolean; before?: number; after?: number },
 ): Promise<{ end: TurnEnd; calls: Call[]; model?: string }> {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
@@ -52,6 +52,8 @@ async function turnAgainst(
         stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: 'session not found' } })}\n`)
         continue
       }
+      const amount = msg.method === 'session/load' ? resume?.before : msg.method === 'session/prompt' ? resume?.after : undefined
+      if (amount !== undefined) stdout.write(JSON.stringify({ method: 'session/update', params: { sessionId: resume?.id, update: { sessionUpdate: 'usage_update', cost: { amount, currency: 'USD' } } } }) + '\n')
       stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: answers[msg.method] ?? {} })}\n`)
     }
   })
@@ -240,4 +242,13 @@ describe('what else an ACP session opens with and reports', () => {
     ])
     fs.rmSync(dir, { recursive: true, force: true })
   })
+})
+
+it('subtracts a loaded ACP cost baseline, preserving zero and unknown (#689)', async () => {
+  assert.equal((await turnAgainst({}, {}, undefined, { id: 's', before: 2, after: 2.5 })).end.costUsd, 0.5)
+  assert.equal((await turnAgainst({}, {}, undefined, { id: 's', before: 0, after: 0 })).end.costUsd, 0)
+  assert.equal((await turnAgainst({}, {}, undefined, { id: 'untracked-s', after: 2.5 })).end.costUsd, undefined)
+  assert.equal((await turnAgainst({}, {}, undefined, { id: 's', after: 0.5 })).end.costUsd, 0.5)
+  assert.equal((await turnAgainst({}, {}, undefined, { id: 's', after: 0.75 })).end.costUsd, 0.25)
+  assert.equal((await turnAgainst(GROK_OPENED, GROK_DONE, undefined, { id: 's' })).end.costUsd, 0.00774486)
 })

@@ -703,7 +703,7 @@ export function openRun(
     // a fork is a fresh session of its own.
     ...(said && !said.fork ? { resumeId: plan.resumeId ?? undefined } : {}),
     ...(said?.continues ? { continues: { resumeId: said.continues, ...(said.fork ? { fork: true } : {}) } } : {}),
-    ...(said?.continues && said.continues === req.carry?.resumeId && req.carry.costFrom ? { sessionCostFrom: req.carry.costFrom } : {}),
+    ...(said?.continues && said.continues === req.carry?.resumeId && req.carry.costFrom !== undefined ? { sessionCostFrom: req.carry.costFrom } : {}),
     logPath: logPathOf(sessionId),
     // Which agent this is, on the action that is one — so the run list can name it, and so
     // a resume starts the same agent rather than a different one.

@@ -88,7 +88,7 @@ export const OPENCODE: Harness = {
   // OpenCode retries a 429 itself and no switch turns that off, so the card is held meanwhile.
   stopsOnRateLimit: false,
 
-  client: (values) => createAcpClient({ model: values.model, mcpConfig: values.mcpConfig }),
+  client: (values) => createAcpClient({ tool: 'opencode', model: values.model, mcpConfig: values.mcpConfig }),
 
   adoptsSessionId: false,
 

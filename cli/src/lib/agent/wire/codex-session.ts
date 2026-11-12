@@ -1,3 +1,4 @@
+import { priceUsd } from '../prices'
 // What Codex writes down about a run that its event stream leaves out.
 //
 // `codex exec --json` never names the model — see the note at the top of codex-stream.ts —
@@ -22,6 +23,7 @@ import type { ContextWindow, TokenUsage } from '../types'
 /** One finished turn of a thread: the thread's running total as it ended, and what the turn
  *  itself added to it — absent when it added nothing. */
 export interface CodexTurn {
+  at?: number
   total: TokenUsage
   own?: TokenUsage
   model?: string
@@ -39,9 +41,10 @@ export interface CodexRunFacts {
   context?: ContextWindow
   /** Every turn the rollout saw finish, oldest first. */
   turns?: CodexTurn[]
+  children?: string[]
 }
 
-type Entry = { type?: unknown; payload?: Record<string, unknown> }
+type Entry = { timestamp?: string; type?: unknown; payload?: Record<string, unknown> }
 
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
@@ -158,6 +161,9 @@ export function readCodexRunFacts(threadId: string): CodexRunFacts | undefined {
   const turns: CodexTurn[] = []
   let total: TokenUsage | undefined
   let before: TokenUsage | undefined
+  let at: number | undefined
+  const spawns = new Set<string>()
+  const children = new Set<string>()
   for (const line of raw.split('\n')) {
     // A rollout is mostly the conversation itself. Only a few kinds of line carry an answer,
     // so the rest is skipped without parsing it.
@@ -165,7 +171,10 @@ export function readCodexRunFacts(threadId: string): CodexRunFacts | undefined {
       !line.includes('"session_meta"') &&
       !line.includes('"turn_context"') &&
       !line.includes('"token_count"') &&
-      !line.includes('"task_complete"')
+      !line.includes('"task_complete"') &&
+      !line.includes('"task_started"') &&
+      !line.includes('"function_call"') &&
+      !line.includes('"function_call_output"')
     ) continue
     let entry: Entry
     try {
@@ -178,6 +187,14 @@ export function readCodexRunFacts(threadId: string): CodexRunFacts | undefined {
     }
     const payload = entry.payload
     if (!payload) continue
+    if (payload.type === 'task_started') at = entry.timestamp ? Date.parse(entry.timestamp) : undefined
+    if (payload.type === 'function_call' && payload.name === 'spawn_agent' && typeof payload.call_id === 'string') spawns.add(payload.call_id)
+    if (payload.type === 'function_call_output' && spawns.has(String(payload.call_id))) {
+      try {
+        const output = JSON.parse(String(payload.output))
+        if (typeof output.agent_id === 'string') children.add(output.agent_id)
+      } catch { /* An incomplete spawn has no billable child yet. */ }
+    }
     // The provider is settled when the session opens and can't change under it.
     if (entry.type === 'session_meta') facts.provider ??= text(payload.model_provider)
     // The model is per turn, and last turn wins — the same rule the token counts follow.
@@ -196,10 +213,38 @@ export function readCodexRunFacts(threadId: string): CodexRunFacts | undefined {
     if (payload.type === 'task_complete' && total && before) {
       const own = minus(total, before)
       const spent = Object.values(own).some((n) => n > 0)
-      if (Object.values(own).every((n) => n >= 0)) turns.push({ total, ...(spent ? { own } : {}), model: facts.model })
+      if (Object.values(own).every((n) => n >= 0)) turns.push({ at, total, ...(spent ? { own } : {}), model: facts.model })
       before = total
     }
   }
   if (turns.length) facts.turns = turns
+  if (children.size) facts.children = [...children]
   return facts.model || facts.provider || facts.context ? facts : undefined
+}
+
+/** Separate child threads are billed once, excluding work before this invocation. */
+export function childSpend(ids: Iterable<string>, since: number): { usage?: TokenUsage; costUsd?: number; costIncomplete?: boolean } {
+  const seen = new Set<string>()
+  const usage = { ...ZERO }
+  let counted = false
+  let costUsd: number | undefined
+  let costIncomplete = false
+  const visit = (id: string) => {
+    if (seen.has(id)) return
+    seen.add(id)
+    const facts = readCodexRunFacts(id)
+    const turns = facts?.turns?.filter(t => t.at !== undefined && t.at >= since)
+    if (!turns?.length) costIncomplete = true
+    for (const turn of turns ?? []) {
+      if (!turn.own) { costIncomplete = true; continue }
+      counted = true
+      for (const key of Object.keys(ZERO) as (keyof TokenUsage)[]) usage[key] += turn.own[key]
+      const usd = priceUsd(facts?.provider, turn.model, turn.own)
+      if (usd === undefined) costIncomplete = true
+      else costUsd = (costUsd ?? 0) + usd
+    }
+    for (const child of facts?.children ?? []) visit(child)
+  }
+  for (const id of ids) visit(id)
+  return { ...(counted ? { usage } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(costIncomplete ? { costIncomplete } : {}) }
 }

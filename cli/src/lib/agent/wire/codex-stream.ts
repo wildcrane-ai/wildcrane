@@ -3,7 +3,7 @@
 
 import { createBackgroundTasks } from './background'
 import type { LocalReplyPart } from '../../shared/reply-parts'
-import { codexUsage, readCodexRunFacts, sameUsage, type CodexRunFacts, type CodexTurn } from './codex-session'
+import { childSpend, codexUsage, readCodexRunFacts, sameUsage, type CodexRunFacts, type CodexTurn } from './codex-session'
 import { createEventCollector, type EventCollector, type ToolKind } from './events'
 import { hint, obj, str, type Json } from './json'
 import { createLineReader, frame, type StreamRenderer } from './stream'
@@ -133,6 +133,7 @@ const LOOK_EVERY_MS = 3_000
 
 /** `carried` is a run that resumes or forks a thread, whose stream total holds earlier turns. */
 export function createCodexStreamRenderer(carried = false): StreamRenderer {
+  const since = Date.now()
   let final: string | undefined
   const pictures: LocalReplyPart[] = []
   let total: TokenUsage | undefined
@@ -275,7 +276,12 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
     },
     result: () => final,
     replyParts: () => [...pictures, ...(final ? [{ type: 'text' as const, text: final }] : [])],
-    usage: own,
+    usage: () => {
+      const main = own()
+      const child = childSpend(subagents, since).usage
+      if (!main || !child) return main ?? child
+      return { input: main.input + child.input, cacheCreation: main.cacheCreation + child.cacheCreation, cacheRead: main.cacheRead + child.cacheRead, output: main.output + child.output }
+    },
     // Off the rollout, not the stream: no thread event carries a count, and the rollout
     // gains a `token_count` every time a request comes back — so a long run's ring climbs
     // while it works (./codex-session.ts).
@@ -290,7 +296,12 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
     // Worked out here rather than reported: the turn's own tokens at the model's list
     // rate, and nothing at all unless both the provider and the model are ones
     // whose rates the board knows.
-    costUsd: () => priceUsd(facts?.provider, turn()?.model ?? facts?.model, own()),
+    costUsd: () => {
+      const main = priceUsd(facts?.provider, turn()?.model ?? facts?.model, own())
+      const child = childSpend(subagents, since).costUsd
+      return main === undefined ? child : main + (child ?? 0)
+    },
+    costIncomplete: () => childSpend(subagents, since).costIncomplete || (childSpend(subagents, since).costUsd !== undefined && priceUsd(facts?.provider, turn()?.model ?? facts?.model, own()) === undefined) || undefined,
     resumeId: () => threadId,
     failure: () => failure ?? background.failure(),
     background: () => subagents.size ? background.count() : undefined,
