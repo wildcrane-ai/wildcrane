@@ -3956,8 +3956,7 @@ describe('connection tests (#2074)', () => {
         },
       },
     })
-    await until(() => errors.mock.callCount() > 0)
-    assert.match(String(errors.mock.calls[0]!.arguments[0]), /connection test t1: Cloud did not accept/)
+    await until(() => errors.mock.calls.some(call => /connection test t1: Cloud did not accept/.test(String(call.arguments[0]))))
     assert.equal(attempts, 1)
     assert.equal(planned.length, 1)
     assert.equal(job.state, 'claimed')

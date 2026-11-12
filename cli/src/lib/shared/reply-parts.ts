@@ -4,7 +4,7 @@ export type ReplyPart = { type: 'text'; text: string } | {
 
 /** Image bytes never belong in reports or events. */
 export type LocalReplyPart = { type: 'text'; text: string } | {
-  type: 'image'; path?: string; data?: string; mime?: string
+  type: 'image'; path?: string; data?: string; mime?: string; registered?: true
 }
 
 export function imageMime(bytes: Uint8Array): string | undefined {

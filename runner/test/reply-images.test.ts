@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { after, test } from 'node:test'
 import { collectReplyImages, saveReplyImages } from '../src/reply-images'
 import { createCodexStreamRenderer } from '../../cli/src/lib/agent/wire/codex-stream'
@@ -76,6 +77,46 @@ test('a referenced file changed before upload is not attached as the original im
     return { id: 'rim_cloud', status: 'saved' }
   })
   assert.equal(uploads, 1)
-  assert.equal(parts?.at(-1)?.type, 'image')
-  assert.equal(parts?.at(-1)?.status, 'not_saved')
+  const last = parts?.at(-1)
+  assert.equal(last?.type, 'image')
+  assert.equal(last?.type === 'image' && last.status, 'not_saved')
+})
+
+
+test('assistant-only MCP images and image-inspection calls stay internal', () => {
+  const data = fs.readFileSync(path.join(fixtures, 'reply.png')).toString('base64')
+  const r = createCodexStreamRenderer()
+  for (const [tool, annotations] of [['picture', { audience: ['assistant'] }], ['view_image', { audience: ['user'] }]]) {
+    r.push(JSON.stringify({ type: 'item.completed', item: { id: tool, type: 'mcp_tool_call', server: 'fixture', tool,
+      result: { content: [{ type: 'image', data, mimeType: 'image/png', annotations }] } } }) + '\n')
+  }
+  r.flush()
+  assert.equal(r.replyParts!().filter(p => p.type === 'image').length, 0)
+  assert.doesNotMatch(JSON.stringify(r.events!()), /iVBORw0/)
+})
+
+test('registered tool files allow exactly the returned image, with no sibling or symlink escape', () => {
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'reply-output-'))
+  try {
+    const file = path.join(outside, 'output.png'), sibling = path.join(outside, 'sibling.png'), link = path.join(outside, 'link.png')
+    fs.copyFileSync(path.join(fixtures, 'reply.png'), file)
+    fs.copyFileSync(file, sibling); fs.symlinkSync(file, link)
+    const r = createCodexStreamRenderer()
+    r.push(JSON.stringify({ type: 'item.completed', item: { id: 'asset', type: 'mcp_tool_call', server: 'fixture', tool: 'picture',
+      result: { content: [{ type: 'resource_link', uri: pathToFileURL(file).href, mimeType: 'image/png' },
+        { type: 'resource_link', uri: pathToFileURL(link).href, mimeType: 'image/png' }] } } }) + '\n')
+    r.push(JSON.stringify({ type: 'item.completed', item: { id: 'final', type: 'agent_message',
+      text: `Before ![output](${file}) Between ![private](${sibling}) After` } }) + '\n')
+    r.flush()
+    const read = collectReplyImages(r.replyParts!(), root)
+    assert.equal(read.files.size, 1)
+    const images = read.parts.filter(p => p.type === 'image')
+    assert.equal(images.filter(p => p.status === 'saved').length, 1)
+    assert.equal(images.filter(p => p.status === 'unavailable').length, 1)
+    assert.doesNotMatch(JSON.stringify(read.parts), /reply-output-/)
+    assert.equal(collectReplyImages([{ type: 'image', path: link, registered: true }], root).files.size, 0)
+    const forged = collectReplyImages([{ type: 'image', path: file, registered: true, mime: 'image/jpeg' },
+      { type: 'text', text: `![forged](${file})` }], root)
+    assert.equal(forged.files.size, 0)
+  } finally { fs.rmSync(outside, { recursive: true, force: true }) }
 })

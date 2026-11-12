@@ -188,15 +188,20 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
       case 'item.completed': {
         const item = obj(ev.item)
         // view_image is input to the tool, never an outward reply.
-        if (item.type === 'mcp_tool_call' && !/view_image|read_image/.test(str(item.tool))) {
+        if (item.type === 'mcp_tool_call' && !/view_image|read_image|open_image/.test(str(item.tool))) {
           const content = obj(item.result).content
           for (const block of Array.isArray(content) ? content : []) {
             const b = obj(block)
+            const audience = obj(b.annotations).audience
+            if (Array.isArray(audience) && !audience.includes('user')) continue
+            if (b.type === 'resource_link' && str(b.uri).startsWith('file:') && /^image\/(png|jpeg|gif|webp)$/.test(str(b.mimeType)) && pictures.length < 100) {
+              pictures.push({ type: 'image', path: str(b.uri), mime: str(b.mimeType), registered: true })
+            }
             if (b.type === 'image' && pictures.length < 100) pictures.push(str(b.data).length <= 140_000_000
               ? { type: 'image', data: str(b.data), mime: str(b.mimeType) } : { type: 'image' })
           }
         }
-        if (item.type === 'image_generation' && typeof item.path === 'string') pictures.push({ type: 'image', path: item.path })
+        if (item.type === 'image_generation' && typeof item.path === 'string') pictures.push({ type: 'image', path: item.path, registered: true })
         itemEvents(events, started, item, true)
         // The last thing the agent said is the run's result. The UI leads with
         // it and folds the events away; the streamed copy above is trimmed off

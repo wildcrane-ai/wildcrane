@@ -14,6 +14,21 @@ export function collectReplyImages(parts: LocalReplyPart[], cwd: string): { part
   const tools: ReplyPart[] = []
   const output: ReplyPart[] = []
   const roots = [cwd, path.join(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex'), 'generated_images')].flatMap(p => { try { return [fs.realpathSync(p)] } catch { return [] } })
+  const registered = new Set(parts.flatMap(p => {
+    if (p.type !== 'image' || !p.registered || !p.path) return []
+    try {
+      const file = p.path.startsWith('file:') ? fileURLToPath(p.path) : path.resolve(cwd, p.path)
+      if (!fs.lstatSync(file).isFile()) return []
+      const real = fs.realpathSync(file)
+      const fd = fs.openSync(real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
+      try {
+        const stat = fs.fstatSync(fd)
+        if (!stat.isFile() || stat.size > ASSET_FILE_LIMIT) return []
+        const mime = imageMime(fs.readFileSync(fd))
+        return mime && (!p.mime || p.mime === mime) ? [real] : []
+      } finally { fs.closeSync(fd) }
+    } catch { return [] }
+  }))
   const image = (p: Extract<LocalReplyPart, { type: 'image' }>): ReplyPart => {
     const read = (): Uint8Array => {
       let bytes: Uint8Array
@@ -24,9 +39,9 @@ export function collectReplyImages(parts: LocalReplyPart[], cwd: string): { part
         if (!p.path) throw Error()
         const source = p.path.startsWith('file:') ? fileURLToPath(p.path) : decodeURIComponent(p.path)
         if (/^[a-z][a-z0-9+.-]*:/i.test(source) && !/^[A-Za-z]:[\\/]/.test(source)) throw Error()
-        if (!/\.(png|jpe?g|gif|webp)$/i.test(source)) throw Error()
         const real = fs.realpathSync(path.resolve(cwd, source))
-        if (!roots.some(root => inside(root, real))) throw Error()
+        if (!/\.(png|jpe?g|gif|webp)$/i.test(source) && !registered.has(real)) throw Error()
+        if (!roots.some(root => inside(root, real)) && !registered.has(real)) throw Error()
         const fd = fs.openSync(real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
         try {
           const stat = fs.fstatSync(fd)
