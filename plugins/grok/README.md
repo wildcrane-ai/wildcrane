@@ -60,6 +60,11 @@ grok plugin uninstall wildcrane
 These commands retain WildCrane data, login, projects and other plugins.
 禁用和卸载保留 WildCrane 数据、登录、项目及其他插件。
 
+## Network and credentials / 网络与凭据
+
+The launcher downloads the published `wildcrane-runner` npm package and verifies its SHA-512 integrity. Its readable source is in this repository's `runner/` directory. The Runner calls `api.ai4kanban.dev` for WildCrane data and version selection, uses the npm registry for packages, and opens settings on localhost. It uses your existing WildCrane sign-in; it does not need your Grok token. License: Apache-2.0.
+启动器下载公开 npm 包并校验 SHA-512；源码位于本仓库 `runner/`。Runner 连接 WildCrane API 与 npm，设置在本机打开；沿用 WildCrane 登录，不需要 Grok token。许可证为 Apache-2.0。
+
 ## Develop / 开发
 
 Run `npm run build` in `runner/`, then install `plugins/grok` by its absolute local path.
