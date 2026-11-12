@@ -1,6 +1,7 @@
 // `akb task`, `workspace`, `project`, `runner` (#550): the signed-in account's WildCrane tasks, read
 // and changed in Cloud from any chat. Nothing here reads or writes a board.
 
+import { approveAfterReply } from '../lib/cloud/reply-approval'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -145,6 +146,8 @@ async function act(id: string, route: string, body: unknown, done: (key: string)
 }
 
 export async function taskApprove(id: string, comment?: string): Promise<MoveResult> {
+  const deferred = await approveAfterReply(id, comment)
+  if (deferred) return deferred
   const task = await cloud<Task>('GET', `/v1/tasks/${enc(await taskRef(id))}`)
   return act(task.key, 'decisions', {
     decision: 'approve',

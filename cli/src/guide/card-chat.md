@@ -18,3 +18,5 @@ Work on the current card and its assets by default. Project implementation requi
 - **Anything else**: for a request this guide does not cover, read `akb help` once, then the matching command's `--help`.
 
 Reply in plain, natural language. Do not write memory, including through any flow this conversation starts.
+
+- **Start this task**: when the user explicitly asks to start, implement or approve it, use `akb task approve` or `akb raw card approve/implement`. In a task reply these register one approval for after the reply finishes and syncs. Pending means accepted, not started; finish the reply and do not wait or edit the card again. Preview approvals still apply.

@@ -503,6 +503,14 @@ export function pull(ws: TaskFolder, machineId: string): Promise<api.Call<void>>
 }
 
 /** The Cloud board version the folder last read up to; null when never read. */
+export const replyAssetsSynced = (ws: TaskFolder): boolean => !readRecord(ws).pendingAssets?.length && !readBase(ws).pendingAssets?.includes(ws.task)
+
+export function syncedCardVersion(ws: TaskFolder): number | null {
+  const base = readBase(ws)
+  const card = Object.entries(base.files).find(([p]) => p.startsWith(rootOf(ws) + 'todo/') && numberOfCard(p.slice(rootOf(ws).length)) === ws.number)
+  return card?.[1].seq ?? null
+}
+
 export const readHead = (ws: Pick<TaskFolder, 'cwd'>): number | null => readBase(ws).head_seq
 
 /** What Cloud changed since the base, between jobs (#103): written only over a file still as last

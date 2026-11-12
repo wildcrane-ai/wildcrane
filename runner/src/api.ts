@@ -298,6 +298,7 @@ export interface Subagents {
 }
 
 export interface JobReport {
+  replyApprovalSynced?: boolean
   recovery?: { safe: boolean; stopped: boolean; resumable: boolean }
   processesStopped?: boolean
   evidence?: string
@@ -329,6 +330,11 @@ export interface JobReport {
   /** A chat reply the user stopped part way (#2133). */
   stopped?: boolean
 }
+
+export const cancelReplyApproval = (machineId: string, job: string) => move(job, 'approve', { machineId, cancel: true })
+
+export const approveReply = (machineId: string, job: string, fields: { card_version: number; review_revision: number; comment?: string }) =>
+  move<{ id: string; status: 'pending' | 'committed' | 'cancelled'; task: string; reason?: string }>(job, 'approve', { machineId, fields })
 
 export const finishJob = (
   machineId: string,
@@ -507,7 +513,7 @@ export const listStudios = (workspace: string, after?: string | null) =>
 
 /** `context.studio`: the own studio a Studio builder task changes (#2004). */
 export const readTask = (task: string) =>
-  request<{ title: string; request: string; status?: string; context?: { studio?: string } }>('GET', `/v1/tasks/${q(task)}`)
+  request<{ key?: string; title: string; request: string; status?: string; card_version?: number; review?: { revision: number } | null; context?: { studio?: string } }>('GET', `/v1/tasks/${q(task)}`)
 
 export const readStudio = (id: string) => request<{ version: number; name?: string; files: Record<string, string> }>('GET', `/v1/studios/${q(id)}`)
 

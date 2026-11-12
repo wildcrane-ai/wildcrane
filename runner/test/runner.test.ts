@@ -1354,6 +1354,31 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(result.ok, true)
   }
 
+  for (const pending of [false, true]) {
+    it(`reply approval synchronizes edits first and ${pending ? 'refuses pending assets' : 'proves final sync'} (#684)`, async () => {
+      await prepareBoard()
+      cloud.serviceUnavailableUploads = pending
+      const script = `
+        const fs = require('fs');
+        fs.appendFileSync('todo/1-task-1.md', 'Edited before approval.');
+        ${pending ? "fs.mkdirSync('assets/1', { recursive: true }); fs.writeFileSync('assets/1/pending.json', '{}');" : ''}
+        const { url, token } = JSON.parse(process.env.AI4KANBAN_REPLY_APPROVAL);
+        fetch(url, { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify({ task: '1' }) })
+          .then(r => r.json()).then(r => { fs.writeFileSync('reply-result.json', JSON.stringify(r)); console.log('done'); });
+      `
+      const job = await runTask('reply-approval', script, { chat: { message: 'm1', body: 'Start' } })
+      assert.equal(job.outcome, 'done', job.reason)
+      const answer = JSON.parse(read('reply-result.json'))
+      assert.equal(answer.ok, !pending, JSON.stringify(answer))
+      assert.equal(cloud.replyApprovals.length, pending ? 0 : 1)
+      if (!pending) {
+        assert.match(cloud.replyApprovals[0]!.card!, /Edited before approval/)
+        assert.equal(cloud.replyApprovals[0]!.fields.card_version, cloud.board.get('projects/prj_1/' + CARD)!.seq)
+        assert.equal(job.report?.replyApprovalSynced, true)
+      } else assert.notEqual(job.report?.replyApprovalSynced, true)
+    })
+  }
+
   it('reads the board in one call, writes the card, its memory and its assets, and runs there', async () => {
     const job = await runTask('j1')
     assert.equal(job.outcome, 'done', job.reason)

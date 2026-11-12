@@ -98,6 +98,7 @@ export class FakeCloud {
   task: FakeTask = { artifacts: new Map() }
   /** A task's status as `GET /v1/tasks/{id}` answers it; `gone` is no such task, `down` a failing read. */
   taskStatus: Record<string, string> = {}
+  replyApprovals: { job: string; fields: Record<string, unknown>; card: string | null }[] = []
   /** The workspace's own studios' files, by id (#2004). */
   studios: Record<string, Record<string, string>> = {}
   /** What the workspace's rejection review has not learned, and each batch marked learned. */
@@ -432,11 +433,16 @@ export class FakeCloud {
       const jobs = [...this.jobs.values()].filter((j) => j.state === 'waiting' || (j.state === 'claimed' && j.machine === machine && !j.leaseLost))
       return send(200, { jobs: jobs.map(({ events, claims, ...j }) => j) })
     }
-    const move = /^\/v1\/runner\/jobs\/([^/]+)\/(claim|renew|finish)$/.exec(route)
+    const move = /^\/v1\/runner\/jobs\/([^/]+)\/(claim|renew|finish|approve)$/.exec(route)
     const job = move && this.jobs.get(move[1]!)
     if (!move || !job) return refuse(404, 'not_found', 'no')
     const held = job.state === 'claimed' && job.machine === body.machineId && !job.leaseLost
     switch (move[2]) {
+      case 'approve':
+        if (!held) return refuse(409, 'conflict', 'No active reply.')
+        if (body.cancel) return send(200, { cancelled: true })
+        this.replyApprovals.push({ job: job.id, fields: body.fields, card: this.file('todo/1-task-1.md') })
+        return send(200, { id: job.id, status: 'pending', task: job.task })
       case 'claim':
         if (!mine(body.machineId) || job.state !== 'waiting') return send(200, { claimed: false, reason: 'taken' })
         job.claims++
@@ -516,7 +522,7 @@ export class FakeCloud {
       const status = this.taskStatus[route.split('/')[3]!] ?? 'running'
       if (status === 'gone') return refuse(404, 'not_found', 'No task has this id.')
       if (status === 'down') return refuse(500, 'internal', 'Down.')
-      return send(200, { status, id: route.split('/')[3], title: task.title ?? 'Pricing', request: task.request ?? 'Two tiers.', context: task.context ?? {} })
+      return send(200, { status, key: 'WC-1', card_version: this.board.get('projects/prj_1/todo/1-task-1.md')?.seq, review: { revision: 1 }, id: route.split('/')[3], title: task.title ?? 'Pricing', request: task.request ?? 'Two tiers.', context: task.context ?? {} })
     }
     if (/^\/v1\/studios\/[^/]+$/.test(route)) {
       const files = this.studios[route.split('/')[3]!]

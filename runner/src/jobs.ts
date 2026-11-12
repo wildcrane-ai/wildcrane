@@ -12,6 +12,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { contextLimit, refreshCatalog } from '../../cli/src/lib/agent/catalog'
+import { replyApprovalBridge } from './reply-approval'
+import { syncedCardVersion, withBoard, replyAssetsSynced } from './task-folder'
 import { akbEnv, type Akb } from './akb'
 import { currentAkb } from './akb-version'
 import type { RunEvent, TurnEnd } from '../../cli/src/lib/agent/wire'
@@ -431,6 +433,13 @@ export async function runJob(id: string, deps: Deps, track: (stop: () => Promise
 
 /** `keep` keeps a project folder out of the cache's cleanup until the job ends. */
 async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<void>) => void, keep: (dir: string) => void, lease: Lease, replyStream?: ReturnType<typeof streamOut>): Promise<void> {
+  const scope: { bridge?: Awaited<ReturnType<typeof replyApprovalBridge>> } = {}
+  try { await runClaimedStep(job, deps, track, keep, lease, scope, replyStream) }
+  finally { scope.bridge?.close() }
+}
+
+async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Promise<void>) => void, keep: (dir: string) => void,
+  lease: Lease, scope: { bridge?: Awaited<ReturnType<typeof replyApprovalBridge>> }, replyStream?: ReturnType<typeof streamOut>): Promise<void> {
   const id = job.id
   const local = readCheckpoint(id)
   const previous = local ?? (job.recoveryOf ? readCheckpoint(job.recoveryOf) : null)
@@ -548,6 +557,23 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
         if (!pulled.ok) throw new Error(pulled.error)
       }
     }
+    if (ws && job.chat && !job.flow && !checkpoint.completed) {
+      const folder = ws
+      scope.bridge = await replyApprovalBridge(job.task!, job.number!, (comment, asked) => withBoard(folder, async (send) => {
+        if (checkpoint.approvalCancelled) return { ok: false, error: 'This reply failed before. Ask again in a new reply.' }
+        const pushed = await send({ id, machineId: deps.machineId })
+        if (!pushed.ok) return { ok: false, error: pushed.error }
+        if (!replyAssetsSynced(folder)) return { ok: false, error: 'Preview uploads are still pending. Try again after they finish.' }
+        const version = syncedCardVersion(folder)
+        const task = await deps.api.readTask(job.task!)
+        if (!task.ok) return task
+        if (asked !== job.task && asked !== String(job.number) && asked?.toUpperCase() !== task.value.key?.toUpperCase()) return { ok: false, error: 'Only the current task can be approved from this reply.' }
+        if (!version || version !== task.value.card_version || !task.value.review) return { ok: false, error: 'The task changed or has no review. Review it again.' }
+        checkpoint.approvalRequested = true
+        persist()
+        return api.approveReply(deps.machineId, id, { card_version: version, review_revision: task.value.review.revision, comment })
+      }))
+    }
     if (checkpoint.completed) {
       const done = checkpoint.completed
       if (done.outcome === 'failed' || !ws) return finishClaimed(done.outcome, done.reason, done.report)
@@ -584,6 +610,7 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
         let p = deps.plan(job.runtime, promptOf(said), cwd, resume, job.model, settingsOf(job), fork, cloudLanguage(job))
         // A task's chat changes its card with the akb the Runner carries, on the task's board.
         if (ws) p = { ...p, env: akbEnv(deps.akb, ws.board, ws.task, cloudLanguage(job), p.env) }
+        if (scope.bridge) p = { ...p, env: { ...p.env, AI4KANBAN_REPLY_APPROVAL: scope.bridge.env } }
         if (goalFile) p = { ...p, env: { ...akbEnv(deps.akb, discussed, undefined, cloudLanguage(job), p.env), KANBAN_GOALS: goalFile, KANBAN_IDEAS: goalFile } }
         // A reply waits out a passing failure on the agent's own retries (#88).
         if (job.chat || job.discussion) {
@@ -645,6 +672,9 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
   }
   const retry = async (reason: string | undefined): Promise<boolean> => {
     if (!reply || !reason || stream.asked() || stream.lost()) return false
+    checkpoint.approvalCancelled = true
+    persist()
+    if (job.chat && checkpoint.approvalRequested) await api.cancelReplyApproval(deps.machineId, id)
     const safe = replayable(checkpoint)
     if (checkpoint.pending.length || checkpoint.opaque || !safe && (!checkpoint.session || sessionMissing(reason))) return false
     const at = replyRetry(checkpoint, reason, Date.now(), deps.replyBackoff)
@@ -680,7 +710,7 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
   const told = (report: JobReport): JobReport => {
     if (goalFile) savedGoals ??= readGoals(goalFile)
     const ran = subagents.summary()
-    const said = ran ? { ...report, subagents: ran } : report
+    const said = { ...report, ...(ran ? { subagents: ran } : {}), ...(checkpoint.approvalRequested && checkpoint.approvalCancelled ? { replyApprovalSynced: false } : {}) }
     return savedGoals ? { ...said, ...(job.discussion?.goals !== undefined ? { goals: savedGoals } : { ideas: savedGoals }) } : said
   }
   track(stream.stop)
@@ -905,7 +935,7 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
   await stream.end()
   if (stream.lost()) return
   if (failure || !ws) return finishClaimed(failure ? 'failed' : 'done', failure, said)
-  return sendBack(deps, id, lease, ws, said, () => keepChat(job, said.reply))
+  return await sendBack(deps, id, lease, ws, said, () => keepChat(job, said.reply))
 }
 
 /** A periodic agent, on the project's folder here; a job for a project with none here fails. */
@@ -1030,7 +1060,7 @@ async function sendBack(deps: StepDeps, id: string, lease: Lease, ws: TaskFolder
   const pushed = await whileOffline<Pushed>(deps, id, lease, () => push(ws, { id, machineId: deps.machineId }))
   if (!pushed) return
   if (pushed.ok) {
-    if (await ended(deps, id, lease, 'done', '', report)) landed()
+    if (await ended(deps, id, lease, 'done', '', { ...report, ...(readCheckpoint(id)?.approvalRequested ? { replyApprovalSynced: report.replyApprovalSynced !== false && replyAssetsSynced(ws) } : {}) })) landed()
     return
   }
   if (pushed.offline) return

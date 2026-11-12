@@ -50,6 +50,7 @@ import path from 'node:path'
 import { say } from '../lib/io'
 import { pidAlive } from '../lib/lock'
 import { die, BOARD_FLAG, KANBAN } from '../lib/paths'
+import { approveAfterReply } from '../lib/cloud/reply-approval'
 import { approveTask, runnerProject, workspaceTask } from '../lib/cloud/tasks'
 import { findCard } from '../lib/view/read'
 import { awaitingApproval, creationRefusal } from '../lib/view/rules'
@@ -78,6 +79,10 @@ export async function cmdStartRun(
   program = 'akb',
 ): Promise<MoveResult> {
   const { req, follow, print } = readRequest(action, args, opts)
+  if (!print && (action === 'approve' || action === 'implement')) {
+    const deferred = await approveAfterReply(String(req.id), req.notes)
+    if (deferred) return deferred
+  }
   // A card its creator has not finished writing takes no flow (#564) — printed here, or
   // started below. `cardCreation` lets the creating run itself through, which is what keeps
   // a create that goes on to refine its own card working.
