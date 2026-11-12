@@ -73,6 +73,10 @@ try {
       }
       console.log(`OpenCode ${version}: installed package, native registration and skills passed (${process.platform}).`)
     } catch (error) {
+      if (version === 'v1') {
+        const config = await get('/config').catch(() => ({}))
+        logs += JSON.stringify({ directory: dir, skills: config.skills?.paths })
+      }
       throw new Error(`${version}: ${error.message}; ${logs.replace(/server password .+/g, '[redacted]')}`, { cause: error })
     } finally {
       child.kill('SIGTERM')

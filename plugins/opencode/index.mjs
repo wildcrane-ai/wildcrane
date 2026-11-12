@@ -78,7 +78,7 @@ function skills() {
   })
 }
 
-// V1 reads configured paths after native folders. Keep user skills ahead of ours.
+// V1 has no skill editor; omit package names already owned by the user.
 function userSkillPaths(directory, worktree) {
   const home = os.homedir()
   const roots = [process.env.OPENCODE_CONFIG_DIR ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(home, '.config'), 'opencode')]
@@ -95,6 +95,27 @@ function userSkillPaths(directory, worktree) {
     paths.push(...names.map((name) => path.join(dir, name, 'skills')))
   }
   return [...paths, ...roots.flatMap((root) => ['skill', 'skills'].map((name) => path.join(root, name)))].filter((dir) => fs.existsSync(dir))
+}
+
+function skillNames(directories) {
+  const pending = [...directories], visited = new Set(), names = new Set()
+  while (pending.length) {
+    const dir = pending.pop()
+    try {
+      const real = fs.realpathSync(dir)
+      if (visited.has(real)) continue
+      visited.add(real)
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const file = path.join(dir, entry.name)
+        if (entry.isDirectory() || entry.isSymbolicLink()) pending.push(file)
+        else if (entry.name === 'SKILL.md') {
+          const name = fs.readFileSync(file, 'utf8').match(/^name:\s*(.+)$/m)?.[1]?.trim().replace(/^["']|["']$/g, '')
+          if (name) names.add(name)
+        }
+      }
+    } catch { /* Native discovery reports invalid or unreadable user folders. */ }
+  }
+  return names
 }
 
 const output = (result) => result.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n')
@@ -121,7 +142,12 @@ export default {
         tool: native,
         config(config) {
           config.skills ??= {}
-          config.skills.paths = [...new Set([path.join(root, 'v1-skills'), ...userSkillPaths(directory, worktree), ...(config.skills.paths ?? [])])]
+          const own = path.join(root, 'v1-skills')
+          const supplied = (config.skills.paths ?? []).filter((dir) => dir !== own && !dir.startsWith(own + path.sep))
+          const expanded = supplied.map((dir) => path.resolve(directory, dir.replace(/^~(?=$|[\\/])/, os.homedir())))
+          const occupied = skillNames([...userSkillPaths(directory, worktree), ...expanded])
+          const added = skills().filter((skill) => !occupied.has(skill.name)).map((skill) => path.join(own, skill.name))
+          config.skills.paths = [...new Set([...added, ...supplied])]
         },
         dispose: () => bridge.close(),
       }
