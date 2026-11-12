@@ -120,6 +120,7 @@ export class FakeCloud {
   closedArtifacts = new Set<string>()
   refusedUploads = new Map<string, string>()
   unreachableArtifacts = new Set<string>()
+  serviceUnavailableUploads = false
   /** The type each artifact was made with. */
   types = new Map<string, string>()
   jobs = new Map<string, FakeJob>()
@@ -303,6 +304,7 @@ export class FakeCloud {
     const refuse = (status: number, code: string, message: string) => send(status, { error: { code, message } })
     const route = url.pathname
     const upload = /^\/v1\/artifacts\/([^/]+)\/uploads$/.exec(route)
+    if (upload && this.serviceUnavailableUploads) return refuse(503, 'service_unavailable', 'Cloud is not answering right now. Try again shortly.')
     if (upload && this.unreachableArtifacts.has(upload[1]!)) {
       this.log.push(`${req.method} ${route}`)
       return void req.socket.destroy()

@@ -861,6 +861,7 @@ describe('the Runner', () => {
       await until(() => job.state === 'finished')
       assert.equal(planned.length, 0)
       assert.equal(job.reason, 'recovery_unsafe')
+      assert.notEqual((job.report?.recovery as { safe?: boolean } | undefined)?.safe, true)
     })
   }
 
@@ -1753,6 +1754,41 @@ describe('a task’s folder (#2037)', () => {
     assert.ok(pulled.ok, JSON.stringify(pulled))
     for (const [name, bytes] of files) assert.deepEqual(fs.readFileSync(path.join(ws.board, name)), bytes, name)
     assert.deepEqual(fs.readFileSync(path.join(projectStateDir(ws.board), 'assets/1/deep/data.bin')), Buffer.from([3, 2, 1, 0]))
+  })
+
+  it('keeps ordinary asset uploads pending on Cloud 503 without blocking a task reply', async () => {
+    await prepareBoard()
+    const file = path.join(board(), 'assets/1/history.json')
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '{"history":true}')
+    cloud.serviceUnavailableUploads = true
+    const job = await runTask('temporary-upload', '', { chat: { message: 'm1', body: 'Explain this' } })
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(planned.length, 1)
+    const record = path.join(board(), '.sync/task_1.json')
+    assert.ok(JSON.parse(fs.readFileSync(record, 'utf8')).pendingAssets.length)
+    assert.ok(fs.existsSync(file))
+    cloud.serviceUnavailableUploads = false
+    assert.equal((await pushBoard(keptBoard(cached())!, MACHINE)).ok, true)
+    assert.equal(JSON.parse(fs.readFileSync(record, 'utf8')).pendingAssets.length, 0)
+  })
+
+  it('retains safe retry evidence when required asset sync fails before the reply starts', async () => {
+    await prepareBoard()
+    fs.writeFileSync(path.join(board(), 'todo/hero.png'), 'local edit')
+    cloud.serviceUnavailableUploads = true
+    const job = await runTask('sync-before-reply', '', { chat: { message: 'm1', body: 'Explain this' } })
+    assert.equal(job.outcome, 'failed')
+    assert.match(job.reason!, /board changes could not be sent/)
+    assert.equal(planned.length, 0)
+    assert.deepEqual(job.report?.recovery, { safe: true, stopped: true, resumable: false })
+    assert.equal(readCheckpoint(job.id)?.started, false)
+    cloud.serviceUnavailableUploads = false
+    const retried = await runTask('retry-sync', '', {
+      chat: { message: 'm1', body: 'Explain this' }, recoveryOf: job.id, manualRecovery: true, retryReplay: true,
+    })
+    assert.equal(retried.outcome, 'done', retried.reason)
+    assert.equal(planned.length, 1)
   })
 
   it('keeps an ordinary asset pending while a discussion replies, then retries (#666)', async () => {

@@ -957,10 +957,10 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
       try { sent = await sendFile() }
       catch (error) { sent = { ok: false, error: `${key}: ${renderError(error)}` } }
       if (!sent.ok) {
-        if (sent.code && !['too_large', 'payload_too_large', 'storage_limit', 'storage_limit_reached'].includes(sent.code)) return sent
+        if (sent.code && !['too_large', 'payload_too_large', 'storage_limit', 'storage_limit_reached', 'service_unavailable'].includes(sent.code)) return sent
         record.pendingAssets = [...new Set([...(record.pendingAssets ?? []), key])]
         writeRecord(ws, record)
-        errors.push({ error: sent.error, ...(sent.code ? {} : { offline: true }) })
+        errors.push({ error: sent.error, ...(!sent.code || sent.code === 'service_unavailable' ? { offline: true } : {}) })
         console.error(`runner: asset upload pending: ${sent.error}`)
         if (before[key]) refs[key] = before[key]!
       }

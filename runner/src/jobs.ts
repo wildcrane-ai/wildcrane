@@ -438,7 +438,13 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
     ? { session: checkpoint.session, ...replySpent(checkpoint, job.runtime) } : undefined
   const finishClaimed = (outcome: Outcome, reason = '', said?: JobReport) => {
     const before = spent()
-    const report = before ? { ...before, ...said } : said
+    let report = before ? { ...before, ...said } : said
+    if (reply && outcome === 'failed' && checkpoint.started === false && checkpoint.effects === false
+        && !checkpoint.pending.length && !checkpoint.opaque
+        && (!(job.recoveryOf || job.manualRecovery) || previous || job.retryReplay === true)) {
+      report = { ...report, recovery: { safe: true, stopped: true, resumable: false } }
+      saveCheckpoint(id, checkpoint)
+    }
     if (before && outcome === 'failed') {
       checkpoint.completed = { outcome, reason, report: report! }
       saveCheckpoint(id, checkpoint)
