@@ -41,6 +41,7 @@ export function buildSettingsClient() {
       target: 'es2022',
       minify: true,
       jsx: 'automatic',
+      loader: { '.svg': 'text' },
       legalComments: 'none',
       define: { 'process.env.NODE_ENV': '"production"' },
       plugins: [{

@@ -46,7 +46,7 @@ for (const [entry, outfile] of [
     platform: 'node',
     format: 'esm',
     target: 'node22',
-    loader: { '.html': 'text', '.txt': 'text', '.md': 'text', '.tsx': 'text', '.json': 'text' },
+    loader: { '.html': 'text', '.txt': 'text', '.md': 'text', '.svg': 'text', '.tsx': 'text', '.json': 'text' },
     banner: { js: `// wildcrane-runner ${VERSION} — built by runner/scripts/build.mjs. Do not edit.\n${REQUIRE_SHIM}` },
     define: { __RUNNER_VERSION__: JSON.stringify(VERSION), __AKB_VERSION__: JSON.stringify(CLI_VERSION), __AKB_CONTRACT__: String(AKB_CONTRACT) },
     legalComments: 'none',
@@ -83,7 +83,7 @@ async function buildAkb(dir) {
     platform: 'node',
     format: 'esm',
     target: 'node22',
-    loader: { '.html': 'text', '.txt': 'text', '.md': 'text', '.tsx': 'text', '.json': 'text' },
+    loader: { '.html': 'text', '.txt': 'text', '.md': 'text', '.svg': 'text', '.tsx': 'text', '.json': 'text' },
     // 保持 CLI 构建标记格式。
     banner: { js: `#!/usr/bin/env node\n// ai4kanban ${CLI_VERSION} — built by runner/scripts/build.mjs. Do not edit.\n${REQUIRE_SHIM}` },
     define: { __AKB_BUILT__: 'true' },

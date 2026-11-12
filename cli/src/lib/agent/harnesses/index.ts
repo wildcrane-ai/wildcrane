@@ -2,6 +2,7 @@
 // whole of what the rest of the CLI sees — nothing outside this folder learns an agent's
 // name. What a harness declares, and what a new file has to answer, is in ./types.
 
+import { ANTIGRAVITY } from './antigravity'
 import { checkHarnesses } from './check'
 import { CLAUDE_CODE } from './claude-code'
 import { CODEX } from './codex'
@@ -25,7 +26,7 @@ const withRawArgs = (harness: Harness): Harness => ({
 })
 
 /** Every agent the board can run, in the order they are listed. */
-export const HARNESSES: Harness[] = [CLAUDE_CODE, CODEX, CURSOR, OPENCODE, KIMI, DSH, ZCODE, GROK].map(
+export const HARNESSES: Harness[] = [CLAUDE_CODE, CODEX, CURSOR, OPENCODE, KIMI, DSH, ZCODE, GROK, ANTIGRAVITY].map(
   withRawArgs,
 )
 

@@ -13,7 +13,7 @@ import type { AddressInfo, Socket } from 'node:net'
 export interface FakeJob {
   handoff?: import('../src/api').Job['handoff']
   id: string
-  runtime: 'claude-code' | 'codex' | 'cursor' | 'opencode' | 'kimi' | 'dsh' | 'zcode' | 'grok'
+  runtime: 'claude-code' | 'codex' | 'cursor' | 'opencode' | 'kimi' | 'dsh' | 'zcode' | 'grok' | 'antigravity'
   runtimeId?: string | null
   model?: string | null
   settings?: Record<string, string> | null

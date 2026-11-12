@@ -13,7 +13,7 @@ import { secretsSet } from './secrets'
 export type Call<T> = { ok: true; value: T } | { ok: false; error: string; code?: string; project?: string }
 
 /** Every connector a job can run on, in the board's order. */
-export const RUNTIMES = ['claude-code', 'codex', 'cursor', 'opencode', 'kimi', 'dsh', 'zcode', 'grok'] as const
+export const RUNTIMES = ['claude-code', 'codex', 'cursor', 'opencode', 'kimi', 'dsh', 'zcode', 'grok', 'antigravity'] as const
 
 export interface Job {
   handoff?: { kind: 'check' | 'execution'; action?: 'queue' | 'continue' | 'restart' | 'runtime'; started?: boolean; recovering?: boolean; isolation?: string; progressIsolation?: string | null; verb?: Flow['verb']; evidence?: string | null } | null
@@ -153,7 +153,7 @@ export interface SettingDecl {
 
 /** Raised by Cloud when it no longer takes this Runner's protocol. 9 keeps keys (#2135); 10 stops
  *  a flow job, pausing its board runs (#2128); 11 holds the computer's lock (#2161); 14 shares local settings and account revocation; 18 says Studio (#645). */
-export const PROTOCOL = 19
+export const PROTOCOL = 20
 
 const TIMEOUT_MS = 20_000
 

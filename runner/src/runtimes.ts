@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+import { antigravityModels } from '../../cli/src/lib/agent/harnesses/antigravity'
 import { LANGUAGE_ENV, LANGUAGE_LINE_ENV } from '../../cli/src/lib/agent/language'
 import { splitCommand } from '../../cli/src/lib/agent/argv'
 import { HARNESSES as ALL } from '../../cli/src/lib/agent/harnesses'
@@ -198,7 +199,7 @@ export function refreshModels(found: RuntimeReport[]): Promise<RuntimeReport[]> 
 
 type Model = { id: string; name: string }
 
-const SLOW = new Set<Job['runtime']>(['opencode', 'cursor'])
+const SLOW = new Set<Job['runtime']>(['opencode', 'cursor', 'antigravity'])
 
 /** The ids a CLI caches for its own picker (harness `models()`), for the ones read no other way. */
 const listed = (harness: Harness) => async (): Promise<Model[]> => (harness.models?.() ?? []).map((id) => ({ id, name: id }))
@@ -217,6 +218,7 @@ const MODELS: Partial<Record<Job['runtime'], () => Promise<Model[]>>> = {
   codex: async () => codexModels(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'models_cache.json')),
   opencode: async () => opencodeModels(await output(commandOf(HARNESSES.opencode)[0], ['models'])),
   cursor: () => cursorModels(),
+  antigravity: async () => antigravityModels(await output(commandOf(HARNESSES.antigravity)[0], ['models'])),
 }
 
 /** `opencode models`: one `provider/model` id a line, the same ids its ACP session takes. */
@@ -273,7 +275,7 @@ function output(command: string, args: string[]): Promise<string> {
     } catch {
       return resolve('')
     }
-    const timer = setTimeout(() => child.kill(), MODELS_MS)
+    const timer = setTimeout(() => { child.kill(); resolve('') }, MODELS_MS)
     child.stdout?.on('data', (d) => (out += d))
     child.on('error', () => resolve(''))
     child.on('close', (code) => {
@@ -342,7 +344,7 @@ function probeLogin(binary: string, harness: Harness): Promise<boolean | undefin
     } catch {
       return resolve(undefined)
     }
-    const timer = setTimeout(() => child.kill(), LOGIN_PROBE_MS)
+    const timer = setTimeout(() => { child.kill(); resolve(undefined) }, probe.timeoutMs ?? LOGIN_PROBE_MS)
     child.stdout?.on('data', (d) => (output += d))
     child.stderr?.on('data', (d) => (output += d))
     child.on('error', () => resolve(undefined))

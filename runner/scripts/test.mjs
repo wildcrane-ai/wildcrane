@@ -30,7 +30,7 @@ await esbuild.build({
   format: 'esm',
   target: 'node22',
   outExtension: { '.js': '.mjs' },
-  loader: { '.html': 'text', '.txt': 'text', '.md': 'text', '.tsx': 'text', '.json': 'text' },
+  loader: { '.html': 'text', '.txt': 'text', '.md': 'text', '.svg': 'text', '.tsx': 'text', '.json': 'text' },
   define: { __RUNNER_VERSION__: '"0.0.0-test"', __AKB_VERSION__: '"0.0.0-test"', __AKB_CONTRACT__: '1' },
   legalComments: 'none',
   banner: { js: REQUIRE_SHIM },

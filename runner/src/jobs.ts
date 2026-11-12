@@ -893,6 +893,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     })
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => {
+      renderer.stderr?.(chunk)
       stderr = (stderr + chunk).slice(-EVENT_CHARS)
       stream.out(quietLines(plan, chunk))
     })
@@ -910,7 +911,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   let ended = await printed(plan)
   let measured = measure(report(job, plan))
   // A carried session that is not here, or not copied, leaves a new one reading the discussion.
-  if (fresh && ended.code !== 0 && plan.renderer!.result() === undefined && !ended.acted
+  if (fresh && job.runtime !== 'antigravity' && ended.code !== 0 && plan.renderer!.result() === undefined && !ended.acted
       && (!missingSessionOnly || sessionMissing(`${ended.stderr}\n${plan.renderer!.failure?.() ?? ''}`))
       && (checkpoint.retry?.attempt ?? 1) < 3 && Date.now() <= (checkpoint.retry?.since ?? Date.now()) + 120_000
       && !checkpoint.pending.length && !checkpoint.effects && !stream.asked() && !stream.lost()
@@ -937,7 +938,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     if (parts) measured = { ...measured, parts, reply: parts.filter(p => p.type === 'text').map(p => p.text).join('') }
   }
   const rawFailure = ended.error ?? renderer.failure?.() ?? (ended.code === 0 ? undefined : `Exited with code ${ended.code}.`)
-  if (sessionMissing(rawFailure ?? '') && !replayable(checkpoint)) {
+  if (job.runtime !== 'antigravity' && sessionMissing(rawFailure ?? '') && !replayable(checkpoint)) {
     checkpoint.session = undefined
     persist()
   }
@@ -1149,6 +1150,7 @@ async function runTest(job: Job, deps: Shared, lease: Lease): Promise<void> {
     })
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => {
+      renderer.stderr?.(chunk)
       said += chunk.split('\n').filter((line) => line && !run.quiet(line)).map((line) => `${line}\n`).join('')
     })
     child.on('error', (error) => {

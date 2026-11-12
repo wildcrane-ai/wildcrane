@@ -34,6 +34,8 @@ export interface LoginProbe {
   /** What to run, after the binary the installed answer resolved. Side-effect free, and
    *  cheap enough to run every time the picker opens. */
   args: string[]
+  /** A slow network probe must leave readiness unknown without holding the picker. */
+  timeoutMs?: number
   /** True for output that says somebody is logged in. Read FIRST, so a CLI that prints both
    *  never draws a warning. */
   ready(output: string): boolean

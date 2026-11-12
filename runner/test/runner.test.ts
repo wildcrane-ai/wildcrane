@@ -1066,6 +1066,20 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.match(planned[1]!.prompt, /云端历史和最新消息/)
   })
 
+  it('Antigravity 续接失败保留会话且不新建空白会话（#687）', async () => {
+    const job = cloud.dispatch({ id: 'antigravity-missing', runtime: 'antigravity', resume: 'absent', chat: { message: 'm1', body: '继续' } })
+    start('', { plan: (...args) => {
+      const p = fakeRuntime('console.error("Session not found");process.exit(1)')(...args)
+      p.renderer!.result = () => undefined
+      p.renderer!.events = () => []
+      return p
+    } })
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'failed')
+    assert.deepEqual(planned.map(p => p.resume), ['absent'])
+    assert.equal(job.report?.session, 'absent')
+  })
+
   it('换机的新会话也失败时返回清空入口所需状态', async () => {
     const job = cloud.dispatch({ id: 'new-session-failed', resume: 'absent', chat: { message: 'm1', body: '继续' } })
     start('', { plan: (...args) => {
@@ -1297,10 +1311,10 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.deepEqual(stop, { reason: 'elsewhere', machine: 'laptop' })
   })
 
-  it('registers with protocol 19', async () => {
+  it('registers with protocol 20', async () => {
     start()
     await until(() => cloud.registrations > 0)
-    assert.equal(cloud.protocol, 19)
+    assert.equal(cloud.protocol, 20)
   })
 
   it('stops as outdated when Cloud no longer takes its protocol', async () => {
@@ -4109,7 +4123,7 @@ describe('the real runtimes', () => {
   it('reports what each connector takes, never how it reaches a run (#2135)', async () => {
     const { detectRuntimes } = await import('../src/runtimes')
     const found = await detectRuntimes(true)
-    assert.deepEqual(found.map((r) => r.name), ['claude-code', 'codex', 'cursor', 'opencode', 'kimi', 'dsh', 'zcode', 'grok'])
+    assert.deepEqual(found.map((r) => r.name), ['claude-code', 'codex', 'cursor', 'opencode', 'kimi', 'dsh', 'zcode', 'grok', 'antigravity'])
     const codex = found.find((r) => r.name === 'codex')!.settings!
     assert.ok(codex.some((s) => s.key === 'apiKey' && s.kind === 'secret'))
     assert.ok(codex.every((s) => !('env' in s) && !('flags' in s)))

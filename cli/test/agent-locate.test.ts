@@ -22,6 +22,7 @@ const OUTPUT = [
   ['kimi', '2.4.0', '2.4.0'],
   ['dsh', '@openma/deepseek-harness-acp 0.4.14', '0.4.14'],
   ['zcode', 'zcode-app-cli 3.14.4-29\nzcode-runtime 0.16.9', '3.14.4-29'],
+  ['antigravity', '1.5.6', '1.5.6'],
   ['grok', 'grok 1.0.70 (f50904eaee6c) [stable]', '1.0.70'],
 ] as const
 

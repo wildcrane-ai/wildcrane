@@ -357,6 +357,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
   const errs = createStderrFilter(active.quietStderr)
   child.stderr.on('data', (d: Buffer) => {
     touch()
+    renderer?.stderr?.(d.toString())
     const text = errs.push(d.toString())
     if (text) log.write(text)
   })

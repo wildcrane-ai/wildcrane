@@ -15,6 +15,7 @@ import type { ContextWindow, TokenUsage } from '../types'
 export interface StreamRenderer {
   /** Feed a chunk of stdout; returns the log text it renders to (may be ""). */
   push(chunk: string): string
+  stderr?(chunk: string): void
   /** Render a trailing partial line at close; returns the remaining text. */
   flush(): string
   /** The agent's final message, once the `result` event has arrived. */
