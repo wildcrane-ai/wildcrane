@@ -1358,20 +1358,21 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(result.ok, true)
   }
 
-  for (const pending of [false, true]) {
-    it(`reply approval synchronizes edits first and ${pending ? 'refuses pending assets' : 'proves final sync'} (#684)`, async () => {
+  for (const asset of ['unchanged', 'unreferenced', 'referenced']) {
+    it(`reply approval synchronizes ${asset} assets before deciding (#684)`, async () => {
       await prepareBoard()
-      cloud.serviceUnavailableUploads = pending
+      const pending = asset === 'referenced'
+      cloud.serviceUnavailableUploads = asset !== 'unchanged'
       const script = `
         const fs = require('fs');
         fs.appendFileSync('todo/1-task-1.md', 'Edited before approval.');
-        ${pending ? "fs.mkdirSync('assets/1', { recursive: true }); fs.writeFileSync('assets/1/pending.json', '{}');" : ''}
+        ${pending ? "fs.writeFileSync('todo/hero.png', 'pending edit');" : asset === 'unreferenced' ? "fs.mkdirSync('assets/1', { recursive: true }); fs.writeFileSync('assets/1/pending.json', '{}');" : ''}
         const { url, token } = JSON.parse(process.env.AI4KANBAN_REPLY_APPROVAL);
         fetch(url, { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify({ task: '1' }) })
           .then(r => r.json()).then(r => { fs.writeFileSync('reply-result.json', JSON.stringify(r)); console.log('done'); });
       `
       const job = await runTask('reply-approval', script, { chat: { message: 'm1', body: 'Start' } })
-      assert.equal(job.outcome, 'done', job.reason)
+      assert.equal(job.outcome, pending ? 'failed' : 'done', job.reason)
       const answer = JSON.parse(read('reply-result.json'))
       assert.equal(answer.ok, !pending, JSON.stringify(answer))
       assert.equal(cloud.replyApprovals.length, pending ? 0 : 1)
@@ -1792,87 +1793,67 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(unsent(cached()), false)
   })
 
-  it('syncs captures and ordinary nested files with byte-preserving recovery (#666)', async () => {
+  it('syncs only card assets and their declared dependencies, including multipart recovery', async () => {
     await prepareBoard()
-    cloud.multipartSize = 200_000
-    const files = new Map<string, Buffer>()
-    for (let i = 0; i < 38; i++) files.set(`assets/1/snap/${i}/snapshot.json`,
-      Buffer.from(JSON.stringify({ tree: ['capture'.repeat(i === 0 ? 350_000 : 40_000)] })))
-    for (const [name, bytes] of Object.entries({
-      'notes.txt': Buffer.from('notes'), 'README.md': Buffer.from('# Notes'),
-      'image.png': Buffer.from([0, 255, 128]), 'opaque.unknown': Buffer.from([255, 0, 254]),
-      'broken.json': Buffer.from('{unfinished'), 'page.html': Buffer.from('<html>original</html>'),
-    })) files.set(`assets/1/nested/${name}`, bytes)
+    cloud.multipartSize = 200
+    const files = new Map([
+      ['../assets/1/guide.md', Buffer.from('# Guide\n\n![](nested/image.png)\n')],
+      ['../assets/1/nested/image.png', Buffer.from([0, 255, 128])],
+      ['.assets/1/data.bin', Buffer.alloc(600, 127)],
+    ])
     for (const [name, bytes] of files) {
-      fs.mkdirSync(path.dirname(path.join(board(), name)), { recursive: true })
-      fs.writeFileSync(path.join(board(), name), bytes)
+      const file = name.startsWith('.assets/')
+        ? path.join(projectStateDir(board()), name.slice(1))
+        : path.resolve(path.dirname(path.join(board(), CARD)), name)
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, bytes)
     }
-    const extra = path.join(projectStateDir(board()), 'assets/1/deep/data.bin')
-    fs.mkdirSync(path.dirname(extra), { recursive: true })
-    fs.writeFileSync(extra, Buffer.from([3, 2, 1, 0]))
-    fs.writeFileSync(path.join(board(), 'assets/1/.env'), 'private')
-    fs.mkdirSync(path.join(board(), 'assets/1/.sync'), { recursive: true })
-    fs.writeFileSync(path.join(board(), 'assets/1/.sync/private.json'), '{}')
-    fs.symlinkSync(extra, path.join(board(), 'assets/1/linked.bin'))
-    const privateDir = fs.mkdtempSync(path.join(runnerHome(), 'private-'))
-    fs.writeFileSync(path.join(privateDir, 'secret.json'), '{}')
-    fs.mkdirSync(path.join(projectStateDir(board()), 'mockups'), { recursive: true })
-    fs.symlinkSync(privateDir, path.join(projectStateDir(board()), 'mockups/1'))
-    const start = cloud.log.length
-    const sent = await pushBoard(keptBoard(cached())!, MACHINE)
-    assert.ok(sent.ok, JSON.stringify(sent))
-    let active = 0
-    let peak = 0
-    for (const line of cloud.log.slice(start)) {
-      if (line === 'POST /v1/tasks/task_1/artifacts') peak = Math.max(peak, ++active)
-      if (/^POST \/v1\/artifacts\/[^/]+\/versions$/.test(line)) active--
+    for (const root of [path.join(board(), 'assets/1'), path.join(projectStateDir(board()), 'assets/1')]) {
+      for (const name of ['snap/snapshot.json', 'history/old.png', 'tools/check.mjs', 'build.log', 'source.url', 'node_modules/pkg/index.js']) {
+        const file = path.join(root, name)
+        fs.mkdirSync(path.dirname(file), { recursive: true })
+        fs.writeFileSync(file, 'unreferenced')
+      }
     }
-    assert.ok(peak > 1 && peak <= 4, `ordinary resource upload concurrency: ${peak}`)
-    const refs = JSON.parse(cloud.file('assets/task_1.json')!)
-    for (const [name, bytes] of files) {
-      const ref = refs[`../${name}`]
-      assert.ok(ref, name)
-      assert.equal(cloud.types.get(ref.artifact), 'asset', name)
-      assert.deepEqual(cloud.task.artifacts.get(ref.artifact)!.at(-1), bytes, name)
-      assert.equal(cloud.file(name), null, 'an asset went into board data')
-    }
-    assert.ok(refs['.assets/1/deep/data.bin'])
-    assert.ok(!Object.keys(refs).some(key => /\.env|private|linked/.test(key)))
-    const count = cloud.log.filter(line => line.endsWith('/uploads')).length
+    fs.appendFileSync(path.join(board(), CARD), '\n<Asset src="../assets/1/guide.md" />\n\n<Asset src=".assets/1/data.bin" />\n')
     assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
-    assert.equal(cloud.log.filter(line => line.endsWith('/uploads')).length, count)
-    const generated = await runTask('generated', `
-      const fs = require('fs')
-      fs.writeFileSync('assets/1/generated.dat', 'generated in task')
-      fs.writeFileSync('assets/1/generated.png', Buffer.alloc(300_000, 127))
-      fs.appendFileSync('${CARD}', '\\n![](../assets/1/generated.png)\\n')
-    `)
-    assert.equal(generated.outcome, 'done', generated.reason)
-    files.set('assets/1/generated.dat', Buffer.from('generated in task'))
-    files.set('assets/1/generated.png', Buffer.alloc(300_000, 127))
+    const refs = JSON.parse(cloud.file('assets/task_1.json')!)
+    for (const name of files.keys()) assert.ok(refs[name], name)
+    assert.ok(!Object.keys(refs).some(key => /snapshot|history|tools|build.log|source.url|node_modules/.test(key)))
+    assert.deepEqual(cloud.task.artifacts.get(refs['.assets/1/data.bin'].artifact)!.at(-1), files.get('.assets/1/data.bin'))
+    const uploads = cloud.log.filter(line => line.endsWith('/uploads')).length
+    assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
+    assert.equal(cloud.log.filter(line => line.endsWith('/uploads')).length, uploads)
     const restored = fs.mkdtempSync(path.join(runnerHome(), 'restored-'))
     const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, restored)
-    const pulled = await pull(ws, MACHINE)
-    assert.ok(pulled.ok, JSON.stringify(pulled))
-    for (const [name, bytes] of files) assert.deepEqual(fs.readFileSync(path.join(ws.board, name)), bytes, name)
-    assert.deepEqual(fs.readFileSync(path.join(projectStateDir(ws.board), 'assets/1/deep/data.bin')), Buffer.from([3, 2, 1, 0]))
+    assert.ok((await pull(ws, MACHINE)).ok)
+    for (const [name, bytes] of files) {
+      const file = name.startsWith('.assets/')
+        ? path.join(projectStateDir(ws.board), name.slice(1))
+        : path.resolve(path.dirname(path.join(ws.board, CARD)), name)
+      assert.deepEqual(fs.readFileSync(file), bytes, name)
+    }
   })
 
-  it('keeps ordinary asset uploads pending on Cloud 503 without blocking a task reply', async () => {
+  it('reuses a newly created artifact when an upload fails and is retried', async () => {
     await prepareBoard()
-    const file = path.join(board(), 'assets/1/history.json')
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, '{"history":true}')
+    const file = path.join(board(), 'todo/data.bin')
+    fs.writeFileSync(file, 'new attachment')
+    fs.appendFileSync(path.join(board(), CARD), '\n<Asset src="data.bin" />\n')
     cloud.serviceUnavailableUploads = true
-    const job = await runTask('temporary-upload', '', { chat: { message: 'm1', body: 'Explain this' } })
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(planned.length, 1)
-    const record = path.join(board(), '.sync/task_1.json')
-    assert.ok(JSON.parse(fs.readFileSync(record, 'utf8')).pendingAssets.length)
-    assert.ok(fs.existsSync(file))
+    assert.equal((await pushBoard(keptBoard(cached())!, MACHINE)).ok, false)
+    const created = cloud.log.filter(line => line === 'POST /v1/tasks/task_1/artifacts').length
+    assert.equal((await pushBoard(keptBoard(cached())!, MACHINE)).ok, false)
+    assert.equal(cloud.log.filter(line => line === 'POST /v1/tasks/task_1/artifacts').length, created)
     cloud.serviceUnavailableUploads = false
-    assert.equal((await pushBoard(keptBoard(cached())!, MACHINE)).ok, true)
-    assert.equal(JSON.parse(fs.readFileSync(record, 'utf8')).pendingAssets.length, 0)
+    assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
+    assert.equal(cloud.log.filter(line => line === 'POST /v1/tasks/task_1/artifacts').length, created)
+    const uploads = cloud.log.filter(line => line.endsWith('/uploads')).length
+    fs.appendFileSync(path.join(board(), CARD), '\n<Asset src="./data.bin" />\n')
+    assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
+    assert.equal(cloud.log.filter(line => line.endsWith('/uploads')).length, uploads)
+    const refs = JSON.parse(cloud.file('assets/task_1.json')!)
+    assert.deepEqual(refs['data.bin'], refs['./data.bin'])
   })
 
   it('retains safe retry evidence when required asset sync fails before the reply starts', async () => {
@@ -1893,39 +1874,7 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(planned.length, 1)
   })
 
-  it('keeps an ordinary asset pending while a discussion replies, then retries (#666)', async () => {
-    await prepareBoard()
-    const file = path.join(board(), 'assets/1/snap/data.json')
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, JSON.stringify({ tree: 'x'.repeat(300_000) }))
-    fs.appendFileSync(path.join(board(), CARD), '\nUnsynced draft.\n')
-    cloud.uploadFailure = { after: 0, code: 'storage_limit' }
-    const sent = await pushBoard(keptBoard(cached())!, MACHINE)
-    assert.equal(sent.ok, false)
-    assert.ok(unsent(cached()))
-    const failed = [...cloud.task.artifacts.keys()].at(-1)!
-    cloud.unreachableArtifacts.add(failed)
-    const result = await runTask('discussion', '', { task: null, projectDir: cached(), discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
-    assert.equal(result.outcome, 'done', result.reason)
-    assert.match(read(CARD), /Unsynced draft/)
-    assert.ok(fs.existsSync(file))
-    assert.ok(unsent(cached()))
-    const required = await pull(openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cached()), MACHINE)
-    assert.equal(required.ok, true)
-    cloud.unreachableArtifacts.clear()
-    assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
-    assert.match(cloud.file(CARD)!, /Unsynced draft/)
-    assert.ok(!unsent(cached()))
-    fs.truncateSync(file, 2 * 1024 ** 3)
-    const count = cloud.log.filter(line => line.endsWith('/uploads')).length
-    const oversized = await pushBoard(keptBoard(cached())!, MACHINE)
-    assert.equal(oversized.ok, false)
-    if (!oversized.ok) assert.match(oversized.error, /100 MiB/)
-    assert.equal(cloud.log.filter(line => line.endsWith('/uploads')).length, count)
-    assert.equal(fs.statSync(file).size, 2 * 1024 ** 3)
-  })
-
-  it('replies when the task itself creates an oversized unrelated file (#670)', async () => {
+  it('ignores unrelated oversized files while syncing a task reply', async () => {
     const job = await runTask('new-asset', `
       const fs = require('fs')
       fs.mkdirSync('assets/1', { recursive: true })
@@ -1936,86 +1885,17 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(job.outcome, 'done', job.reason)
     assert.match(cloud.file(CARD)!, /Safe new edit/)
     assert.ok(!JSON.parse(cloud.file('assets/task_1.json')!)['../assets/1/large.bin'])
-    assert.ok(unsent(cached()))
-  })
-
-  it('keeps file read failures pending without blocking a task reply (#670)', async (t) => {
-    await prepareBoard()
-    const file = path.join(board(), 'assets/1/unreadable.bin')
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, 'local bytes')
-    const original = fs.createReadStream
-    t.mock.method(fs, 'createReadStream', (...args: Parameters<typeof fs.createReadStream>) => {
-      if (args[0] === file) throw new Error('local read failed')
-      return original(...args)
-    })
-    const job = await runTask('read-failure')
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(fs.readFileSync(file, 'utf8'), 'local bytes')
-    assert.ok(unsent(cached()))
-    t.mock.restoreAll()
-    assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
     assert.equal(unsent(cached()), false)
   })
 
-  for (const required of [false, true]) {
-    it(`preserves ${required ? 'referenced upload' : 'authorization'} failures (#670)`, async () => {
+  for (const code of ['storage_limit_reached', 'unauthenticated']) {
+    it(`preserves referenced upload failures: ${code}`, async () => {
       await prepareBoard()
-      if (required) {
-        cloud.refusedUploads.set('art_1', 'storage_limit_reached')
-        fs.writeFileSync(path.join(board(), 'todo/hero.png'), 'required edit')
-      } else {
-        const file = path.join(board(), 'assets/1/data.bin')
-        fs.mkdirSync(path.dirname(file), { recursive: true })
-        fs.writeFileSync(file, 'old')
-        assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
-        const ref = JSON.parse(cloud.file('assets/task_1.json')!)['../assets/1/data.bin']
-        cloud.refusedUploads.set(ref.artifact, 'unauthenticated')
-        fs.writeFileSync(file, 'new')
-      }
+      cloud.refusedUploads.set('art_1', code)
+      fs.writeFileSync(path.join(board(), 'todo/hero.png'), 'required edit')
       const job = await runTask('strict')
       assert.equal(job.outcome, 'failed')
       assert.match(job.reason!, /上传被拒绝/)
-    })
-  }
-
-  for (const failure of ['too_large', 'storage_limit_reached', 'offline']) {
-    it(`completes task replies with safe edits while an unrelated asset is ${failure} (#670)`, async () => {
-      assert.equal((await runTask('seed')).outcome, 'done')
-      const dir = path.join(board(), 'assets/1')
-      fs.mkdirSync(dir, { recursive: true })
-      const file = path.join(dir, 'a.bin')
-      fs.writeFileSync(file, 'original')
-      assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
-      const key = '../assets/1/a.bin'
-      const old = JSON.parse(cloud.file('assets/task_1.json')!)[key]
-      if (failure === 'too_large') fs.truncateSync(file, 101 * 1024 ** 2)
-      else fs.writeFileSync(file, 'pending edit')
-      if (failure === 'offline') cloud.unreachableArtifacts.add(old.artifact)
-      else if (failure !== 'too_large') cloud.refusedUploads.set(old.artifact, failure)
-      // Establish pending state before a reply, as a watcher would.
-      assert.equal((await pushBoard(keptBoard(cached())!, MACHINE)).ok, false)
-      await runner?.close()
-      runner = null
-      const job = await runTask('reply', `
-        const fs = require('fs')
-        fs.writeFileSync('assets/1/z.bin', 'another asset')
-        fs.appendFileSync('${CARD}', '\\nSafe card edit.\\n')
-      `)
-      assert.equal(job.outcome, 'done', job.reason)
-      assert.match(cloud.file(CARD)!, /Safe card edit/)
-      const refs = JSON.parse(cloud.file('assets/task_1.json')!)
-      assert.deepEqual(refs[key], old, 'a failed update published a new version')
-      assert.ok(refs['../assets/1/z.bin'], 'another asset was blocked')
-      assert.equal(fs.statSync(file).size, failure === 'too_large' ? 101 * 1024 ** 2 : 12)
-      assert.ok(unsent(cached()))
-      cloud.unreachableArtifacts.clear()
-      cloud.refusedUploads.clear()
-      fs.writeFileSync(file, 'recovered')
-      assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
-      const updated = JSON.parse(cloud.file('assets/task_1.json')!)[key]
-      assert.ok(updated.version > old.version)
-      assert.equal(unsent(cached()), false)
     })
   }
 
