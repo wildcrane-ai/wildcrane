@@ -1,3 +1,5 @@
+import { streamFinished, createBackgroundWait, backgroundWaitMessage } from '../../cli/src/lib/agent/wire/background'
+import { BACKGROUND_WAIT } from '../../cli/src/lib/agent/settings'
 import { saveReplyImages } from './reply-images'
 // 领取作业、运行并回写；断网只能运行到租约到期，失效后停止本地执行。
 
@@ -763,7 +765,16 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
       // Killed, the turn ends with what it said so far; one that never does is not waited on.
       stream.whenAsked.then(() => wait(KILL_GRACE_MS * 2)).then((): TurnEnd => ({ ok: true })),
     ])
-    const measured = measure(report(job, plan, end))
+    let measured = measure(report(job, plan, end))
+    if (reply && end.replyParts) {
+      const parts = await saveReplyImages(end.replyParts, cwd, async (key, bytes, mime) => {
+        if (stream.asked() || stream.lost() || !end.ok) return { status: 'not_saved' as const }
+        const result = await api.uploadReplyImage(deps.machineId, id, key, bytes, mime)
+        if (!result.ok) throw Error('image_upload_failed')
+        return stream.asked() || stream.lost() ? { status: 'not_saved' as const } : result.value
+      })
+      if (parts) measured = { ...measured, parts, reply: parts.filter(p => p.type === 'text').map(p => p.text).join('') }
+    }
     if (!end.ok && !recovering && job.resume && (job.chat || job.discussion) && sessionMissing(end.error ?? '') && !replyProgress && !checkpoint.pending.length && (checkpoint.retry?.attempt ?? 1) < 3 && Date.now() <= (checkpoint.retry?.since ?? Date.now()) + 120_000 && !stream.asked() && !stream.lost()) {
       stop(child)
       if (!await stopReply(id, deps.stopMs) || !await stream.confirmed()) {
@@ -810,6 +821,11 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
     const structured = !!renderer.events
     let stderr = ''
     let acted = false
+    let backgroundError: string | undefined
+    const backgroundWait = createBackgroundWait(BACKGROUND_WAIT.minutes * 60_000, () => {
+      backgroundError = backgroundWaitMessage(BACKGROUND_WAIT.minutes)
+      stop(child)
+    })
     const fromAgent = (text: string) => {
       if (!structured) {
         if (text.trim()) acted = true
@@ -824,7 +840,8 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
     child.stdout.on('data', (chunk: string) => {
       fromAgent(renderer.push(chunk))
       // A runtime reading turns from stdin keeps going until stdin closes.
-      if (plan.stdin && renderer.result() !== undefined && !child.stdin.writableEnded) child.stdin.end()
+      if (renderer.background?.()) backgroundWait.pending()
+      if (plan.stdin && streamFinished(renderer) && !child.stdin.writableEnded) { backgroundWait.close(); child.stdin.end() }
     })
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => {
@@ -835,8 +852,10 @@ async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<
       child.on('error', (e) => resolve({ code: null, error: e.message }))
       child.on('close', (code) => resolve({ code }))
     })
+    backgroundWait.close()
     fromAgent(renderer.flush())
-    return { ...ended, stderr, acted }
+    const pending = renderer.background?.() ? 'The agent exited with unfinished background tasks.' : undefined
+    return { ...ended, error: ended.error ?? backgroundError ?? pending, stderr, acted }
   }
   let plan = run
   beginAttempt()
@@ -1078,7 +1097,7 @@ async function runTest(job: Job, deps: Shared, lease: Lease): Promise<void> {
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => {
       renderer.push(chunk)
-      if (run.stdin && renderer.result() !== undefined && !child.stdin.writableEnded) child.stdin.end()
+      if (run.stdin && streamFinished(renderer) && !child.stdin.writableEnded) child.stdin.end()
     })
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => {

@@ -507,20 +507,21 @@ export function openPlan(plan: RunPlan): ActiveRun {
   const started = [start.binary, ...plan.argv.slice(1)]
   const { argv, env: planned, note } = withSystemLanguage(harness, started, runEnv(resolved, plan.cwd ?? REPO_ROOT), runLanguage())
   const env = copyEnv(start.binary, planned)
+  const connection = harness.connection?.(argv)
   return {
     ...plan,
-    argv,
+    argv: connection?.argv ?? argv,
     ...([start.note, note].some(Boolean) ? { startNote: [start.note, note].filter(Boolean).join('\n') } : {}),
     env,
     // The folder and the binary: what a renderer needs to go looking for what the stream
     // left out (agent/harnesses/types.ts). argv's first word is the command's own binary,
     // the same one the spawn resolves and an ENOENT names.
-    renderer: harness.renderer?.(plan.cwd ?? REPO_ROOT, argv[0], argv),
+    renderer: connection ? undefined : harness.renderer?.(plan.cwd ?? REPO_ROOT, argv[0], argv),
     // The client is handed the settings that are actually in effect — the same ones that
     // would have reached the run as flags, minus whatever the picked provider doesn't
     // need — because for a connector that talks, a setting is something the conversation
     // opens with rather than something argv carries.
-    client: harness.client?.(effectiveValues(resolved)),
+    client: connection?.client ?? harness.client?.(effectiveValues(resolved)),
     // Read off the argv, so a plan written before the CLI took its turns on stdin still runs.
     stdinPrompt: harness.stdinPrompt?.(argv),
     quietStderr: harness.quietStderr,

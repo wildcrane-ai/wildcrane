@@ -36,10 +36,10 @@ try {
     child.stdout.on('data', (x) => { logs += x })
     child.stderr.on('data', (x) => { logs += x })
     const exit = new Promise((resolve) => child.on('exit', resolve))
-    const get = async (endpoint) => {
+    const get = async (endpoint, timeout = 15_000) => {
       const url = new URL(`http://127.0.0.1:${port}${endpoint}`)
       if (version === 'v2') url.searchParams.set('location[directory]', dir)
-      const response = await fetch(url, { headers: { authorization: `Basic ${Buffer.from('opencode:disposable-test').toString('base64')}` }, signal: AbortSignal.timeout(90_000) })
+      const response = await fetch(url, { headers: { authorization: `Basic ${Buffer.from('opencode:disposable-test').toString('base64')}` }, signal: AbortSignal.timeout(timeout) })
       assert.equal(response.status, 200)
       return response.json()
     }
@@ -51,9 +51,11 @@ try {
         await new Promise((r) => setTimeout(r, 500))
       }
       assert.ok(ready, `OpenCode ${version} did not start: ${logs.replace(/server password .+/g, 'server password [redacted]')}`)
+      if (version === 'v1') await get('/config', 180_000)
       if (version === 'v2') {
         let active = false
-        for (let attempt = 0; attempt < 60; attempt++) {
+        const deadline = Date.now() + 180_000
+        while (Date.now() < deadline) {
           const plugins = await get('/api/plugin')
           if (plugins.data.find((p) => p.id === 'wildcrane')?.state.status === 'active') { active = true; break }
           await new Promise((r) => setTimeout(r, 500))

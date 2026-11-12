@@ -369,7 +369,7 @@ describe('turning an older board into runtimes', () => {
     migrateRuntimes(['planner', 'builder', 'reviewer'], takeLocalModels(kanban()))
     setBoardRoot(root)
     const run = openPlan(plan({ action: 'implement', studio: 'coding' }))
-    assert.ok(run.argv.includes('gpt-5.1-codex'))
+    assert.ok(run.argv.includes('model="gpt-5.1-codex"'))
     // …and the rest of what that block said about reaching the CLI came with it: the
     // provider Codex was set to, and the hand-edited command Global default ran.
     assert.equal(readRuntimes().find((r) => r.harness === 'codex')?.settings.provider, 'api')

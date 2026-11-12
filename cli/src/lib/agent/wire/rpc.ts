@@ -112,6 +112,7 @@ export function connect(stdout: Readable, stdin: Writable, onCall: (msg: Message
         send({ id, method, params })
       })
     },
+    notify(method: string, params: Json = {}) { send({ method, params }) },
     /** Answer something the agent asked us. */
     reply(id: number | string, result: Json) {
       send({ id, result })
