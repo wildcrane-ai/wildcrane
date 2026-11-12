@@ -3131,10 +3131,11 @@ describe('flow jobs (#2020)', () => {
     const building = async () => {
       await flowJob('j1', { verb: 'create' })
       process.env.FAKE_AKB = JSON.stringify({ implement: { hang: true, chain: 2 } })
+      const before = Date.now()
       const job = cloud.dispatch({ id: 'j2', task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb: 'implement', card: 2 } })
       await until(() => runs().some((r) => r.sessionId.startsWith('run-implement') && r.status === 'running'))
       // A run on the card the job did not start.
-      fs.writeFileSync(runsFile(), JSON.stringify([...runs(), { sessionId: 'run-mine', cardId: 2, status: 'running', startedAt: 1 }]))
+      fs.writeFileSync(runsFile(), JSON.stringify([...runs(), { sessionId: 'run-mine', cardId: 2, status: 'running', startedAt: before - 1 }]))
       return job
     }
     const stopsBuild = () => {
@@ -3205,11 +3206,12 @@ describe('flow jobs (#2020)', () => {
     })
 
     const priorBuild = (over: Record<string, unknown> = {}) => {
+      const earlier = Date.now() - 1_000
       fs.writeFileSync(path.join(board(), '.fake', 'runs.json'), JSON.stringify([
-        { sessionId: 'old-plan', cardId: 2, action: 'refine', status: 'done', startedAt: 1 },
-        { sessionId: 'old-build', cardId: 2, action: 'implement', status: 'stopped', deliveryId: 'd1', resumeId: 'original-thread', startedAt: 2, ...over },
-        { sessionId: 'other-delivery', cardId: 2, action: 'implement', status: 'stopped', deliveryId: 'd2', resumeId: 'other-thread', startedAt: 3 },
-        { sessionId: 'helper', cardId: 2, action: 'sub', status: 'stopped', deliveryId: 'd1', startedAt: 4 },
+        { sessionId: 'old-plan', cardId: 2, action: 'refine', status: 'done', startedAt: earlier + 1 },
+        { sessionId: 'old-build', cardId: 2, action: 'implement', status: 'stopped', deliveryId: 'd1', resumeId: 'original-thread', startedAt: earlier + 2, ...over },
+        { sessionId: 'other-delivery', cardId: 2, action: 'implement', status: 'stopped', deliveryId: 'd2', resumeId: 'other-thread', startedAt: earlier + 3 },
+        { sessionId: 'helper', cardId: 2, action: 'sub', status: 'stopped', deliveryId: 'd1', startedAt: earlier + 4 },
       ]))
     }
 
@@ -3229,7 +3231,7 @@ describe('flow jobs (#2020)', () => {
 
     it('resumes an active delivery, and returns immediately if it already landed', async () => {
       await flowJob('j1', { verb: 'create' })
-      priorBuild({ deliveryId: 'd2', startedAt: 5 })
+      priorBuild({ deliveryId: 'd2', startedAt: Date.now() - 1 })
       process.env.FAKE_AKB = JSON.stringify({ delivery: { refuse: 'delivery d2 has not ended — it is still in flight on #2.', reason: 'deliveryActive', args: { id: 'd2' } } })
       assert.equal((await flowJob('j2', { verb: 'implement', card: 2, resume: true })).outcome, 'done')
       assert.ok(calls().some((c) => c[0] === 'run' && c[1] === 'resume' && c[2] === 'old-build'))
@@ -3327,7 +3329,7 @@ describe('flow jobs (#2020)', () => {
     const runsFile = () => path.join(board(), '.fake', 'runs.json')
     const runs = () => JSON.parse(fs.readFileSync(runsFile(), 'utf8')) as FakeRun[]
     const leaveRun = () =>
-      fs.writeFileSync(runsFile(), JSON.stringify([...runs(), { sessionId: 'run-left', cardId: 2, action: 'refine', status: 'running', startedAt: 1 }]))
+      fs.writeFileSync(runsFile(), JSON.stringify([...runs(), { sessionId: 'run-left', cardId: 2, action: 'refine', status: 'running', startedAt: Date.now() - 1_000 }]))
     const stops = () => calls().filter((c) => c[0] === 'run' && c[1] === 'stop').map((c) => c[2])
 
     it('when the Runner restarts under a job it held', async () => {

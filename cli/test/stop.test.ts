@@ -4,11 +4,11 @@
 // (#1313) is at the bottom: which pids it picks runs everywhere, ending them only there.
 
 import assert from 'node:assert/strict'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, it } from 'node:test'
+import { describe, it, mock } from 'node:test'
 
 import { RUN_ENV, STOP_ENV } from '../src/lib/agent/env.ts'
 import { watcherEnv } from '../src/lib/agent/launch.ts'
@@ -57,6 +57,40 @@ async function agent(script: string, mark?: Mark): Promise<{ child: ChildProcess
 }
 
 describe('ending an agent with its commands', { skip }, () => {
+  it('Linux ignores older unreadable processes but keeps new or unbounded ones uncertain (#675)', { skip: process.platform !== 'linux' }, async () => {
+    const old = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'])
+    let fresh: ChildProcess | undefined
+    const denied = new Set([`/proc/${old.pid}/environ`])
+    const read = fs.readFileSync
+    const stub = mock.method(fs, 'readFileSync', (file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+      if (denied.has(String(file))) throw Object.assign(new Error('denied'), { code: 'EACCES' })
+      return Reflect.apply(read, fs, [file, ...args])
+    })
+    try {
+      await wait(3_100)
+      const mark = stopMark()
+      assert.equal(processesStopped(mark), true)
+      assert.equal(processesStopped({ name: mark.name, value: mark.value }), false, 'missing creation time stays uncertain')
+      fresh = spawn(process.execPath, ['-e', 'console.log("ready"); setTimeout(() => {}, 60000)'], { env: markEnv(process.env, mark), stdio: ['ignore', 'pipe', 'ignore'] })
+      await new Promise(resolve => fresh!.stdout!.once('data', resolve))
+      denied.add(`/proc/${fresh.pid}/environ`)
+      assert.equal(processesStopped(mark), false, JSON.stringify({
+        message: 'a new unreadable process stays uncertain', since: mark.since, now: Date.now(),
+        pid: fresh.pid, uid: process.getuid?.(), owner: fs.statSync(`/proc/${fresh.pid}`).uid,
+        birth: spawnSync('ps', ['-p', String(fresh.pid), '-o', 'lstart='], { encoding: 'utf8' }).stdout.trim(),
+        inspected: stub.mock.calls.filter(c => String(c.arguments[0]) === `/proc/${fresh!.pid}/environ`).length,
+      }))
+    } finally {
+      stub.mock.restore()
+      for (const child of [old, fresh]) {
+        if (!child || child.exitCode !== null) continue
+        const closed = new Promise(resolve => child.once('close', resolve))
+        child.kill('SIGKILL')
+        await closed
+      }
+    }
+  })
+
   it('后台子进程仍在时不能确认停止，退出后才提供证明', async () => {
     const mark = stopMark()
     const { child, pid } = await agent(`${IDLE} & echo $!`, mark)

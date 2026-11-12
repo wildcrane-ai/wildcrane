@@ -49,7 +49,7 @@ A pinned commit stays pinned. Reinstall from `@grok-plugin` to follow releases a
 | Disabled / 已禁用 | `grok plugin enable wildcrane` |
 | Untrusted installation / 安装未信任 | Repeat the install with `--trust` / 加 `--trust` 重新安装 |
 | Missing Node / 缺少 Node | Install Node 22+, reopen Grok / 安装 Node 22+ 后重开 |
-| Runner download, old Runner, network or update failure / Runner 下载、旧版本、网络或更新失败 | Check connectivity and retry; Grok requires Runner 0.6.52+ / 检查网络后重试，需 Runner 0.6.52+ |
+| Runner download, old Runner, network or update failure / Runner 下载、旧版本、网络或更新失败 | Check connectivity and retry; Grok requires Runner 0.6.53+ / 检查网络后重试，需 Runner 0.6.53+ |
 | First release fails / 首版故障 | Disable or uninstall; wait for a higher fixed version / 禁用或卸载，等待修复版 |
 
 ```sh

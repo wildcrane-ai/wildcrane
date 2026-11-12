@@ -12,13 +12,15 @@ import { KANBAN, REPO_ROOT } from '../paths'
 export interface Mark {
   name: string
   value: string
+  /** Earliest time a process could have inherited this mark. */
+  since?: number
 }
 
 /** The mark a run's agent already carries. */
-export const runMark = (sessionId: string): Mark => ({ name: RUN_ENV, value: sessionId })
+export const runMark = (sessionId: string, since?: number): Mark => ({ name: RUN_ENV, value: sessionId, ...(since === undefined ? {} : { since }) })
 
 /** A mark for an agent no run stands behind — a chat turn, a test. */
-export const stopMark = (): Mark => ({ name: STOP_ENV, value: randomUUID() })
+export const stopMark = (): Mark => ({ name: STOP_ENV, value: randomUUID(), since: Date.now() })
 
 export const markEnv = (env: NodeJS.ProcessEnv, mark: Mark): NodeJS.ProcessEnv => ({ ...env, [mark.name]: mark.value })
 
@@ -28,7 +30,7 @@ const KILL_ROUND_MS = 300
 const KILL_ROUNDS = 3
 
 // Linux: every process of ours shows its environment under /proc.
-function markedInProc(entry: string, strict = false): number[] {
+function markedInProc(entry: string, strict = false, since?: number): number[] {
   const pids: number[] = []
   for (const name of fs.readdirSync('/proc')) {
     if (!/^\d+$/.test(name)) continue
@@ -37,11 +39,21 @@ function markedInProc(entry: string, strict = false): number[] {
     } catch (error) {
       if (strict && !['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) {
         const stat = fs.statSync(`/proc/${name}`, { throwIfNoEntry: false })
-        if (stat?.uid === process.getuid?.()) throw error
+        if (stat?.uid === process.getuid?.() && !startedBefore(Number(name), since)) throw error
       }
     }
   }
   return pids
+}
+
+// Older processes cannot inherit the mark. Allow two seconds for clock rounding.
+function startedBefore(pid: number, since?: number): boolean {
+  if (since === undefined) return false
+  const result = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], {
+    encoding: 'utf8', timeout: 5_000, env: { ...process.env, LC_ALL: 'C' },
+  })
+  const birth = Date.parse(result.stdout?.trim() ?? '')
+  return result.status === 0 && Number.isFinite(birth) && birth + 2_000 <= since
 }
 
 // macOS and the BSDs: `ps -E` prints the environment after the command line. It prints none
@@ -336,6 +348,6 @@ export function processesStopped(mark: Mark, root?: { pid: number; since: number
       return startedUnder(list, root.pid, root.since).length === 0
     }
     const entry = `${mark.name}=${mark.value}`
-    return (process.platform === 'linux' ? markedInProc(entry, true) : markedInPs(entry, root ? [root.pid] : [])).length === 0
+    return (process.platform === 'linux' ? markedInProc(entry, true, mark.since) : markedInPs(entry, root ? [root.pid] : [])).length === 0
   } catch { return false }
 }

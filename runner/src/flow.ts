@@ -156,7 +156,7 @@ async function stopRuns(akb: Akb, ws: TaskFolder, id: number, since: number, ms:
     const live = (runs ?? []).filter((r) => r.status === 'running' && (r.startedAt ?? 0) >= since)
     if (!runs) return false
     if (!live.length && (runs ?? []).filter((r) => (r.startedAt ?? 0) >= since).every((r) =>
-      processesStopped(runMark(r.sessionId), r.agentPid && r.agentStartedAt ? { pid: r.agentPid, since: r.agentStartedAt } : undefined))) return true
+      processesStopped(runMark(r.sessionId, r.startedAt), r.agentPid && r.agentStartedAt ? { pid: r.agentPid, since: r.agentStartedAt } : undefined))) return true
     for (const r of live) await call(['raw', 'run', 'stop', r.sessionId])
     await wait(250)
   }
@@ -690,7 +690,7 @@ export async function confirmFlowStopped(ws: TaskFolder, job: Job, deps: FlowDep
   const id = akbCardOf(ws) ?? job.number
   if (!id) return false
   const ran = await runAkb(deps.akb, ['raw', 'run', 'list', '--card', String(id), '--all', '--json', '--board', ws.board], { cwd: ws.cwd, board: ws.board })
-  const runs = answerOf<{ runs?: { sessionId: string; status?: string; agentPid?: number; agentStartedAt?: number }[] }>(ran)?.runs
-  return !!runs && runs.every((r) => r.status !== 'running' && processesStopped(runMark(r.sessionId),
+  const runs = answerOf<{ runs?: { sessionId: string; status?: string; startedAt?: number; agentPid?: number; agentStartedAt?: number }[] }>(ran)?.runs
+  return !!runs && runs.every((r) => r.status !== 'running' && processesStopped(runMark(r.sessionId, r.startedAt),
     r.agentPid && r.agentStartedAt ? { pid: r.agentPid, since: r.agentStartedAt } : undefined))
 }

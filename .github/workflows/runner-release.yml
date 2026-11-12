@@ -25,5 +25,8 @@ jobs:
         working-directory: cli
       - run: npm install
         working-directory: runner
+      - name: Check shared CLI behavior
+        run: npm run lint && npm test
+        working-directory: cli
       - run: node scripts/publish.mjs
         working-directory: runner

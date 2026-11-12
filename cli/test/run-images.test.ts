@@ -146,6 +146,7 @@ describe('the log prune', () => {
     const name = paste()
     claimRunPictures(BOX, RUN, [name])
     fs.writeFileSync(path.join(SESSIONS_DIR, `${RUN}.log`), 'old')
+    fs.utimesSync(path.join(SESSIONS_DIR, `${RUN}.log`), new Date(0), new Date(0))
     // Enough newer runs to push this one past the ceiling.
     for (let i = 0; i <= KEEP_LOGS; i++) {
       fs.writeFileSync(path.join(SESSIONS_DIR, `newer-${i}.log`), 'newer')

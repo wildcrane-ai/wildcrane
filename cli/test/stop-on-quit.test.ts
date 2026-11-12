@@ -112,8 +112,8 @@ if (process.env[HOST]) {
     it('listens only while an agent is running', async () => {
       const before = quitListeners()
       const mark = stopMark()
-      const first = sh('sleep 60', markEnv(process.env, mark))
-      const second = sh('sleep 60', markEnv(process.env, mark))
+      const first = sh('exec sleep 60', markEnv(process.env, mark))
+      const second = sh('exec sleep 60', markEnv(process.env, mark))
       try {
         trackAgent(first, mark)
         trackAgent(second, mark)
