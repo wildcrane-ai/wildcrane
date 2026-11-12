@@ -33,4 +33,4 @@ jobs:
       - name: Check native hosts with the packed plugin
         run: |
           export WILDCRANE_RUNNER_DIR="$GITHUB_WORKSPACE/runner"
-          node runner/scripts/check-opencode.mjs --package "$RUNNER_TEMP/packed/node_modules/wildcrane-opencode" --v1 "$RUNNER_TEMP/host-v1/node_modules/opencode-ai/bin/opencode" --v2 "$RUNNER_TEMP/host-v2/node_modules/@opencode/cli/bin/opencode.exe"
+          node runner/scripts/check-opencode.mjs --package "$RUNNER_TEMP/packed/node_modules/wildcrane-opencode" --v1 "$RUNNER_TEMP/host-v1/node_modules/opencode-ai/bin/opencode.exe" --v2 "$RUNNER_TEMP/host-v2/node_modules/@opencode/cli/bin/opencode.exe"
