@@ -12,14 +12,27 @@ name: plugin-release
 on:
   push:
     tags: ['plugin-v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
   id-token: write
 
 jobs:
+  verify-publisher:
+    if: github.repository == 'wildcrane-ai/wildcrane' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node runner/scripts/check-npm-publisher.mjs
   build:
-    if: github.repository == 'wildcrane-ai/wildcrane'
+    if: github.repository == 'wildcrane-ai/wildcrane' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
