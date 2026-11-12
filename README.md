@@ -4,7 +4,7 @@ Shape goals with Cursor in your own chat and start them as WildCrane tasks, run 
 
 - **Needs**: the Cursor editor (not the Cursor CLI), and Node 22 or later. macOS and Linux.
 - **Goals**: tell Cursor what you want to build; it asks in the chat and saves the goals,
-  replying with one line and a link per goal. Review, change the workflow, discard and **Start** on
+  replying with one line and a link per goal. Review, change the studio, discard and **Start** on
   the web: Cursor never starts a task.
 - **Ask Cursor**: for your projects, recent discussions and agent connections.
 - **`akb`**: when none is installed, Cursor is told the full path of the Runner's own. Not on
