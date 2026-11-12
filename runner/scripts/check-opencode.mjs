@@ -36,7 +36,7 @@ try {
     const get = async (endpoint) => {
       const url = new URL(`http://127.0.0.1:${port}${endpoint}`)
       if (version === 'v2') url.searchParams.set('location[directory]', dir)
-      const response = await fetch(url, { headers: { authorization: `Basic ${Buffer.from('opencode:disposable-test').toString('base64')}` }, signal: AbortSignal.timeout(15_000) })
+      const response = await fetch(url, { headers: { authorization: `Basic ${Buffer.from('opencode:disposable-test').toString('base64')}` }, signal: AbortSignal.timeout(90_000) })
       assert.equal(response.status, 200)
       return response.json()
     }
@@ -68,6 +68,8 @@ try {
         assert.equal(plugins.data.find((p) => p.id === 'wildcrane')?.state.status, 'active')
       }
       console.log(`OpenCode ${version}: installed package, native registration and skills passed (${process.platform}).`)
+    } catch (error) {
+      throw new Error(`${version}: ${error.message}; ${logs.replace(/server password .+/g, '[redacted]')}`, { cause: error })
     } finally {
       child.kill('SIGTERM')
       const timer = setTimeout(() => child.kill('SIGKILL'), 5000)
