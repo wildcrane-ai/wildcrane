@@ -93,36 +93,14 @@ export function byDispatchOrder(a: Card, b: Card): number {
 
 // ---- would a refine move this card? ----------------------------------------
 
-/**
- * The one rule behind both ways a refine starts — the follow-up a finished run leaves on
- * each card it touched, and a Refine button on a card page — so the button can never offer
- * a run that arrives, finds nothing to do, and leaves the card exactly as it was.
- *
- * The four cases where a refine has nothing to work with:
- *   • the card is a group root — its recursively refined subtasks own the work;
- *   • the card isn't `todo` — it's `ready` (the plan is already concrete) or being
- *     implemented, and neither is a plan waiting to be sharpened;
- *   • every todo is checked — that card is finished, not rough;
- *   • every open question has choices — the card waits on the user's answers. Resolve is
- *     the move that fits there.
- *
- * A card with no questions at all is refinable, and so is one with an old question that has
- * no choices: nothing can ask it, so a refine rewrites it with some.
- *
- * A card finishing in planning (#1057) stays refinable, `ready` or ticked, until its file
- * is done: planning is where it is made. A round waiting on Approve (#1790) is not.
- *
- * Being blocked is deliberately NOT part of this. The follow-up skips a blocked card
- * because spending a run on a plan whose foundation could still change shape is wasted
- * work — but that is a judgment about where to spend a turn, not a fact about the card. A
- * user who asks to refine a blocked card has asked for it.
- */
+// Explicit refinement also checks an existing split. Questions and approvals still wait
+// for the user; blocked cards may be refined explicitly but are not followed automatically.
 export function canRefine(card: Card): boolean {
-  if (card.isGroup) return false
   if (awaitingApproval(card)) return false
-  if (card.status !== 'todo' && !planUnfinished(card)) return false
+  const unfinished = !card.isGroup && planUnfinished(card)
+  if (card.status !== 'todo' && !unfinished) return false
   const { total, done } = card.todos
-  if (total > 0 && done === total && !planUnfinished(card)) return false
+  if (total > 0 && done === total && !unfinished) return false
   if (card.questions.length > 0 && card.questions.every(hasOptions)) return false
   return true
 }

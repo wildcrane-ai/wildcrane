@@ -12,6 +12,10 @@ Plan one card in this session until it can be built.
   `akb raw reject <id> --reason "<what shows it>"` and stop.
 - **Gone or already done**: for any other card, append a question asking the user whether to
   discard it, run no preview agent, and stop.
+- **Existing group**: read its subtasks and check that they cover the parent’s outcome;
+  keep a complete split, or fill gaps by updating subtasks and dependencies without
+  duplicating work or resetting progress. Finish the pass without marking the parent
+  ready merely because its split is complete; its completion still follows its subtasks.
 - **Studio rules**: write the card as the studio rules at the end of this prompt say.
 - **Preview agents**: an agent's `After` names the previews it waits for; the board approves
   previews in stages, one stage per Approve, and the card's `previews` were chosen when its

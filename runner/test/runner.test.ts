@@ -3077,17 +3077,38 @@ describe('flow jobs (#2020)', () => {
 
   for (const [file, how] of [
     ['todo/2-pricing.md', { failed: '运行中断' }],
-    ['todo/2-pricing/root.md', { refuse: 'a refine would not move #2' }],
+    ['todo/2-pricing/root.md', { failed: 'Group audit interrupted' }],
   ] as const) {
     it(`非待审卡细化失败仍失败：${file}（#210）`, async () => {
       cloud.put({ [file]: '---\ntitle: Pricing\nstatus: planning\nquestions: []\n---\n' })
       process.env.FAKE_AKB = JSON.stringify({ refine: how })
       const job = await flowJob('j1', { verb: 'refine', card: 2 })
       assert.equal(job.outcome, 'failed')
-      assert.equal(job.reason, 'failed' in how ? how.failed : how.refuse)
+      assert.equal(job.reason, how.failed)
       assert.deepEqual(flowReport(job), {})
     })
   }
+
+  it('resumes a refused group by actually refining it and preserving its children (#688)', async () => {
+    const child = '---\ntitle: Existing child\nstatus: ready\nphase: 1\nstages: 2\nquestions: []\n---\n\nApproved work.\n- [x] Shipped step\n- [ ] Remaining step\n'
+    cloud.put({
+      'todo/2-pricing/root.md': '---\ntitle: Pricing\nstatus: todo\nquestions: []\n---\n\n## Todo\n- [x] Shipped #3\n- [ ] Existing child #4\n',
+      'todo/2-pricing/4-child.md': child,
+    })
+    process.env.FAKE_AKB = JSON.stringify({ refine: { refuse: 'a refine would not move #2' } })
+    assert.equal((await flowJob('j1', { verb: 'refine', card: 2 })).outcome, 'failed')
+    process.env.FAKE_AKB = JSON.stringify({ refine: { result: 'Checked existing split; coverage is complete.' } })
+    const resumed = await flowJob('j2', { verb: 'refine', card: 2, resume: true })
+    assert.equal(resumed.outcome, 'done', resumed.reason)
+    assert.equal(cardCalls().filter((call) => call.startsWith('card refine 2 ')).length, 2)
+    assert.equal(flowReport(resumed).reply, 'Checked existing split; coverage is complete.')
+    assert.equal(cloud.file('todo/2-pricing/4-child.md'), child)
+    assert.match(cloud.file('todo/2-pricing/root.md')!, /- \[x\] Shipped #3/)
+    process.env.FAKE_AKB = JSON.stringify({ refine: { failed: 'Group audit interrupted' } })
+    const failed = await flowJob('j3', { verb: 'refine', card: 2, resume: true })
+    assert.equal(failed.outcome, 'failed')
+    assert.equal(failed.reason, 'Group audit interrupted')
+  })
 
   it('fails a build that stopped short, and reports one held on a question', async () => {
     await flowJob('j1', { verb: 'create' })

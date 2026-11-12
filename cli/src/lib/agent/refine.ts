@@ -175,7 +175,7 @@ export function refinementAfter(
   flowId?: string,
 ): AgentRequest | null {
   const card = currentCard(cardId)
-  if (!card || card.openBlockers.length > 0) return null
+  if (!card || card.isGroup || card.openBlockers.length > 0) return null
   if (card.questions.length > 0 || action === 'clarify' || card.deliversIn !== 'plan') return null
   if (planDeliveryGap(card) === null) return null
   // A stage before the last waits on the user's Approve (#1790).
@@ -229,7 +229,7 @@ function refinesAfter(
 function stalledLine(cardId: number | null, next: AgentRequest | null): string | null {
   if (next !== null) return null
   const card = cardId === null ? null : currentCard(cardId)
-  if (!card || refinementStep(card) === 'done') return null
+  if (!card || card.isGroup || refinementStep(card) === 'done') return null
   return `#${card.id} is still in To do after planning, and the board won't plan it again on its own — refine it again, or mark it ready yourself.`
 }
 
@@ -254,7 +254,7 @@ export interface RefinementFollowUp {
 function planStageEnd(run: RunRecord): ReturnType<typeof endOfStage> | null {
   if (run.cardId === null || stageOfAction(run.action) !== 'plan') return null
   const card = currentCard(run.cardId)
-  if (!card || card.openBlockers.length > 0 || card.questions.length > 0) return null
+  if (!card || card.isGroup || card.openBlockers.length > 0 || card.questions.length > 0) return null
   if (refinementStep(card) !== 'done') return null
   return endOfStage(stageContract('plan'), card)
 }

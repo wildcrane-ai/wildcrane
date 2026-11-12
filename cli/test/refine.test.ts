@@ -7,6 +7,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { after, beforeEach, describe, it } from 'node:test'
 
+import { findCard } from '../src/lib/view/read.ts'
+import { canImplement, canRefine } from '../src/lib/view/rules.ts'
 import { refineRunsAfter } from '../src/lib/agent/follow.ts'
 import {
   claimChanges,
@@ -437,5 +439,61 @@ describe('specialized input', () => {
     const { runs, stalled } = closing({ ...run('spec', 1), refineRound: undefined }, before)
     assert.deepEqual(runs, [])
     assert.equal(stalled, undefined)
+  })
+})
+
+
+describe('refining an existing group (#688)', () => {
+  function split() {
+    const group = path.join(root, 'docs', 'kanban', 'todo', '7-a-card-to-refine')
+    fs.mkdirSync(group, { recursive: true })
+    const parent = path.join(group, 'root.md')
+    fs.renameSync(cardFile, parent)
+    fs.appendFileSync(parent, '\n- [x] Shipped #8\n- [ ] Remaining #9\n')
+    writePiece(9)
+    const child = path.join(group, '9-a-piece.md')
+    fs.renameSync(path.join(track, '9-a-piece.md'), child)
+    fs.appendFileSync(child, '\nApproved preview and completed work.\n- [x] First step\n')
+    return { parent, child }
+  }
+
+  it('checks a complete split once without changing progress or scheduling the parent again', () => {
+    writeCard()
+    const { parent, child } = split()
+    const original = [parent, child].map((file) => fs.readFileSync(file, 'utf8'))
+    assert.ok(!('error' in refinementRequest({ action: 'refine', id: 7 })))
+    const before = markBoard()
+    const result = closing(run('clarify', 1), before)
+    assert.deepEqual(result.runs, [])
+    assert.equal(result.stalled, undefined)
+    assert.equal(canImplement(findCard(7)!), false)
+    assert.deepEqual([parent, child].map((file) => fs.readFileSync(file, 'utf8')), original)
+  })
+
+  it('accepts a queued request after a split and follows only a newly added gap', () => {
+    writeCard()
+    const queued = refinementRequest({ action: 'refine', id: 7 })
+    const { parent, child } = split()
+    const original = fs.readFileSync(child, 'utf8')
+    assert.deepEqual(refinementRequest({ action: 'refine', id: 7 }), queued)
+    const before = markBoard()
+    writePiece(10)
+    fs.appendFileSync(parent, '- [ ] Missing coverage #10\n')
+    const result = closing(run('clarify', 1), before)
+    assert.deepEqual(result.runs.map((req) => req.id), [10])
+    assert.equal(result.stalled, undefined)
+    assert.equal(fs.readFileSync(child, 'utf8'), original)
+  })
+
+  it('keeps completion, implementation, question and approval boundaries', () => {
+    writeCard()
+    split()
+    const card = findCard(7)!
+    assert.equal(canRefine(card), true)
+    assert.equal(canRefine({ ...card, todos: { total: 2, done: 2 } }), false)
+    assert.equal(canRefine({ ...card, status: 'implementing' }), false)
+    assert.equal(canRefine({ ...card, deliversIn: 'plan', todos: { total: 2, done: 2 } }), false)
+    assert.equal(canRefine({ ...card, questions: [{ text: 'Choose?', options: ['A', 'B'] }] }), false)
+    assert.equal(canRefine({ ...card, status: 'ready', stage: 1, stages: 2 }), false)
   })
 })
