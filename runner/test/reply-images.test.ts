@@ -57,3 +57,9 @@ test('actual native image generation emits a final local reference without a too
   assert.deepEqual(read.parts.map(p => p.type), ['image'])
   assert.equal(read.files.size, 1)
 })
+
+
+test('quota refusal never sends the local digest as a cloud image ID', async () => {
+  const parts = await saveReplyImages([{ type: 'image', path: 'reply.png' }], root, async () => ({ status: 'not_saved' }))
+  assert.deepEqual(parts, [{ type: 'image', id: undefined, status: 'not_saved', mime: 'image/png' }])
+})

@@ -79,14 +79,18 @@ export function collectReplyImages(parts: LocalReplyPart[], cwd: string): { part
 }
 
 export async function saveReplyImages(parts: LocalReplyPart[], cwd: string,
-  upload: (key: string, bytes: Uint8Array, mime: string) => Promise<{ id: string; status: 'saved' | 'not_saved' }>): Promise<ReplyPart[] | undefined> {
+  upload: (key: string, bytes: Uint8Array, mime: string) => Promise<{ id?: string; status: 'saved' | 'not_saved' }>): Promise<ReplyPart[] | undefined> {
   const read = collectReplyImages(parts, cwd)
   if (!read.parts.some(p => p.type === 'image')) return undefined
-  const saved = new Map<string, { id: string; status: 'saved' | 'not_saved' }>()
+  const saved = new Map<string, { id?: string; status: 'saved' | 'not_saved' }>()
   for (const [key, f] of read.files) {
     for (let attempt = 0; attempt < 2; attempt++) {
       try { saved.set(key, await upload(key.slice(4), f.bytes, f.mime)); break } catch { /* Bounded retry; the model is never rerun. */ }
     }
   }
-  return read.parts.map(p => p.type === 'image' && p.id ? { ...p, ...(saved.get(p.id) ?? { id: undefined, status: 'not_saved' as const }) } : p)
+  return read.parts.map(p => {
+    if (p.type !== 'image' || !p.id) return p
+    const uploaded = saved.get(p.id)
+    return { ...p, id: uploaded?.status === 'saved' ? uploaded.id : undefined, status: uploaded?.status ?? 'not_saved' }
+  })
 }

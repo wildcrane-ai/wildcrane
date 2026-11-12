@@ -224,7 +224,7 @@ export async function upload<T>(route: string, bytes: Uint8Array, type: string):
 export async function uploadReplyImage(machine: string, job: string, key: string, bytes: Uint8Array, mime: string) {
   const route = `/v1/runner/jobs/${encodeURIComponent(job)}/images/${key}?machine=${encodeURIComponent(machine)}`
   const sent = await send('PUT', route, bytes, true, 15_000, mime)
-  return sent.ok ? answerOf<{ id: string; status: 'saved' | 'not_saved' }>(sent.value) : sent
+  return sent.ok ? answerOf<{ id?: string; status: 'saved' | 'not_saved' }>(sent.value) : sent
 }
 
 export interface Registration {
