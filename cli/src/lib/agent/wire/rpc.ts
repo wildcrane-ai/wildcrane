@@ -101,6 +101,7 @@ export function connect(stdout: Readable, stdin: Writable, onCall: (msg: Message
   })
   stdout.on('close', () => closed('the agent closed the connection'))
   stdout.on('error', (err: Error) => closed(String(err)))
+  stdin.on('error', (err: Error) => closed(String(err)))
 
   return {
     /** Ask the agent something. Rejects with the agent's own words when it says no. */

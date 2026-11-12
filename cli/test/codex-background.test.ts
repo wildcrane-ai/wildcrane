@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { PassThrough } from 'node:stream'
+import { PassThrough, Writable } from 'node:stream'
 import { afterEach, it } from 'node:test'
 import { createCodexStreamRenderer } from '../src/lib/agent/wire/codex-stream.ts'
 import { createCodexClient, createCodexConnection } from '../src/lib/agent/wire/codex.ts'
@@ -264,4 +264,14 @@ it('does not repeat a prompt whose start response is lost', async t => {
   assert.match(end.error!, /submission outcome is unknown/)
   assert.equal(s.calls.filter(c => c.method === 'turn/start').length, 1)
   s.stdout.destroy()
+})
+
+
+it('returns a startup failure when the agent closes its input pipe', async () => {
+  const stdout = new PassThrough()
+  const stdin = new Writable({ write(_chunk, _encoding, callback) { queueMicrotask(() => callback(Error('EPIPE: agent input closed'))) } })
+  const end = await createCodexClient().turn({ stdout, stdin, cwd: '/tmp', prompt: 'go', log: () => {}, gotResumeId: () => {}, gotModel: () => {} })
+  assert.equal(end.ok, false)
+  assert.match(end.error!, /EPIPE/)
+  stdout.destroy()
 })

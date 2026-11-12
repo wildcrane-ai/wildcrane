@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import os from 'node:os'
-import { describe, it } from 'node:test'
+import { afterEach, describe, it } from 'node:test'
 
 import { markUnsent } from '../src/cache'
 import { runnerHome, useRunnerHome } from '../src/home'
@@ -71,12 +71,17 @@ describe('one Runner per computer', () => {
   })
 })
 
+const components = new Set<ReturnType<typeof spawn>>()
+afterEach(() => { for (const child of components) child.kill('SIGKILL'); components.clear() })
+
 /** The built component of `host`'s plugin, spoken to over stdio. */
 function component(host: 'claude-code' | 'codex' | 'dsh' | 'grok' | 'opencode', cloud = 'http://127.0.0.1:9', env: Record<string, string> = {}) {
   const server = path.join(process.env.RUNNER_DIST!, '..', '..', 'plugins', host, 'server', 'dist', 'start.mjs')
   const child = spawn(process.execPath, [server, ...(host === 'claude-code' ? [] : [host])], {
     stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CLAUDE_PLUGIN_ROOT: path.resolve(path.dirname(server), '..', '..'), WILDCRANE_RUNNER_DIR: path.resolve(process.env.RUNNER_DIST!, '..'), AI4KANBAN_CLOUD_URL: cloud, HTTPS_PROXY: 'http://127.0.0.1:9', CODEX_HOME: path.join(os.tmpdir(), 'wildcrane-no-codex-home'), ...env },
   })
+  components.add(child)
+  child.once('close', () => components.delete(child))
   const answers = new Map<number, Record<string, unknown>>()
   let buffer = ''
   child.stdout.on('data', (d) => {
