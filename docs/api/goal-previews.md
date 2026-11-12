@@ -107,3 +107,10 @@ akb goal new --studio coding --previews ui,api --title "Review goal previews" --
 `wildcrane_draft_read` 建立讨论，后续读取显式传回 `discussionId`；所有 `akb` 命令携带
 `WILDCRANE_DISCUSSION=<discussion>`。共享 MCP 进程不提供默认聊天绑定，保存目标不会启动任务。
 
+
+## OpenCode 中的讨论
+
+`POST /v1/discussions/external` 增加 `host: "opencode"`，其余参数、账号权限与幂等规则不变。
+原生适配器每次调用把真实 `sessionID` 与会话目录传给 Runner；重连保留同一讨论，缺少身份时失败。
+六个原生工具沿用现有 MCP 参数与返回值。目标技能复用 MCP 入口，所有命令使用返回的
+`akb` 路径和 `WILDCRANE_DISCUSSION`；任务技能通过 `akb task` 实际创建或管理任务。

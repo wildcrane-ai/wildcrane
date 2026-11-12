@@ -587,7 +587,7 @@ export interface Discussion {
 }
 
 /** Without a project, the discussion is the personal workspace's, in no project. */
-const openDiscussionCall = (project: string | null, requestId: string, host: 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'kimi' | 'grok' = 'claude-code') =>
+const openDiscussionCall = (project: string | null, requestId: string, host: 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'kimi' | 'grok' | 'opencode' = 'claude-code') =>
   request<Discussion>('POST', '/v1/discussions/external', { ...(project ? { project } : {}), requestId, host })
 
 const readDiscussionCall = (id: string) => request<Discussion>('GET', `/v1/discussions/${q(id)}`)

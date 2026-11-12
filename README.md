@@ -12,7 +12,7 @@ This repository holds the parts of WildCrane that run on your computer:
 | --- | --- |
 | `cli/` | `akb`, the command-line tool (npm package `wildcrane`) |
 | `runner/` | The Runner that runs tasks on your computer (npm package `wildcrane-runner`) |
-| `plugins/` | The WildCrane plugins for Claude Code, ZCode, Codex, Cursor, dsh, Kimi Code and Grok Build |
+| `plugins/` | The WildCrane plugins for Claude Code, ZCode, Codex, Cursor, dsh, Kimi Code, Grok Build and OpenCode |
 | `artifact-sdk/` | The SDK for previews (npm package `wildcrane-artifact-sdk`) |
 | `official/` | Built-in studios and preview agents |
 
@@ -37,6 +37,14 @@ Kimi Code, in a session:
 ```text
 /plugins install https://github.com/wildcrane-ai/wildcrane/tree/kimi-plugin
 ```
+
+OpenCode ([V1/V2 setup and recovery](plugins/opencode/README.md)):
+
+```sh
+opencode plugin add wildcrane-opencode  # V2
+```
+
+V1: add `"wildcrane-opencode"` to the `plugin` array in `opencode.json`.
 
 Grok Build ([setup and recovery](plugins/grok/README.md)):
 

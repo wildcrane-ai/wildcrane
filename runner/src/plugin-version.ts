@@ -18,7 +18,7 @@ const RETRY_MS = 5 * 60_000
 const pluginRoot = (host: Host) => ((host === 'claude-code' || host === 'zcode') && process.env.CLAUDE_PLUGIN_ROOT) || path.resolve(path.dirname(process.argv[1] ?? ''), '..', '..')
 
 const CLAUDE_MANIFEST = path.join('.claude-plugin', 'plugin.json')
-const MANIFEST: Record<Host, string> = { 'claude-code': CLAUDE_MANIFEST, zcode: CLAUDE_MANIFEST, codex: 'plugin.json', grok: 'plugin.json', dsh: 'package.json', cursor: path.join('.cursor-plugin', 'plugin.json'), kimi: 'kimi.plugin.json' }
+const MANIFEST: Record<Host, string> = { 'claude-code': CLAUDE_MANIFEST, zcode: CLAUDE_MANIFEST, codex: 'plugin.json', grok: 'plugin.json', opencode: 'package.json', dsh: 'package.json', cursor: path.join('.cursor-plugin', 'plugin.json'), kimi: 'kimi.plugin.json' }
 
 export function pluginVersion(host: Host = 'claude-code', root = pluginRoot(host)): string | null {
   const file = MANIFEST[host]

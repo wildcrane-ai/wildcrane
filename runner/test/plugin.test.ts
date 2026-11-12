@@ -72,7 +72,7 @@ describe('one Runner per computer', () => {
 })
 
 /** The built component of `host`'s plugin, spoken to over stdio. */
-function component(host: 'claude-code' | 'codex' | 'dsh' | 'grok', cloud = 'http://127.0.0.1:9', env: Record<string, string> = {}) {
+function component(host: 'claude-code' | 'codex' | 'dsh' | 'grok' | 'opencode', cloud = 'http://127.0.0.1:9', env: Record<string, string> = {}) {
   const server = path.join(process.env.RUNNER_DIST!, '..', '..', 'plugins', host, 'server', 'dist', 'start.mjs')
   const child = spawn(process.execPath, [server, ...(host === 'claude-code' ? [] : [host])], {
     stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CLAUDE_PLUGIN_ROOT: path.resolve(path.dirname(server), '..', '..'), WILDCRANE_RUNNER_DIR: path.resolve(process.env.RUNNER_DIST!, '..'), AI4KANBAN_CLOUD_URL: cloud, HTTPS_PROXY: 'http://127.0.0.1:9', CODEX_HOME: path.join(os.tmpdir(), 'wildcrane-no-codex-home'), ...env },
@@ -100,6 +100,7 @@ describe('the host the Claude Code plugin runs in (#532)', () => {
     assert.equal(hostOf(undefined, { CLAUDE_PLUGIN_ROOT: '/z', ZCODE_PLUGIN_ROOT: '/z' }), 'zcode')
     assert.equal(hostOf(undefined, { CLAUDE_PLUGIN_ROOT: '/c', ZCODE_PLUGIN_ROOT: '/z' }), 'claude-code')
     assert.equal(hostOf(undefined, { CLAUDE_PLUGIN_ROOT: '/c' }), 'claude-code')
+    assert.equal(hostOf('opencode', {}), 'opencode')
     assert.equal(hostOf('grok', { CLAUDE_PLUGIN_ROOT: '/c' }), 'grok')
     assert.equal(hostOf('codex', { CLAUDE_PLUGIN_ROOT: '/z', ZCODE_PLUGIN_ROOT: '/z' }), 'codex')
   })
@@ -528,6 +529,46 @@ describe('the plugin component', () => {
     } finally {
       for (const child of children) {
         if (child.exitCode !== null) continue
+        const exited = new Promise((r) => child.on('exit', r))
+        child.stdin.end()
+        await exited
+      }
+      await cloud.stop()
+    }
+  })
+
+  it('binds OpenCode discussions to real sessions across reconnects (#676)', async () => {
+    useRunnerHome()
+    fs.rmSync(runnerHome(), { recursive: true, force: true })
+    writeFakeSession(runnerHome())
+    const cloud = new FakeCloud()
+    await cloud.start()
+    const children: ReturnType<typeof component>[] = []
+    const start = async () => {
+      const c = component('opencode', `http://127.0.0.1:${cloud.port}`)
+      children.push(c)
+      await c.ready
+      let id = 10
+      return async (thread?: string) => {
+        const n = id++
+        c.send(n, 'tools/call', { name: 'wildcrane_draft_read', arguments: { path: os.homedir() },
+          ...(thread ? { _meta: { threadId: thread } } : {}) })
+        await until(() => c.answers.has(n), 10_000)
+        return c.answers.get(n)!
+      }
+    }
+    const draft = (answer: Record<string, unknown>) => JSON.parse((answer.result as { content: { text: string }[] }).content[0]!.text).discussion
+    try {
+      const read = await start()
+      assert.equal(((await read()).result as { isError: boolean }).isError, true)
+      const [a, b] = await Promise.all([read('ses-a'), read('ses-b')])
+      assert.notEqual(draft(a), draft(b))
+      assert.equal(draft(await read('ses-a')), draft(a))
+      const reconnect = await start()
+      assert.equal(draft(await reconnect('ses-a')), draft(a))
+      assert.equal(cloud.discussions.length, 2)
+    } finally {
+      for (const { child } of children) {
         const exited = new Promise((r) => child.on('exit', r))
         child.stdin.end()
         await exited

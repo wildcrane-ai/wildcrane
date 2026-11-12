@@ -1,0 +1,5 @@
+dist/
+server/dist/
+skills/
+*.tgz
+v1-skills/

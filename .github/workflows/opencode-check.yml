@@ -1,0 +1,36 @@
+name: opencode-check
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: cli
+      - run: npm ci --include=dev
+        working-directory: runner
+      - run: npm test -- opencode
+        working-directory: runner
+      - run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          npm install --prefix "$RUNNER_TEMP/packed" "$RUNNER_TEMP"/wildcrane-opencode-*.tgz
+          npm install --prefix "$RUNNER_TEMP/host-v1" opencode-ai@1.18.30
+          npm install --prefix "$RUNNER_TEMP/host-v2" @opencode/cli@2.2.7
+        working-directory: plugins/opencode
+      - name: Check native hosts with the packed plugin
+        run: |
+          export WILDCRANE_RUNNER_DIR="$GITHUB_WORKSPACE/runner"
+          node runner/scripts/check-opencode.mjs --package "$RUNNER_TEMP/packed/node_modules/wildcrane-opencode" --v1 "$RUNNER_TEMP/host-v1/node_modules/opencode-ai/bin/opencode" --v2 "$RUNNER_TEMP/host-v2/node_modules/@opencode/cli/bin/opencode.exe"

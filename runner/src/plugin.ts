@@ -24,11 +24,11 @@ import { versionDir } from './update'
 import * as settings from './settings'
 import { closeSettings, openSettings } from './settings-server'
 
-export type Host = 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'zcode' | 'kimi' | 'grok'
+export type Host = 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'zcode' | 'kimi' | 'grok' | 'opencode'
 
 /** ZCode runs the Claude Code plugin and sets both roots; a ZCode root alone was inherited from a ZCode shell. */
 export function hostOf(arg: string | undefined, env: NodeJS.ProcessEnv): Host {
-  if (arg === 'codex' || arg === 'cursor' || arg === 'dsh' || arg === 'kimi' || arg === 'grok') return arg
+  if (arg === 'codex' || arg === 'cursor' || arg === 'dsh' || arg === 'kimi' || arg === 'grok' || arg === 'opencode') return arg
   return env.ZCODE_PLUGIN_ROOT && env.ZCODE_PLUGIN_ROOT === env.CLAUDE_PLUGIN_ROOT ? 'zcode' : 'claude-code'
 }
 
@@ -170,7 +170,8 @@ const CODEX_SWITCH = 'run `codex plugin marketplace add wildcrane-ai/wildcrane -
 const DSH_UPDATE = 'run `dsh plugin --profile web add wildcrane-dsh@latest` in a terminal, then restart dsh'
 const KIMI_UPDATE = 'run `/plugins` in Kimi Code, update WildCrane, then restart Kimi Code'
 const GROK_UPDATE = 'run `grok plugin update wildcrane` in a terminal, then reopen the Grok Build session'
-const updateSteps = (as: Host, plugin: PluginInfo) => (as === 'grok' ? GROK_UPDATE : as === 'dsh' ? DSH_UPDATE : as === 'kimi' ? KIMI_UPDATE : plugin.source === 'git' ? CODEX_UPGRADE : CODEX_SWITCH)
+const OPENCODE_UPDATE = 'V2: run `opencode plugin update wildcrane-opencode`, then `opencode service restart`. V1: change only wildcrane-opencode in the `plugin` array to the new version and restart OpenCode. See the plugin README for cache recovery and pinned rollback'
+const updateSteps = (as: Host, plugin: PluginInfo) => (as === 'opencode' ? OPENCODE_UPDATE : as === 'grok' ? GROK_UPDATE : as === 'dsh' ? DSH_UPDATE : as === 'kimi' ? KIMI_UPDATE : plugin.source === 'git' ? CODEX_UPGRADE : CODEX_SWITCH)
 
 /** Cloud refused the Runner and it could not update itself; a restart downloads it again. */
 const OUTDATED = {
@@ -179,6 +180,7 @@ const OUTDATED = {
   cursor: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Cursor.",
   zcode: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart ZCode.",
   dsh: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart dsh.",
+  opencode: "WildCrane's Runner is out of date and could not update. Check the network, then restart OpenCode.",
   grok: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Grok Build.",
   kimi: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Kimi Code.",
 }
@@ -212,7 +214,7 @@ export function nextOf(as: Host, state: typeof runnerState, plugin: PluginInfo, 
   if (as === 'codex' && plugin.source === 'local') return LOCAL
   if (seen && !seen.connections.some((c) => c.state === 'ready')) return NOT_READY(seen.connections, seen.web)
   if (seen && seen.folder === null && seen.refused === null) return NOT_ADDED
-  return (as === 'codex' || as === 'dsh' || as === 'kimi' || as === 'grok') && plugin.version && plugin.latest ? NEWER(as, plugin) : null
+  return (as === 'codex' || as === 'dsh' || as === 'kimi' || as === 'grok' || as === 'opencode') && plugin.version && plugin.latest ? NEWER(as, plugin) : null
 }
 
 async function state(cwd: string) {
@@ -387,8 +389,10 @@ const linked = (d: { id: string }, goals: ReturnType<typeof goalOf>[]) =>
 /** Shared MCP hosts bind explicitly; every first read opens a separate discussion. */
 const PROCESS = `process-${crypto.randomUUID()}`
 type Meta = { threadId?: unknown; 'x-codex-turn-metadata'?: { workspaces?: Record<string, unknown> } } | undefined
-const threadOf = (meta: Meta) =>
-  `${host}:${(host === 'dsh' || host === 'grok') ? crypto.randomUUID() : typeof meta?.threadId === 'string' && meta.threadId ? meta.threadId : PROCESS}`
+const threadOf = (meta: Meta) => {
+  if (host === 'opencode' && (typeof meta?.threadId !== 'string' || !meta.threadId.trim())) throw new Error('OpenCode session identity is missing. Reload the WildCrane plugin and retry.')
+  return `${host}:${(host === 'dsh' || host === 'grok') ? crypto.randomUUID() : typeof meta?.threadId === 'string' && meta.threadId ? meta.threadId : PROCESS}`
+}
 const pathOf = (given: string | undefined, meta: Meta) => given || Object.keys(meta?.['x-codex-turn-metadata']?.workspaces ?? {})[0] || ''
 
 const SIGNED_OUT = { error: 'signed_out', message: 'Not signed in to WildCrane. Call wildcrane_open_settings to open settings and sign in, then try again.' }

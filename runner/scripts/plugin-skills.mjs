@@ -8,6 +8,7 @@ export const SKILLS = {
   cursor: { 'discuss-goal': 'cursor', tasks: '', wildcrane: '' },
   'kimi-code': { 'discuss-goal': 'kimi-code', tasks: '', wildcrane: '' },
   dsh: { 'discuss-goal': 'mcp', tasks: 'dsh', wildcrane: '' },
+  opencode: { 'discuss-goal': 'mcp', tasks: 'grok', wildcrane: '' },
   grok: { 'discuss-goal': 'mcp', tasks: 'grok', wildcrane: '' },
 }
 

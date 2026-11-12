@@ -27,7 +27,7 @@ const PACKAGE_JSON = {
   },
 }
 const PLUGINS_DIR = path.join(PKG_DIR, '..', 'plugins')
-const PLUGIN_DISTS = ['claude-code', 'codex', 'cursor', 'dsh', 'kimi-code', 'grok'].map((host) => path.join(PLUGINS_DIR, host, 'server', 'dist'))
+const PLUGIN_DISTS = ['claude-code', 'codex', 'cursor', 'dsh', 'kimi-code', 'grok', 'opencode'].map((host) => path.join(PLUGINS_DIR, host, 'server', 'dist'))
 for (const dir of PLUGIN_DISTS) fs.rmSync(dir, { recursive: true, force: true })
 copySkills(PLUGINS_DIR)
 
@@ -53,6 +53,23 @@ for (const [entry, outfile] of [
     plugins: [PACKAGE_JSON, settingsClientPlugin],
   })
   process.stdout.write(`build: wrote ${path.relative(PKG_DIR, outfile)} — ${(fs.statSync(outfile).size / 1024).toFixed(1)} kB\n`)
+}
+
+await esbuild.build({
+  entryPoints: [path.join(PLUGINS_DIR, 'opencode', 'index.mjs')],
+  outfile: path.join(PLUGINS_DIR, 'opencode', 'dist', 'index.mjs'),
+  bundle: true, platform: 'node', format: 'esm', target: 'node22',
+  nodePaths: [path.join(PKG_DIR, 'node_modules')],
+  banner: { js: REQUIRE_SHIM }, legalComments: 'none',
+})
+const v1Skills = path.join(PLUGINS_DIR, 'opencode', 'v1-skills')
+fs.rmSync(v1Skills, { recursive: true, force: true })
+for (const skill of ['discuss-goal', 'tasks', 'wildcrane']) {
+  const name = skill === 'wildcrane' ? skill : `wildcrane-${skill}`
+  const target = path.join(v1Skills, name)
+  fs.mkdirSync(target, { recursive: true })
+  const source = fs.readFileSync(path.join(PLUGINS_DIR, 'opencode', 'skills', skill, 'SKILL.md'), 'utf8')
+  fs.writeFileSync(path.join(target, 'SKILL.md'), source.replace(/^name: .+$/m, `name: ${name}`))
 }
 
 await buildAkb(path.join(PKG_DIR, 'dist', 'akb'))
