@@ -1,4 +1,4 @@
-// wildcrane-runner 0.6.54 — built by runner/scripts/build.mjs. Do not edit.
+// wildcrane-runner 0.6.56 — built by runner/scripts/build.mjs. Do not edit.
 import { createRequire as __ai4kanbanRequire } from 'node:module'
 const require = __ai4kanbanRequire(import.meta.url)
 var __create = Object.create;
@@ -27353,7 +27353,7 @@ if (Number(process.versions.node.split(".")[0]) < 22) {
 }
 var { useRunnerHome: useRunnerHome2 } = await Promise.resolve().then(() => (init_home(), home_exports));
 var { pluginEntry: pluginEntry2 } = await Promise.resolve().then(() => (init_launcher(), launcher_exports));
-var FIRST = { kimi: "0.6.35", grok: "0.6.53" };
+var FIRST = { kimi: "0.6.35", grok: "0.6.53", opencode: "0.6.55" };
 useRunnerHome2();
 var entry = await pluginEntry2(FIRST[process.argv[2] ?? ""]);
 if (entry) await import(pathToFileURL(entry).href);
