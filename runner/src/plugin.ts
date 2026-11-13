@@ -170,7 +170,7 @@ const CODEX_SWITCH = 'run `codex plugin marketplace add wildcrane-ai/wildcrane -
 const DSH_UPDATE = 'run `dsh plugin --profile web add wildcrane-dsh@latest` in a terminal, then restart dsh'
 const KIMI_UPDATE = 'run `/plugins` in Kimi Code, update WildCrane, then restart Kimi Code'
 const GROK_UPDATE = 'run `grok plugin update wildcrane` in a terminal, then reopen the Grok Build session'
-const OPENCODE_UPDATE = 'V2: run `opencode plugin update wildcrane-opencode`, then `opencode service restart`. V1: change only wildcrane-opencode in the `plugin` array to the new version and restart OpenCode. See the plugin README for cache recovery and pinned rollback'
+const OPENCODE_UPDATE = 'run `npx --yes wildcrane-opencode@latest update`, then reopen OpenCode. Pinned versions stay pinned; see the plugin README to change the pin'
 const updateSteps = (as: Host, plugin: PluginInfo) => (as === 'opencode' ? OPENCODE_UPDATE : as === 'grok' ? GROK_UPDATE : as === 'dsh' ? DSH_UPDATE : as === 'kimi' ? KIMI_UPDATE : plugin.source === 'git' ? CODEX_UPGRADE : CODEX_SWITCH)
 
 /** Cloud refused the Runner and it could not update itself; a restart downloads it again. */

@@ -63,15 +63,12 @@ await esbuild.build({
   nodePaths: [path.join(PKG_DIR, 'node_modules')],
   banner: { js: REQUIRE_SHIM }, legalComments: 'none',
 })
-const v1Skills = path.join(PLUGINS_DIR, 'opencode', 'v1-skills')
-fs.rmSync(v1Skills, { recursive: true, force: true })
-for (const skill of ['discuss-goal', 'tasks', 'wildcrane']) {
-  const name = skill === 'wildcrane' ? skill : `wildcrane-${skill}`
-  const target = path.join(v1Skills, name)
-  fs.mkdirSync(target, { recursive: true })
-  const source = fs.readFileSync(path.join(PLUGINS_DIR, 'opencode', 'skills', skill, 'SKILL.md'), 'utf8')
-  fs.writeFileSync(path.join(target, 'SKILL.md'), source.replace(/^name: .+$/m, `name: ${name}`))
-}
+await esbuild.build({
+  entryPoints: [path.join(PLUGINS_DIR, 'opencode', 'manage.mjs')],
+  outfile: path.join(PLUGINS_DIR, 'opencode', 'dist', 'manage.mjs'),
+  bundle: true, platform: 'node', format: 'esm', target: 'node22',
+  nodePaths: [path.join(PKG_DIR, 'node_modules')], mainFields: ['module', 'main'], legalComments: 'none',
+})
 
 await buildAkb(path.join(PKG_DIR, 'dist', 'akb'))
 

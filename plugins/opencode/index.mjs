@@ -1,10 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { z } from 'zod'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const recovery = 'WildCrane could not connect to its Runner. Check the network and Node.js 22+, then reload the plugin.'
@@ -25,7 +23,7 @@ function connection() {
     if (current) return Promise.resolve(current)
     if (opening) return opening
     opening = (async () => {
-      const client = new Client({ name: 'wildcrane-opencode', version: '0.1.21' })
+      const client = new Client({ name: 'wildcrane-opencode', version: '0.1.22' })
       const transport = new StdioClientTransport({
         command: 'node',
         args: [path.join(root, 'server/dist/start.mjs'), 'opencode'],
@@ -78,81 +76,10 @@ function skills() {
   })
 }
 
-// V1 has no skill editor; omit package names already owned by the user.
-function userSkillPaths(directory, worktree) {
-  const home = os.homedir()
-  const roots = [process.env.OPENCODE_CONFIG_DIR ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(home, '.config'), 'opencode')]
-  const external = !['1', 'true'].includes(process.env.OPENCODE_DISABLE_EXTERNAL_SKILLS)
-  const names = external ? [...(['1', 'true'].includes(process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS) ? [] : ['.claude']), '.agents'] : []
-  const paths = names.map((name) => path.join(home, name, 'skills'))
-  const directories = []
-  for (let dir = directory; ; dir = path.dirname(dir)) {
-    directories.unshift(dir)
-    if (dir === worktree || path.dirname(dir) === dir) break
-  }
-  for (const dir of directories) {
-    roots.push(path.join(dir, '.opencode'))
-    paths.push(...names.map((name) => path.join(dir, name, 'skills')))
-  }
-  return [...paths, ...roots.flatMap((root) => ['skill', 'skills'].map((name) => path.join(root, name)))].filter((dir) => fs.existsSync(dir))
-}
-
-function skillNames(directories) {
-  const pending = [...directories], visited = new Set(), names = new Set()
-  while (pending.length) {
-    const dir = pending.pop()
-    try {
-      const real = fs.realpathSync(dir)
-      if (visited.has(real)) continue
-      visited.add(real)
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const file = path.join(dir, entry.name)
-        if (entry.isDirectory() || entry.isSymbolicLink()) pending.push(file)
-        else if (entry.name === 'SKILL.md') {
-          const name = fs.readFileSync(file, 'utf8').match(/^name:\s*(.+)$/m)?.[1]?.trim().replace(/^["']|["']$/g, '')
-          if (name) names.add(name)
-        }
-      }
-    } catch { /* Native discovery reports invalid or unreadable user folders. */ }
-  }
-  return names
-}
-
 const output = (result) => result.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n')
 
 export default {
   id: 'wildcrane',
-  async server({ directory = process.cwd(), worktree = directory } = {}) {
-    const bridge = connection()
-    try {
-      const definitions = await bridge.tools()
-      const native = Object.fromEntries(definitions.map((definition) => {
-        const schema = z.fromJSONSchema(definition.inputSchema)
-        return [definition.name, {
-          description: definition.description,
-          args: schema.shape,
-          async execute(args, context) {
-            await context.ask({ permission: definition.name, patterns: ['*'], always: ['*'], metadata: {} })
-            return output(await bridge.call(definition.name, args, context))
-          },
-        }]
-      }))
-      // V1 discovers skills natively from paths supplied by the config hook.
-      return {
-        tool: native,
-        config(config) {
-          config.skills ??= {}
-          const own = path.join(root, 'v1-skills')
-          const supplied = (config.skills.paths ?? []).filter((dir) => dir !== own && !dir.startsWith(own + path.sep))
-          const expanded = supplied.map((dir) => path.resolve(directory, dir.replace(/^~(?=$|[\\/])/, os.homedir())))
-          const occupied = skillNames([...userSkillPaths(directory, worktree), ...expanded])
-          const added = skills().filter((skill) => !occupied.has(skill.name)).map((skill) => path.join(own, skill.name))
-          config.skills.paths = [...new Set([...added, ...supplied])]
-        },
-        dispose: () => bridge.close(),
-      }
-    } catch (error) { await bridge.close(); throw error }
-  },
   async setup(ctx) {
     const bridge = connection()
     try {

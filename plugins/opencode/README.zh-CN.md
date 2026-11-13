@@ -1,38 +1,36 @@
 # OpenCode 的 WildCrane 插件
 
-在 OpenCode 讨论目标，到 WildCrane 网页审阅、启动；也能查询、创建和管理任务。沿用已有登录、项目与计费。需要 Node.js 22+、Runner 0.6.55+；首次使用自动下载 Runner。
+在 OpenCode 讨论目标，到 WildCrane 网页审阅、启动；也能查询、创建和管理任务。沿用已有登录、项目与计费。需要 OpenCode 2.2.7+、Node.js 22+、Runner 0.6.55+；首次使用自动下载 Runner。
 
 ## 安装
 
-OpenCode V2（2.2.7+）：
-
 ```sh
-opencode plugin add wildcrane-opencode
+npx --yes wildcrane-opencode@latest install
 ```
 
-OpenCode V1（1.18.30+）：在 `opencode.json` 或 `opencode.jsonc` 的现有 `plugin` 数组追加插件，再重启：
-
-```json
-{ "plugin": ["wildcrane-opencode@0.1.21"] }
-```
-
-V2 也可配置 `{ "plugins": ["wildcrane-opencode"] }`。保留其他配置。无需配置 MCP 或复制技能。插件装入六个原生工具，以及 `wildcrane-discuss-goal`、`wildcrane-tasks`、`wildcrane`（设置）三个技能，沿用宿主权限。
+安装器先下载 WildCrane，再修改全局 `opencode.json(c)` 中的本插件条目。保留其他插件、注释、instructions、权限和用户技能。无需配置 MCP 或复制技能。插件注册六个原生工具，以及 `wildcrane-discuss-goal`、`wildcrane-tasks`、`wildcrane`（设置）三个技能；同名用户技能优先。
 
 让 OpenCode 打开 WildCrane 设置，即可登录、添加项目。讨论工作只保存目标，用户从网页开始；明确要求新建任务时会实际创建任务。插件只传工具参数及会话身份，不上传整段对话。
 
-## 更新和恢复
+## 更新
 
-- **V2**：运行 `opencode plugin update wildcrane-opencode`，再运行 `opencode service restart`。固定版本不会自动更新；修改本插件条目以解除固定或切换版本。
-- **V1**：修改 `plugin` 中本插件的版本并重启。若缓存仍旧，关闭 OpenCode，在 `opencode debug paths` 显示的缓存内只移除 `wildcrane-opencode`，再重启；保留其他包和配置。
-- **下载失败或离线**：检查 npm、WildCrane 的网络连通性及 `node --version`（22+），再重新加载。低于 0.6.55 的 Runner 会被拒绝，不会冒充其他宿主运行。
-- **断线或取消**：恢复连接后重试。同一会话重开仍找到同一讨论。取消时写入可能已到达 Cloud，重试保存前先读取最新讨论。
+```sh
+npx --yes wildcrane-opencode@latest update
+```
 
-## 卸载和回退
+安装后即可检查更新。固定版本保持固定。下载成功后才修改配置；失败时报告原因，保留当前配置版本。
 
-V2 运行 `opencode plugin remove wildcrane-opencode`；固定版本时使用配置中的完整包名。V1 只移除 `plugin` 中本插件的条目并重启。关闭或重载后释放本插件连接，不关闭其他宿主使用的 Runner。
+## 固定版本、回退或卸载
 
-后续升级可固定 `wildcrane-opencode@<版本>` 回退。首版可通过移除插件停用。任务、讨论和登录会保留；服务端回退仍须兼容读取 `opencode` 数据。
+```sh
+npx --yes wildcrane-opencode@latest install 0.1.21
+npx --yes wildcrane-opencode@latest remove
+```
 
-接口、构建、发布顺序和官方依据见 [English README](README.md)。npm 发布与生态目录 PR 合并分别记录；提交不代表已收录。
+将 `0.1.21` 换成所需的已发布版本。不带版本运行 `install` 可恢复跟随更新。安装、切换版本或卸载后重新打开 OpenCode。只改 WildCrane；保留任务、讨论、登录、其他插件及用户技能。
 
-已在 macOS、Linux、Windows（Node 22）验证 OpenCode 1.18.30 和 2.2.7 的原生包加载及适配器回归。
+安装器管理 `OPENCODE_CONFIG_DIR` 或 `$XDG_CONFIG_HOME/opencode` 下的全局配置（默认 `~/.config/opencode`），下载版本保存在其专属的 `wildcrane/packages` 目录。`install` 会迁移已有全局 npm 条目，不修改项目配置。OpenCode 原生更新命令依赖异步发现的插件清单，因此 WildCrane 使用上述统一命令。
+
+## 接口与发布
+
+工具契约见 [英文说明](README.md#interfaces-and-release)。在 `runner/` 运行 `npm run build`，再在本目录运行 `npm pack`；先发布兼容的 Runner，再发布插件。

@@ -38,13 +38,11 @@ Kimi Code, in a session:
 /plugins install https://github.com/wildcrane-ai/wildcrane/tree/kimi-plugin
 ```
 
-OpenCode ([V1/V2 setup and recovery](plugins/opencode/README.md)):
+OpenCode 2.2.7+ ([setup and updates](plugins/opencode/README.md)):
 
 ```sh
-opencode plugin add wildcrane-opencode  # V2
+npx --yes wildcrane-opencode@latest install
 ```
-
-V1: add `"wildcrane-opencode"` to the `plugin` array in `opencode.json`.
 
 Grok Build ([setup and recovery](plugins/grok/README.md)):
 
