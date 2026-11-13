@@ -21,7 +21,7 @@ import { renderError } from '../../cli/src/lib/preview-validation'
 import { referenceText } from '../../cli/src/lib/dress-page'
 import * as api from './api'
 import type { Assets, Job } from './api'
-import { busy, markUsed, markUnsent } from './cache'
+import { busy, kept as cacheKept, markUsed, markUnsent } from './cache'
 import { keepOutOfGit } from './kanban-skill'
 import { sharedMemory, type Shared } from './memory-files'
 import { countSync, logSync, syncDebug } from './sync-debug'
@@ -55,6 +55,8 @@ interface Entry {
 interface Record_ {
   task?: string
   number?: number
+  /** Cloud removed its archived card or confirmed the task is gone. */
+  deleted?: string | true
 
   /** `kind` is the artifact's type (#2003); an `html` one is the page a mockup draws, and its
    *  hash is the page's. */
@@ -218,6 +220,55 @@ function writeRecord(ws: TaskFolder, record: Record_): void {
   if (syncDebug) countSync('recordBytes', Buffer.byteLength(content))
   fs.mkdirSync(path.dirname(recordFile(ws)), { recursive: true })
   fs.writeFileSync(recordFile(ws), content)
+}
+
+/** Only a successful Cloud read can retire an index; missing local files alone prove nothing. */
+async function cleanRecords(ws: TaskFolder, base: Base, removed: string[] = [], tasks?: Iterable<string>): Promise<Set<string>> {
+  const retired = new Set<string>()
+  const root = rootOf(ws)
+  const removedPaths = new Set(removed)
+  const numbers = new Set(Object.keys(base.files).filter(p => p.startsWith(root) && !removedPaths.has(p)).map(p => numberOfCard(p.slice(root.length))))
+  const deleted = new Map(removed.filter(p => p.startsWith(root + '.archive/')).map(p => [numberOfCard(p.slice(root.length)), p.slice(root.length)]))
+  for (const name of tasks ? [...tasks].map(task => `${task}.json`) : filesUnder(path.join(ws.board, '.sync'))) {
+    if (!name.endsWith('.json') || name.includes('/')) continue
+    let record: Record_
+    try { record = JSON.parse(fs.readFileSync(path.join(ws.board, '.sync', name), 'utf8')) } catch { continue }
+    if (!record.task || !TASK_ID.test(record.task) || name !== `${record.task}.json` || !record.number || numbers.has(record.number)) continue
+    const folder = { ...ws, task: record.task, cloudTask: record.task, number: record.number }
+    const card = findCard(ws.board, record.number)
+    if (!record.deleted && deleted.has(record.number)) {
+      record.deleted = deleted.get(record.number)!
+      writeRecord(folder, record)
+    }
+    if (!record.deleted) {
+      if (card) continue
+      const read = await api.readTask(record.task)
+      if (read.ok || read.code !== 'not_found') continue
+      record.deleted = true
+      writeRecord(folder, record)
+    }
+    retired.add(record.task)
+    const index = syncIndex(ws) ?? newIndex(ws)
+    taskIndexes.set(ws.cwd, index)
+    index.retiring.add(record.task)
+    if (card || cacheKept(ws.cwd) || base.pendingAssets?.includes(record.task)) continue
+    const list = assetsFile(record.task)
+    const here = readText(path.join(ws.board, list))
+    if (here !== null && here !== (base.files[root + list]?.content ?? null)) continue
+    let changed = false
+    for (const [name, entry] of Object.entries(record.assets ?? {})) {
+      let file: string | null
+      try { file = assetPath(folder, name, typeof record.deleted === 'string' ? path.join(ws.board, record.deleted) : cardFile(folder)) } catch { changed = true; break }
+      if (!file) continue
+      const hash = hashFile(file)
+      if (hash !== null && hash !== (entry.localHash ?? entry.hash)) { changed = true; break }
+    }
+    if (!changed) {
+      fs.rmSync(recordFile(folder), { force: true })
+      index.retiring.delete(record.task)
+    }
+  }
+  return retired
 }
 
 const baseFile = (ws: Pick<TaskFolder, 'cwd'>) => path.join(ws.cwd, '.akb', 'base.json')
@@ -498,6 +549,8 @@ export const pullChanges = (ws: TaskFolder): Promise<api.Call<void>> => inFolder
   let skipped = false
   for (const f of read.value.files) {
     const p = f.path.startsWith(root) ? f.path.slice(root.length) : f.path
+    const index = syncIndex(ws)
+    if (index) rememberDirectories(index.directories, p)
     const isShared = p.startsWith(MEMORY) && shared(p.slice(MEMORY.length))
     if (kept(p) && isShared === !f.path.startsWith(root)) {
       const file = path.join(ws.board, p)
@@ -515,11 +568,14 @@ export const pullChanges = (ws: TaskFolder): Promise<api.Call<void>> => inFolder
   if (!skipped) base.head_seq = read.value.head_seq
   writeBase(ws, base)
   writeIndex(ws.board)
+  await cleanRecords(ws, base, read.value.files.filter(f => f.content === null).map(f => f.path),
+    syncIndex(ws)?.ready ? affectedTasks(ws, read.value.files.map(f => f.path.startsWith(root) ? f.path.slice(root.length) : f.path)) : undefined)
   return { ok: true, value: undefined }
 })
 
 async function readCloud(ws: TaskFolder): Promise<api.Call<void>> {
   const base = readBase(ws)
+  const previous = { ...base.files }
   const known = new Set(Object.keys(base.files))
   const keepDraft = new Set((base.deferred ?? []).filter(p =>
     readText(path.join(ws.board, p)) !== (base.files[rootOf(ws) + p]?.content ?? null)))
@@ -534,6 +590,12 @@ async function readCloud(ws: TaskFolder): Promise<api.Call<void>> {
   for (const f of read.value.files) {
     if (f.content === null) delete base.files[f.path]
     else base.files[f.path] = { seq: f.seq, content: f.content }
+  }
+  const removed = [...known].filter(p => !base.files[p])
+  for (const p of removed) {
+    const local = p.startsWith(rootOf(ws)) ? p.slice(rootOf(ws).length) : p
+    if (local.startsWith('.archive/') && readText(path.join(ws.board, local)) !== null &&
+      readText(path.join(ws.board, local)) !== previous[p]?.content) keepDraft.add(local)
   }
   base.head_seq = read.value.head_seq
   base.project = ws.project
@@ -551,6 +613,11 @@ async function readCloud(ws: TaskFolder): Promise<api.Call<void>> {
   for (const p of localFiles(ws, base)) if (!keepDraft.has(p) && !view.has(p) && !first(p)) fs.rmSync(path.join(ws.board, p), { force: true })
   reset(view)
 
+  const retired = await cleanRecords(ws, base, removed)
+  if (retired.has(ws.task)) {
+    writeIndex(ws.board)
+    return { ok: true, value: undefined }
+  }
   const record = readRecord(ws)
   const studio = await pullStudio(ws, record)
   if (!studio.ok) return studio
@@ -891,9 +958,9 @@ export function resetSorted(ws: TaskFolder): void {
 
 /** Each item the job added to `triage/`, proposed from its task on its studio — the job's when
  *  the file names none — as `akb raw triage add` cannot know either. */
-function proposeItems(ws: TaskFolder, base: Base): void {
+function proposeItems(ws: TaskFolder, base: Base, paths?: string[]): void {
   const root = rootOf(ws)
-  for (const p of localFiles(ws, base)) {
+  for (const p of paths ?? localFiles(ws, base)) {
     if (itemAt(p)?.state !== 'open' || base.files[root + p]) continue
     const file = path.join(ws.board, p)
     const content = fs.readFileSync(file, 'utf8')
@@ -938,46 +1005,155 @@ export const withBoard = <T>(ws: TaskFolder, work: (push: (job: { id: string; ma
   inFolder(ws.cwd, () => work((job) => sendMarked(ws, job)))
 
 /** What changed on the board, for no job (#59). */
-export const pushBoard = (ws: TaskFolder, machineId: string): Promise<Pushed> => inFolder(ws.cwd, () => sendBoard(ws, machineId))
+export const pushBoard = (ws: TaskFolder, machineId: string, paths?: string[]): Promise<Pushed> =>
+  inFolder(ws.cwd, () => sendBoard(ws, machineId, paths))
 
 /** Never before the board was first read: everything here would go up as new. */
-async function sendBoard(ws: TaskFolder, machineId: string): Promise<Pushed> {
+async function sendBoard(ws: TaskFolder, machineId: string, paths?: string[]): Promise<Pushed> {
   if (readBase(ws).head_seq === null) return { ok: true, changed: false }
-  return sendMarked(ws, { id: null, machineId })
+  return sendMarked(ws, { id: null, machineId }, paths)
 }
 
-async function sendMarked(ws: TaskFolder, job: { id: string | null; machineId: string }): Promise<Pushed> {
-  const pushed = await send(ws, job)
+async function sendMarked(ws: TaskFolder, job: { id: string | null; machineId: string }, paths?: string[]): Promise<Pushed> {
+  const pushed = await send(ws, job, paths)
   markUnsent(ws.cwd, !pushed.ok || !!readBase(ws).pendingAssets?.length)
   return pushed
 }
 
-async function send(ws: TaskFolder, job: { id: string | null; machineId: string }): Promise<Pushed> {
+interface TaskIndex {
+  task: string
+  number: number
+  paths: Set<string>
+}
+
+interface SyncIndex {
+  identity: string
+  directories: Set<string>
+  ready: boolean
+  retiring: Set<string>
+  tasks: Map<string, TaskIndex>
+  files: Map<string, Set<string>>
+}
+const boardIdentity = (ws: TaskFolder) => {
+  const stat = fs.statSync(ws.board)
+  return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`
+}
+function rememberDirectories(directories: Set<string>, file: string): void {
+  for (let dir = path.posix.dirname(file); dir !== '.' && dir !== '/'; dir = path.posix.dirname(dir)) directories.add(dir)
+}
+function newIndex(ws: TaskFolder): SyncIndex {
+  const directories = new Set<string>()
+  for (const p of Object.keys(readBase(ws).files)) {
+    if (p.startsWith(rootOf(ws))) rememberDirectories(directories, p.slice(rootOf(ws).length))
+  }
+  return { identity: boardIdentity(ws), directories, ready: false, retiring: new Set(), tasks: new Map(), files: new Map() }
+}
+const taskIndexes = new Map<string, SyncIndex>()
+
+function syncIndex(ws: TaskFolder): SyncIndex | undefined {
+  const index = taskIndexes.get(ws.cwd)
+  if (index && index.identity !== boardIdentity(ws)) {
+    taskIndexes.delete(ws.cwd)
+    return undefined
+  }
+  return index
+}
+
+function indexTask(ws: TaskFolder, record: Record_, card = cardFile(ws)): void {
+  if (!ws.cloudTask || !ws.number) return
+  const paths = new Set([card, path.join(ws.board, assetsFile(ws.task)), recordFile(ws)])
+  for (const name of Object.keys(record.assets)) {
+    try {
+      const file = assetPath(ws, name, card)
+      if (file) paths.add(file)
+    } catch { /* Invalid references are reported by pushAssets. */ }
+  }
+  for (const file of [...paths]) {
+    for (let dir = path.dirname(file); dir.startsWith(ws.cwd + path.sep); dir = path.dirname(dir)) paths.add(dir)
+  }
+  const index = syncIndex(ws) ?? newIndex(ws)
+  for (const file of index.tasks.get(ws.task)?.paths ?? []) {
+    const tasks = index.files.get(file)!
+    tasks.delete(ws.task)
+    if (!tasks.size) index.files.delete(file)
+  }
+  index.tasks.set(ws.task, { task: ws.task, number: ws.number, paths })
+  for (const file of paths) {
+    const tasks = index.files.get(file) ?? new Set<string>()
+    tasks.add(ws.task)
+    index.files.set(file, tasks)
+  }
+  taskIndexes.set(ws.cwd, index)
+}
+
+function affectedTasks(ws: TaskFolder, paths: Iterable<string>): Set<string> {
+  const index = syncIndex(ws)
+  const tasks = new Set<string>(index?.retiring)
+  for (const p of paths) {
+    for (const task of index?.files.get(path.resolve(ws.board, p)) ?? []) tasks.add(task)
+    const task = /^\.sync\/([\w-]+)\.json$/.exec(p)?.[1]
+    if (task) tasks.add(task)
+  }
+  return tasks
+}
+
+async function send(ws: TaskFolder, job: { id: string | null; machineId: string }, paths?: string[]): Promise<Pushed> {
   const record = readRecord(ws)
   const base = readBase(ws)
   const fail = (error: string, conflict = false, code?: string): Pushed => ({ ok: false, conflict, error, ...(code ? {} : { offline: true }) })
 
-  const tasks = ws.cloudTask ? [{ folder: ws, record }] : filesUnder(path.join(ws.board, '.sync')).filter(name => name.endsWith('.json')).flatMap(name => {
+  // A first reconciliation also catches edits made while the Runner was stopped.
+  if (!syncIndex(ws)?.ready) paths = undefined
+  const selected = paths && new Set(paths)
+  const names = selected ? new Set<string>(base.pendingAssets ?? []) : null
+  if (selected) for (const task of affectedTasks(ws, selected)) names!.add(task)
+  const retired = await cleanRecords(ws, base, [], names ?? undefined)
+  if (retired.has(ws.task)) record.deleted = true
+  const tasks = ws.cloudTask ? [{ folder: ws, record }] : (names ? [...names].map(task => `${task}.json`) : filesUnder(path.join(ws.board, '.sync')).filter(name => name.endsWith('.json'))).flatMap(name => {
     try {
       const held = JSON.parse(fs.readFileSync(path.join(ws.board, '.sync', name), 'utf8')) as Record_
       if (!held.task || !TASK_ID.test(held.task) || !held.number) return []
       return [{ folder: { ...ws, task: held.task, cloudTask: held.task, number: held.number }, record: held }]
     } catch { return [] }
   })
+  if (!syncIndex(ws)) taskIndexes.set(ws.cwd, newIndex(ws))
   const boardSync = !job.id && !ws.cloudTask
   const deferredCards = new Set<number>()
   const deferredLists = new Set<string>()
   const assetErrors: Record<string, { error: string; offline?: boolean; blocking?: boolean }> = {}
   const processed = new Set<string>()
+  const cards = !selected && !ws.cloudTask ? new Map(
+    ['.archive', 'todo'].flatMap(dir => filesUnder(path.join(ws.board, dir), ws.board))
+      .flatMap(p => { const number = numberOfCard(p); return number ? [[number, p] as const] : [] }),
+  ) : null
   for (const item of tasks) {
     processed.add(item.folder.task)
     if (processed.size === 1 || processed.size % 25 === 0) logSync('board.progress', { project: ws.project, processed: processed.size, total: tasks.length })
-    const card = path.relative(ws.board, cardFile(item.folder)).split(path.sep).join('/')
-    const archived = boardSync && card.startsWith('.archive/') && base.files[rootOf(ws) + card]
-    if (!archived) {
-      const assets = await pushAssets(item.folder, item.record, assetsOf(assetsListOf(item.folder, base)))
+    const card = cards?.get(item.folder.number!) ?? path.relative(ws.board, cardFile(item.folder)).split(path.sep).join('/')
+    indexTask(item.folder, item.record, path.join(ws.board, card))
+    selected?.add(card)
+    const before = assetsOf(assetsListOf(item.folder, base))
+    const newer = Object.entries(before).some(([name, ref]) => {
+      const held = item.record.assets[name]
+      return held?.artifact === ref.artifact && (ref.version ?? 0) > held.version
+    })
+    const clean = () => Object.entries(item.record.assets).every(([name, entry]) => {
+      try {
+        const file = assetPath(item.folder, name, path.join(ws.board, card))
+        return !file || hashFile(file) === (entry.localHash ?? entry.hash)
+      } catch { return false }
+    })
+    const archived = !selected && boardSync && card.startsWith('.archive/')
+      && readText(path.join(ws.board, card)) === base.files[rootOf(ws) + card]?.content
+      && !newer && clean()
+    if (!archived && !item.record.deleted) {
+      // Cloud can advance an archived preview while its local source is unchanged.
+      const refreshed = newer && clean() ? await pullAssets(item.folder, item.record, before) : { ok: true as const, value: undefined }
+      const assets = refreshed.ok ? await pushAssets(item.folder, item.record, before) : refreshed
       if (assets.ok) {
         writeRecord(item.folder, item.record)
+        indexTask(item.folder, item.record)
+        selected?.add(assetsFile(item.folder.task))
         continue
       }
       if (!boardSync) return fail(assets.error, false, assets.code)
@@ -988,15 +1164,25 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
     deferredCards.add(item.folder.number!)
     deferredLists.add(assetsFile(item.folder.task))
   }
-  proposeItems(ws, base)
+  if (!ws.cloudTask) syncIndex(ws)!.ready = true
+  const scoped = selected && [...new Set([...selected].flatMap(p => {
+    if (!isBoardPath(p) && !fs.statSync(path.join(ws.board, p), { throwIfNoEntry: false })?.isDirectory()) return []
+    const file = path.join(ws.board, p)
+    return fs.statSync(file, { throwIfNoEntry: false })?.isDirectory() ? filesUnder(file, ws.board).filter(kept) : kept(p) ? [p] : []
+  }))].filter(p => fs.statSync(path.join(ws.board, p), { throwIfNoEntry: false })?.isFile())
+  for (const p of scoped ?? []) rememberDirectories(syncIndex(ws)!.directories, p)
+  proposeItems(ws, base, scoped)
 
   const shared = sharedMemory(ws.board)
-  const deferred = new Set((base.deferred ?? []).filter(p => !boardSync && !tasks.some(item =>
+  const deferred = new Set((base.deferred ?? []).filter(p => (selected || !boardSync) && !tasks.some(item =>
     processed.has(item.folder.task) && !deferredCards.has(item.folder.number!) &&
     (p === assetsFile(item.folder.task) || numberOfCard(p) === item.folder.number))))
+  const retiredCards = new Set(tasks.filter(item => item.record.deleted).map(item => item.folder.number))
+  const retiredLists = new Set(tasks.filter(item => item.record.deleted).map(item => assetsFile(item.folder.task)))
   const defer = (p: string) => {
+    if (retiredCards.has(numberOfCard(p)) || retiredLists.has(p)) { deferred.add(p); return true }
     if (!boardSync) return deferred.has(p)
-    if (!deferredLists.has(p) && !deferredCards.has(numberOfCard(p) ?? 0)) return false
+    if (!deferredLists.has(p) && !deferredCards.has(numberOfCard(p) ?? 0)) return deferred.has(p)
     deferred.add(p)
     return true
   }
@@ -1011,13 +1197,14 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
     if (firstError && boardSync) return { ok: false, conflict: false, ...firstError, tasks: assetErrors }
     return { ok: true, changed }
   }
-  const local = localFiles(ws, base)
+  const local = scoped ?? localFiles(ws, base)
   const localOf = new Map<string, string>()
   const changes: api.BoardWrite[] = []
   // An item a job is adding goes up with that job, stamped with its task.
   const owed = (p: string) => !job.id && busy(ws.cwd) && itemAt(p)?.state === 'open' && !base.files[rootOf(ws) + p]
   for (const p of local) {
     if (defer(p) || owed(p)) continue
+    if (selected && tasks.some(item => assetFiles(item.folder, assetsListOf(item.folder, base)).has(p))) continue
     const content = fs.readFileSync(path.join(ws.board, p), 'utf8')
     const remote = remoteOf(ws, shared, p)
     localOf.set(remote, p)
@@ -1026,7 +1213,12 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
     if (Buffer.byteLength(content) > BOARD_FILE_LIMIT) return fail(`${p} is over ${BOARD_FILE_LIMIT / 1024} KB; keep large files as assets.`, false, 'too_large')
     changes.push({ path: remote, content, base_seq: held?.seq ?? 0 })
   }
-  for (const p of viewOf(ws, base, shared).keys()) {
+  const previous = selected ? new Set([...selected].flatMap(p => {
+    if (base.files[remoteOf(ws, shared, p)]) return [p]
+    if (!syncIndex(ws)?.directories.has(p) && !fs.statSync(path.join(ws.board, p), { throwIfNoEntry: false })?.isDirectory()) return []
+    return [...viewOf(ws, base, shared).keys()].filter(file => file.startsWith(p + '/'))
+  })) : viewOf(ws, base, shared).keys()
+  for (const p of previous) {
     const remote = remoteOf(ws, shared, p)
     if (!defer(p) && kept(p) && !localOf.has(remote) && base.files[remote]) {
       localOf.set(remote, p)
@@ -1050,12 +1242,22 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
       const p = localOf.get(theirs.path) ?? theirs.path
       // A card Cloud took off the board goes here too: an edit to it never merges, and would
       // hold back every other change.
-      if (at >= 0 && theirs.content === null && changes[at]!.content !== null && p.startsWith('todo/') && numberOfCard(p) !== null) {
+      if (at >= 0 && theirs.content === null && changes[at]!.content !== null && (p.startsWith('todo/') || p.startsWith('.archive/')) && numberOfCard(p) !== null) {
         changes.splice(at, 1)
         delete base.files[theirs.path]
+        if (p.startsWith('.archive/')) {
+          deferred.add(p)
+          const item = tasks.find(item => item.folder.number === numberOfCard(p))
+          if (item) {
+            item.record.deleted = p
+            writeRecord(item.folder, item.record)
+            deferred.add(assetsFile(item.folder.task))
+          }
+        } else {
+          fs.rmSync(path.join(ws.board, p), { force: true })
+          writeIndex(ws.board)
+        }
         writeBase(ws, base)
-        fs.rmSync(path.join(ws.board, p), { force: true })
-        writeIndex(ws.board)
         continue
       }
       // Where an item sits is Cloud's to say: a sort or a move there wins (#2107).

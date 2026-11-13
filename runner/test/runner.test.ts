@@ -30,7 +30,7 @@ import { AKB_CONTRACT } from '../src/protocol'
 import { agentDue, nextHour } from '../src/agents'
 import { sharedMemory } from '../src/memory-files'
 import { projectStateDir } from '../../cli/src/lib/machine/project'
-import { NO_FOLDER, keptBoard, mergeFile, openTaskFolder, pull, pushBoard, readHead } from '../src/task-folder'
+import { NO_FOLDER, keptBoard, mergeFile, openTaskFolder, pull, pullChanges, pushBoard, readHead } from '../src/task-folder'
 import { watchBoards } from '../src/board-watch'
 import { hold, unsent } from '../src/cache'
 import { FILE_BYTES, diffOf } from '../src/diff'
@@ -768,7 +768,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'done', job.reason)
     assert.deepEqual([(job.report!.reply as string).trim(), job.report!.stopped], ['Two', true])
-    assert.equal(fs.existsSync(path.join(runnerHome(), 'attachments', 'j1')), false)
+    await until(() => !fs.existsSync(path.join(runnerHome(), 'attachments', 'j1')))
   })
 
   it('stops a reply its renewal asks to stop, as done', async () => {
@@ -1624,6 +1624,69 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(read('memory/readme.md'), 'Shipped again')
   })
 
+  for (const protection of ['none', 'card', 'asset', 'running']) {
+    it(`cleans Cloud-deleted archive indexes safely (${protection}, #713)`, async () => {
+      await prepareBoard()
+      const archive = '.archive/1-task-1.md'
+      cloud.put({ [CARD]: null, [archive]: BODY })
+      const ws = keptBoard(cached())!
+      assert.ok((await pullChanges(ws)).ok)
+      fs.copyFileSync(path.join(board(), 'todo/hero.png'), path.join(board(), '.archive/hero.png'))
+      fs.mkdirSync(path.join(board(), '.archive/shots'), { recursive: true })
+      fs.copyFileSync(path.join(board(), 'todo/shots/a.png'), path.join(board(), '.archive/shots/a.png'))
+      if (protection === 'card') fs.appendFileSync(path.join(board(), archive), 'Local draft')
+      if (protection === 'asset') fs.writeFileSync(path.join(board(), '.archive/hero.png'), 'Local image')
+      const release = protection === 'running' ? hold(cached()) : () => {}
+      try {
+        cloud.put({ [archive]: null })
+        assert.ok((await pullChanges(ws)).ok)
+        assert.ok((await pullChanges(ws)).ok, 'repeated delete/reconnect is safe')
+        const index = path.join(board(), '.sync/task_1.json')
+        assert.equal(fs.existsSync(index), protection !== 'none')
+        if (protection === 'card') {
+          assert.match(read(archive), /Local draft/)
+          assert.equal(JSON.parse(fs.readFileSync(index, 'utf8')).deleted, archive)
+        }
+        if (protection === 'asset') assert.equal(read('.archive/hero.png'), 'Local image')
+        assert.ok((await pushBoard(ws, MACHINE)).ok)
+        assert.equal(cloud.file(archive), null, 'deleted archive must not be recreated')
+      } finally { release() }
+      if (protection === 'running') {
+        assert.ok((await pullChanges(ws)).ok)
+        assert.equal(fs.existsSync(path.join(board(), '.sync/task_1.json')), false)
+      }
+    })
+  }
+
+  it('keeps an edited archive through full pulls without reviving Cloud content (#713)', async () => {
+    await prepareBoard()
+    const archive = '.archive/1-task-1.md'
+    cloud.put({ [CARD]: null, [archive]: BODY })
+    const ws = keptBoard(cached())!
+    assert.ok((await pullChanges(ws)).ok)
+    fs.appendFileSync(path.join(board(), archive), 'Unsent draft')
+    cloud.put({ [archive]: null })
+    for (let i = 0; i < 2; i++) {
+      assert.ok((await pull(ws, MACHINE)).ok)
+      assert.match(read(archive), /Unsent draft/)
+      assert.equal(cloud.file(archive), null)
+      assert.ok(fs.existsSync(path.join(board(), '.sync/task_1.json')))
+    }
+  })
+
+  it('reclaims old orphan indexes only when Cloud confirms the task is gone (#713)', async () => {
+    await prepareBoard()
+    const ws = keptBoard(cached())!
+    for (const [id, status] of [['old', 'gone'], ['live', 'done'], ['unknown', 'down']]) {
+      fs.writeFileSync(path.join(board(), `.sync/task_${id}.json`), JSON.stringify({ task: `task_${id}`, number: 99, assets: {} }))
+      cloud.taskStatus[`task_${id}`] = status!
+    }
+    assert.ok((await pullChanges(ws)).ok)
+    assert.equal(fs.existsSync(path.join(board(), '.sync/task_old.json')), false)
+    assert.ok(fs.existsSync(path.join(board(), '.sync/task_live.json')))
+    assert.ok(fs.existsSync(path.join(board(), '.sync/task_unknown.json')))
+  })
+
   it('keeps a card archived outside a job archived on the next job (#59)', async () => {
     await runTask('j1')
     fs.mkdirSync(path.join(board(), '.archive'), { recursive: true })
@@ -1688,6 +1751,123 @@ describe('a task’s folder (#2037)', () => {
     assert.ok(!cloud.board.has('projects/prj_1/todo/README.md'), 'a generated file went up')
   })
 
+  for (const count of [300, 3000]) {
+    it(`checks no historical files for one active edit or idle sync with ${count} archived tasks (#712)`, async (t) => {
+      await prepareBoard()
+      const ws = keptBoard(cached())!
+      const archived: Record<string, string> = {}
+      fs.mkdirSync(path.join(board(), '.archive'), { recursive: true })
+      for (let n = 10; n < count + 10; n++) {
+        const p = `.archive/${n}-done.md`
+        archived[p] = `---\ntitle: Done ${n}\n---\n`
+        fs.writeFileSync(path.join(board(), p), archived[p]!)
+        fs.writeFileSync(path.join(board(), '.sync', `task_history_${n}.json`), JSON.stringify({ task: `task_history_${n}`, number: n, assets: {} }))
+      }
+      cloud.put(archived)
+      assert.ok((await pullChanges(ws)).ok)
+      assert.ok((await pushBoard(ws, MACHINE)).ok)
+      const history: string[] = []
+      const read = fs.readFileSync
+      const list = fs.readdirSync
+      const track = (file: unknown) => {
+        if (String(file).includes('/.archive') || /\.sync\/task_history_/.test(String(file))) history.push(String(file))
+      }
+      t.mock.method(fs, 'readFileSync', (...args: Parameters<typeof read>) => { track(args[0]); return read(...args) })
+      t.mock.method(fs, 'readdirSync', (...args: Parameters<typeof list>) => { track(args[0]); return list(...args) })
+      fs.appendFileSync(path.join(board(), CARD), '\nActive edit.\n')
+      assert.ok((await pushBoard(ws, MACHINE, [CARD])).ok)
+      assert.match(cloud.file(CARD)!, /Active edit/)
+      const before = cloud.log.length
+      assert.deepEqual(await pushBoard(ws, MACHINE, []), { ok: true, changed: false })
+      assert.equal(cloud.log.length, before)
+      assert.deepEqual(history, [])
+      t.mock.restoreAll()
+      const archivedPath = '.archive/10-done.md'
+      fs.appendFileSync(path.join(board(), archivedPath), '\nLocal archive edit.\n')
+      assert.ok((await pushBoard(ws, MACHINE)).ok)
+      assert.match(cloud.file(archivedPath)!, /Local archive edit/)
+      cloud.put({ [archivedPath]: 'Cloud archive edit' })
+      assert.ok((await pullChanges(ws)).ok)
+      assert.equal(readText(archivedPath), 'Cloud archive edit')
+      function readText(p: string) { return fs.readFileSync(path.join(board(), p), 'utf8') }
+      fs.rmSync(path.join(board(), archivedPath))
+      const own = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cached())
+      assert.ok((await pull(own, MACHINE)).ok)
+      // The local deletion was uploaded; recovery must not resurrect it.
+      assert.equal(cloud.file(archivedPath), null)
+      const restored = fs.mkdtempSync(path.join(runnerHome(), 'archive-restore-'))
+      assert.ok((await pull(openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, restored), MACHINE)).ok)
+      assert.equal(fs.readFileSync(path.join(restored, '.akb/kanban/.archive/11-done.md'), 'utf8'), archived['.archive/11-done.md'])
+    })
+  }
+
+  it('watches asset dependencies outside the board and retries a failed write without another edit (#712)', async () => {
+    await prepareBoard()
+    const ws = keptBoard(cached())!
+    const assets = path.join(projectStateDir(board()), 'assets/1')
+    fs.mkdirSync(assets, { recursive: true })
+    fs.writeFileSync(path.join(assets, 'page.html'), '<img src="image.png">')
+    fs.writeFileSync(path.join(assets, 'image.png'), 'first')
+    fs.appendFileSync(path.join(board(), CARD), '\n<Asset src=".assets/1/page.html" />\n')
+    assert.ok((await pushBoard(ws, MACHINE)).ok)
+    const refs = JSON.parse(cloud.file('assets/task_1.json')!)
+    const artifact = refs['.assets/1/image.png'].artifact
+    const watch = watchBoards(MACHINE, 20, 100)
+    try {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      cloud.serviceUnavailableUploads = true
+      fs.writeFileSync(path.join(assets, 'image.png'), 'retry dependency')
+      await until(() => unsent(cached()))
+      cloud.serviceUnavailableUploads = false
+      await until(() => cloud.task.artifacts.get(artifact)!.at(-1)!.toString() === 'retry dependency')
+      await until(() => !unsent(cached()))
+      const before = commits().length
+      watch.look()
+      await new Promise(resolve => setTimeout(resolve, 150))
+      assert.equal(commits().length, before)
+    } finally { watch.close() }
+  })
+
+  it('retries only pending assets and syncs explicit archive moves and deletes (#712)', async () => {
+    await prepareBoard()
+    const ws = keptBoard(cached())!
+    assert.ok((await pushBoard(ws, MACHINE)).ok)
+    fs.writeFileSync(path.join(board(), 'todo/hero.png'), 'changed attachment')
+    fs.appendFileSync(path.join(board(), CARD), '\nPending draft.\n')
+    cloud.serviceUnavailableUploads = true
+    assert.equal((await pushBoard(ws, MACHINE, ['todo/hero.png', CARD])).ok, false)
+    cloud.serviceUnavailableUploads = false
+    assert.ok((await pushBoard(ws, MACHINE, [])).ok)
+    assert.match(cloud.file(CARD)!, /Pending draft/)
+    assert.equal(cloud.task.artifacts.get('art_1')!.at(-1)!.toString(), 'changed attachment')
+    // Move the card and its relative dependencies together.
+    fs.renameSync(path.join(board(), 'todo'), path.join(board(), '.archive'))
+    assert.ok((await pushBoard(ws, MACHINE, ['todo', '.archive'])).ok)
+    assert.equal(cloud.file(CARD), null)
+    assert.match(cloud.file('.archive/1-task-1.md')!, /Pending draft/)
+    const refs = JSON.parse(cloud.file('assets/task_1.json')!)
+    const versions = cloud.task.artifacts.get('art_1')!
+    versions.push(Buffer.from('remote archive image'))
+    refs['hero.png'].version = versions.length
+    cloud.put({ 'assets/task_1.json': JSON.stringify(refs) })
+    assert.ok((await pullChanges(ws)).ok)
+    assert.ok((await pushBoard(ws, MACHINE, ['assets/task_1.json'])).ok)
+    assert.equal(read('.archive/hero.png'), 'remote archive image')
+    const remoteCount = versions.length
+    fs.writeFileSync(path.join(board(), '.archive/hero.png'), 'unuploaded local image')
+    versions.push(Buffer.from('another remote image'))
+    refs['hero.png'].version = versions.length
+    cloud.put({ 'assets/task_1.json': JSON.stringify(refs) })
+    assert.ok((await pullChanges(ws)).ok)
+    assert.ok((await pushBoard(ws, MACHINE, ['assets/task_1.json', '.archive/hero.png'])).ok)
+    assert.equal(read('.archive/hero.png'), 'unuploaded local image')
+    assert.equal(versions.at(-1)!.toString(), 'unuploaded local image')
+    assert.equal(versions.length, remoteCount + 2)
+    fs.rmSync(path.join(board(), '.archive'), { recursive: true })
+    assert.ok((await pushBoard(ws, MACHINE, ['.archive'])).ok)
+    assert.equal(cloud.file('.archive/1-task-1.md'), null)
+  })
+
   it('syncs 10 MiB board documents and preserves the remote copy when over the limit (#667)', async () => {
     await prepareBoard()
     const target = path.join(board(), 'memory/readme.md')
@@ -1745,7 +1925,7 @@ describe('a task’s folder (#2037)', () => {
       assert.equal(read(path.join(path.dirname(card), 'hero.png')), 'local draft')
       assert.equal(cloud.file(card), BODY)
       if (!archived) assert.match(read(card), /Local card draft/)
-      assert.equal(cloud.log.filter(line => line === 'POST /v1/artifacts/art_1/uploads').length, archived ? 0 : 1)
+      assert.equal(cloud.log.filter(line => line === 'POST /v1/artifacts/art_1/uploads').length, 1)
       if (!archived) {
         cloud.closedArtifacts.clear()
         assert.equal((await runTask('j3', '', { task: 'task_2', number: 2 })).outcome, 'done')
@@ -3658,14 +3838,18 @@ describe('periodic agents on the Runner (#2068)', () => {
     assert.equal(periodic().scheduled, undefined)
   })
 
-  it('pulls the project\'s board before an idea conversation on its folder (#2110)', async () => {
+  it('starts a project discussion without board reads or uploads (#711)', async () => {
     cloud.put({ 'todo/4-pricing.md': '---\ntitle: Pricing\n---\n\nTiers.\n' })
+    const boardPath = path.join(fs.realpathSync(project), '.akb', 'kanban')
+    const local = path.join(boardPath, 'todo', '4-pricing.md')
+    fs.mkdirSync(path.dirname(local), { recursive: true })
+    fs.writeFileSync(local, 'Local draft that has not been uploaded.')
     const job = cloud.dispatch({ id: 'd1', project: 'prj_1', projectDir: project, discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
-    start(`const fs = require('node:fs'); const path = require('node:path');
-      if (process.env.AI4KANBAN_BOARD !== ${JSON.stringify(path.join(fs.realpathSync(project), '.akb', 'kanban'))}) process.exit(4);
-      if (!fs.existsSync(path.join(process.env.AI4KANBAN_BOARD, 'todo', '4-pricing.md'))) process.exit(5)`)
+    start(`if (process.env.AI4KANBAN_BOARD !== ${JSON.stringify(boardPath)}) process.exit(4);`)
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(fs.readFileSync(local, 'utf8'), 'Local draft that has not been uploaded.')
+    assert.ok(!cloud.log.some(line => line.includes('/board') || line.includes('/artifacts')), cloud.log.join('\n'))
   })
 
   it('runs a studio\'s scheduled agent by its akb name, and fails a project with no folder here', async () => {

@@ -591,12 +591,10 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       return sendBack(deps, id, lease, ws, done.report, () => keepChat(job, done.report.reply))
     }
     if (job.flow && !ws) throw new Error('This job names no task.')
-    // A discussion on a project folder here reads its board as Cloud has it now (#2110).
+    // Discussions bind the local board; background synchronization owns its freshness.
     if (job.discussion && job.projectDir && folder) {
       const board = openDiscussionFolder(job, folder.cwd)
       keep(board.cwd)
-      const pulled = await pull(board, deps.machineId)
-      if (!pulled.ok) throw new Error(pulled.error)
       discussed = board.board
     }
     if (job.discussion) {

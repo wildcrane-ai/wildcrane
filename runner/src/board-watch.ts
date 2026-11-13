@@ -8,8 +8,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { projectStateDir } from '../../cli/src/lib/machine/project'
 import { isBoardPath } from '../../cli/src/lib/shared/board-files.ts'
-import { busy, cacheRoot, unsent } from './cache'
+import { busy, cacheRoot, markUnsent, unsent } from './cache'
 import { allowedProjects } from './folders'
 import { keptBoard, pullChanges, pushBoard, readHead, type TaskFolder } from './task-folder'
 
@@ -48,6 +49,9 @@ interface Watched {
   spaced: boolean
   /** When the last write that changed Cloud's board started. */
   sentAt: number
+  paths: Set<string>
+  full: boolean
+  sending: boolean
 }
 
 export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pullMs = PULL_MS, busyMs = BUSY_MS): BoardWatch {
@@ -64,8 +68,8 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
     if (!read.ok && read.code) console.error(`runner: the board in ${ws.cwd} was not read: ${read.error}`)
   }
 
-  const send = async (ws: TaskFolder) => {
-    const sent = await pushBoard(ws, machineId)
+  const send = async (ws: TaskFolder, paths?: string[]) => {
+    const sent = await pushBoard(ws, machineId, paths)
     if (!sent.ok && !sent.offline) console.error(`runner: the board in ${ws.cwd} was not sent: ${sent.error}`)
     return sent
   }
@@ -75,20 +79,50 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
     if (!held) return void (await send(ws))
     clearTimeout(held.timer)
     held.timer = undefined
+    if (held.sending) return
+    held.sending = true
+    const paths = [...held.paths]
+    held.paths.clear()
     held.spaced = false
     const last = held.sentAt
+    let retry = false
     held.sentAt = Date.now()
-    const sent = await send(ws)
-    if (!sent.ok || !sent.changed) held.sentAt = last
+    try {
+      const sent = await send(ws, held.full ? undefined : paths)
+      if (!sent.ok || !sent.changed) held.sentAt = last
+      if (sent.ok) held.full = false
+      else {
+        retry = true
+        for (const p of paths) held.paths.add(p)
+      }
+    } catch (error) {
+      retry = true
+      for (const p of paths) held.paths.add(p)
+      markUnsent(ws.cwd, true)
+      console.error(`runner: the board in ${ws.cwd} was not sent: ${error}`)
+    } finally {
+      held.sending = false
+      if (!closed && held.paths.size && !held.timer) {
+        held.spaced = busy(ws.cwd)
+        held.timer = setTimeout(() => void flush(ws), Math.max(retry ? lookMs : ms, held.spaced ? held.sentAt + busyMs - Date.now() : 0))
+      }
+    }
   }
 
   const watch = (ws: TaskFolder) => {
     let watcher: fs.FSWatcher
     try {
-      watcher = fs.watch(ws.board, { recursive: true }, (_event, name) => {
-        const p = name && String(name).split(path.sep).join('/')
+      const state = path.relative(ws.board, projectStateDir(ws.board)).split(path.sep).join('/')
+      const assets = ['assets', 'mockups'].map(dir => `${state}/${dir}/`)
+      watcher = fs.watch(path.dirname(ws.board), { recursive: true }, (_event, name) => {
+        const p = name && path.relative(ws.board, path.join(path.dirname(ws.board), String(name))).split(path.sep).join('/')
         const held = watched.get(ws.cwd)
-        if (closed || !p || !isBoardPath(p) || !held) return
+        if (closed || !p || !held) return
+        if (!isBoardPath(p) && !/^(?:todo|\.archive|memory|assets|studios|triage|rules)(?:\/|$)/.test(p)
+          && !assets.some(root => p.startsWith(root))
+          && !/^\.sync\/[\w-]+\.json$/.test(p)) return
+        if (p === 'todo/README.md') return
+        held.paths.add(p)
         const job = busy(ws.cwd)
         if (job && held.spaced) return
         clearTimeout(held.timer)
@@ -103,7 +137,7 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
       watcher.close()
       watched.delete(ws.cwd)
     })
-    watched.set(ws.cwd, { watcher, spaced: false, sentAt: 0 })
+    watched.set(ws.cwd, { watcher, spaced: false, sentAt: 0, paths: new Set(), full: true, sending: false })
     return true
   }
 
