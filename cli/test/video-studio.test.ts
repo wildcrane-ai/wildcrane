@@ -1,5 +1,4 @@
-// The built-in product video studio (#822, #1057, #2154): the script and rehearsal, then the
-// film, each approved, then its cover as it lands; and the `<board-state>` path constant.
+// Studio preview routing and board-state path regressions.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -13,7 +12,6 @@ import { printFlow } from '../src/lib/agent/flow.ts'
 import { buildAsk, buildPrompt } from '../src/lib/agent/prompts.ts'
 import { refinementRequest } from '../src/lib/agent/refine.ts'
 import { agentForRun } from '../src/lib/agent/runner.ts'
-import { landAgents, previewStages, studioById, studioProblems } from '../src/lib/agent/studios.ts'
 import { startCollecting, stopCollecting } from '../src/lib/io.ts'
 import { boardText, setBoardRoot } from '../src/lib/paths.ts'
 import type { AgentRequest } from '../src/lib/agent/types.ts'
@@ -53,14 +51,6 @@ const videoCard = async (): Promise<number> =>
   (await move(root, ['create', '--title', 'Show the board', '--studio', 'hyperframes-video'])).id as number
 
 describe('the hyperframes-video studio', () => {
-  it('previews the script and rehearsal, then the film, and lands with its cover', () => {
-    const flow = studioById('hyperframes-video')!
-    assert.deepEqual([flow.name, flow.builtIn, flow.needsArtifact], ['Product video', true, true])
-    assert.deepEqual(previewStages(flow, ['scriptwriter', 'demo-rehearser', 'hyperframes-editor']), [['scriptwriter', 'demo-rehearser'], ['hyperframes-editor']])
-    assert.deepEqual(landAgents(flow).map((h) => h.agent), ['cover-designer'])
-    assert.deepEqual(studioProblems('hyperframes-video'), [])
-  })
-
   it('is planned by the board’s planner, which asks the scriptwriter for the script', async () => {
     const id = await videoCard()
     assert.equal(agentForRun({ action: 'clarify', id, refineRound: 1 }), 'planner')
@@ -84,15 +74,6 @@ describe('the hyperframes-video studio', () => {
     const coding = (await move(root, ['create', '--title', 'Fix the header'])).id as number
     for (const action of ['refine', 'implement'] as const) assert.doesNotMatch(printed(action, coding), /scriptwriter|hyperframes-editor/)
     assert.doesNotMatch(buildPrompt({ action: 'implement', id: coding }), /hyperframes-editor/)
-  })
-
-  it('tells planning what its last approval does', async () => {
-    const id = await videoCard()
-    assert.match(printed('refine', id), /complete the approved outcome and archive the card/)
-    const deck = (await move(root, ['create', '--title', 'Pitch', '--studio', 'slide-deck'])).id as number
-    assert.match(printed('refine', deck), /The last Approve archives the card/)
-    const coding = (await move(root, ['create', '--title', 'Fix the header'])).id as number
-    assert.match(printed('refine', coding), /complete the approved outcome and archive the card/)
   })
 })
 

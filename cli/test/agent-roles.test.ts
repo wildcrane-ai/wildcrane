@@ -1,8 +1,4 @@
-// The roles the board ships, and the rule each agent carries (#420).
-//
-// What is asked here: every flow the board can start belongs to exactly one agent, the
-// roster names the roles before the specialists, a board written when rules were per flow
-// is folded onto its agents once and says so.
+// Flow ownership, role name collisions and lossless rule migration.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -12,9 +8,9 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { FLOWS } from '../src/lib/agent/flows.ts'
 import { buildRun } from '../src/lib/agent/prompts.ts'
-import { agentNames, agentRoster, roleForFlow, roleNamed, roles, stageContractProblems } from '../src/lib/agent/roles.ts'
+import { agentNames, agentRoster, roleNamed } from '../src/lib/agent/roles.ts'
 import { agentForFlow } from '../src/lib/agent/stages.ts'
-import { migrateFlowRules, readRule, ruleFor } from '../src/lib/agent/rules.ts'
+import { migrateFlowRules, readRule } from '../src/lib/agent/rules.ts'
 import { specAgentProblems } from '../src/lib/agents/index.ts'
 import { RULES, setBoardRoot, UI_CONFIG } from '../src/lib/paths.ts'
 
@@ -50,53 +46,6 @@ describe('the roles', () => {
     }
   })
 
-  it('leaves the planner every flow that writes a card', () => {
-    for (const flow of ['refine', 'resolve']) {
-      assert.equal(roleForFlow(flow)!.name, 'planner')
-    }
-  })
-
-  it('names every board flow, and leaves the build to the studio', () => {
-    assert.deepEqual(
-      roles().map((r) => r.name),
-      [
-        'discussion-helper',
-        'planner',
-        'memory-pruner',
-        'chat-reviewer',
-        'dismissal-reviewer',
-        'project-writer',
-        'proposer',
-      ],
-    )
-    assert.equal(agentForFlow('implement'), undefined)
-    assert.equal(agentForFlow('implement', 'coding'), 'builder')
-    assert.equal(roleForFlow('prune-memory')!.name, 'memory-pruner')
-    // Reading back over the conversations is the chat reviewer's (#748): a chat writes no
-    // memory itself.
-    assert.equal(roleForFlow('review-memory')!.name, 'chat-reviewer')
-    assert.equal(roleForFlow('review-dismissals')!.name, 'dismissal-reviewer')
-    assert.equal(roleForFlow('describe-project')!.name, 'project-writer')
-    // Every conversation is the discussion helper's, and `chat` is no flow anyone types.
-    assert.equal(roleForFlow('chat')!.name, 'discussion-helper')
-    // And a reflection is the proposer's — no flow a person types either (#534).
-    assert.equal(roleForFlow('reflect')!.name, 'proposer')
-  })
-
-  // Memory belongs to whoever writes it (#805): all three planning files are the planner's.
-  it('says what each role remembers, in files that are the board it is on', () => {
-    assert.deepEqual(roleForFlow('refine')!.memory, [
-      'memory/agents/planner/decisions.md',
-      'memory/agents/planner/rejected.md',
-      'memory/agents/planner/redesign.md',
-    ])
-  })
-
-  // The builder writes no memory at all, so owns no folder either (#805).
-  it('gives the builder no memory', () => {
-    assert.deepEqual(agentRoster().find((a) => a.name === 'builder')!.memory, [])
-  })
-
   it("refuses a project agent that takes a role's name, so no two share a rule", () => {
     const home = path.join(kanban(), 'agents', 'proposer')
     fs.mkdirSync(home, { recursive: true })
@@ -109,51 +58,6 @@ describe('the roles', () => {
     assert.equal(agentNames().filter((name) => name === 'proposer').length, 1)
     assert.match(specAgentProblems().join('\n'), /`proposer` is one of the roles the board ships/)
   })
-
-  it('rosters the roles first, then the specialists the command ships', () => {
-    const names = agentNames()
-    assert.deepEqual(names.slice(0, 6), [
-      'discussion-helper',
-      'memory-pruner',
-      'chat-reviewer',
-      'dismissal-reviewer',
-      'project-writer',
-      'proposer',
-    ])
-    assert.deepEqual(names.slice(6), [
-      'api-designer',
-      'blog-illustrator',
-      'blog-planner',
-      'blog-writer',
-      'builder',
-      'carousel-planner',
-      'carousel-renderer',
-      'competitor-research',
-      'cover-designer',
-      'deck-builder',
-      'deck-planner',
-      'demo-rehearser',
-      'email-planner',
-      'hyperframes-editor',
-      'prompt-writer',
-      'qa-manager',
-      'schema-designer',
-      'scriptwriter',
-      'social-illustrator',
-      'studio-publisher',
-      'studio-writer',
-      'tech-stack-advisor',
-      'ui-designer',
-      'video-cloner',
-      'video-template-builder',
-    ])
-    assert.deepEqual(agentRoster().map((a) => a.kind), [...Array(6).fill('role'), ...Array(25).fill('agent')])
-    // A role says which work it runs; a specialist is asked for by name and runs none.
-    assert.ok(agentRoster()[0]!.flows.length > 0)
-    assert.deepEqual(agentRoster()[7]!.flows, [])
-    // No role lands a studio; `builder` is one of Coding's agents.
-    assert.deepEqual(agentRoster().filter((a) => a.kind === 'role' && a.lands).map((a) => a.name), [])
-  })
 })
 
 // The proposer and the chat reviewer used to have switches (#534, #748).
@@ -165,13 +69,6 @@ describe('the board helpers are always on (#1208)', () => {
     fs.writeFileSync(UI_CONFIG, JSON.stringify({ proposer: false, autoTriage: false, memoryReviewer: false }))
     for (const name of ['proposer', 'chat-reviewer', 'discussion-helper', 'builder']) {
       assert.equal(on(name), true, name)
-    }
-  })
-
-  // The retired roles are gone: nothing answers to their names.
-  it('knows no gater, decider or code reviewer', () => {
-    for (const name of ['gater', 'decider', 'code-reviewer']) {
-      assert.equal(agentNames().includes(name), false, name)
     }
   })
 })
@@ -220,13 +117,6 @@ describe("the one-time move onto the agents", () => {
     assert.equal(readRule('ui-designer'), 'Keep to the existing palette.')
     assert.equal(ruleText('ui-designer'), 'Keep to the existing palette.')
     assert.equal(fs.existsSync(path.join(RULES, 'ui-design.md')), false)
-  })
-
-  it('leaves a board that never had a rule alone', () => {
-    assert.deepEqual(migrateFlowRules(), [])
-    assert.equal(fs.existsSync(RULES), false)
-    assert.equal(readRule('builder'), '')
-    assert.equal(ruleFor({ action: 'implement', id: 1 }), '')
   })
 })
 

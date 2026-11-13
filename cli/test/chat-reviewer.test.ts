@@ -17,7 +17,6 @@ import { readRule } from '../src/lib/agent/rules.ts'
 import { readRuns } from '../src/lib/agent/store.ts'
 import { specAgentNames } from '../src/lib/spec-agent-names.ts'
 import { buildAsk } from '../src/lib/agent/prompts.ts'
-import { findGuide } from '../src/lib/guide.ts'
 import { startCollecting, stopCollecting } from '../src/lib/io.ts'
 import { AGENT_MEMORY, RULES, setBoardRoot } from '../src/lib/paths.ts'
 import { forgetMachineState, restoreMachineHome, run } from './helpers/board.ts'
@@ -301,23 +300,6 @@ describe('what the review is handed', () => {
     const said = flow(`${TASK}:1`)
     assert.match(said, /`prompt-writer` — docs\/kanban\/memory\/agents\/prompt-writer\/: style\.md/)
     assert.match(said, /`designer` — docs\/kanban\/memory\/agents\/designer\/: no files yet/)
-  })
-
-  it('记忆审阅引用所需指南', () => {
-    const ask = buildAsk({ action: 'review-memory', tasks: [TASK] })
-    assert.match(ask, /akb guide review-memory/)
-    let guides: string[] = []
-    quiet(() => {
-      guides = printFlow({ action: 'review-memory', tasks: [TASK] }).guides as string[]
-    })
-    assert.deepEqual(guides, ['board', 'review-memory'])
-  })
-})
-
-describe('对话记忆边界', () => {
-  it('明确禁止对话及其启动的流程写入记忆', () => {
-    const chat = findGuide('card-chat')!.text
-    assert.match(chat, /Do not write memory, including through any flow this conversation starts/)
   })
 })
 

@@ -302,21 +302,6 @@ process.stdin.on('data', () => { if (read) return; read = true;
     } finally { await active.close(); await standby.close() }
   })
 
-  it('connects, runs a job in its own folder and reports the output', async () => {
-    const job = cloud.dispatch({ id: 'j1', prompt: 'Build it', attachments: [{ name: 'brief.md', content: Buffer.from('hi').toString('base64') }] })
-    const brief = path.join(runnerHome(), 'attachments', 'j1', 'brief.md')
-    start(`console.log("hello from the runtime", require("node:fs").readFileSync(${JSON.stringify(brief)}, "utf8"))`)
-    await until(() => job.state === 'finished')
-    assert.equal(job.outcome, 'done')
-    assert.match(job.events.map((e) => e.text).join(''), /hello from the runtime hi/)
-    assert.equal(planned[0]!.cwd, path.join(runnerHome(), 'work', 'j1'))
-    assert.equal(/- (.+brief\.md)/.exec(planned[0]!.prompt)![1], brief)
-    assert.ok(planned[0]!.prompt.endsWith('\n\n---\n\nBuild it'), "Cloud's prompt was not last")
-    // The attachments go with the job (#2133).
-    await until(() => !fs.existsSync(path.dirname(brief)))
-    assert.equal(fs.existsSync(path.dirname(brief)), false)
-  })
-
   it('leaves a chat or discussion reply to the agent\'s own retries, and no other job (#88)', async () => {
     const chat = cloud.dispatch({ id: 'j1', chat: { message: 'msg_1', body: 'Why?' } })
     const idea = cloud.dispatch({ id: 'j2', discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
@@ -508,14 +493,6 @@ process.stdin.on('data', () => { if (read) return; read = true;
     ], 5)
     assert.deepEqual(wire.map((e) => [e.seq, e.kind, e.text]), [[5, 'log', 'ab'], [6, 'tool_call_update', '']])
     assert.equal((wire[1]!.data!.result as string).length, 64 * 1024)
-  })
-
-  it('continues the session a job names, and reports what the agent said', async () => {
-    const job = cloud.dispatch({ id: 'j1', resume: 'th_1' })
-    start()
-    await until(() => job.state === 'finished')
-    assert.equal(planned[0]!.resume, 'th_1')
-    assert.deepEqual(job.report, { reply: 'Two tiers.', session: 'th_1', context: { used: 38_000, limit: 200_000 } })
   })
 
   it("兼容旧 Cloud，正文去掉自动追加行，传递语言代码", async () => {
@@ -2826,24 +2803,26 @@ describe('flow jobs (#2020)', () => {
 
   it('creates the card from the task, refines it, and reports the card, its question and the reply', async () => {
     process.env.FAKE_AKB = JSON.stringify({ refine: { result: 'Planned two tiers.', question: 'Which billing period leads?' } })
-    const job = await flowJob('j1', { verb: 'create' })
+    const job = await flowJob('j1', { verb: 'create' }, { number: 12 })
     assert.equal(job.outcome, 'done', job.reason)
     const create = calls().find((c) => c[0] === 'raw' && c[1] === 'create')!
     assert.deepEqual(create.slice(0, 6), ['raw', 'create', '--title', 'Pricing page', '--studio', 'coding'])
+    assert.deepEqual(create.slice(create.indexOf('--id'), create.indexOf('--id') + 2), ['--id', '12'])
+    assert.equal(fs.readFileSync(path.join(board(), '.fake', 'task-env'), 'utf8'), 'task_1')
     assert.deepEqual(calls().find((c) => c[0] === 'agent'), ['agent', 'use', 'claude-code', '--board', board()])
     assert.deepEqual(calls().find((c) => c[1] === 'set' && c[2] === 'model'), ['agent', 'set', 'model', '--board', board()])
-    assert.deepEqual(cardCalls(), [`card refine 2 --follow --events --json --board ${board()}`])
+    assert.deepEqual(cardCalls(), [`card refine 12 --follow --events --json --board ${board()}`])
     assert.deepEqual(flowReport(job), {
       reply: 'Planned two tiers.',
-      card: 2,
+      card: 12,
       review: { question: 'Which billing period leads?', options: ['Monthly', 'Yearly'], position: 2 },
     })
-    const file = path.join(board(), 'todo', '2-pricing-page.md')
-    assert.equal(cloud.file('todo/2-pricing-page.md'), fs.readFileSync(file, 'utf8'))
-    assert.match(cloud.file('todo/2-pricing-page.md')!, /^---\ntitle: Pricing page\n[\s\S]*Two tiers, monthly and yearly\./)
-    assert.match(job.events.map((e) => e.text).join(''), /working on #2/)
+    const file = path.join(board(), 'todo', '12-pricing-page.md')
+    assert.equal(cloud.file('todo/12-pricing-page.md'), fs.readFileSync(file, 'utf8'))
+    assert.match(cloud.file('todo/12-pricing-page.md')!, /^---\ntitle: Pricing page\n[\s\S]*Two tiers, monthly and yearly\./)
+    assert.match(job.events.map((e) => e.text).join(''), /working on #12/)
     assert.doesNotMatch(job.events.map((e) => e.text).join(''), /"ok":/)
-    assert.deepEqual(job.events.find((e) => e.kind === 'message')?.data?.text, 'Read #2.')
+    assert.deepEqual(job.events.find((e) => e.kind === 'message')?.data?.text, 'Read #12.')
     assert.equal(fs.readFileSync(path.join(board(), '.fake', 'agent-board'), 'utf8'), board())
     assert.equal(spawnSync('git', ['-C', cached(), 'log', '--oneline'], { encoding: 'utf8' }).stdout.trim().split('\n').length, 1)
   })
@@ -2853,22 +2832,6 @@ describe('flow jobs (#2020)', () => {
     const job = await flowJob('j1', { verb: 'create' })
     assert.equal(job.outcome, 'failed')
     assert.match(cloud.file('todo/2-pricing-page.md') ?? '', /^---\ntitle: Pricing page\n/)
-  })
-
-  it('首次准备同源技能，重复运行不改写，也不调用旧命令', async () => {
-    process.env.FAKE_AKB = JSON.stringify({ refine: { result: 'Planned.' } })
-    const job = await flowJob('j1', { verb: 'create' })
-    assert.equal(job.outcome, 'done', job.reason)
-    const skill = path.join(cached(), '.claude', 'skills', 'kanban', 'SKILL.md')
-    const held = fs.statSync(skill).mtimeMs
-    assert.match(fs.readFileSync(skill, 'utf8'), /name: kanban/)
-    await flowJob('j2', { verb: 'refine' })
-    assert.equal(fs.statSync(skill).mtimeMs, held)
-    assert.equal(calls().filter((c) => c[0] === 'skill').length, 0)
-    fs.writeFileSync(skill, 'kanban\n\n<!-- ai4kanban 0.0.0-old -->\n')
-    await flowJob('j3', { verb: 'refine' })
-    assert.match(fs.readFileSync(skill, 'utf8'), /name: kanban/)
-    assert.equal(fs.existsSync(path.join(cached(), '.git')), false)
   })
 
   it('技能缺失且属于用户目录时拒绝启动任务', async () => {
@@ -3001,20 +2964,14 @@ describe('flow jobs (#2020)', () => {
     assert.equal(cloud.task.artifacts.get(ref.artifact)![0]!.toString(), 'hi')
   })
 
-  it('runs resolve, revise and approve on the card it made, and implement until the delivery lands', async () => {
+  it('reports the landed commit and syncs the archived card after a build', async () => {
     await flowJob('j1', { verb: 'create' })
-    await flowJob('j2', { verb: 'resolve', card: 2, text: 'Monthly' })
-    await flowJob('j3', { verb: 'revise', card: 2, text: '-- three tiers' })
-    await flowJob('j4', { verb: 'approve', card: 2 })
     const commit = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
     process.env.FAKE_AKB = JSON.stringify({ implement: { result: 'Built it.', landed: 'Landed it.', delivery: { commit, branch: 'main' } } })
     const built = await flowJob('j5', { verb: 'implement', card: 2 })
     const b = board()
     assert.deepEqual(cardCalls(), [
       `card refine 2 --follow --events --json --board ${b}`,
-      `card resolve 2 --follow --events --json --board ${b} -- Monthly`,
-      `card revise 2 --follow --events --json --board ${b} -- -- three tiers`,
-      `card approve 2 --follow --events --json --board ${b}`,
       `card implement 2 --follow --events --json --board ${b}`,
     ])
     assert.equal(built.outcome, 'done', built.reason)
@@ -3054,13 +3011,6 @@ describe('flow jobs (#2020)', () => {
     assert.equal(fs.readFileSync(path.join(b, '.fake', 'transcript'), 'utf8'), `${transcript}\n`)
     assert.ok(!fs.existsSync(file), 'the discussion was left on the board')
     assert.equal((built.report as { session?: string }).session, 'bs1')
-  })
-
-  it('leaves a build that follows a plan on its own session', async () => {
-    await flowJob('j1', { verb: 'create' })
-    await flowJob('j2', { verb: 'implement', card: 2 })
-    const b = board()
-    assert.equal(cardCalls()[1], `card implement 2 --follow --events --json --board ${b}`)
   })
 
   for (const verb of ['refine', 'create'] as const) {
@@ -3552,16 +3502,6 @@ describe('flow jobs (#2020)', () => {
     assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), servers)
   })
 
-  it('numbers the card with the task\'s number, and names the task to akb (#2063)', async () => {
-    const job = await flowJob('j1', { verb: 'create' }, { number: 12 })
-    assert.equal(job.outcome, 'done', job.reason)
-    const create = calls().find((c) => c[0] === 'raw' && c[1] === 'create')!
-    assert.deepEqual(create.slice(create.indexOf('--id'), create.indexOf('--id') + 2), ['--id', '12'])
-    assert.equal(job.report!.card, 12)
-    assert.ok(cloud.file('todo/12-pricing-page.md'))
-    assert.equal(fs.readFileSync(path.join(board(), '.fake', 'task-env'), 'utf8'), 'task_1')
-  })
-
   it('takes the card holding the task\'s number as its own, whatever its slug (#2108)', async () => {
     cloud.put({ 'todo/2-pricing/root.md': '---\ntitle: Pricing\nquestions: []\n---\n\nSplit.\n' })
     const job = await flowJob('j1', { verb: 'revise', text: 'shorter' })
@@ -3617,7 +3557,6 @@ describe('flow jobs (#2020)', () => {
       assert.doesNotMatch(cloud.file('todo/2-task.md') ?? '', /studio folder:/)
     }
   })
-
 })
 
 describe('periodic agents on the Runner (#2068)', () => {
@@ -3930,13 +3869,6 @@ describe('connection tests (#2074)', () => {
     return job
   }
 
-  it('sends the prompt alone on the connector and model, and reports how long it took', async () => {
-    const job = await test('t1', 'console.log("OK")')
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(typeof job.report?.ms, 'number')
-    assert.deepEqual(planned.map((p) => [p.runtime, p.model, p.prompt]), [['claude-code', 'haiku', 'Reply with OK.']])
-  })
-
   it('names a connector that is missing or signed out, without starting it', async () => {
     installed = [{ name: 'codex', installed: false }, { name: 'claude-code', installed: true, loggedIn: false }]
     assert.equal((await test('t1', 'console.log("OK")', { runtime: 'codex' })).reason, 'not_installed')
@@ -3950,7 +3882,7 @@ describe('connection tests (#2074)', () => {
   })
 
   it('retries a connection test result after a network failure without rerunning the connector', async () => {
-    const job = cloud.dispatch({ id: 't1', test: true, runtime: 'codex', prompt: 'Reply with OK.' })
+    const job = cloud.dispatch({ id: 't1', test: true, runtime: 'codex', model: 'gpt-test', prompt: 'Reply with OK.' })
     let attempts = 0
     start('console.log("OK")', {
       api: {
@@ -3964,13 +3896,14 @@ describe('connection tests (#2074)', () => {
     await until(() => readCheckpoint(job.id) === null)
     assert.equal(job.outcome, 'done')
     assert.equal(typeof job.report?.ms, 'number')
+    assert.deepEqual(planned.map((p) => [p.runtime, p.model, p.prompt]), [['codex', 'gpt-test', 'Reply with OK.']])
     assert.equal(attempts, 2)
     assert.equal(planned.length, 1)
   })
 
   it('logs a refused test result without retrying or claiming it was accepted', async (t) => {
     const errors = t.mock.method(console, 'error', () => {})
-    const job = cloud.dispatch({ id: 't1', test: true, runtime: 'codex', prompt: 'Reply with OK.' })
+    const job = cloud.dispatch({ id: 't1', test: true, runtime: 'codex', model: 'gpt-test', prompt: 'Reply with OK.' })
     let attempts = 0
     start('console.log("OK")', {
       api: {

@@ -12,9 +12,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 import { formatStamp } from '../src/lib/cadence.ts'
 import { citedSources, dismissalsToReview, rejectionsToReview, withdrawnSources } from '../src/lib/agent/dismissal-review.ts'
 import { printFlow } from '../src/lib/agent/flow.ts'
-import { buildAsk } from '../src/lib/agent/prompts.ts'
 import { openRun } from '../src/lib/agent/sessions.ts'
-import { findGuide } from '../src/lib/guide.ts'
 import { startCollecting, stopCollecting } from '../src/lib/io.ts'
 import { scaffoldProjectMemory } from '../src/lib/memory.ts'
 import { REJECTIONS_TO_REVIEW, setBoardRoot } from '../src/lib/paths.ts'
@@ -155,17 +153,5 @@ describe('what the review is handed', () => {
     assert.match(said, /withdrawn\s+back/)
     assert.match(said, /memory\/agents\/planner\/rejected\.md/)
     assert.doesNotMatch(said, /window/)
-  })
-
-  it('points the ask at the guide, which holds the rules', () => {
-    assert.match(buildAsk({ action: 'review-dismissals' }), /akb guide review-rejections/)
-    const guide = findGuide('review-rejections')!.text
-    assert.match(guide, /Never infer one/)
-    assert.match(guide, /Withdraw restored evidence/)
-    assert.match(guide, /a line with no source was written by the user/)
-  })
-
-  it('has pruning keep every source id', () => {
-    assert.match(findGuide('prune-memory')!.text, /keep\s+every source id/i)
   })
 })

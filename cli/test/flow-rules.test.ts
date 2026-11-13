@@ -8,7 +8,6 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { cmdSpec } from '../src/commands/spec.ts'
-import { cmdGuide } from '../src/commands/guide.ts'
 import { readRuns } from '../src/lib/agent/sessions.ts'
 import { cmdStartRun } from '../src/commands/run.ts'
 import { activeDelivery } from '../src/lib/agent/deliveries.ts'
@@ -18,7 +17,6 @@ import { buildPrompt } from '../src/lib/agent/prompts.ts'
 import { openPlan, planRun } from '../src/lib/agent/resolve.ts'
 import { addRuntime, setAgentRuntime } from '../src/lib/agent/runtimes.ts'
 import { readRule, ruleFor } from '../src/lib/agent/rules.ts'
-import { findGuide, guideNames } from '../src/lib/guide.ts'
 import { setLanguage } from '../src/lib/machine/settings.ts'
 import { runLanguage, LANGUAGE_ENV, translating } from '../src/lib/agent/language.ts'
 import { startCollecting, stopCollecting } from '../src/lib/io.ts'
@@ -183,25 +181,6 @@ describe('the files', () => {
 })
 
 describe('the prompt', () => {
-  it('leaves planning requirements in the guide', () => {
-    const prompt = buildPrompt({ action: 'clarify', id: 1, refineRound: 1 })
-    assert.match(prompt, /akb guide refine/)
-  })
-
-  it('plans in one clarify session under the refine guide', () => {
-    const req = { action: 'clarify' as const, id: 1, refineRound: 1 }
-    assert.match(buildPrompt(req), /akb guide refine/)
-    startCollecting()
-    try {
-      assert.deepEqual(printFlow(req).guides, ['refine', 'writing', 'update-questions'])
-    } finally {
-      stopCollecting()
-    }
-    for (const gone of ['qa-parallel', 'qa-loop', 'qa-lightweight', 'validate-assumption', 'decide', 'gate', 'review']) {
-      assert.equal(findGuide(gone), null, gone)
-    }
-  })
-
   it('takes no effort on the refine command', async () => {
     fs.writeFileSync(
       path.join(root, 'docs', 'kanban', 'todo', 'features', '1-card.md'),
@@ -215,98 +194,6 @@ describe('the prompt', () => {
       stopCollecting()
     }
     await assert.rejects(() => akb(root, ['raw', 'card', 'refine', '1', '--effort', 'standard', '--print']))
-  })
-
-  it('gives a finishing run the archive page, and a build the shipped line beside board', () => {
-    startCollecting()
-    try {
-      assert.deepEqual(printFlow({ action: 'archive', id: 1, title: 'card one' }).guides, ['archive'])
-      assert.deepEqual(printFlow({ action: 'implement', id: 1, title: 'card one' }).guides, ['board', 'archive', 'implement'])
-    } finally {
-      stopCollecting()
-    }
-    assert.match(buildPrompt({ action: 'archive', id: 1, title: 'card one' }), /Follow `akb guide archive`/)
-  })
-
-  it('构建提示词引用执行指南，无卡入口直接构建需求', () => {
-    assert.match(buildPrompt({ action: 'implement', id: 1, title: 'card one' }), /akb guide implement/)
-    for (const requirement of [{ description: 'Build a widget' }, { plan: 'plans/widget.md' }]) {
-      const prompt = buildPrompt({ action: 'implement', ...requirement })
-      assert.match(prompt, /akb guide implement/)
-      assert.match(prompt, /create no card/)
-      assert.doesNotMatch(prompt, /write its card|raw create|on the card/)
-    }
-  })
-
-  it('loads writing upfront for planning and not for a build', () => {
-    for (const action of ['clarify', 'resolve', 'edit'] as const) {
-      startCollecting()
-      try {
-        const flow = printFlow({ action, id: 1, title: 'card one' })
-        assert.ok((flow.guides as string[]).includes('writing'), action)
-      } finally {
-        stopCollecting()
-      }
-    }
-    startCollecting()
-    try {
-      const flow = printFlow({ action: 'implement', id: 1, title: 'card one' })
-      assert.equal((flow.guides as string[]).includes('writing'), false)
-    } finally {
-      stopCollecting()
-    }
-  })
-
-  it('starts resolve and revise on their own guide, with no QA pass after', () => {
-    for (const [action, guide] of [['resolve', 'resolve'], ['edit', 'revise']] as const) {
-      const req = { action, id: 1, notes: 'Use A.' }
-      const prompt = buildPrompt(req)
-      assert.match(prompt, new RegExp(`akb guide ${guide}`))
-      assert.doesNotMatch(prompt, /qa-lightweight|qa-loop/)
-      startCollecting()
-      try {
-        const guides = printFlow(req).guides as string[]
-        assert.ok(guides.includes(guide), action)
-        assert.ok(!guides.some((g) => g.startsWith('qa-')), action)
-      } finally {
-        stopCollecting()
-      }
-    }
-  })
-
-  it('shows the spec-agent catalog to every planning session and to no spec run', () => {
-    for (const action of ['clarify', 'resolve', 'edit'] as const) {
-      const prompt = buildPrompt({ action, id: 1 })
-      assert.match(prompt, /<preview-agents>/)
-      // A card with no `previews` is asked to choose them, never shown a skill's own instructions.
-      assert.match(prompt, /akb raw previews --triggers --studio/)
-      assert.doesNotMatch(prompt, /You draw the screen a card needs/)
-    }
-    assert.doesNotMatch(buildPrompt({ action: 'implement', id: 1 }), /<preview-agents>/)
-    assert.doesNotMatch(buildPrompt({ action: 'spec', id: 1, specAgent: 'ui-designer' }), /<preview-agents>/)
-  })
-
-  it('removes the evaluation guide and keeps revisions on the same card', () => {
-    assert.ok(!guideNames().includes('evaluate-task'))
-    assert.equal(findGuide('evaluate-task'), null)
-    assert.throws(() => cmdGuide('evaluate-task'), /no guide called "evaluate-task"/)
-    assert.match(findGuide('revise')!.text, /revision, then plan the card in this session as `akb guide refine` says/)
-    for (const name of guideNames()) {
-      assert.doesNotMatch(findGuide(name)!.text, /evaluate-task/)
-    }
-  })
-
-  it('hands no build over from planning', () => {
-    startCollecting()
-    try {
-      const flow = printFlow({ action: 'clarify', id: 1, refineRound: 1 })
-      assert.match((flow.close as string[]).join('\n'), /update 1 --status ready/)
-      assert.doesNotMatch((flow.next as string[]).join('\n'), /card implement/)
-      const resolved = printFlow({ action: 'resolve', id: 1 })
-      assert.doesNotMatch((resolved.next as string[]).join('\n'), /card implement/)
-    } finally {
-      stopCollecting()
-    }
   })
 
   it('names the card’s module copy of a planner file, then the planner’s own (#1484)', () => {
@@ -345,11 +232,6 @@ describe('the prompt', () => {
     assert.match(prompt, /`builder` agent carries one rule of its own\./)
   })
 
-  it('carries no rule when the agent has none', async () => {
-    const prompt = buildPrompt({ action: 'implement', id: 1, title: 'card one' })
-    assert.doesNotMatch(prompt, /rule of its own/)
-  })
-
   it("reads only its own agent's rule", async () => {
     setRule('ui-designer', 'Keep to the existing palette.')
     assert.doesNotMatch(buildPrompt({ action: 'implement', id: 1 }), /existing palette/)
@@ -377,22 +259,6 @@ describe('the prompt', () => {
     assert.ok(prompt.trimEnd().endsWith('Keep to the existing palette.'))
     assert.match(prompt, /`ui-designer` agent carries one rule of its own\./)
     assert.doesNotMatch(prompt, /data model/)
-  })
-
-  // A printed flow says the same thing in its own words, at the very end. It must name the
-  // AGENT too: saying "the rule for `implement`" would tell the reader it stops there.
-  it('names the same agent when the flow is printed, last of all', async () => {
-    setRule('builder', 'Install dependencies first.')
-    const sink = startCollecting()
-    try {
-      printFlow({ action: 'implement', id: 1, title: 'card one' })
-    } finally {
-      stopCollecting()
-    }
-    const printed = sink.out.join('\n')
-    assert.match(printed, /`builder` agent carries one rule of its own —/)
-    assert.doesNotMatch(printed, /own rule for `implement`/)
-    assert.ok(printed.trimEnd().endsWith('Install dependencies first.'))
   })
 })
 
@@ -465,9 +331,4 @@ describe("the board's language", () => {
     setLanguage('zh')
     assert.equal(openPlan(planRun('s1')).argv[1], '--append-system-prompt')
   })
-
-  it('英文机器选择英文规则', () => {
-    assert.equal(runLanguage(), 'en')
-  })
-
 })

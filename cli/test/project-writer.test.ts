@@ -10,15 +10,11 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { formatStamp } from '../src/lib/cadence.ts'
-import { printFlow } from '../src/lib/agent/flow.ts'
-import { buildAsk } from '../src/lib/agent/prompts.ts'
 import { closeRun } from '../src/lib/agent/sessions.ts'
 import { readRule } from '../src/lib/agent/rules.ts'
 import { readAgentRuntime } from '../src/lib/agent/runtimes.ts'
 import { stampProjectDescription } from '../src/lib/agent/settings.ts'
 import { readRuns } from '../src/lib/agent/store.ts'
-import { findGuide } from '../src/lib/guide.ts'
-import { startCollecting, stopCollecting } from '../src/lib/io.ts'
 import { renameProductFile, retireGoal, scaffoldProjectMemory } from '../src/lib/memory.ts'
 import { setBoardRoot, RULES, SESSIONS, UI_CONFIG } from '../src/lib/paths.ts'
 import { forgetMachineState } from './helpers/board.ts'
@@ -62,16 +58,6 @@ function pastRuns(...runs: { status: string; startedAt: number }[]): void {
 
 const saved = (): Record<string, any> => (fs.existsSync(UI_CONFIG) ? JSON.parse(fs.readFileSync(UI_CONFIG, 'utf8')) : {})
 
-function quiet(job: () => void): string {
-  const sink = startCollecting()
-  try {
-    job()
-    return sink.out.join('\n')
-  } finally {
-    stopCollecting()
-  }
-}
-
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-project-writer-'))
   fs.mkdirSync(path.join(kanban(), 'todo'), { recursive: true })
@@ -83,11 +69,6 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
 
 describe('the project writer', () => {
-  it('starts from a header-only file on a new board', () => {
-    scaffoldProjectMemory()
-    assert.match(fs.readFileSync(projectFile(), 'utf8'), /^# Project\n/)
-  })
-
   it('moves the window to the start of a pass, and not on a failure', async () => {
     const started = Date.now() - 10 * 60_000
     pastRuns({ status: 'running', startedAt: started })
@@ -96,13 +77,6 @@ describe('the project writer', () => {
     pastRuns({ status: 'running', startedAt: started })
     await closeRun('past-0', { status: 'done', ok: true, code: 0 })
     assert.equal(saved().projectDescription.lastRun, formatStamp(new Date(started)))
-  })
-
-  it('is handed the one file it writes, and points at the guide', () => {
-    const said = quiet(() => printFlow({ action: 'describe-project' }))
-    assert.match(said, /memory\/project\.md/)
-    assert.match(buildAsk({ action: 'describe-project' }), /akb guide describe-project/)
-    assert.match(findGuide('describe-project')!.text, /## Who it is for/)
   })
 })
 

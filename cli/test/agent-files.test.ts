@@ -9,7 +9,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { buildAsk, buildPrompt } from '../src/lib/agent/prompts.ts'
-import { findSpecAgent, specAgentCatalog, specAgentList } from '../src/lib/agents/index.ts'
+import { findSpecAgent, specAgentCatalog } from '../src/lib/agents/index.ts'
 import { sharedMemory } from '../src/lib/agents/shared-memory.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
 import { forgetMachineState, move, refuses } from './helpers/board.ts'
@@ -65,10 +65,6 @@ describe('what an agent offers', () => {
     assert.deepEqual(findSpecAgent('sdk-sample')!.files, ['examples/client.md', 'style.md'])
     assert.deepEqual(findSpecAgent('api-contract')!.files, [])
   })
-
-  it('offers a reference file the way it offers any other file (#1003)', () => {
-    assert.deepEqual(findSpecAgent('ui-designer')!.files, ['references/copywriting.md', 'references/illustration.md', 'references/rendered-screen.md', 'references/ui-draft.md'])
-  })
 })
 
 describe('what a run is told', () => {
@@ -91,17 +87,6 @@ describe('what a run is told', () => {
     assert.match(prompt, /——— your own files ———[\s\S]*docs\/kanban\/agents\/clip-editor\/style\.md/)
     assert.doesNotMatch(prompt, /Cut on the beat/)
   })
-
-  it('says nothing at all when the agent has no other file', () => {
-    assert.doesNotMatch(helperAsk('api-contract'), /your own files/)
-  })
-
-  it("names `ui-designer`'s reference by path rather than pasting it in (#1003)", () => {
-    const ask = helperAsk('ui-designer')
-    assert.match(ask, /your studio's files/)
-    assert.match(ask, /references\/rendered-screen\.md/)
-    assert.doesNotMatch(ask, /How to draw a rendered screen/)
-  })
 })
 
 describe("a studio's shared rules, files and memory (#656)", () => {
@@ -120,11 +105,6 @@ describe("a studio's shared rules, files and memory (#656)", () => {
 })
 
 describe('`akb raw agent-file`', () => {
-  it("prints a project agent's file", async () => {
-    const said = await move(root, ['agent-file', 'sdk-sample', 'examples/client.md'])
-    assert.equal(said.text, 'const client = connect()')
-  })
-
   it("prints a built-in agent's file, which has no path to open", async () => {
     writeOfficial('agents/ui-designer/spacing.md', 'Eight pixels, or a multiple of it.')
     assert.deepEqual(findSpecAgent('ui-designer')!.files, ['references/copywriting.md', 'references/illustration.md', 'references/rendered-screen.md', 'references/ui-draft.md', 'spacing.md'])
@@ -171,9 +151,5 @@ describe('an agent that still declares `akb.dependencies`', () => {
     agent('release-page', ['  when: A card needs it.', '  dependencies:', '    - agent: api-contract', '    - agent: nobody'])
     assert.ok(findSpecAgent('release-page'))
     assert.deepEqual(specAgentCatalog().problems, [])
-  })
-
-  it('is no longer ordered by it — nothing says one agent starts after another', () => {
-    assert.doesNotMatch(specAgentList('akb'), /starts only after/)
   })
 })

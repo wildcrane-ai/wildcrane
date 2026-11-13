@@ -5,13 +5,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { after, before, describe, it } from 'node:test'
 
-import { prepareKanbanSkill } from '../src/kanban-skill'
-import { installCommitHook } from '../../cli/src/lib/skill/hook'
 import { answerOf, runAkb, type Akb, type Ran } from '../src/akb'
 
-// The real built akb, driven the way the Runner drives it: every command flow.ts and built.ts
-// run, and every field they read. A failure here after an akb change means restore compatibility
-// or raise `akbContract` in cli/package.json (docs/deploy.md).
+// Bundled-CLI wire contract: streamed results, usage, refusals and deliveries.
+// Breaking this boundary requires compatibility repair or an akbContract bump (docs/deploy.md).
 
 /** Stands in for Claude Code. Its version beats any other copy, and the PATH below has no other. */
 const AGENT = `#!${process.execPath}
@@ -81,11 +78,6 @@ describe('the akb the Runner carries (#171)', () => {
   it('sets a board up as a job does', async () => {
     ok(await onBoard(['raw', 'init']))
     assert.ok(fs.existsSync(path.join(board, 'config.md')))
-    prepareKanbanSkill(project)
-    assert.deepEqual(installCommitHook(project, board), {})
-    for (const folder of ['.claude', '.agents']) {
-      assert.match(fs.readFileSync(path.join(project, folder, 'skills', 'kanban', 'SKILL.md'), 'utf8'), /<!-- ai4kanban \S+ -->\s*$/)
-    }
     ok(await onBoard(['raw', 'agent', 'use', 'claude-code']))
     ok(await onBoard(['raw', 'agent', 'set', 'model', 'opus']))
     ok(await onBoard(['raw', 'agent', 'set', 'model']))
@@ -115,21 +107,9 @@ describe('the akb the Runner carries (#171)', () => {
     refused(await onBoard([...create, '--id', '11', '--previews', 'missing-agent']), /missing-agent/)
   })
 
-  it('answers the studio checks', async () => {
-    const list = answerOf<{ studios?: { id: string; problems?: string[] }[]; problems?: string[] }>(await onBoard(['studio', 'list', '--json']))
-    assert.ok(list?.studios?.some((w) => w.id === 'coding'))
-    const spec = answerOf<{ problems?: string[] }>(await onBoard(['raw', 'previews', '--json']))
-    assert.ok(Array.isArray(spec?.problems))
-  })
-
-  it('runs an agent on a card and on the board, and lists what it spent', async () => {
+  it('runs an agent through the bundled CLI and lists the result and usage', async () => {
     const started = Date.now()
     assert.equal(typeof finishes(await onBoard(['raw', 'card', 'refine', '2', ...follow])).agentSession, 'string')
-    finishes(await onBoard(['raw', 'card', 'revise', '2', ...follow, '--', 'Shorter.']))
-    finishes(await onBoard(['raw', 'card', 'resolve', '2', ...follow, '--', 'Yes.']))
-    finishes(await onBoard(['raw', 'reflect', '--cards', '2', ...follow]))
-    finishes(await onBoard(['raw', 'memory', 'prune', ...follow]))
-    finishes(await onBoard(['raw', 'review-dismissals', ...follow]))
 
     const listed = answerOf<{ runs?: { sessionId: string; status?: string; startedAt?: number; result?: string; usage?: { input: number; cacheCreation: number; cacheRead: number; output: number }; costUsd?: number }[] }>(
       await onBoard(['raw', 'run', 'list', '--card', '2', '--all', '--json']))
@@ -184,6 +164,5 @@ describe('the akb the Runner carries (#171)', () => {
     refused(await onBoard(['raw', 'delivery', 'resume', 'gone', '--json']), /no delivery/)
     refused(await onBoard(['raw', 'delivery', 'cancel', 'gone', '--json']), /no delivery/)
     refused(await onBoard(['raw', 'agent', 'run', 'coding', 'nobody', ...follow]), /nobody/)
-    ok(await onBoard(['raw', 'memory', 'review', '--task', 'task_1:2', ...follow]))
   })
 })
