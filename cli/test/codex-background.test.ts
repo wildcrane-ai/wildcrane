@@ -12,7 +12,7 @@ const originalWait = BACKGROUND_WAIT.minutes
 afterEach(() => { BACKGROUND_WAIT.minutes = originalWait })
 const tick = () => new Promise(r => setImmediate(r))
 
-function server(handle: (method: string, params: any) => any, options?: Parameters<typeof createCodexClient>[0]) {
+function server(handle: (method: string, params: any) => any, options?: Parameters<typeof createCodexClient>[0], completed?: () => boolean) {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const calls: { method: string; params: any }[] = []
@@ -33,7 +33,7 @@ function server(handle: (method: string, params: any) => any, options?: Paramete
     }
   })
   const client = createCodexClient(options)
-  const end = client.turn({ stdout, stdin, prompt: 'original task', cwd: '/tmp', log: () => {}, gotResumeId: () => {}, gotModel: () => {}, event: e => events.push(e) })
+  const end = client.turn({ stdout, stdin, prompt: 'original task', cwd: '/tmp', completed, log: () => {}, gotResumeId: () => {}, gotModel: () => {}, event: e => events.push(e) })
   const item = (item: any) => notify('item/completed', { threadId: 'main', turnId: 't1', item })
   const complete = (id = 't1', status = 'completed') => notify('turn/completed', { threadId: 'main', turn: { id, status, items: [] } })
   const reply = (text: string, id: string) => item({ type: 'agentMessage', id, text })
@@ -286,4 +286,19 @@ it('returns a startup failure when the agent closes its input pipe', async () =>
   assert.equal(end.ok, false)
   assert.match(end.error!, /EPIPE/)
   stdout.destroy()
+})
+
+it('ends background waiting after the owning task records completion (#715)', async () => {
+  let completed = false
+  const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : method === 'thread/backgroundTerminals/list' ? { data: [{ itemId: 'preview' }] } : {}, undefined, () => completed)
+  await tick()
+  s.item({ id: 'preview', type: 'commandExecution', status: 'inProgress', command: 'npm run dev' })
+  s.reply('SHIPPED', 'reply'); s.complete()
+  await tick()
+  assert.equal(s.client.background?.(), 1)
+  completed = true
+  const end = await s.end
+  assert.equal(end.ok, true, end.error)
+  assert.equal(end.result, 'SHIPPED')
+  assert.equal(s.calls.filter(c => c.method === 'turn/start').length, 1)
 })

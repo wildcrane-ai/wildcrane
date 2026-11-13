@@ -265,7 +265,7 @@ async function cleanRecords(ws: TaskFolder, base: Base, removed: string[] = [], 
     }
     if (!changed) {
       fs.rmSync(recordFile(folder), { force: true })
-      index.retiring.delete(record.task)
+      forgetTask(index, record.task)
     }
   }
   return retired
@@ -1022,6 +1022,7 @@ async function sendMarked(ws: TaskFolder, job: { id: string | null; machineId: s
 
 interface TaskIndex {
   task: string
+  deleted?: Record_['deleted']
   number: number
   paths: Set<string>
 }
@@ -1059,6 +1060,16 @@ function syncIndex(ws: TaskFolder): SyncIndex | undefined {
   return index
 }
 
+function forgetTask(index: SyncIndex, task: string): void {
+  for (const file of index.tasks.get(task)?.paths ?? []) {
+    const tasks = index.files.get(file)!
+    tasks.delete(task)
+    if (!tasks.size) index.files.delete(file)
+  }
+  index.tasks.delete(task)
+  index.retiring.delete(task)
+}
+
 function indexTask(ws: TaskFolder, record: Record_, card = cardFile(ws)): void {
   if (!ws.cloudTask || !ws.number) return
   const paths = new Set([card, path.join(ws.board, assetsFile(ws.task)), recordFile(ws)])
@@ -1077,7 +1088,7 @@ function indexTask(ws: TaskFolder, record: Record_, card = cardFile(ws)): void {
     tasks.delete(ws.task)
     if (!tasks.size) index.files.delete(file)
   }
-  index.tasks.set(ws.task, { task: ws.task, number: ws.number, paths })
+  index.tasks.set(ws.task, { task: ws.task, number: ws.number, deleted: record.deleted, paths })
   for (const file of paths) {
     const tasks = index.files.get(file) ?? new Set<string>()
     tasks.add(ws.task)
@@ -1109,12 +1120,23 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
   if (selected) for (const task of affectedTasks(ws, selected)) names!.add(task)
   const retired = await cleanRecords(ws, base, [], names ?? undefined)
   if (retired.has(ws.task)) record.deleted = true
-  const tasks = ws.cloudTask ? [{ folder: ws, record }] : (names ? [...names].map(task => `${task}.json`) : filesUnder(path.join(ws.board, '.sync')).filter(name => name.endsWith('.json'))).flatMap(name => {
-    try {
-      const held = JSON.parse(fs.readFileSync(path.join(ws.board, '.sync', name), 'utf8')) as Record_
-      if (!held.task || !TASK_ID.test(held.task) || !held.number) return []
-      return [{ folder: { ...ws, task: held.task, cloudTask: held.task, number: held.number }, record: held }]
-    } catch { return [] }
+  const records = ws.cloudTask ? [] : names ? [...names].map(task => `${task}.json`) : [...new Set([
+    ...filesUnder(path.join(ws.board, '.sync')).filter(name => name.endsWith('.json')),
+    ...[...(syncIndex(ws)?.tasks.keys() ?? [])].map(task => `${task}.json`),
+  ])]
+  const tasks = ws.cloudTask ? [{ folder: ws, record }] : records.flatMap(name => {
+    let held: Record_
+    try { held = JSON.parse(fs.readFileSync(path.join(ws.board, '.sync', name), 'utf8')) as Record_ }
+    catch {
+      const known = syncIndex(ws)?.tasks.get(name.replace(/\.json$/, ''))
+      if (!known) return []
+      const before = assetsOf(assetsListOf({ ...ws, task: known.task }, base))
+      held = { task: known.task, number: known.number, deleted: known.deleted ?? (syncIndex(ws)?.retiring.has(known.task) ? true : undefined), assets: Object.fromEntries(Object.entries(before)
+        .map(([name, ref]) => [name, { artifact: ref.artifact, version: ref.version ?? 0, hash: '' }])) }
+      writeRecord({ ...ws, task: known.task }, held)
+    }
+    if (!held.task || !TASK_ID.test(held.task) || !held.number) return []
+    return [{ folder: { ...ws, task: held.task, cloudTask: held.task, number: held.number }, record: held }]
   })
   if (!syncIndex(ws)) taskIndexes.set(ws.cwd, newIndex(ws))
   const boardSync = !job.id && !ws.cloudTask
@@ -1174,7 +1196,7 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
   proposeItems(ws, base, scoped)
 
   const shared = sharedMemory(ws.board)
-  const deferred = new Set((base.deferred ?? []).filter(p => (selected || !boardSync) && !tasks.some(item =>
+  const deferred = new Set((base.deferred ?? []).filter(p => !tasks.some(item =>
     processed.has(item.folder.task) && !deferredCards.has(item.folder.number!) &&
     (p === assetsFile(item.folder.task) || numberOfCard(p) === item.folder.number))))
   const retiredCards = new Set(tasks.filter(item => item.record.deleted).map(item => item.folder.number))

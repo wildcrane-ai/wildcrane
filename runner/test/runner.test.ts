@@ -1671,6 +1671,7 @@ describe('a task’s folder (#2037)', () => {
       assert.match(read(archive), /Unsent draft/)
       assert.equal(cloud.file(archive), null)
       assert.ok(fs.existsSync(path.join(board(), '.sync/task_1.json')))
+      if (i === 0) fs.rmSync(path.join(board(), '.sync/task_1.json'))
     }
   })
 
@@ -1828,10 +1829,11 @@ describe('a task’s folder (#2037)', () => {
     } finally { watch.close() }
   })
 
-  it('retries only pending assets and syncs explicit archive moves and deletes (#712)', async () => {
+  it('recovers a missing record, retries pending assets and syncs archive moves and deletes (#712)', async () => {
     await prepareBoard()
     const ws = keptBoard(cached())!
     assert.ok((await pushBoard(ws, MACHINE)).ok)
+    fs.rmSync(path.join(board(), '.sync/task_1.json'))
     fs.writeFileSync(path.join(board(), 'todo/hero.png'), 'changed attachment')
     fs.appendFileSync(path.join(board(), CARD), '\nPending draft.\n')
     cloud.serviceUnavailableUploads = true

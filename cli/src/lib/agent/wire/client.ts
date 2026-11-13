@@ -28,8 +28,10 @@ export interface ClientTurn {
    *  too, but only to count bytes against the silence window (#394). */
   stdout: Readable
   stdin: Writable
-  /** What to ask the agent to do. */
+  /** The owning task has recorded final completion; background work can be disposed. */
+  completed?: () => boolean
   prepareUntil?: number
+  /** What to ask the agent to do. */
   prompt: string
   /** The folder the work happens in. */
   cwd: string

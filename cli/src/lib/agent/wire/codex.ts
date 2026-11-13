@@ -208,6 +208,7 @@ async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof cr
     if (ended || checking || active) return
     checking = true
     try {
+      if (io.completed?.()) { end(); return }
       for (const key of tasks.running().filter(id => id.startsWith('agent:'))) {
         const id = key.slice(6)
         let thread = obj((await rpc.call('thread/read', { threadId: id, includeTurns: false })).thread)

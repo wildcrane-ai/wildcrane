@@ -30,7 +30,7 @@ import { boardCommand } from './command'
 import { BACKGROUND_WAIT, silenceMinutes } from './settings'
 import { runEnv } from './flow'
 import { spawnable } from './spawnable'
-import { endAgent, killMarked, runMark } from './stop'
+import { endAgent, killMarked, processesStopped, runMark } from './stop'
 import { refineRunsAfter, specRunsAfter } from './follow'
 import { queueCompleted } from './propose'
 import { costLine, durationLine, modelLine, RESULT_MARKER, usageLine } from './log'
@@ -300,12 +300,15 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     child.stdin!.write(stdinPrompt!(prompt))
   }
   // A turn that ends with nothing left in the background is the last one.
+  const completed = () => !!record.deliveryId && findDelivery(record.deliveryId)?.status === 'finished'
+  let finishCompletedTurn = () => {}
   let turnsSeen = 0
   const afterTurn = () => {
     const turns = renderer?.turns?.() ?? []
     if (turns.length === turnsSeen) return
     turnsSeen = turns.length
-    if (renderer && streamFinished(renderer)) endInput()
+    if (completed()) finishCompletedTurn()
+    else if (renderer && streamFinished(renderer)) endInput()
   }
   // Both ids are written into the record the first time the stream names them, and never
   // looked for again — every write takes the record's lock, and a run's output arrives in
@@ -427,6 +430,18 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       if (idle) clearTimeout(idle)
       // Its sub-runs end first, so what they leave is in the folder this close reads.
       await stopSubRuns(sessionId)
+      const taskCompleted = completed()
+      if (taskCompleted) {
+        endChild()
+        const mark = runMark(sessionId, agentStartedAt)
+        const root = child.pid ? { pid: child.pid, since: agentStartedAt } : undefined
+        const until = Date.now() + STOP_GRACE_MS + STOP_CLOSE_MS
+        while (!processesStopped(mark, root) && Date.now() < until) await sleep(100)
+        if (!processesStopped(mark, root)) {
+          spawnError = 'Task completed, but its background processes could not be confirmed stopped.'
+          code = 1
+        }
+      }
       if (renderer) {
         append(renderer.flush())
         drainEvents()
@@ -449,7 +464,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       // Only Claude Code does (agent/wire/stream.ts) — read after the flush above, so the
       // closing event is in. A run that failed this way must not close as done: its card
       // would advance and the refinements behind it would run on work that never happened.
-      let failure = renderer?.failure?.() ?? (renderer?.background?.() ? 'The agent exited with unfinished background tasks.' : undefined)
+      let failure = renderer?.failure?.() ?? (!taskCompleted && renderer?.background?.() ? 'The agent exited with unfinished background tasks.' : undefined)
       const unfinished = blocker || failure
       const result = spoken ? spoken.result : renderer?.result()
 
@@ -719,6 +734,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     // commands it started go with it (#1302, #1499).
     let ending = false
     const endChild = () => {
+      if (ending) return
       ending = true
       try {
         child.stdin?.end()
@@ -727,6 +743,8 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       }
       endAgent(child, runMark(sessionId), STOP_GRACE_MS)
     }
+
+    finishCompletedTurn = () => { endChild(); void finish(0, false) }
 
     // Putting the command down and declaring the run over whether or not its pipes come
     // with it. Both endings take this path: a stop, and the silence window running out.
@@ -820,8 +838,10 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
             gotModel: (model) => gotModel(model),
             event,
             gotContext,
+            completed,
           })
           .then((end) => {
+            if (done) return
             spoken = end
             endChild()
             void finish(end.ok ? 0 : 1, peekRun(sessionId)?.stopping === true || stopped)

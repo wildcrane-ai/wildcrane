@@ -55,6 +55,8 @@ interface Watched {
 }
 
 export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pullMs = PULL_MS, busyMs = BUSY_MS): BoardWatch {
+  // Recursive watchers can deliver one filesystem burst in separate callbacks.
+  ms = Math.max(ms, 200)
   const watched = new Map<string, Watched>()
   const due = new Map<string, ReturnType<typeof setTimeout>>()
   const afterJob = new Set<string>()
