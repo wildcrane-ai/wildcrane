@@ -1,3 +1,4 @@
+import { frozenPreviewFile } from '../lib/agent/preview-progress'
 // `akb raw file <studio> <path>` (#656): one file of a studio, as `akb studio pull` lays it out —
 // `shared/…` or `agents/<name>/…`. In a task's run, the version the task is pinned to.
 
@@ -16,7 +17,8 @@ export function cmdStudioFile(askedStudio: string, askedFile: string): MoveResul
   if (!readable.includes(file) || isAboutFile(file)) {
     die(`${studio} has no ${file}. It has: ${readable.join(', ')}.`, { kind: 'no-such-studio-file', studio, file })
   }
-  const text = files![file]!
+  const own = /^agents\/([^/]+)\/(.+)$/.exec(file)
+  const text = (own ? frozenPreviewFile(own[1]!, own[2]!) : undefined) ?? files![file]!
   say(text)
   return { studio, file, text }
 }

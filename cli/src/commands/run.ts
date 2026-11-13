@@ -1,3 +1,5 @@
+import { confirmLocalPreview, type PreviewConfirmOptions } from './preview-confirm'
+import { previewBlocker } from '../lib/agent/preview-progress'
 import { nextDeliveryRun } from '../lib/agent/progress'
 import { completeDelivery } from '../lib/agent/complete'
 // Starting a run, and everything you do to one afterwards: watch it, list them, stop one,
@@ -78,7 +80,12 @@ export async function cmdStartRun(
   opts: StartOptions,
   program = 'akb',
 ): Promise<MoveResult> {
+  if (action === 'approve' && (opts.preview || opts.previewStage || opts.previewVersion || opts.definitionRevision)) return confirmLocalPreview(Number(args[0]), opts)
   const { req, follow, print } = readRequest(action, args, opts)
+  if (Number.isInteger(req.id) && ['approve', 'implement', 'archive'].includes(action)) {
+    const blocked = previewBlocker(req.id!)
+    if (blocked) die(blocked, { kind: 'preview-unfinished' })
+  }
   if (!print && (action === 'approve' || action === 'implement')) {
     const deferred = await approveAfterReply(String(req.id), req.notes)
     if (deferred) return deferred
@@ -255,7 +262,7 @@ function sayBeforeStart(req: CommandRequest, program: string): void {
 
 /** Every flow's own options, as its command declares them (lib/agent/flows.ts). Each flow
  *  takes a few of these; none takes them all. */
-export interface StartOptions {
+export interface StartOptions extends PreviewConfirmOptions {
   print?: boolean
   follow?: boolean
   /** With `follow`: the events file rather than the log (#2059). */

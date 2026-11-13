@@ -1,3 +1,8 @@
+import { boardCommandFor } from '../lib/agent/command'
+import { resetPreviewScope } from './preview-confirm'
+import { choosePreviewRevision, previewBaseline } from '../lib/preview-stages'
+import { PREVIEW_BRIDGE_ENV, previewBridge } from '../lib/cloud/preview'
+import { freezePreviewProgress, previewRun, selectLocalPreview, submitLocalPreview, previewStagePrompt, updatePreviewProgress, savePreviewBaseline, readPreviewBaseline } from '../lib/agent/preview-progress'
 // Print specialist instructions here, or request a separate run.
 
 import { insideRun, printFlow } from '../lib/agent/flow'
@@ -31,6 +36,13 @@ export interface SpecOptions {
   notes?: string
   follow?: boolean
   print?: boolean
+  stages?: string
+  resetStages?: boolean
+  reviseFrom?: string
+  submit?: boolean
+  stage?: string
+  continue?: boolean
+  events?: boolean
   triggers?: boolean
   studio?: string
   workspace?: string
@@ -62,6 +74,9 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
     return { agents: specAgentNamesOnBoard(), problems: specAgentProblems() }
   }
 
+  if ([opts.submit, opts.stages !== undefined, opts.reviseFrom, opts.resetStages].filter(Boolean).length > 1) die('Choose one stage operation.', { kind: 'invalid-usage' })
+  if ((opts.submit && !opts.stage) || (opts.stage && !opts.submit) || (opts.stages !== undefined && opts.submit)) die('Use --stages <ids> or --submit --stage <id>.', { kind: 'invalid-usage' })
+
   const askedName = opts.agent.trim()
   const agent = findSpecAgent(askedName)
   if (!agent) die(notAnAgent(askedName), { kind: 'no-such-spec-agent', specAgent: askedName })
@@ -72,6 +87,32 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
     die(`say which card: ${program} raw previews ${name} <id> [note]`, { kind: 'needs-input' })
   }
   if (!locate(id)) die(`no task with id ${id} under ${rel(TODO)}`, { kind: 'card-not-found', id })
+
+  if (opts.stages !== undefined || opts.submit || opts.reviseFrom) {
+    try {
+      const run = previewRun(id, name)
+      const ids = opts.stages?.split(',').map((id) => id.trim())
+      const result = await previewBridge(name, ids ? 'select' : opts.reviseFrom ? 'revise' : 'submit', { run: run.sessionId, ...(ids ? { stages: ids } : opts.reviseFrom ? { stageId: opts.reviseFrom } : { baseline: readPreviewBaseline(run.sessionId), stageId: opts.stage }) })
+      if (result?.progress) {
+        updatePreviewProgress(id, (all) => { all[name] = result.progress! })
+        if (result.baseline) savePreviewBaseline(run.sessionId, result.baseline)
+      } else if (opts.reviseFrom) {
+        updatePreviewProgress(id, (all) => {
+          const progress = all[name]!
+          choosePreviewRevision(progress, opts.reviseFrom!, run.sessionId)
+          savePreviewBaseline(run.sessionId, previewBaseline(progress, opts.reviseFrom!, run.sessionId))
+        })
+      } else if (ids) {
+        const selected = selectLocalPreview(id, name, ids)
+        savePreviewBaseline(run.sessionId, selected.baseline)
+      } else submitLocalPreview(id, name, opts.stage!, readPreviewBaseline(run.sessionId))
+      if (ids || opts.reviseFrom) say(previewStagePrompt(id, name, boardCommandFor(id)))
+      else say('Preview stage submitted. Stop here; the program controls confirmation and continuation.')
+      return { specAgent: name, cardId: id, submitted: !!opts.submit }
+    } catch (error) { die(error instanceof Error ? error.message : 'Preview submission failed.', { kind: 'preview-refused' }) }
+  }
+
+  if (opts.resetStages) return resetPreviewScope(id, name, opts.notes ?? opts.note?.join(' '))
 
   // Off, or in another studio (#749): refused, with what to do instead.
   if (!specAgentAssigned(name, cardStudioId(id))) {
@@ -85,6 +126,7 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
   const req: AgentRequest = { action: 'spec', id, title: titleOf(id), specAgent: name, notes }
 
   const inside = insideRun()
+  if (!inside && process.env[PREVIEW_BRIDGE_ENV]) opts.follow = true
   if (inside && readRuns().find((r) => r.sessionId === inside)?.action === 'spec') {
     die(
       'a preview agent does not ask for another preview agent — answer the part you own and leave the rest of the card to the session planning it.',
@@ -107,7 +149,7 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
   // that asks for a session of its own (#2152).
   const caller = inside ? readRuns().find((r) => r.sessionId === inside)?.runtime : undefined
   const ownRuntime = opts.print === true && !!caller && caller !== agentHarness(name).runtime
-  const ownSession = opts.print === true && agent.session === 'new'
+  const ownSession = opts.print === true && (agent.session === 'new' || !!freezePreviewProgress(id, name))
   const print = opts.print === true && !ownRuntime && !ownSession
 
   if (print) return printFlow(req, program)
@@ -139,7 +181,7 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
   say(`previews ${name} #${id} — run ${run.sessionId}`)
   say(`  follow it: ${program} raw run log ${short(run.sessionId)} --follow${BOARD_FLAG}`)
   say(`  stop it:   ${program} raw run stop ${short(run.sessionId)}${BOARD_FLAG}`)
-  if (opts.follow === true) return await followStarted(run.sessionId, program)
+  if (opts.follow === true) return await followStarted(run.sessionId, program, opts.events === true)
   return { sessionId: run.sessionId, action: 'spec', specAgent: name, cardId: id }
 }
 

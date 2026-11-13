@@ -135,6 +135,7 @@ export function checkAgentKeys(agents: SpecAgent[], places: AgentPlaces): { prob
       ...(!preview(agent.name) && agent.when ? ['when'] : []),
       ...(!preview(agent.name) && agent.after.length ? ['after'] : []),
       ...(!preview(agent.name) && agent.session ? ['session'] : []),
+      ...(!preview(agent.name) && agent.stages ? ['stages'] : []),
       ...(where !== 'scheduled' && agent.reads ? ['reads'] : []),
     ]
     for (const key of ignored) problems.push(`${agent.from}: \`akb.${key}\` is read only on ${key === 'reads' ? 'a scheduled agent' : 'a preview'} — ignoring it`)
@@ -220,7 +221,9 @@ export function agentFileReader(dir: string): (relative: string) => string | nul
     const target = path.resolve(dir, relative)
     if (target !== dir && !target.startsWith(dir + path.sep)) return null
     try {
-      return fs.readFileSync(target, 'utf8')
+      const real = fs.realpathSync(target)
+      if (!real.startsWith(fs.realpathSync(dir) + path.sep)) return null
+      return fs.readFileSync(real, 'utf8')
     } catch {
       return null
     }

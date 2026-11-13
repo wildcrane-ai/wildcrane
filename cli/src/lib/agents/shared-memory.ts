@@ -17,7 +17,10 @@ export function sharedMemory(board: string): Shared {
   const declared = new Map<string, string[]>()
   const take = (folder: string, text: string | null, builtIn: boolean) => {
     if (text === null || declared.has(folder)) return
-    const read = parseSpecAgent(text, folder, () => null, builtIn)
+    const read = parseSpecAgent(text, folder, (relative) => {
+      if (builtIn) return shippedAgentFiles()[`${folder}/${relative}`] ?? null
+      try { return fs.readFileSync(path.join(board, 'agents', folder, relative), 'utf8') } catch { return null }
+    }, builtIn)
     if ('agent' in read && read.agent.name === folder) declared.set(folder, read.agent.memoryFiles.workspace)
   }
   for (const [key, text] of Object.entries(shippedAgentFiles())) {
@@ -41,6 +44,7 @@ export function sharedMemory(board: string): Shared {
     take(folder, text, false)
   }
   const matches = [
+    matcher('agents/copywriting/style.md'),
     ...[...declared].flatMap(([agent, paths]) => paths.map((p) => matcher(`agents/${agent}/${p}`))),
     ...cloudFlows().flatMap((f) => (f.def.memoryFiles?.workspace ?? []).map((p) => matcher(`studios/${f.def.id}/${p}`))),
   ]

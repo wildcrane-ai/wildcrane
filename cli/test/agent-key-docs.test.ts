@@ -22,6 +22,8 @@ describe('akb guide write-agent', () => {
         if (underAkb && key) keys.add(key)
       }
     }
-    assert.deepEqual(sorted(keys), sorted(AGENT_KEYS))
+    for (const match of cliGuide.matchAll(/`akb\.([A-Za-z]+)(?:[. :`])/g)) keys.add(match[1])
+    assert.deepEqual(sorted(keys), sorted(AGENT_KEYS.filter((key) => key !== 'after')))
+    assert.match(cliGuide, /Legacy.*after/s)
   })
 })

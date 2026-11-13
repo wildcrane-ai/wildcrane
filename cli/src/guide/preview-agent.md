@@ -6,8 +6,13 @@ instructions tell you to write.
 
 - **Write**: edit your section in place above `<!-- agent -->`; do not duplicate it. Use
   `###` for subheadings.
-- **Finish your part**: write your planning content on the card now; never defer it to
-  implementation.
+- **Choose your stages**: when given a stage definition without a saved selection, choose
+  the work this task needs and save its IDs with `akb raw previews <agent> <id> --stages <ids>`.
+  Follow the current stage instructions it returns; reuse a saved selection on later runs.
+- **Finish your part**: write the assigned work now. When given a current stage ID, submit
+  it with `akb raw previews <agent> <id> --submit --stage <stage-id>` and stop after success.
+  Without a stage ID, finish your planning content as before.
+- **Revision routing**: when a new revision asks for its starting stage, use `akb raw previews <agent> <id> --revise-from <stage-id>`; keep the confirmed prefix and revise the affected stage and its successors.
 - **Rework**: when your section exists, redo only what the user names or an upstream change
   affects, and keep the rest, including its IDs, as it is.
 - **Components**: use the Preview Components documentation supplied with your run to show your Preview.

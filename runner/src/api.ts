@@ -92,7 +92,8 @@ export interface AgentJob {
 }
 
 export interface Flow {
-  verb: 'create' | 'resolve' | 'revise' | 'approve' | 'implement' | 'refine' | 'discard'
+  feedback?: string
+  verb: 'create' | 'resolve' | 'revise' | 'approve' | 'implement' | 'refine' | 'discard' | 'preview'
   /** The task's studio id, e.g. `wf_builtin_coding`. */
   studio: string
   /** The akb card id this Runner reported before. */
@@ -153,7 +154,7 @@ export interface SettingDecl {
 
 /** Raised by Cloud when it no longer takes this Runner's protocol. 9 keeps keys (#2135); 10 stops
  *  a flow job, pausing its board runs (#2128); 11 holds the computer's lock (#2161); 14 shares local settings and account revocation; 18 says Studio (#645). */
-export const PROTOCOL = 20
+export const PROTOCOL = 21
 
 const TIMEOUT_MS = 20_000
 
@@ -640,3 +641,6 @@ export type Idea = Goal
 export type DraftIdea = DraftGoal
 
 export { setGoalStudio as setIdeaStudio, dropGoal as dropIdea, startGoal as startIdea }
+
+export const previewOperation = (machineId: string, job: string, agent: string, fields: Record<string, unknown>) =>
+  request<{ progress: import('../../cli/src/lib/preview-stages').PreviewProgress | null; baseline?: import('../../cli/src/lib/preview-stages').PreviewBaseline | null }>('POST', `/v1/runner/jobs/${q(job)}/previews/${q(agent)}`, { ...fields, machineId })

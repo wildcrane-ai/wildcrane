@@ -5,7 +5,7 @@
 // write one by hand. This reads that shape and nothing more — scalars, nested maps, lists of
 // scalars and lists of maps, all by indentation.
 //
-// What it deliberately does not do: anchors, multi-line scalars, flow maps, types. A flow
+// Unsupported: anchors, multiline scalars and YAML types. A flow
 // list of scalars (`[a, b]`) is read, as a value or a list item; one nesting anything else is not. An agent
 // that needs one of those is an agent written against a YAML library this command does not
 // ship, and the parse it gets back is what the validator reports on.
@@ -84,6 +84,16 @@ function readMap(lines: Line[], start: number, indent: number): [Record<string, 
 
 // `[a, "b"]` is a list of scalars; anything else is one scalar.
 function readScalar(value: string): YamlValue {
+  if (value.startsWith('{') && value.endsWith('}')) {
+    const entries = value.slice(1, -1).match(/(?:[^,"']|"(?:\\.|[^"\\])*"|'(?:''|[^'])*')+/g) ?? []
+    const out: Record<string, YamlValue> = {}
+    for (const entry of entries) {
+      const pair = /^\s*([^:]+):\s*(.+)$/.exec(entry)
+      if (!pair) return value
+      out[unquote(pair[1]!.trim())] = readScalar(pair[2]!.trim())
+    }
+    return out
+  }
   const flow = value.match(/^\[(.*)\]$/)
   if (!flow) return unquote(value)
   return flow[1]!.split(',').map((item) => unquote(item.trim())).filter(Boolean)

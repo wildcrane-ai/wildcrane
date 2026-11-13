@@ -1,3 +1,5 @@
+import { boardCommandFor } from './command'
+import { activatePreviewRun, previewStagePrompt, readPreviewProgress, updatePreviewProgress } from './preview-progress'
 import { nextDeliveryRun } from './progress'
 import { findDelivery } from './deliveries'
 // The process that watches one run.
@@ -185,8 +187,17 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
   if (active.startNote) log.write(`[board] ${active.startNote}\n`)
   // Resume the recorded action, not another phase of the same delivery. A resume that could
   // only open a new session (#1321) brings the whole ask instead.
+  if (record.action === 'spec' && record.cardId !== null && record.specAgent) {
+    try { await activatePreviewRun(record.cardId, record.specAgent, sessionId) } catch (error) {
+      await closeRun(sessionId, { status: 'error', code: null, error: error instanceof Error ? error.message : 'Could not prepare the preview stage.' })
+      log.end()
+      letGo()
+      return 1
+    }
+  }
+  const stagePrompt = record.action === 'spec' && record.cardId !== null && record.specAgent ? previewStagePrompt(record.cardId, record.specAgent, boardCommandFor(record.cardId)) : ''
   const basePrompt = record.formatRepair ? contractRepairPrompt(requestOf(record), record.formatRepair.errors) : (record.resumedFrom ? spec.prompt || resumePrompt(record.deliveryId, record.action) : spec.prompt)
-  const prompt = [basePrompt, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n')
+  const prompt = [basePrompt, stagePrompt, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n')
 
   // The board as it was the moment before the agent touched it. The difference between this
   // and the same read at the close is what this run could be answerable for; which of it
@@ -438,7 +449,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       // Only Claude Code does (agent/wire/stream.ts) — read after the flush above, so the
       // closing event is in. A run that failed this way must not close as done: its card
       // would advance and the refinements behind it would run on work that never happened.
-      const failure = renderer?.failure?.() ?? (renderer?.background?.() ? 'The agent exited with unfinished background tasks.' : undefined)
+      let failure = renderer?.failure?.() ?? (renderer?.background?.() ? 'The agent exited with unfinished background tasks.' : undefined)
       const unfinished = blocker || failure
       const result = spoken ? spoken.result : renderer?.result()
 
@@ -615,6 +626,20 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       //
       // Worked out BEFORE the record closes, so anything watching for the run to end sees
       // the note it ended with rather than catching the record a beat too early.
+      if (status === 'done' && record.action === 'spec' && record.cardId !== null && record.specAgent) {
+        const progress = readPreviewProgress(record.cardId)[record.specAgent]
+        if (progress && !['awaiting_confirmation', 'ready'].includes(progress.stages.find((stage) => stage.id === progress.currentStageId)?.status ?? '')) {
+          status = 'error'
+          failure = 'The preview agent exited without submitting its current stage.'
+        }
+      }
+      if (status !== 'done' && record.action === 'spec' && record.cardId !== null && record.specAgent) {
+        updatePreviewProgress(record.cardId, (all) => {
+          const progress = all[record.specAgent!]
+          const stage = progress?.stages.find((stage) => stage.id === progress.currentStageId)
+          if (stage?.status === 'running' && progress.execution?.endsWith(sessionId)) stage.status = 'failed'
+        })
+      }
       const settled = status === 'done' && !sub ? settleBoard(record, changed, original) : null
       const note = status === 'done' ? settled?.stalled : undefined
       const noteWhy: RunReason[] = status === 'done' ? settled?.stalledWhy ?? [] : []

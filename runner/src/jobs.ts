@@ -1,3 +1,4 @@
+import { previewBridge } from './preview-bridge'
 import { CONVERSATION_MS } from '../../cli/src/lib/shared/conversation'
 import { streamFinished, createBackgroundWait, backgroundWaitMessage } from '../../cli/src/lib/agent/wire/background'
 import { BACKGROUND_WAIT } from '../../cli/src/lib/agent/settings'
@@ -437,13 +438,13 @@ export async function runJob(id: string, deps: Deps, track: (stop: () => Promise
 
 /** `keep` keeps a project folder out of the cache's cleanup until the job ends. */
 async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<void>) => void, keep: (dir: string) => void, lease: Lease, replyStream?: ReturnType<typeof streamOut>): Promise<void> {
-  const scope: { bridge?: Awaited<ReturnType<typeof replyApprovalBridge>> } = {}
+  const scope: { bridge?: Awaited<ReturnType<typeof replyApprovalBridge>>; preview?: Awaited<ReturnType<typeof previewBridge>> } = {}
   try { await runClaimedStep(job, deps, track, keep, lease, scope, replyStream) }
-  finally { scope.bridge?.close() }
+  finally { scope.bridge?.close(); scope.preview?.close() }
 }
 
 async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Promise<void>) => void, keep: (dir: string) => void,
-  lease: Lease, scope: { bridge?: Awaited<ReturnType<typeof replyApprovalBridge>> }, replyStream?: ReturnType<typeof streamOut>): Promise<void> {
+  lease: Lease, scope: { bridge?: Awaited<ReturnType<typeof replyApprovalBridge>>; preview?: Awaited<ReturnType<typeof previewBridge>> }, replyStream?: ReturnType<typeof streamOut>): Promise<void> {
   const id = job.id
   const local = readCheckpoint(id)
   const previous = local ?? (job.recoveryOf ? readCheckpoint(job.recoveryOf) : null)
@@ -563,6 +564,12 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     }
     if (ws && job.chat && !job.flow && !checkpoint.completed) {
       const folder = ws
+      scope.preview = await previewBridge((agent, fields) => withBoard(folder, async (send) => {
+        const sent = await send({ id, machineId: deps.machineId })
+        if (!sent.ok) return sent
+        if (!replyAssetsSynced(folder)) return { ok: false, error: 'Preview uploads are still pending.' }
+        return api.previewOperation(deps.machineId, id, agent, fields)
+      }))
       scope.bridge = await replyApprovalBridge(job.task!, job.number!, (comment, asked) => withBoard(folder, async (send) => {
         if (checkpoint.approvalCancelled) return { ok: false, error: 'This reply failed before. Ask again in a new reply.' }
         const pushed = await send({ id, machineId: deps.machineId })
@@ -614,6 +621,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
         let p = deps.plan(job.runtime, promptOf(said), cwd, resume, job.model, settingsOf(job), fork, cloudLanguage(job))
         // A task's chat changes its card with the akb the Runner carries, on the task's board.
         if (ws) p = { ...p, env: akbEnv(deps.akb, ws.board, ws.task, cloudLanguage(job), p.env) }
+        if (scope.preview) p = { ...p, env: { ...p.env, AI4KANBAN_PREVIEW_BRIDGE: scope.preview.env } }
         if (scope.bridge) p = { ...p, env: { ...p.env, AI4KANBAN_REPLY_APPROVAL: scope.bridge.env } }
         if (goalFile) p = { ...p, env: { ...akbEnv(deps.akb, discussed, undefined, cloudLanguage(job), p.env), KANBAN_GOALS: goalFile, KANBAN_IDEAS: goalFile } }
         // A reply waits out a passing failure on the agent's own retries (#88).

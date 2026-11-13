@@ -183,21 +183,22 @@ describe('the agents this command ships', () => {
     assert.deepEqual(problems, [])
     assert.deepEqual(
       agents.map((a) => a.name),
-      ['api-designer', 'blog-illustrator', 'blog-planner', 'blog-writer', 'builder', 'carousel-planner', 'carousel-renderer', 'competitor-research', 'copywriting', 'cover-designer', 'deck-builder', 'deck-planner', 'demo-rehearser', 'email-planner', 'hyperframes-editor', 'illustrator', 'prompt-writer', 'qa-manager', 'schema-designer', 'scriptwriter', 'social-illustrator', 'studio-publisher', 'studio-writer', 'tech-stack-advisor', 'ui-designer', 'video-cloner', 'video-template-builder'],
+      ['api-designer', 'blog-illustrator', 'blog-planner', 'blog-writer', 'builder', 'carousel-planner', 'carousel-renderer', 'competitor-research', 'cover-designer', 'deck-builder', 'deck-planner', 'demo-rehearser', 'email-planner', 'hyperframes-editor', 'prompt-writer', 'qa-manager', 'schema-designer', 'scriptwriter', 'social-illustrator', 'studio-publisher', 'studio-writer', 'tech-stack-advisor', 'ui-designer', 'video-cloner', 'video-template-builder'],
     )
     const ui = findSpecAgent('ui-designer')!
-    assert.match(ui.description, /^Draws the screens/)
-    assert.match(ui.when!, /^A card designs/)
-    assert.deepEqual(ui.after, ['copywriting', 'illustrator'])
-    assert.match(ui.when!, /Not a typo/)
-    assert.match(ui.body, /You draw the screen a card needs/)
+    assert.match(ui.description, /^Routes copy/)
+    assert.match(ui.when!, /^A card needs/)
+    assert.deepEqual(ui.after, [])
+    assert.deepEqual(ui.stages?.map((stage) => stage.id), ['copywriting', 'illustration', 'ui-draft'])
+    assert.match(ui.when!, /not a typo/)
+    assert.match(ui.body, /You own one preview/)
     assert.equal(ui.builtIn, true)
   })
 
   it('draws no setting on `ui-designer`, and names its reference as a file', () => {
     const agent = findSpecAgent('ui-designer')!
     assert.ok(agent.files.includes('references/rendered-screen.md'))
-    assert.match(agent.body, /Read `references\/rendered-screen\.md` before you draw/)
+    assert.match(agent.file('references/ui-draft.md')!, /references\/rendered-screen\.md/)
   })
 
   it('still answers to every name each of them had before', () => {
@@ -363,7 +364,7 @@ describe('what a session is shown', () => {
     assert.doesNotMatch(catalog, /planned by guess|Asking for none is the usual answer/)
     assert.match(catalog, /akb raw previews <agent> 12 <short note>/)
     assert.doesNotMatch(catalog, /Rendered screen/)
-    assert.doesNotMatch(catalog, /You draw the screen a card needs/)
+    assert.doesNotMatch(catalog, /You own one preview/)
   })
 
   it('lists a project preview in both the selector and command listing', () => {
@@ -385,7 +386,7 @@ describe('what a session is shown', () => {
   })
 
   it('says nothing at all when the card\'s studio runs no one', () => {
-    for (const name of ['copywriting', 'tech-stack-advisor', 'email-planner', 'ui-designer', 'api-designer', 'schema-designer', 'prompt-writer', 'competitor-research', 'illustrator']) {
+    for (const name of ['tech-stack-advisor', 'email-planner', 'ui-designer', 'api-designer', 'schema-designer', 'prompt-writer', 'competitor-research', 'illustrator']) {
       assert.equal(switchAgent('coding', name, false).ok, true)
     }
     assert.equal(specAgentSelector(12, 'coding', null), '')
@@ -416,7 +417,7 @@ describe('what a session is shown', () => {
     assert.match(prompt, /You are the `ui-designer` preview agent on task 12/)
     assert.match(prompt, /guide preview-agent` — read it unless it is already in your context/)
     assert.doesNotMatch(prompt, /Be a preview agent/)
-    assert.match(prompt, /You draw the screen a card needs/)
+    assert.match(prompt, /You own one preview/)
     assert.match(prompt, /——— your own files ———/)
     assert.match(prompt, /`references\/rendered-screen\.md`/)
     // Named, never pasted in: the run opens it when the work calls for it.
@@ -581,7 +582,7 @@ describe("an agent's memory folder", () => {
     assert.deepEqual(specAgentCatalog().problems, [])
     assert.deepEqual(findSpecAgent('api-contract')?.memoryFiles, { workspace: ['style.md', 'motions/', 'format-*.md'] })
     assert.deepEqual(findSpecAgent('api-notes')?.memoryFiles, { workspace: [] })
-    assert.deepEqual(findSpecAgent('copywriting')?.memoryFiles, { workspace: ['style.md'] })
+    assert.deepEqual(findSpecAgent('ui-designer')?.memoryFiles, { workspace: ['style.md'] })
   })
 
   for (const [value, says] of [
@@ -617,7 +618,7 @@ describe("an agent's memory folder", () => {
   it('puts the memory rule in the contract, and the look in the agent that needs it', () => {
     const prompt = buildPrompt({ action: 'spec', id: 12, specAgent: 'ui-designer' })
     assert.match(findGuide('preview-agent')!.text, /\*\*Memory\*\*: `docs\/kanban\/memory\/agents\/<agent-name>\/` is yours/)
-    assert.match(prompt, /## What you remember[\s\S]*`redesign\.md`[\s\S]*`decisions\.md`/)
+    assert.match(prompt, /## Memory[\s\S]*`writing\.md`[\s\S]*`redesign\.md`/)
   })
 
   it('only names the folder when nothing is in it', () => {
@@ -801,10 +802,12 @@ describe('preview command queries (#397)', () => {
     const old = await query(['spec'])
     assert.equal(old.code, 1)
     assert.equal(old.data.error.kind, 'unknownCommand')
+    const uiFile = path.join(editableOfficial(), 'agents/ui-designer/AGENT.md')
+    fs.writeFileSync(uiFile, fs.readFileSync(uiFile, 'utf8').replace(/  stages:\n[\s\S]*?(?=  memoryFiles:)/, ''))
     card(12)
-    const printed = await query(['raw', 'previews', 'ui-designer', '12', '--print'])
+    const printed = await query(['raw', 'previews', 'tech-stack-advisor', '12', '--print'])
     assert.equal(printed.code, 0)
-    assert.match(printed.data.output, /You are the `ui-designer` preview agent on task 12/)
+    assert.match(printed.data.output, /You are the `tech-stack-advisor` preview agent on task 12/)
     assert.deepEqual(readRuns(), [])
     for (const guide of ['refine', 'revise', 'write-agent']) {
       assert.match(findGuide(guide)!.text, /akb raw previews/)

@@ -1320,10 +1320,10 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.deepEqual(stop, { reason: 'elsewhere', machine: 'laptop' })
   })
 
-  it('registers with protocol 20', async () => {
+  it('registers with protocol 21', async () => {
     start()
     await until(() => cloud.registrations > 0)
-    assert.equal(cloud.protocol, 20)
+    assert.equal(cloud.protocol, 21)
   })
 
   it('stops as outdated when Cloud no longer takes its protocol', async () => {

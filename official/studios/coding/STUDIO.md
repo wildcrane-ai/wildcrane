@@ -6,7 +6,7 @@ description: Plans the change, then builds it.
 when: Software changes, and any work no other studio covers.
 needsArtifact: false
 icon: software
-previews: [copywriting, tech-stack-advisor, email-planner, ui-designer, api-designer, schema-designer, prompt-writer, competitor-research, illustrator]
+previews: [tech-stack-advisor, email-planner, ui-designer, api-designer, schema-designer, prompt-writer, competitor-research]
 land: [builder]
 scheduled:
   - agent: qa-manager

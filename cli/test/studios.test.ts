@@ -109,8 +109,8 @@ describe('the studios a board has', () => {
     assert.deepEqual(studios().map((w) => w.id), ['blog-post', 'carousel-post', 'coding', 'hyperframes-video', 'slide-deck', 'studio-builder', 'video-clone'])
     const of = (id: string) => studioById(id)!
     const all = (id: string) => previewStages(of(id), names(previewMembers(of(id))))
-    assert.deepEqual(names(previewMembers(of('coding'))), ['copywriting', 'tech-stack-advisor', 'email-planner', 'ui-designer', 'api-designer', 'schema-designer', 'prompt-writer', 'competitor-research', 'illustrator'])
-    assert.deepEqual(all('coding'), [['copywriting', 'tech-stack-advisor', 'email-planner', 'api-designer', 'schema-designer', 'prompt-writer', 'competitor-research', 'illustrator'], ['ui-designer']])
+    assert.deepEqual(names(previewMembers(of('coding'))), ['tech-stack-advisor', 'email-planner', 'ui-designer', 'api-designer', 'schema-designer', 'prompt-writer', 'competitor-research'])
+    assert.deepEqual(all('coding'), [['tech-stack-advisor', 'email-planner', 'ui-designer', 'api-designer', 'schema-designer', 'prompt-writer', 'competitor-research']])
     assert.deepEqual(landAgents(of('coding')).map((h) => h.agent), ['builder'])
     assert.deepEqual(scheduledMembers(of('coding')).map((h) => h.agent), ['qa-manager'])
     assert.deepEqual(all('hyperframes-video'), [['scriptwriter', 'demo-rehearser'], ['hyperframes-editor']])

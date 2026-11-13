@@ -190,6 +190,13 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
     .option('-f, --follow', 'watch its log instead of returning')
     .option('--notes <text>', 'what the flow wants looked at, for a caller building a command')
     .option('--print', 'print specialist instructions and work in this session')
+    .option('--reset-stages', 'explicitly change the preview scope and choose its stages again')
+    .option('--revise-from <id>', 'start the requested revision at its earliest affected stage')
+    .option('--stages <ids>', 'save this preview agent’s ordered stage selection')
+    .option('--submit', 'submit the current preview stage')
+    .option('--stage <id>', 'the stage being submitted')
+    .option('--events', 'with --follow: print structured events')
+    .option('--continue', 'continue the saved preview stage')
     .option('--triggers', 'list agent names and trigger conditions without starting a run')
     .option('--studio <id>', 'only enabled preview agents of this studio')
     .option('--workspace <id>', 'the workspace whose studios to query')
@@ -310,9 +317,13 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
   withShared(task.command('approve'))
     .argument('<task>')
     .summary('approve the current review point')
+    .option('--preview <agent>', 'confirm this preview’s intermediate stage')
+    .option('--preview-stage <id>', 'the stage reviewed')
+    .option('--preview-version <n>', 'the version reviewed')
+    .option('--definition-revision <revision>', 'the frozen definition reviewed')
     .option('--comment <text>', 'a note with the approval')
     .action(async function (this: Command, id: string) {
-      await boardless(this, cli, () => taskApprove(id, this.opts().comment))
+      await boardless(this, cli, () => taskApprove(id, this.opts().comment, this.opts()))
     })
   const questionOps: Typed[] = []
   const opInOrder = ordered(questionOps)
@@ -848,6 +859,7 @@ function declareFlow(parent: Command, flow: Flow, cli: AgentCliOptions): void {
   for (const arg of splitArgs(flow.argument)) {
     cmd.argument(arg, argNote(arg, flow), arg.startsWith('<id') ? (byDelivery ? String : cardId) : undefined)
   }
+  if (flow.action === 'approve') cmd.option('--preview <agent>').option('--preview-stage <id>').option('--preview-version <n>').option('--definition-revision <revision>')
   cmd.summary(flow.gloss)
   if (flow.more?.length) cmd.description(`${sentence(flow.gloss)} ${flow.more.join(' ')}`)
   for (const option of flow.options ?? []) addFlowOption(cmd, option)

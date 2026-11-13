@@ -17,6 +17,7 @@ export interface SpecAgent {
   /** The previews whose approval it waits on when a card requests them too (#2154) —
    *  `akb.after`. ../agent/studios.ts drops a name outside its studio or one that closes a loop. */
   after: string[]
+  stages?: PreviewStageDefinition[]
   /** Preview Components documentation supplied with the run. */
   components: string[]
   /** Its deliverable sticker (#455) — `akb.icon`: a glyph name or the parts of one. */
@@ -60,6 +61,13 @@ export interface SpecAgent {
 }
 
 /** An agent's user-facing words, as one language says them. */
+export interface PreviewStageDefinition {
+  id: string
+  title: { en: string; [language: string]: string }
+  instructions: string
+  when?: string
+}
+
 export interface AgentLines {
   /** What it is CALLED here. Its `name` is an id — the folder, the rule file, the word a
    *  run is asked for by — and stays English everywhere; this is only ever drawn. */
@@ -78,7 +86,7 @@ export const AGENT_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/
 
 /** Every documented `akb.*` key read below. Change it with the parser: test/agent-key-docs.test.ts
  *  holds the written key table to it. */
-export const AGENT_KEYS = ['when', 'after', 'session', 'reads', 'memory', 'memoryFiles', 'i18n', 'components', 'icon', 'merges'] as const
+export const AGENT_KEYS = ['when', 'after', 'stages', 'session', 'reads', 'memory', 'memoryFiles', 'i18n', 'components', 'icon', 'merges'] as const
 
 /** What `akb.reads` names (#1475): the new input whose arrival makes a scheduled agent due. */
 export const SCHEDULE_READS = ['archived-cards', 'chats', 'dismissals'] as const
@@ -142,6 +150,25 @@ export function parseSpecAgent(
     return bad(`\`${name}\` declares \`akb.session: ${declaredSession}\` — it is \`new\`, or left out to run in the planning session`)
   }
 
+  let stages: PreviewStageDefinition[] | undefined
+  if (akb.stages !== undefined) {
+    if (!Array.isArray(akb.stages) || !akb.stages.length || akb.stages.length > 50) return bad('`akb.stages` must contain 1 to 50 stages')
+    stages = []
+    for (const value of akb.stages) {
+      const row = map(value)
+      const id = str(row?.id)
+      const title = map(row?.title)
+      const instructions = str(row?.instructions)
+      if (!row || Object.keys(row).some((key) => !['id', 'title', 'instructions', 'when'].includes(key)) || !AGENT_NAME.test(id)
+        || stages.some((stage) => stage.id === id)) return bad('`akb.stages` needs unique stage IDs and only id, title, instructions and optional when')
+      if (!title || !str(title.en) || Object.values(title).some((text) => typeof text !== 'string' || !text.trim())) return bad(`stage ${id} needs a title map with en`)
+      if (!instructions.endsWith('.md') || instructions.startsWith('/') || instructions.includes('\\') || instructions.split('/').some((part) => !part || part === '..' || part === '.')
+        || !file(instructions)?.trim()) return bad(`stage ${id} needs an existing agent-relative instructions file`)
+      if (row.when !== undefined && !str(row.when)) return bad(`stage ${id} needs nonempty when text, or omit when for a required stage`)
+      stages.push({ id, title: Object.fromEntries(Object.entries(title).map(([lang, text]) => [lang, str(text)])) as PreviewStageDefinition['title'], instructions, ...(str(row.when) ? { when: str(row.when) } : {}) })
+    }
+  }
+
   const components = akb.components === undefined ? ['Asset'] : akb.components
   if (!Array.isArray(components) || components.some((value) => typeof value !== 'string' || !value.trim())) {
     return bad(`\`${name}\` declares \`akb.components\` that is not a list of component IDs`)
@@ -171,6 +198,7 @@ export function parseSpecAgent(
       description,
       ...(when ? { when } : {}),
       after,
+      ...(stages ? { stages } : {}),
       components: [...new Set((components as string[]).map((value) => value.trim()))],
       ...(icon ? { icon: icon as AgentIcon } : {}),
       ...(akb.merges === 'true' ? { merges: true as const } : {}),

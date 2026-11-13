@@ -1,3 +1,6 @@
+import { previewBridge } from './preview-bridge'
+import { previewOperation } from './api'
+import { push, replyAssetsSynced } from './task-folder'
 // A flow job (#2020): one board verb, run with the akb the Runner carries on the task's board
 // and followed to its end — for `implement`, until the delivery has landed. A periodic agent's
 // job (#2068) runs its own command the same way, on the project's board.
@@ -281,9 +284,19 @@ function boardAkb(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo, task?: s
     const at = args.includes('--') ? args.indexOf('--') : args.length
     const full = [...args.slice(0, at), '--board', ws.board, ...args.slice(at)]
     const log = show ? logLines(io.show, io.event) : undefined
-    const ran = await runAkb(deps.akb, full, { cwd: ws.cwd, board: ws.board, task, language: cloudLanguage(job), env: { ...env, AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId }) }, show: log?.push, track: io.track })
+    const bridge = task ? await previewBridge(async (agent, fields) => {
+      {
+        const sent = await push(ws, { id: job.id, machineId: deps.machineId })
+        if (!sent.ok) return sent
+        if (!replyAssetsSynced(ws)) return { ok: false, error: 'Preview uploads are still pending.' }
+      }
+      return previewOperation(deps.machineId, job.id, agent, fields)
+    }) : null
+    try {
+    const ran = await runAkb(deps.akb, full, { cwd: ws.cwd, board: ws.board, task, language: cloudLanguage(job), env: { ...env, ...(bridge ? { AI4KANBAN_PREVIEW_BRIDGE: bridge.env } : {}), AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId }) }, show: log?.push, track: io.track })
     log?.end()
     return ran
+    } finally { bridge?.close() }
   }
 }
 
@@ -618,6 +631,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     const fresh = () => {
       const carry = carryArgs(verb)
       const costFrom = carry.includes('--session') && typeof job.resumeCostUsd === 'number' ? { [SESSION_COST_ENV]: String(job.resumeCostUsd) } : undefined
+      if (verb === 'preview') return akb(['raw', 'previews', text, String(id), '--continue', '--follow', '--events', '--json', ...(flow.feedback ? ['--notes', flow.feedback] : [])], true)
       return akb(['raw', 'card', verb, String(id), '--follow', '--events', '--json', ...carry, ...(note ? ['--', note] : [])], true, costFrom)
     }
     ran ??= await (continuation ? akb([...continuation, '--follow', '--events', '--json'], true) : fresh())

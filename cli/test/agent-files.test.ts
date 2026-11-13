@@ -67,7 +67,7 @@ describe('what an agent offers', () => {
   })
 
   it('offers a reference file the way it offers any other file (#1003)', () => {
-    assert.deepEqual(findSpecAgent('ui-designer')!.files, ['references/rendered-screen.md'])
+    assert.deepEqual(findSpecAgent('ui-designer')!.files, ['references/copywriting.md', 'references/illustration.md', 'references/rendered-screen.md', 'references/ui-draft.md'])
   })
 })
 
@@ -127,7 +127,7 @@ describe('`akb raw agent-file`', () => {
 
   it("prints a built-in agent's file, which has no path to open", async () => {
     writeOfficial('agents/ui-designer/spacing.md', 'Eight pixels, or a multiple of it.')
-    assert.deepEqual(findSpecAgent('ui-designer')!.files, ['references/rendered-screen.md', 'spacing.md'])
+    assert.deepEqual(findSpecAgent('ui-designer')!.files, ['references/copywriting.md', 'references/illustration.md', 'references/rendered-screen.md', 'references/ui-draft.md', 'spacing.md'])
     const said = await move(root, ['file', 'coding', 'agents/ui-designer/spacing.md'])
     assert.equal(said.text, 'Eight pixels, or a multiple of it.')
     assert.match(buildAsk({ action: 'spec', id: card, specAgent: 'ui-designer' }), /raw file coding agents\/ui-designer\/spacing\.md/)

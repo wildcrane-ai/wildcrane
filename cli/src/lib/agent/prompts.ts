@@ -1,3 +1,4 @@
+import { freezePreviewProgress, previewStagePrompt } from './preview-progress'
 import { deliveryStep } from './progress'
 // The one place a board action turns into words for an agent.
 //
@@ -595,7 +596,8 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
         ]
           .filter(Boolean)
           .join(' '),
-        agent && own ? `——— you, the \`${agent.name}\` agent ———\n\n${own.instructions}` : '',
+        req.id !== undefined && agent ? previewStagePrompt(req.id, agent.name, command) : '',
+        agent && own ? `——— you, the \`${agent.name}\` agent ———\n\n${req.id !== undefined ? freezePreviewProgress(req.id, agent!.name)?.body ?? own.instructions : own.instructions}` : '',
         ...ownFiles(studioForRun(req), agent?.name, own?.files),
         memory ? `——— what you remember ———\n\n${memory}` : '',
         shared ? `——— global memories ———\n\n${shared}` : '',

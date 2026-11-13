@@ -1,3 +1,4 @@
+import { editableOfficial, resetOfficial } from './helpers/official.ts'
 // 验证规则传递、流程路由和交付期间的规则冻结。
 
 import assert from 'node:assert/strict'
@@ -95,13 +96,19 @@ async function end(sessionId: string): Promise<void> {
 }
 
 describe('in-session spec work', () => {
+  beforeEach(() => {
+    const official = editableOfficial()
+    const file = path.join(official, 'agents/ui-designer/AGENT.md')
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/  stages:\n[\s\S]*?(?=  memoryFiles:)/, ''))
+  })
+  afterEach(() => resetOfficial())
   it('prints specialist instructions and rules without starting a run', async () => {
-    setRule('ui-designer', 'Keep to the existing palette.')
+    setRule('tech-stack-advisor', 'Keep to the existing palette.')
     const file = path.join(root, 'docs/kanban/todo/features/1-card.md')
     const before = fs.readFileSync(file, 'utf8')
     const sink = startCollecting()
     try {
-      await akb(root, ['raw', 'previews', 'ui-designer', '1', 'Use scrolling tabs.', '--print'])
+      await akb(root, ['raw', 'previews', 'tech-stack-advisor', '1', 'Use scrolling tabs.', '--print'])
     } finally {
       stopCollecting()
     }
@@ -121,7 +128,7 @@ describe('in-session spec work', () => {
     const before = JSON.stringify(readRuns())
     startCollecting()
     try {
-      const result = await cmdSpec({ agent: 'ui-designer', id: 1, print: true })
+      const result = await cmdSpec({ agent: 'tech-stack-advisor', id: 1, print: true })
       assert.equal(result.mode, 'print')
     } finally {
       stopCollecting()
@@ -132,22 +139,22 @@ describe('in-session spec work', () => {
   // #1598: an agent set to another runtime than the caller's never runs in its session.
   it('queues an agent on another runtime than the run asking for it', async () => {
     process.env[RUN_ENV] = run('implement', 1)
-    setAgentRuntime('ui-designer', addRuntime('Other', 'codex').id!)
+    setAgentRuntime('tech-stack-advisor', addRuntime('Other', 'codex').id!)
     const sink = startCollecting()
     try {
-      const result = await cmdSpec({ agent: 'ui-designer', id: 1, print: true })
+      const result = await cmdSpec({ agent: 'tech-stack-advisor', id: 1, print: true })
       assert.equal(result.queued, true)
     } finally {
       stopCollecting()
     }
-    assert.match(sink.out.join('\n'), /asked for the ui-designer preview agent/)
+    assert.match(sink.out.join('\n'), /asked for the tech-stack-advisor preview agent/)
   })
 
   it('prints when the caller names no runtime', async () => {
-    setAgentRuntime('ui-designer', addRuntime('Other', 'codex').id!)
+    setAgentRuntime('tech-stack-advisor', addRuntime('Other', 'codex').id!)
     startCollecting()
     try {
-      assert.equal((await cmdSpec({ agent: 'ui-designer', id: 1, print: true })).mode, 'print')
+      assert.equal((await cmdSpec({ agent: 'tech-stack-advisor', id: 1, print: true })).mode, 'print')
     } finally {
       stopCollecting()
     }

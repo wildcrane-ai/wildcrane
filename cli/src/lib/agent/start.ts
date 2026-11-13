@@ -1,3 +1,4 @@
+import { previewBlocker } from './preview-progress'
 // Starting a run, in the two steps every run takes.
 //
 // Write it down, then hand it to a process of its own. It is one function because there is
@@ -31,6 +32,10 @@ export async function startRun(req: AgentRequest): Promise<{ run: RunRecord; spa
   const cardId = Number.isInteger(req.id) ? (req.id as number) : null
   const short = studioRefusal(req) ?? (await scheduledRefusal(req))
   if (short) return short
+  if (cardId !== null && ['implement', 'approve', 'archive'].includes(req.action)) {
+    const blocked = previewBlocker(cardId)
+    if (blocked) return { error: blocked }
+  }
   const delivery = req.action === 'implement' ? deliveryFor(req) : undefined
   if (delivery && req.session !== 'new') {
     const previous = readRuns()

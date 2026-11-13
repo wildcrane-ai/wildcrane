@@ -1,4 +1,4 @@
-// wildcrane-runner 0.6.64 — built by runner/scripts/build.mjs. Do not edit.
+// wildcrane-runner 0.6.65 — built by runner/scripts/build.mjs. Do not edit.
 import { createRequire as __ai4kanbanRequire } from 'node:module'
 const require = __ai4kanbanRequire(import.meta.url)
 var __create = Object.create;
@@ -27259,6 +27259,16 @@ function readMap(lines, start, indent) {
   return [out, i];
 }
 function readScalar(value) {
+  if (value.startsWith("{") && value.endsWith("}")) {
+    const entries = value.slice(1, -1).match(/(?:[^,"']|"(?:\\.|[^"\\])*"|'(?:''|[^'])*')+/g) ?? [];
+    const out = {};
+    for (const entry2 of entries) {
+      const pair = /^\s*([^:]+):\s*(.+)$/.exec(entry2);
+      if (!pair) return value;
+      out[unquote(pair[1].trim())] = readScalar(pair[2].trim());
+    }
+    return out;
+  }
   const flow = value.match(/^\[(.*)\]$/);
   if (!flow) return unquote(value);
   return flow[1].split(",").map((item) => unquote(item.trim())).filter(Boolean);
@@ -27355,6 +27365,22 @@ function parseSpecAgent(text2, from, file2, builtIn = false, list = () => []) {
   if (declaredSession && declaredSession !== "new") {
     return bad(`\`${name}\` declares \`akb.session: ${declaredSession}\` \u2014 it is \`new\`, or left out to run in the planning session`);
   }
+  let stages;
+  if (akb.stages !== void 0) {
+    if (!Array.isArray(akb.stages) || !akb.stages.length || akb.stages.length > 50) return bad("`akb.stages` must contain 1 to 50 stages");
+    stages = [];
+    for (const value of akb.stages) {
+      const row = map(value);
+      const id = str(row?.id);
+      const title = map(row?.title);
+      const instructions2 = str(row?.instructions);
+      if (!row || Object.keys(row).some((key) => !["id", "title", "instructions", "when"].includes(key)) || !AGENT_NAME.test(id) || stages.some((stage) => stage.id === id)) return bad("`akb.stages` needs unique stage IDs and only id, title, instructions and optional when");
+      if (!title || !str(title.en) || Object.values(title).some((text3) => typeof text3 !== "string" || !text3.trim())) return bad(`stage ${id} needs a title map with en`);
+      if (!instructions2.endsWith(".md") || instructions2.startsWith("/") || instructions2.includes("\\") || instructions2.split("/").some((part) => !part || part === ".." || part === ".") || !file2(instructions2)?.trim()) return bad(`stage ${id} needs an existing agent-relative instructions file`);
+      if (row.when !== void 0 && !str(row.when)) return bad(`stage ${id} needs nonempty when text, or omit when for a required stage`);
+      stages.push({ id, title: Object.fromEntries(Object.entries(title).map(([lang, text3]) => [lang, str(text3)])), instructions: instructions2, ...str(row.when) ? { when: str(row.when) } : {} });
+    }
+  }
   const components = akb.components === void 0 ? ["Asset"] : akb.components;
   if (!Array.isArray(components) || components.some((value) => typeof value !== "string" || !value.trim())) {
     return bad(`\`${name}\` declares \`akb.components\` that is not a list of component IDs`);
@@ -27375,6 +27401,7 @@ function parseSpecAgent(text2, from, file2, builtIn = false, list = () => []) {
       description,
       ...when ? { when } : {},
       after,
+      ...stages ? { stages } : {},
       components: [...new Set(components.map((value) => value.trim()))],
       ...icon ? { icon } : {},
       ...akb.merges === "true" ? { merges: true } : {},
@@ -27660,6 +27687,9 @@ function inspect(value, official) {
     ...def.land.map((h) => [h.agent, "it lands with"]),
     ...def.scheduled.map((s) => [s.agent, "it schedules"])
   ];
+  for (const { agent } of [...def.land, ...def.scheduled]) {
+    if (agents.get(agent)?.stages) fail(`agents/${agent}/AGENT.md`, "`akb.stages` is only supported for preview agents");
+  }
   for (const [name, why] of named) {
     if (!agents.has(name) && !folders.has(name)) fail(STUDIO_FILE, `${why} \`${name}\`, which has no agents/${name}/AGENT.md`);
   }

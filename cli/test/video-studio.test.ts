@@ -104,8 +104,8 @@ describe('the <board-state> path constant', () => {
     assert.doesNotMatch(editor, /<board-state>/)
   })
 
-  it("leaves ui-designer's prompt as it read before", () => {
-    const body = findSpecAgent('ui-designer')!.body
+  it("keeps the rendering contract in board-state assets", () => {
+    const body = findSpecAgent('ui-designer')!.file('references/rendered-screen.md')!
     assert.match(body, /<board-state>\/assets/)
     const before = body.split('<board-state>/assets').join('docs/kanban/.assets')
     assert.equal(boardText(body), boardText(before))

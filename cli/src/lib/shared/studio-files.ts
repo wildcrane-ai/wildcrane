@@ -48,7 +48,7 @@ export function stagesFrom(files: StudioFiles, chosen: string[]): string[][] {
   const previews = read.def.previews.filter((h) => !h.off).map((h) => h.agent)
   const after = (name: string): string[] => {
     const text = files[`agents/${name}/AGENT.md`]
-    const parsed = text === undefined ? null : parseSpecAgent(text, name, () => null, false)
+    const parsed = text === undefined ? null : parseSpecAgent(text, name, (path) => files[`agents/${name}/${path}`] ?? null, false)
     return parsed && 'agent' in parsed ? parsed.agent.after.filter((other) => previews.includes(other)) : []
   }
   return stagesOf(previews.filter((name) => chosen.includes(name)), after)
@@ -66,7 +66,7 @@ export function diagramFrom(files: StudioFiles): StudioDiagram | null {
   if ('problem' in read) return null
   return studioDiagram(read.def, (name) => {
     const text = files[`agents/${name}/AGENT.md`]
-    const parsed = text === undefined ? null : parseSpecAgent(text, name, () => null, false)
+    const parsed = text === undefined ? null : parseSpecAgent(text, name, (path) => files[`agents/${name}/${path}`] ?? null, false)
     return parsed && 'agent' in parsed ? parsed.agent : null
   })
 }
@@ -218,6 +218,9 @@ function inspect(value: unknown, official: boolean): { problems: FilesProblem[];
     ...def.land.map((h): [string, string] => [h.agent, 'it lands with']),
     ...def.scheduled.map((s): [string, string] => [s.agent, 'it schedules']),
   ]
+  for (const { agent } of [...def.land, ...def.scheduled]) {
+    if (agents.get(agent)?.stages) fail(`agents/${agent}/AGENT.md`, '`akb.stages` is only supported for preview agents')
+  }
   for (const [name, why] of named) {
     if (!agents.has(name) && !folders.has(name)) fail(STUDIO_FILE, `${why} \`${name}\`, which has no agents/${name}/AGENT.md`)
   }
@@ -274,7 +277,7 @@ export function previewCatalog(files: StudioFiles) {
   return read.def.previews.filter((h) => !h.off).map(({ agent: name }) => {
     const text = files[`agents/${name}/AGENT.md`]
     if (text === undefined) throw new Error(`Preview agent ${name} is missing.`)
-    const parsed = parseSpecAgent(text, name, () => null, false)
+    const parsed = parseSpecAgent(text, name, (path) => files[`agents/${name}/${path}`] ?? null, false)
     if ('problem' in parsed) throw new Error(parsed.problem)
     const agent = parsed.agent
     return { agent: name, title: { en: agent.i18n.en?.title, zh: agent.i18n.zh?.title }, when: agent.when ?? '' }

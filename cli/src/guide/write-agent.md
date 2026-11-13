@@ -1,185 +1,87 @@
 # Write an agent
 
-An agent is one folder: `docs/kanban/agents/<name>/AGENT.md`. The folder name is the agent's
-name and the word every flow asks for it by — lower-case words joined by `-`, matching the
-`name` in its frontmatter. It cannot be a name the board already answers to: one of the
-board's roles, an agent the command ships, or a folder already in `docs/kanban/agents/`.
+Create `docs/kanban/agents/<name>/AGENT.md`; use an unused lowercase, hyphenated name matching
+the folder. Its studio lists it under `previews`, `land` or `scheduled` in `STUDIO.md`.
 
-## The file
+## Example: a preview agent
 
 ```yaml
 ---
-# Required; matches the folder name.
-name: ux-writer
-# Required: one sentence saying what it does.
-description: Writes the words a screen shows.
-# Optional.
+name: page-designer
+description: Makes complete page designs with their copy.
 akb:
-  # Optional, for a preview agent: when to request it, exceptions included. Without it, it
-  # always runs.
-  when: A card changes what the product says to the user; not a typo.
-  # Optional, for a preview agent: it runs only after these agents' previews are approved,
-  # when the card requests them too; it never makes them run.
-  after: [ui-designer]
-  # Optional, for a preview agent: `new` runs it in a session of its own.
-  session: new
-  # Preview Components this agent uses; an empty list loads no component documentation.
-  components: [Asset]
-  # Optional: a sticker of its deliverable, by glyph name (the Studio builder lists them),
-  # or 1 to 12 parts `{ d, f?, o?: true, s?, w? }`. Without it, a generic file is drawn.
-  icon: text
----
-
-You write the words a screen shows.
-```
-
-Its studio, not the agent, sets its role: `STUDIO.md` lists it under `previews`, `land`
-or `scheduled`.
-
-A scheduled agent can also name the new input it works on; it then runs only when there is some:
-
-```yaml
-akb:
-  # archived-cards | chats | dismissals; omit to run on its cadence alone.
-  reads: archived-cards
-```
-
-A land agent that merges code into the target branch declares it; completing its step then
-requires the merged commit and branch:
-
-```yaml
-akb:
-  merges: true
-```
-
-An agent that shares material with others names the global memories it keeps:
-
-```yaml
-akb:
-  # Optional; global memories under `docs/kanban/memory/<name>/`, by name.
-  memory: [competitors]
-  # Optional; its own memory files, or folders ending in `/`, that hold in any of the user's
-  # projects. Everything else is this project's.
-  memoryFiles:
-    workspace: [style.md]
-```
-
-Everything under the frontmatter is the agent's instructions, read fresh on every run —
-a file with none is refused. A preview agent already redoes only what the user names or an
-upstream change affects; state only how its own rework differs, such as what to re-render.
-
-An agent declares no options of its own. Two ways of working is two agents, each with its own
-`AGENT.md` — a switch that changes how one agent works costs more than it buys.
-
-## Translations
-
-```yaml
-akb:
-  # Optional; UI text only. Runs use English; omitted text falls back to English.
+  when: A card needs a page designed or changed.
+  icon: screen
+  components: [Asset, Set]
   i18n:
-    # Language tag; every field below is optional.
     en:
-      # Display name, shown as the stage name: name the output, not the role; at most
-      # 3 English words or 4 Chinese characters. Does not change the agent's name.
-      title: UI copy
+      title: Page design
     zh:
-      title: 界面文案
-      description: 撰写界面上的文字。
-      when: 卡片新增或修改界面文字时。
+      title: 页面设计
+  stages:
+    - id: copy
+      title: {en: Copy, zh: 文案}
+      when: The page needs new or revised copy; existing text is insufficient.
+      instructions: references/copy.md
+    - id: layout
+      title: {en: Page layout, zh: 页面稿}
+      instructions: references/layout.md
+---
+
+Choose the stages this task needs on first entry; reuse the saved selection on continuation.
+Follow the current stage's instructions, preserving confirmed copy in the page design.
 ```
 
-## Files
+With existing copy, this agent selects only `layout`; otherwise it selects `copy,layout`.
+Each selected step except the last waits for user confirmation. The last is ready for the
+card's approval. The agent chooses its steps, not the planner; the program saves and advances
+them. Omit `stages` for a single preview. Stage IDs are unique; instruction paths stay inside
+the agent folder. A task freezes its definition, files and selection.
 
-Every file beside `AGENT.md`, in any subfolder, is named to the run by its path and opened only
-when the work calls for it. Put long material there and keep `AGENT.md` short.
+**Legacy**: `after` remains readable for frozen workflows; use internal stages for new agents.
 
-- **Shared files**: a file several agents of one studio use goes in the studio's `shared/`, never
-  in one agent's folder for the others to borrow.
-- **Scripts**: every agent owns its task scripts in its own folder, including built-in agents.
-  Keep business validation there, outside the CLI's board logic. Document the runtime, inputs
-  and invocation beside the script; consumers use the owner's script. Built-in files can be
-  saved through `akb raw file <studio> <path>` and run locally with their relative layout
-  intact; custom agents use their existing folders.
+## Other fields
+
+Only `name`, `description` and nonempty body instructions are required. Omit unused fields.
+
+| Field | Use |
+| --- | --- |
+| `akb.when` | When to request a preview; omitted means every task on its studio. |
+| `akb.session: new` | Run a preview in its own session. |
+| `akb.components` | Asset, Set, Compare or Storyboard; default `[Asset]`, `[]` loads no component docs. |
+| `akb.icon` | Glyph name, or 1–12 `{d, f?, o?: true, s?, w?}` parts using supported colours. |
+| `akb.i18n` | Display-only title, description and when by language; missing text falls back to English. Keep titles short and name the output. |
+| `akb.reads` | Scheduled input: `archived-cards`, `chats` or `dismissals`; omitted uses cadence alone. Set fixed cadence on the studio's scheduled entry. |
+| `akb.merges: true` | A land agent merges code; completion requires its merged commit and branch. |
+| `akb.memory` | Names of shared global memories. |
+| `akb.memoryFiles.workspace` | Paths such as `[style.md]` shared across projects within this agent's memory. |
+
+## Instructions and files
+
+- **Keep the body small**: say what the agent owns and delivers. Use `akb guide write-prompt`;
+  do not repeat `preview-agent` rules. Stage-specific work belongs in its instruction file.
+- **Load on demand**: files beside AGENT.md are listed to the run. Put shared studio material
+  in `shared/`; keep scripts and business validation with their owning agent, documenting
+  runtime and invocation. Retrieve bundled files with `akb raw file <studio> <path>`.
+- **Memory**: keep only preferences or corrections that change future work. Name each file's
+  purpose and when to read it; omit transcripts and duplicated rules. Agent memory is under
+  `docs/kanban/memory/agents/<name>/`; studio memory follows its `shared/RULES.md`. Agree on
+  any scheduled agent's persistent state rather than inventing its format.
+- **User decisions**: follow `akb guide update-questions`; do not ask again about settled
+  choices. Show each changed file as a unified diff with one sentence explaining why.
 
 ## Imported skills
 
-An agent may carry several skills, each whole in its own `skills/<skill>/` folder.
+Keep each skill whole under `skills/<skill>/`, including instructions, scripts, resources and
+license; exclude caches and installed packages. Record its source and version in AGENT.md:
+`- **<skill>**: <when to use>. Source: <URL or pasted> @ <commit, tag or date>`.
+Adapt routing outside the skill, preserving its relative paths. Report missing files, tools
+or credentials; never copy keys or claim an unusable skill works. Update or remove only when
+asked, replacing the whole owned copy and showing the diff and version.
 
-- **Keep the capability**: copy the skill's instructions, scripts, resources and license
-  unchanged; never reduce it to rewritten instructions. Leave out installed packages and caches,
-  and name any file it refers to that you could not get.
-- **Record the source**: list each in a `## Skills` section of `AGENT.md` as
-  `- **<skill>**: <when to use it>. Source: <URL or pasted> @ <commit, tag or snapshot date>`.
-- **Adapt outside it**: say in `AGENT.md` when to use each skill and how its result becomes
-  this agent's output; paths inside a skill resolve from its folder. Keep the skill folder
-  untouched so an update can replace it whole.
-- **Runtime needs**: check every command, package and credential the skill needs on this
-  machine. Name what is missing under its bullet and tell the user; never call the agent usable
-  while anything is missing, and never copy a key into the folder.
-- **Update and remove**: update only when the user asks — replace the folder, show the diff and
-  change the version. Remove a skill with its folder and bullet. Each agent owns its copies, so
-  no change reaches another agent.
+## Check
 
-## Memory
-
-`docs/kanban/memory/agents/<name>/` is read into every run; what several agents of one studio
-remember goes in the studio's `docs/kanban/memory/studios/<studio>/`, described in its
-`shared/RULES.md`. Keep none unless the agent has wide
-latitude and its mistakes or the user's corrections should change its next output. Otherwise say
-in `AGENT.md`:
-
-- **Files**: each file and what it holds; `## General` for what always holds, and a heading per
-  situation (a format, a recipe, a channel) for what holds only there.
-- **When**: which file to apply before which step, and which error-prone points, answers or
-  corrections to record.
-- **What goes in**: lasting preferences, decisions and corrections only — never raw feedback,
-  run history, or what the instructions already say.
-- **Shared material**: what other agents also use goes in a global memory under `akb.memory`;
-  its rules arrive with every run, so `AGENT.md` never restates them.
-
-## Output
-
-Declare the Preview Components the agent uses in `akb.components` (Asset, Compare, Storyboard, Set).
-Their usage documentation is supplied with the run; omitted declarations default to Asset.
-Use `akb raw components --agent <name> --docs` or `--studio <id> --docs` to read it.
-
-Choose the form the reader takes in fastest and say it in `AGENT.md`: an image for a look, a
-storyboard for a sequence over time, readable Markdown for everything else.
-
-## Dependencies
-
-- **In `after`**: name the agents whose approved previews this one needs; it waits for those
-  approvals and never requests the agents.
-- **In the instructions**: say what to do when the section it needs is missing or still
-  carries an open question — normally draw nothing and write one line naming what is missing.
-  A preview agent never asks for another.
-
-## Instructions
-
-Say what the agent owns, what it produces, and what it leaves alone. Don't repeat the contract
-every run is pointed to (`akb guide preview-agent`): where the section goes, how to validate,
-how to keep memory, and how to defer to the user. A scheduled agent says what one run does,
-never when it runs. Write the text as `akb guide write-prompt` says.
-
-## Work with the user
-
-- **Ask little**: settle what the request, the skill and the board already answer; ask the rest
-  as `akb guide update-questions` does, and never ask again what is answered.
-- **State between runs**: ask how a scheduled agent should keep what its next run needs, and
-  write the answer into `AGENT.md`; assume no file or format.
-- **Important choices**: give a recommendation and its tradeoff, and accept a free answer.
-- **Show each edit**: when changing an existing agent, show every changed file as a unified
-  diff with context, followed by one sentence of reason.
-
-## Check it
-
-- **Validate before finishing**: after creating or editing an agent, run `akb raw previews`. Read all trigger conditions with `akb raw previews --triggers`.
-  Fix every problem reported for its file under "Problems on this board", then run it again.
-  Do not finish until the agent is accepted with no problems reported for it.
-- **`akb raw previews <name> <id> --print`** on a real card prints the whole prompt the agent will get:
-  its instructions, the reference for each chosen setting, its files and its memory. Read it, and cut whatever the run does not need.
-- **Studio**: a new agent belongs to the studio it was created in and starts switched on;
-  a preview agent joins the end of that studio's `previews`. `akb raw previews` refuses it while it is off.
-  Switch it in that studio's `STUDIO.md`.
-- **Schedule**: set `reads` from what the agent works on; it runs automatically by default.
-  For a fixed cadence, add `cadence: 1d` to its entry in the studio's `scheduled`.
+Run `akb raw previews` and `akb raw previews --triggers`; fix every reported problem.
+Then inspect `akb raw previews <name> <id> --print` on a real task and trim unnecessary context.
+Use `akb raw components --agent <name> --docs` for output formats. New agents start enabled
+in their studio; disabled previews cannot run. Keep registration and instructions consistent.

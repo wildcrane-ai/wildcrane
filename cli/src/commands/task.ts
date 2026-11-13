@@ -1,3 +1,7 @@
+import { insideRun } from '../lib/agent/env'
+import { REPLY_APPROVAL_ENV } from '../lib/cloud/reply-approval'
+import { PREVIEW_BRIDGE_ENV } from '../lib/cloud/preview'
+import { previewConfirmation, type PreviewConfirmOptions } from './preview-confirm'
 // `akb task`, `workspace`, `project`, `runner` (#550): the signed-in account's WildCrane tasks, read
 // and changed in Cloud from any chat. Nothing here reads or writes a board.
 
@@ -55,6 +59,7 @@ interface Task {
   title: string
   status: string
   studio: { id: string; name: string } | null
+  previewReviewRevision?: number
   review?: { status: string | null; revision: number } | null
 }
 
@@ -145,14 +150,16 @@ async function act(id: string, route: string, body: unknown, done: (key: string)
   return value
 }
 
-export async function taskApprove(id: string, comment?: string): Promise<MoveResult> {
-  const deferred = await approveAfterReply(id, comment)
+export async function taskApprove(id: string, comment?: string, opts: PreviewConfirmOptions = {}): Promise<MoveResult> {
+  const preview = opts.preview || opts.previewStage || opts.previewVersion || opts.definitionRevision ? previewConfirmation(opts) : null
+  if (preview && (insideRun() || process.env[REPLY_APPROVAL_ENV] || process.env[PREVIEW_BRIDGE_ENV])) return refuse('Only the user confirms a preview stage.', 'preview_refused')
+  const deferred = preview ? null : await approveAfterReply(id, comment)
   if (deferred) return deferred
   const task = await cloud<Task>('GET', `/v1/tasks/${enc(await taskRef(id))}`)
   return act(task.key, 'decisions', {
-    decision: 'approve',
+    ...(preview ?? { decision: 'approve' }),
     ...(comment?.trim() ? { comment: comment.trim() } : {}),
-    ...(task.review ? { review_revision: task.review.revision } : {}),
+    ...(preview ? { review_revision: task.previewReviewRevision ?? task.review?.revision ?? 0 } : task.review ? { review_revision: task.review.revision } : {}),
   }, (k) => `Approved ${k}.`)
 }
 
