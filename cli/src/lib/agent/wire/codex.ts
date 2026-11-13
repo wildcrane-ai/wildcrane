@@ -59,7 +59,8 @@ export function createCodexConnection(argv: string[]): { argv: string[]; client:
     }
   }
   if (roots.length) server.push('-c', `sandbox_workspace_write.writable_roots=${JSON.stringify(roots)}`)
-  return { argv: server, client: createCodexClient(options) }
+  const proxy = process.env.WILDCRANE_CODEX_PROXY
+  return { argv: proxy && process.env.WILDCRANE_CODEX_SERVER ? [process.execPath, proxy, ...server] : server, client: createCodexClient(options) }
 }
 
 interface Options {

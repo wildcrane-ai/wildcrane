@@ -26,6 +26,7 @@ import { holdMachine, type Holder } from './lock'
 import { STOP_MS, defaultDeps, folderFor, runJob, type Deps } from './jobs'
 import { keepPresence, type Presence } from './presence'
 import { refreshModels } from './runtimes'
+import { codexServer } from './codex-server'
 import { akbCardOf, openTaskFolder } from './task-folder'
 import { logSync } from './sync-debug'
 import { canKeepFlow, reclaimFlowWorkerAfterExit, reclaimFlowWorkers, flowWorkerEntry, hasFlowWorker, launchFlowWorker, stopFlowWorker, watchFlowWorker } from './flow-worker'
@@ -79,6 +80,8 @@ export function startRunner(options: Options): Runner {
   let connected = false
   let closed = false
   let ownsExecution = false
+  let codex: Awaited<ReturnType<typeof codexServer>> | undefined
+  let startingCodex = Promise.resolve()
   let redetect = false
   let preparing = false
   let attempts = 0
@@ -437,6 +440,9 @@ export function startRunner(options: Options): Runner {
       }, (options.deps?.stopMs ?? STOP_MS) + 1_000)
     })])
     clearTimeout(timeout)
+    await startingCodex
+    await codex?.close()
+    for (const [key, value] of Object.entries(codex?.env ?? {})) if (process.env[key] === value) delete process.env[key]
     if (release && !keptWorkers && !lock.waited() && registration) await api.release(registration.machineId)
     clearInterval(accountWatch)
     lock.release()
@@ -455,7 +461,15 @@ export function startRunner(options: Options): Runner {
 
   removeLegacy()
   pruneChats()
-  const lock = holdMachine(options.kind, () => { ownsExecution = true; void tick() }, (holder) => {
+  const lock = holdMachine(options.kind, () => {
+    ownsExecution = true
+    startingCodex = codexServer().then(async service => {
+      codex = service
+      if (closed) return
+      Object.assign(process.env, service.env)
+      void tick()
+    }).catch(e => { console.error(`runner: Codex service failed: ${e instanceof Error ? e.message : String(e)}`); void finish({ reason: 'refused', message: 'Codex service failed to start.' }) })
+  }, (holder) => {
     status(t.waitingHere(holder))
     options.onWaiting?.(holder)
   })

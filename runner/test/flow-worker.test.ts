@@ -48,7 +48,7 @@ before(async () => {
 })
 after(() => fs.rmSync(fixture, { recursive: true, force: true }))
 beforeEach(async () => {
-  fs.rmSync(runnerHome(), { recursive: true, force: true })
+  fs.rmSync(runnerHome(), { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   writeFakeSession(runnerHome())
   fs.mkdirSync(folder(), { recursive: true })
   fs.writeFileSync(path.join(runnerHome(), 'projects.json'), JSON.stringify({ projects: [folder()] }))
