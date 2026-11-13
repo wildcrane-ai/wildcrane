@@ -10,7 +10,7 @@ import { after, before, beforeEach, describe, it } from 'node:test'
 
 import { akbHome, bundledAkb } from '../src/akb'
 import { akbVersionDir, currentAkb, followAkb, readAkbState, sweepAkb } from '../src/akb-version'
-import { IDLE_MS } from '../src/cache'
+import { hold, IDLE_MS } from '../src/cache'
 import { runnerHome, useRunnerHome } from '../src/home'
 import { acceptAlphaUpdates, saveAlphaUpdates } from '../src/preferences'
 import { launch, pluginEntry, readState } from '../src/launcher'
@@ -398,6 +398,20 @@ describe('the launcher', () => {
     assert.deepEqual(fs.readdirSync(versionsDir()).filter((f) => f !== 'state.json').sort(), ['1.2.0', '1.3.0'])
   })
 
+  it('keeps a Runner version while a detached job holds it (#693)', async () => {
+    for (const version of ['1.1.0', '1.2.0', '1.3.0', '1.4.0']) published[version] = { script: CONNECTS }
+    target = '1.1.0'
+    await launch(own)
+    const release = hold(versionDir('1.1.0'))
+    try {
+      for (const version of ['1.2.0', '1.3.0']) { target = version; await launch(own) }
+      assert.ok(fs.existsSync(versionDir('1.1.0')))
+    } finally { release() }
+    target = '1.4.0'
+    await launch(own)
+    assert.equal(fs.existsSync(versionDir('1.1.0')), false)
+  })
+
   it('rolls back when Cloud names an older version again', async () => {
     published['1.2.0'] = { script: CONNECTS }
     published['1.1.0'] = { script: CONNECTS }
@@ -559,6 +573,24 @@ describe('following the akb Cloud names (#171)', () => {
     assert.ok(fs.existsSync(akbVersionDir('1.1.0')), 'a recent version went')
     sweepAkb(later)
     assert.deepEqual(fs.readdirSync(akbHome()).sort(), ['1.2.0', 'akb', 'state.json'])
+  })
+
+  it('keeps an akb version while a detached job holds it (#693)', async () => {
+    await on('1.1.0')
+    const release = hold(akbVersionDir('1.1.0'))
+    const shim = path.join(akbHome(), 'bundled-old')
+    fs.mkdirSync(shim)
+    const releaseShim = hold(shim)
+    await on('1.2.0')
+    const later = Date.now() + IDLE_MS + 60_000
+    try {
+      sweepAkb(later)
+      assert.ok(fs.existsSync(akbVersionDir('1.1.0')))
+      assert.ok(fs.existsSync(shim))
+    } finally { release(); releaseShim() }
+    sweepAkb(later)
+    assert.equal(fs.existsSync(akbVersionDir('1.1.0')), false)
+    assert.equal(fs.existsSync(shim), false)
   })
 
   it('counts a choice as use', async () => {

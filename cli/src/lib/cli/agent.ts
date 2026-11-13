@@ -247,7 +247,7 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
     })
 
   withShared(program.command('components'))
-    .summary('list an agent or studio’s preview components and their usage')
+    .summary('list an agent or studio’s Preview Components and their usage')
     .option('--agent <name>', 'one agent’s components')
     .option('--studio <id>', 'all components used by a studio')
     .option('--docs', 'include component usage documentation')

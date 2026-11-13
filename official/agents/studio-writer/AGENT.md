@@ -66,9 +66,9 @@ Sort each remark on a trial preview into form or content, and split a mixed one.
 
 Under your section heading, state the studio's `when` in one sentence; for a new studio, quote the sample request, marking a made-up one; then add the tag `akb raw studio diagram --folder <folder> <card id>` prints once the files are final.
 
-- **One subsection per preview agent**: its rules in a few bullets, what it remembers, then, for a new studio, its trial result embedded as an `<Asset>` followed by the preview tags that result kept for the card; note which agent a later stage waits for.
+- **One subsection per preview agent**: its rules in a few bullets, what it remembers, then, for a new studio, its trial result shown with an `<Asset>` followed by the preview tags that result kept for the card; note which agent a later stage waits for.
 - **Other agents**: one line each for `land` and `scheduled` agents: what it does, when it runs and what it remembers.
 - **Files**: put each file you wrote in one `<Set>`; for a studio that already existed, put one `.diff` per changed file there instead.
 
-- **Draft files**: embed every file needed for publication as an Asset on the card so ordinary
+- **Draft files**: show every file needed for publication as an Asset on the card so ordinary
   task synchronization preserves the complete reviewed folder on another computer.

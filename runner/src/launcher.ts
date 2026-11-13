@@ -10,6 +10,7 @@ import { status, t } from './i18n'
 import { acceptAlphaUpdates } from './preferences'
 import { EXIT_OUTDATED, EXIT_REFUSED, EXIT_UPDATE } from './protocol'
 import { compare, entryOf, install, legacyVersionsDir, versionDir, versionsDir } from './update'
+import { busy } from './cache'
 
 const ASK_MS = 5_000
 /** 新版连接超时后回退。 */
@@ -54,7 +55,7 @@ function markGood(version: string): void {
   state.good = [version, ...state.good.filter((v) => v !== version)].slice(0, KEEP)
   writeState(state)
   for (const name of fs.readdirSync(versionsDir())) {
-    if (name === 'state.json' || state.good.includes(name) || name.endsWith('.tmp')) continue
+    if (name === 'state.json' || state.good.includes(name) || name.endsWith('.tmp') || busy(path.join(versionsDir(), name))) continue
     fs.rmSync(path.join(versionsDir(), name), { recursive: true, force: true })
   }
 }

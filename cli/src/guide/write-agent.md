@@ -23,7 +23,7 @@ akb:
   after: [ui-designer]
   # Optional, for a preview agent: `new` runs it in a session of its own.
   session: new
-  # Preview components this agent uses; an empty list loads no component documentation.
+  # Preview Components this agent uses; an empty list loads no component documentation.
   components: [Asset]
   # Optional: a sticker of its deliverable, by glyph name (the Studio builder lists them),
   # or 1 to 12 parts `{ d, f?, o?: true, s?, w? }`. Without it, a generic file is drawn.
@@ -139,7 +139,7 @@ in `AGENT.md`:
 
 ## Output
 
-Declare the preview components the agent uses in `akb.components` (Asset, Compare, Storyboard, Set).
+Declare the Preview Components the agent uses in `akb.components` (Asset, Compare, Storyboard, Set).
 Their usage documentation is supplied with the run; omitted declarations default to Asset.
 Use `akb raw components --agent <name> --docs` or `--studio <id> --docs` to read it.
 

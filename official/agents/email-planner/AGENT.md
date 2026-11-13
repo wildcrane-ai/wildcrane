@@ -50,7 +50,7 @@ Give each affected email a `###` heading naming it, and match the form the produ
   `scripts/newsletter/`'s issue JSON and `scripts/newsletter-send.mjs --preview`, write and
   preview it in that format instead of React Email TSX.
 - **Preview**: run this agent's `scripts/render.mjs <file>`, which writes `<email>.html` and
-  `<email>.txt` beside it; embed the HTML twice, desktop and `device="mobile"`, then the
+  `<email>.txt` beside it; show the HTML twice, desktop and `device="mobile"`, then the
   `.txt`, each as `<Asset src=".assets/<card id>/<file>" label="<subject>" />` in its own paragraph.
 - **Render failure**: write the error and how to retry under that email; planning is not done
   until it renders.

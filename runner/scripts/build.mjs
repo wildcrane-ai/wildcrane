@@ -34,6 +34,7 @@ copySkills(PLUGINS_DIR)
 for (const [entry, outfile] of [
   ['launcher-main.ts', path.join(PKG_DIR, 'dist', 'launcher.mjs')],
   ['main.ts', path.join(PKG_DIR, 'dist', 'runner.mjs')],
+  ['flow-worker-main.ts', path.join(PKG_DIR, 'dist', 'flow-worker-main.mjs')],
   ['settings-main.ts', path.join(PKG_DIR, 'dist', 'settings.mjs')],
   ['plugin-main.ts', path.join(PKG_DIR, 'dist', 'plugin.mjs')],
   ['akb-proxy.ts', path.join(PKG_DIR, 'dist', 'akb-proxy.mjs')],

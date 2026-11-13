@@ -111,6 +111,18 @@ if (a === 'raw' && b === 'init') {
     setInterval(() => console.log('still working'), 50)
     await new Promise(() => {})
   }
+  if (how.gates?.length) {
+    runs.push({ sessionId, cardId: id, action: b, status: 'running', ...spent })
+    write('runs.json', runs)
+  }
+  for (const gate of how.gates ?? []) {
+    console.log(JSON.stringify({ kind: 'message', data: { text: `Waiting for ${path.basename(gate)}.` } }))
+    while (!fs.existsSync(gate)) {
+      if (read('runs.json', []).find((r) => r.sessionId === sessionId)?.status === 'stopped') process.exit(1)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+  }
+  if (how.gates?.length) runs.pop()
   runs.push({ sessionId, cardId: id, result: how.result, ...spent }, ...(last !== sessionId ? [{ sessionId: last, cardId: id, result: how.landed ?? 'Landed it.', ...spent }] : []))
   write('runs.json', runs)
   // `ended`: the delivery record a `delivery cancel|discard|blocked` left meanwhile (#59).

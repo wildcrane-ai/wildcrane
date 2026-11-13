@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { BUNDLED_SHIM, akbArgs, akbHome, bundledAkb, type Akb } from './akb'
-import { IDLE_MS } from './cache'
+import { busy, IDLE_MS } from './cache'
 import { runnerCwd } from './home'
 import { AKB_CONTRACT, AKB_VERSION } from './protocol'
 import { installPackage, type Package } from './update'
@@ -126,6 +126,6 @@ export function sweepAkb(now = Date.now()): void {
   for (const e of entries) {
     if (!e.isDirectory() || e.name === current || e.name === BUNDLED_SHIM) continue
     const dir = path.join(akbHome(), e.name)
-    if (now - fs.statSync(dir).mtimeMs > IDLE_MS) fs.rmSync(dir, { recursive: true, force: true })
+    if (!busy(dir) && now - fs.statSync(dir).mtimeMs > IDLE_MS) fs.rmSync(dir, { recursive: true, force: true })
   }
 }

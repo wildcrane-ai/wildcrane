@@ -10,9 +10,9 @@ instructions tell you to write.
   implementation.
 - **Rework**: when your section exists, redo only what the user names or an upstream change
   affects, and keep the rest, including its IDs, as it is.
-- **Components**: use the component documentation supplied with your run for embeds.
+- **Components**: use the Preview Components documentation supplied with your run to show your Preview.
 - **Long drafts**: put a draft over about 20 lines in `<board-state>/assets/<card id>/<name>.md`
-  and embed it as `<Asset src=".assets/<card id>/<name>.md">`; a shorter one goes in a code block.
+  and show it with `<Asset src=".assets/<card id>/<name>.md">`; a shorter one goes in a code block.
 - **Memory**: `docs/kanban/memory/agents/<agent-name>/` is yours; keep only the files your
   instructions name, and edit one directly when you learn something lasting. Edit your
   studio's memory only as its rules say.

@@ -28,6 +28,7 @@ import { keepPresence, type Presence } from './presence'
 import { refreshModels } from './runtimes'
 import { akbCardOf, openTaskFolder } from './task-folder'
 import { logSync } from './sync-debug'
+import { canKeepFlow, reclaimFlowWorkerAfterExit, reclaimFlowWorkers, flowWorkerEntry, hasFlowWorker, launchFlowWorker, stopFlowWorker, watchFlowWorker } from './flow-worker'
 
 /** Re-register this often: it is what keeps the computer counted as connected, inside Cloud's
  *  15-minute lease. */
@@ -44,6 +45,8 @@ export type Stop = { reason: 'elsewhere'; machine: string } | { reason: 'outdate
 export interface Options {
   registration: () => Promise<api.Registration>
   deps?: Deps
+  /** Override the detached job entry in integration tests. */
+  flowWorkerEntry?: string
   heartbeatMs?: number
   pollMs?: number
   /** Called each time Cloud accepts the registration after it did not. */
@@ -59,9 +62,9 @@ export interface Options {
 export interface Runner {
   /** Resolves when Cloud refuses this Runner for good. */
   stopped: Promise<Stop>
-  /** Release the account, stop every job, and close. */
+  /** Keep detached planning/build jobs, stop other jobs, and close. */
   close(): Promise<void>
-  /** 保存正在执行的作业，停机但保留云端领取状态。 */
+  /** 保留规划和构建的执行，其余作业保存进度后停机。 */
   update(): Promise<void>
   /** Register again now, to tell Cloud what changed. */
   renew(): void
@@ -89,6 +92,8 @@ export function startRunner(options: Options): Runner {
   const jobs = new Set<Promise<void>>()
   const running = new Map<string, (() => Promise<void>) | null>()
   const attempted = new Set<string>()
+  const workers = new Set<string>()
+  const workerEntry = options.flowWorkerEntry ?? (options.deps ? undefined : flowWorkerEntry)
   let stop: (s: Stop) => void = () => {}
   const stopped = new Promise<Stop>((resolve) => (stop = resolve))
 
@@ -156,6 +161,7 @@ export function startRunner(options: Options): Runner {
     if (sweeping || closed || !registration) return
     sweeping = true
     try {
+      await reclaimFlowWorkers(registration.machineId, options.deps)
       sweepAkb()
       await sweepCache(registration.machineId)
       await sweepStudios()
@@ -259,6 +265,17 @@ export function startRunner(options: Options): Runner {
       for (const id of attempted) if (!listed.has(id) && !running.has(id)) attempted.delete(id)
       for (const job of list.value.jobs) {
         if (closed || preparing) break
+        if (workerEntry && canKeepFlow(job) && !running.has(job.id)
+            && (job.state === 'waiting' || job.state === 'claimed') && !attempted.has(job.id)) {
+          let keep = hasFlowWorker(job.id)
+          if (!keep) {
+            const current = await api.readJob(job.id)
+            if (closed || preparing || !validAccount()) break
+            if (!current.ok || current.value.job.id !== job.id || current.value.job.state === 'finished') continue
+            keep = current.value.job.state === 'waiting'
+          }
+          if (keep) { startWorker(job); continue }
+        }
         // 本地运行停止后，由 Cloud 自动恢复重启遗留的任务一次。
         if ((job.state === 'claimed' || job.state === 'interrupted') && !running.has(job.id) && (!attempted.has(job.id) || !job.flow && !!(job.chat || job.discussion))) {
           const failure = await stopLeftOn(job)
@@ -343,6 +360,40 @@ export function startRunner(options: Options): Runner {
     jobs.add(job)
   }
 
+  const startWorker = (job: api.Job) => {
+    const id = job.id
+    attempted.add(id)
+    workers.add(id)
+    running.set(id, () => stopFlowWorker(id, deps().stopMs))
+    status(idle())
+    const watched = (async () => {
+      try {
+        if (!hasFlowWorker(id)) launchFlowWorker(id, registration!.machineId, workerEntry)
+        await watchFlowWorker(id, registration!.machineId, () => closed)
+        if (!closed) {
+          const left = await api.listJobs(registration!.machineId)
+          if (left.ok && left.value.jobs.some((j) => j.id === id)) {
+            throw new Error('原执行已退出，但未确认最终结果，已有成果已保留，请检查后续跑。')
+          }
+        }
+      } catch (e) {
+        const held = !closed && validAccount() ? await api.renewJob(registration!.machineId, id) : null
+        const claimed = held?.ok && !held.value.renewed && validAccount() ? await api.claimJob(registration!.machineId, id) : null
+        if (held?.ok && held.value.renewed || claimed?.ok && claimed.value.claimed) {
+          const failure = await stopLeftOn(job)
+          await api.finishJob(registration!.machineId, id, 'failed', failure ?? (e instanceof Error ? e.message : String(e)))
+        }
+      }
+    })().finally(() => {
+      jobs.delete(watched)
+      running.delete(id)
+      workers.delete(id)
+      void reclaimFlowWorkerAfterExit(id, registration!.machineId, options.deps)
+      if (!closed) { boards?.look(); status(idle()); void readJobs() }
+    })
+    jobs.add(watched)
+  }
+
   const close = async (release = true, updating = false) => {
     if (closed) return
     if (updating) {
@@ -350,6 +401,7 @@ export function startRunner(options: Options): Runner {
       await readDone
       // 先让云端保留作业，断网时不开始停机。
       for (const id of running.keys()) {
+        if (workers.has(id)) continue
         const prepared = await api.finishJob(registration!.machineId, id, 'failed', PREPARE_REASON)
         if (!prepared.ok || !prepared.value.prepared && !prepared.value.finished) {
           preparing = false
@@ -361,6 +413,7 @@ export function startRunner(options: Options): Runner {
     closed = true
     if (updating) {
       for (const id of running.keys()) {
+        if (workers.has(id)) continue
         const checkpoint = readCheckpoint(id) ?? { pending: [] }
         saveCheckpoint(id, { ...checkpoint, updating: true })
       }
@@ -372,7 +425,10 @@ export function startRunner(options: Options): Runner {
     presence?.close()
     boards?.close()
     // A stalled protocol or upload must not block the update handoff forever.
-    const stops = Promise.all([readDone, ...jobs, ...[...running.values()].map((halt) => halt?.())])
+    const preserveWorkers = (release || updating) && validAccount()
+    const keptWorkers = preserveWorkers && workers.size > 0
+    const stops = Promise.all([readDone, ...jobs, ...[...running.entries()].map(([id, halt]) =>
+      preserveWorkers && workers.has(id) ? undefined : halt?.())])
     let timeout: ReturnType<typeof setTimeout> | undefined
     await Promise.race([stops, new Promise<void>((resolve) => {
       timeout = setTimeout(() => {
@@ -381,7 +437,7 @@ export function startRunner(options: Options): Runner {
       }, (options.deps?.stopMs ?? STOP_MS) + 1_000)
     })])
     clearTimeout(timeout)
-    if (release && !lock.waited() && registration) await api.release(registration.machineId)
+    if (release && !keptWorkers && !lock.waited() && registration) await api.release(registration.machineId)
     clearInterval(accountWatch)
     lock.release()
     releaseRecord()

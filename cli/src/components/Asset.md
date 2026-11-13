@@ -1,6 +1,6 @@
 # Asset
 
-Embed a file with `<Asset src=".assets/<card id>/<file>" label="..." />` alone in a paragraph.
+Show a file as a Preview with `<Asset src=".assets/<card id>/<file>" label="..." />` alone in a paragraph.
 Inline and fenced examples remain text.
 
 - **Label**: use a few words; an image's optional `alt` is its shipped caption and cannot contain `<`, `>` or its enclosing quote.

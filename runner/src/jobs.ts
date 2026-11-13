@@ -425,7 +425,10 @@ export async function runJob(id: string, deps: Deps, track: (stop: () => Promise
   }
   const releases: (() => void)[] = []
   try {
-    await runClaimed(job, { ...deps, akb: deps.akb() }, track, (dir) => releases.push(hold(dir)), lease)
+    const akb = deps.akb()
+    releases.push(hold(path.dirname(akb.shim)))
+    releases.push(hold(akb.shim))
+    await runClaimed(job, { ...deps, akb }, track, (dir) => releases.push(hold(dir)), lease)
   } finally {
     for (const release of releases) release()
     fs.rmSync(attachmentsOf(job), { recursive: true, force: true })

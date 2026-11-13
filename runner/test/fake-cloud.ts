@@ -114,6 +114,7 @@ export class FakeCloud {
   beforeNextCommit: (() => void) | null = null
   /** Every call fails as if Cloud could not be reached. */
   offline = false
+  beforeReadJob: ((id: string) => void | Promise<void>) | null = null
   registrationUnavailable = 0
   uploads = new Map<string, Buffer>()
   uploadFailure: { after: number; code: string } | null = null
@@ -432,6 +433,13 @@ export class FakeCloud {
       if (!mine(machine)) return send(200, { jobs: [] })
       const jobs = [...this.jobs.values()].filter((j) => j.state === 'waiting' || (j.state === 'claimed' && j.machine === machine && !j.leaseLost))
       return send(200, { jobs: jobs.map(({ events, claims, ...j }) => j) })
+    }
+    const readJob = /^\/v1\/runner\/jobs\/([^/]+)$/.exec(route)
+    if (readJob && req.method === 'GET') {
+      const id = decodeURIComponent(readJob[1]!)
+      await this.beforeReadJob?.(id)
+      const job = this.jobs.get(id)
+      return job ? send(200, { job }) : refuse(404, 'not_found', 'no')
     }
     const move = /^\/v1\/runner\/jobs\/([^/]+)\/(claim|renew|finish|approve)$/.exec(route)
     const job = move && this.jobs.get(move[1]!)

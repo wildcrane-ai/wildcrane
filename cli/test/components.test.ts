@@ -99,7 +99,7 @@ describe('preview component context', () => {
 
   it('requires exactly one selector and supports docs through the CLI', async () => {
     const result = await outputOf(['raw', 'components', '--agent', 'prompt-writer', '--docs'])
-    assert.match(result, /^Asset\nSet\n\nTags draw only in the card body;.*\n\n# Asset[^]*\n\n# Set\n/)
+    assert.match(result, /^Asset\nSet\n\nA Studio is the workbench for one kind of work\.[^]*Tags draw only in the card body;.*\n\n# Asset[^]*\n\n# Set\n/)
     await assert.rejects(run(root, ['raw', 'components']), /exactly one/)
     await assert.rejects(run(root, ['raw', 'components', '--agent', 'prompt-writer', '--studio', 'coding']), /exactly one/)
     await assert.rejects(run(root, ['raw', 'components', '--agent', 'absent']), /absent/)

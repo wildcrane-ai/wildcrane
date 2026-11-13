@@ -10,7 +10,7 @@ Work on the current card and its assets by default. Project implementation requi
 - **Manage open questions**: when a decision needs the user's input, follow `akb guide update-questions` and use `akb raw update-questions <id>` to edit the question list.
 - **Change card fields**: when the user changes metadata such as priority, modules, or dependencies, use `akb raw update <id>`.
 - **Choose a preview agent**: when a preview is needed and the agent is unclear, use `akb raw previews --triggers` to match the work to an agent.
-- **Create or revise a preview**: when the user asks to see or change a preview for the current card, use `akb raw previews <agent> <id> --print`; never write embed tags by hand.
+- **Create or revise a preview**: when the user asks to see or change a preview for the current card, use `akb raw previews <agent> <id> --print`; never write Preview Components tags by hand.
 - **Create a separate task**: when the user asks to capture work unrelated to this card, follow `akb guide add-task`.
 - **Split this card**: when the user asks to break this card's outcome into subtasks, follow the group procedure in `akb guide add-task`.
 - **Change a studio**: use `akb guide update-studio` for shared studio or agent changes; a correction to this card's draft alone stays on this card.

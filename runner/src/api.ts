@@ -246,6 +246,9 @@ export const release = (machineId: string) => request<{ released: boolean }>('PO
 export const listJobs = (machineId: string) =>
   request<{ jobs: Job[] }>('GET', `/v1/runner/jobs?machine=${encodeURIComponent(machineId)}`)
 
+export const readJob = (job: string) =>
+  request<{ job: Job }>('GET', `/v1/runner/jobs/${encodeURIComponent(job)}`)
+
 const move = <T>(job: string, what: string, body: Record<string, unknown>) =>
   request<T>('POST', `/v1/runner/jobs/${encodeURIComponent(job)}/${what}`, body)
 

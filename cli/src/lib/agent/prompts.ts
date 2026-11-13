@@ -187,7 +187,7 @@ function componentsBlock(req: AgentRequest): string {
     ? studioComponents(flow.id)
     : agent ? agentComponents([agent.name]) : []
   const text = componentDocsText(docs)
-  return text ? `——— preview components ———\n\n${text}` : ''
+  return text ? `——— Preview Components ———\n\n${text}` : ''
 }
 
 // A scheduled or sub run's folder holds no board (#1352), so it is given the real places. Filled in

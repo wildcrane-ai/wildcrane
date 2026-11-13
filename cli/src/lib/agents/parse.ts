@@ -17,7 +17,7 @@ export interface SpecAgent {
   /** The previews whose approval it waits on when a card requests them too (#2154) —
    *  `akb.after`. ../agent/studios.ts drops a name outside its studio or one that closes a loop. */
   after: string[]
-  /** Preview component documentation supplied with the run. */
+  /** Preview Components documentation supplied with the run. */
   components: string[]
   /** Its deliverable sticker (#455) — `akb.icon`: a glyph name or the parts of one. */
   icon?: AgentIcon
