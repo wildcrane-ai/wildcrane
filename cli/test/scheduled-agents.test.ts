@@ -58,8 +58,6 @@ const scheduleAgent = (name: string, reads = ''): void => {
 
 const at = (iso: string): Date => new Date(iso)
 
-const QA_OFF = { agent: 'qa-manager', extra: '', off: true }
-
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-scheduled-'))
   fs.mkdirSync(path.join(kanban(), 'todo'), { recursive: true })
@@ -73,8 +71,6 @@ beforeEach(() => {
   git(['add', '-A'])
   git(['commit', '--quiet', '-m', 'start'])
   setBoardRoot(root)
-  // The one Coding ships stays out of the way: these are about a board's own.
-  saveScheduled(root, 'coding', [QA_OFF])
   scheduleAgent(PASS.agent)
 })
 
@@ -98,7 +94,7 @@ async function end(sessionId: string, status: 'done' | 'error' = 'done'): Promis
 }
 
 const enable = (now: Date, more: Record<string, unknown> = {}): void => {
-  saveScheduled(root, PASS.studio, [QA_OFF, { agent: PASS.agent, extra: '', since: formatStamp(now), ...more }])
+  saveScheduled(root, PASS.studio, [{ agent: PASS.agent, extra: '', since: formatStamp(now), ...more }])
 }
 
 describe('declaring a scheduled agent', () => {
@@ -146,13 +142,13 @@ describe("a studio's scheduled agents", () => {
 describe('`studio list`', () => {
   it('names only what STUDIO.md lists, whatever is saved here', () => {
     enable(at('2026-10-01T09:00'), { cadence: '6h', lastRun: '2026-10-02 09:00' })
-    assert.deepEqual(listedScheduled(studioById('coding')!), ['qa-manager'])
+    assert.deepEqual(listedScheduled(studioById('coding')!), [])
     const { studios } = cmdStudioList() as { studios: { id: string; scheduled: unknown }[] }
-    assert.deepEqual(studios.find((w) => w.id === 'coding')!.scheduled, ['qa-manager'])
+    assert.deepEqual(studios.find((w) => w.id === 'coding')!.scheduled, [])
   })
 
   it('has no `studio schedule` to report changes from', async () => {
-    assert.notEqual(await runAgent(['studio', 'schedule', 'coding', '--off', 'qa-manager'], { program: 'akb', cwd: root }), 0)
+    assert.notEqual(await runAgent(['studio', 'schedule', 'coding', '--off', PASS.agent], { program: 'akb', cwd: root }), 0)
   })
 })
 

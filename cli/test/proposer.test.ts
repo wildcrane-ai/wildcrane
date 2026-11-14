@@ -24,6 +24,7 @@ import { logPathOf, withStore } from '../src/lib/agent/store.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
 import { saveScheduled } from './helpers/board.ts'
 import { cmdTriageAdd, type TriageAddOptions } from '../src/commands/triage.ts'
+import { editStudio, resetOfficial } from './helpers/official.ts'
 import { readSignals } from '../src/lib/signals/index.ts'
 
 let root = ''
@@ -97,6 +98,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  resetOfficial()
   fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -294,13 +296,14 @@ describe('the flow', () => {
     fs.mkdirSync(home, { recursive: true })
     fs.writeFileSync(path.join(home, 'AGENT.md'), ['---', 'name: night-auditor', 'description: Audits the night.', 'akb:', '  reads: archived-cards', '---', '', 'You audit.', ''].join('\n'))
     // A saved `off` plays no part in any of these.
-    saveScheduled(root, 'coding', [{ agent: 'qa-manager', extra: '', off: true }])
+    editStudio('coding', (def) => { def.scheduled = [{ agent: 'night-auditor' }] })
+    saveScheduled(root, 'coding', [{ agent: 'night-auditor', extra: '', off: true }])
     const scheduled = () => buildRun({ action: 'reflect', cards: [1] }).prompt
     try {
       delete process.env[SCHEDULED_AGENTS_ENV]
       let printed = scheduled()
-      assert.match(printed, /<\/card>\n<scheduled-agents>\nqa-manager — Keeps the project's test cases/)
-      assert.doesNotMatch(printed, /night-auditor/)
+      assert.match(printed, /<\/card>\n<scheduled-agents>\nnight-auditor — Audits the night\./)
+      assert.doesNotMatch(printed, /qa-manager/)
       process.env[SCHEDULED_AGENTS_ENV] = 'night-auditor,gone'
       printed = scheduled()
       assert.match(printed, /<scheduled-agents>\nnight-auditor — Audits the night\.\n<\/scheduled-agents>/)

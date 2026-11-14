@@ -135,8 +135,11 @@ describe('the akb the Runner carries (#171)', () => {
       ok(ran)
       return ran.out
     }
-    assert.match(await printed(), /<scheduled-agents>\n\s*qa-manager — /)
-    assert.match(await printed({ AI4KANBAN_SCHEDULED_AGENTS: 'qa-manager,gone' }), /<scheduled-agents>\n\s*qa-manager — .*\n\s*<\/scheduled-agents>/)
+    assert.doesNotMatch(await printed(), /<scheduled-agents>\n/)
+    const home = path.join(board, 'agents', 'night-auditor')
+    fs.mkdirSync(home, { recursive: true })
+    fs.writeFileSync(path.join(home, 'AGENT.md'), '---\nname: night-auditor\ndescription: Audits the night.\n---\nAudit.\n')
+    assert.match(await printed({ AI4KANBAN_SCHEDULED_AGENTS: 'night-auditor,gone' }), /<scheduled-agents>\n\s*night-auditor — .*\n\s*<\/scheduled-agents>/)
     assert.doesNotMatch(await printed({ AI4KANBAN_SCHEDULED_AGENTS: '' }), /<scheduled-agents>\n/)
   })
 

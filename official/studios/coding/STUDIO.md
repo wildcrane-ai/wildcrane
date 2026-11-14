@@ -8,8 +8,6 @@ needsArtifact: false
 icon: software
 previews: [tech-stack-advisor, email-planner, ui-designer, api-designer, schema-designer, prompt-writer, competitor-research]
 land: [builder]
-scheduled:
-  - agent: qa-manager
 ---
 
 You plan cards that change software.

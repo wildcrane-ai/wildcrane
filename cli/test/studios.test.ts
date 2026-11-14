@@ -53,7 +53,7 @@ import { BOARD_STATE, RULES, setBoardRoot } from '../src/lib/paths.ts'
 import { backfillCardStudios } from '../src/lib/card-studio-backfill.ts'
 import { findCard } from '../src/lib/view/read.ts'
 import { awaitingApproval, canImplement } from '../src/lib/view/rules.ts'
-import { move, refuses, uiConfigOf } from './helpers/board.ts'
+import { move, refuses, saveScheduled, uiConfigOf } from './helpers/board.ts'
 import { editStudio, editableOfficial, resetOfficial, switchAgent, writeOfficial } from './helpers/official.ts'
 import { startCollecting, stopCollecting } from '../src/lib/io.ts'
 
@@ -112,7 +112,7 @@ describe('the studios a board has', () => {
     assert.deepEqual(names(previewMembers(of('coding'))), ['tech-stack-advisor', 'email-planner', 'ui-designer', 'api-designer', 'schema-designer', 'prompt-writer', 'competitor-research'])
     assert.deepEqual(all('coding'), [['tech-stack-advisor', 'email-planner', 'ui-designer', 'api-designer', 'schema-designer', 'prompt-writer', 'competitor-research']])
     assert.deepEqual(landAgents(of('coding')).map((h) => h.agent), ['builder'])
-    assert.deepEqual(scheduledMembers(of('coding')).map((h) => h.agent), ['qa-manager'])
+    assert.deepEqual(scheduledMembers(of('coding')).map((h) => h.agent), [])
     assert.deepEqual(all('hyperframes-video'), [['scriptwriter', 'demo-rehearser'], ['hyperframes-editor']])
     assert.deepEqual(landAgents(of('hyperframes-video')).map((h) => h.agent), ['cover-designer'])
     assert.deepEqual(all('blog-post'), [['blog-planner'], ['blog-illustrator'], ['blog-writer']])
@@ -441,11 +441,12 @@ describe('starting a run', () => {
   })
 })
 
-describe('the QA manager, Coding’s scheduled agent (#1402)', () => {
-  it('runs on auto, and is no other built-in’s', () => {
-    const qa = scheduledAgent('coding', 'qa-manager')!
-    assert.deepEqual({ off: qa.off, cadence: qa.cadence, extra: qa.extra }, { off: undefined, cadence: 'auto', extra: '' })
-    for (const flow of studios().filter((w) => w.builtIn && w.id !== 'coding')) assert.deepEqual(scheduledMembers(flow), [])
+describe('the retired built-in QA manager (#717)', () => {
+  it('stays absent with an old enabled schedule', () => {
+    saveScheduled(root, 'coding', [{ agent: 'qa-manager', cadence: '1h', extra: '' }])
+    assert.equal(findSpecAgent('qa-manager'), null)
+    assert.equal(scheduledAgent('coding', 'qa-manager'), undefined)
+    for (const flow of studios().filter((w) => w.builtIn)) assert.deepEqual(scheduledMembers(flow), [])
   })
 })
 
@@ -459,7 +460,7 @@ describe('studios in files (#1890)', () => {
       needsArtifact: true,
       previews: [{ agent: 'ui-designer', extra: 'Line one #1\nline two', off: true }, { agent: 'copywriting', extra: '' }, { agent: 'illustrator', extra: '' }],
       land: [{ agent: 'builder', extra: '' }],
-      scheduled: [{ agent: 'qa-manager', cadence: '2d' }],
+      scheduled: [{ agent: 'night-auditor', cadence: '2d' }],
       rules: 'Write it short.',
     }
     assert.deepEqual(parseStudioFile('wf-2', studioFileText(def), 'x'), { def })

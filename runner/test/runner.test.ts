@@ -3802,12 +3802,12 @@ describe('periodic agents on the Runner (#2068)', () => {
     assert.equal(prune({ lastSuccess: at(24 * 8) }), true)
     assert.equal(prune({ lastSuccess: at(24 * 8), attempts: [{ startedAt: at(1), status: 'error' }] }), false, 'a failure was retried at once')
     assert.equal(prune({ attempts: [{ startedAt: at(0), status: 'running' }] }), false, 'a second ran beside the first')
-    assert.equal(agentDue(agent({ name: 'qa-manager', cadence: '1d at 09:30', lastSuccess: at(25) }) as never, now), true)
-    assert.equal(agentDue(agent({ name: 'qa-manager', cadence: '1d at 09:30', lastSuccess: at(25), newWork: false }) as never, now), false)
+    assert.equal(agentDue(agent({ name: 'night-auditor', cadence: '1d at 09:30', lastSuccess: at(25) }) as never, now), true)
+    assert.equal(agentDue(agent({ name: 'night-auditor', cadence: '1d at 09:30', lastSuccess: at(25), newWork: false }) as never, now), false)
   })
 
   it('comes round on the hour, whatever minute Cloud stamped the last pass (#291)', () => {
-    const six = (lastSuccess: string, now: string) => agentDue(agent({ name: 'qa-manager', cadence: '6h', lastSuccess }) as never, Date.parse(now))
+    const six = (lastSuccess: string, now: string) => agentDue(agent({ name: 'night-auditor', cadence: '6h', lastSuccess }) as never, Date.parse(now))
     assert.equal(six('2026-10-26T12:00:40', '2026-10-26T18:00:00'), true)
     assert.equal(six('2026-10-26T12:01:10', '2026-10-26T18:00:00'), true, 'a pass stamped past the hour lost an hour')
     assert.equal(six('2026-10-26T11:59:50', '2026-10-26T17:00:00'), false, 'a pass stamped before the hour came round early')
@@ -3856,12 +3856,12 @@ describe('periodic agents on the Runner (#2068)', () => {
 
   it('tells a reflection the studio agents Cloud has on, and no other agent (#277)', async () => {
     const row = (name: string, studio?: string) => agent({ name, studio, newWork: false, reads: 'archived-cards' })
-    cloud.periodic = [row('prune-memory'), row('qa-manager', 'coding'), row('qa-manager', 'wf_own'), row('seo-writer', 'wf_own')]
+    cloud.periodic = [row('prune-memory'), row('night-auditor', 'coding'), row('night-auditor', 'wf_own'), row('seo-writer', 'wf_own')]
     const job = cloud.dispatch({ id: 'r1', project: 'prj_1', projectDir: project, agent: { name: 'reflect', tasks: [{ id: 'task_7', number: 7 }] } })
     start()
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(periodic().scheduled, 'qa-manager,seo-writer')
+    assert.equal(periodic().scheduled, 'night-auditor,seo-writer')
 
     const other = cloud.dispatch({ id: 'p1', project: 'prj_1', projectDir: project, agent: { name: 'prune-memory' } })
     await until(() => other.state === 'finished')
@@ -3892,12 +3892,12 @@ describe('periodic agents on the Runner (#2068)', () => {
   })
 
   it('runs a studio\'s scheduled agent by its akb name, and fails a project with no folder here', async () => {
-    const qa = cloud.dispatch({ id: 'q1', project: 'prj_1', projectDir: project, agent: { name: 'qa-manager', studio: 'wf_builtin_coding' } })
+    const audit = cloud.dispatch({ id: 'q1', project: 'prj_1', projectDir: project, agent: { name: 'night-auditor', studio: 'wf_builtin_coding' } })
     const away = cloud.dispatch({ id: 'q2', project: 'prj_1', projectDir: null, agent: { name: 'prune-memory' } })
     start()
-    await until(() => qa.state === 'finished' && away.state === 'finished')
-    assert.equal(qa.outcome, 'done', qa.reason)
-    assert.deepEqual(periodic().args.slice(0, 4), ['agent', 'run', 'coding', 'qa-manager'])
+    await until(() => audit.state === 'finished' && away.state === 'finished')
+    assert.equal(audit.outcome, 'done', audit.reason)
+    assert.deepEqual(periodic().args.slice(0, 4), ['agent', 'run', 'coding', 'night-auditor'])
     assert.equal(away.outcome, 'failed')
     assert.equal(away.reason, 'This project has no folder on this computer.')
   })
