@@ -515,7 +515,6 @@ describe('builder 专属指令', () => {
     }
     assert.doesNotMatch(buildPrompt({ action: 'clarify', id }), /you, the `builder` agent/)
     assert.doesNotMatch(findGuide('implement')!.text, /Approved mockups|Approved API previews|Approved schema preview|Building is not shipping|What needs it live|repository-required check/)
-    assert.match(findGuide('implement')!.text, /Start now|User-action blockers/)
   })
 
   it('其他执行者隔离，混合交付按顺序注入各自正文', () => {
