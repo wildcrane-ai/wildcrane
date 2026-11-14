@@ -8,6 +8,11 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 import { openResume, openRun, patch, readSpec, resumeDelivery } from '../src/lib/agent/sessions.ts'
 import { endDelivery } from '../src/lib/agent/deliveries.ts'
 import { startRun } from '../src/lib/agent/start.ts'
+import { approvalRequest } from '../src/lib/agent/approve.ts'
+import { freezePreviewProgress, readPreviewProgress, updatePreviewProgress } from '../src/lib/agent/preview-progress.ts'
+import { selectPreviewStages } from '../src/lib/preview-stages.ts'
+import { cmdStartRun } from '../src/commands/run.ts'
+import { startCollecting, stopCollecting } from '../src/lib/io.ts'
 import { readStore, withStore } from '../src/lib/agent/store.ts'
 import { watchRun } from '../src/lib/agent/watch.ts'
 import type { RunRecord, RunStatus } from '../src/lib/agent/types.ts'
@@ -50,6 +55,32 @@ function build(status: RunStatus = 'stopped', resumeId?: string): RunRecord {
 }
 
 describe('交付的构建会话续接（#368）', () => {
+  for (const status of ['absent', 'unselected', 'running', 'awaiting_confirmation', 'failed'] as const) {
+    it(`启动和续跑不要求预览完成：${status}（#721）`, async () => {
+      await move(root, ['update', '1', '--previews', 'ui-designer', '--status', 'ready'])
+      if (status !== 'absent') {
+        freezePreviewProgress(1, 'ui-designer')
+        if (status !== 'unselected') updatePreviewProgress(1, (all) => {
+          const progress = all['ui-designer']!
+          selectPreviewStages(progress, progress.definitions.map((stage) => stage.id))
+          progress.stages[0]!.status = status
+        })
+      }
+      const before = readPreviewProgress(1)
+      assert.equal((approvalRequest({ action: 'approve', id: 1 }) as { action: string }).action, 'implement')
+      startCollecting()
+      try {
+        assert.equal((await cmdStartRun('implement', [1], { print: true })).mode, 'print')
+      } finally { stopCollecting() }
+      const old = build()
+      const started = await startRun({ action: 'implement', id: 1 })
+      if ('error' in started) throw new Error(started.error)
+      assert.equal(started.run.resumedFrom, old.sessionId)
+      assert.equal(started.run.deliveryId, old.deliveryId)
+      assert.deepEqual(readPreviewProgress(1), before)
+    })
+  }
+
   for (const harness of ['claude-code', 'codex', 'kimi', 'opencode', 'cursor', 'dsh', 'grok', 'zcode']) {
     it(`${harness} 使用原构建的真实会话，而非讨论会话或新运行 ID`, async () => {
       runtime(harness)

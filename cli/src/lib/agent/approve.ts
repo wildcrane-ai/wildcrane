@@ -1,4 +1,3 @@
-import { previewBlocker } from './preview-progress'
 // Approve (#1790, #2154): the user accepts the current stage's previews. Before the last stage
 // the board moves the card to the next one, and planning makes its previews; on the last, the
 // card is built and landed when its studio lands anything, and archived when it does not.
@@ -21,8 +20,6 @@ export function approvalRequest(req: CommandRequest): AgentRequest | { error: st
   const id = req.id
   const card = id === undefined ? null : findCard(id)
   if (!card) return { error: `task #${id} does not exist` }
-  const blocked = previewBlocker(card.id)
-  if (blocked) return { error: blocked }
   if (card.questions.length) return { error: `#${card.id} has open questions — answer them before approving it.` }
   if (readRuns().some((r) => r.status === 'running' && r.cardId === card.id && holdsCard(r.action))) {
     return { error: `#${card.id} has a run in flight — approve once it ends.` }

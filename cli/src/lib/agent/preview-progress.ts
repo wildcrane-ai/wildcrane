@@ -6,7 +6,7 @@ import { agentMemoryDir } from '../memory'
 import { withLock } from '../lock'
 import { findSpecAgent, specHeadingRe } from '../agents'
 import { findCard } from '../view/read'
-import { cardMeta, cardStages, cardStage, cardStudioId, studioFor } from './studios'
+import { cardStudioId } from './studios'
 import { studioFiles } from './studio-shared'
 import { readRuns } from './store'
 import { insideRun } from './env'
@@ -62,18 +62,6 @@ export function previewStagePrompt(id: number, name: string, command: string): s
     ...progress.stages.filter((stage) => stage.status === 'confirmed').map((stage) => `Confirmed ${stage.id} v${stage.version}:\n${stage.artifact?.body ?? ''}`),
     `Write only the current work in your existing section. Submit it with: ${command} raw previews ${name} ${id} --submit --stage ${current.id}. Stop after success.`,
   ].join('\n\n')
-}
-export function previewBlocker(id: number): string | null {
-  const card = findCard(id)
-  if (!card) return null
-  const meta = cardMeta(id)
-  const flow = studioFor(card.studio)
-  const required = cardStages(meta, flow).slice(0, cardStage(meta, flow)).flat()
-  for (const name of required) {
-    const progress = freezePreviewProgress(id, name)
-    if (progress && !previewReady(progress)) return `#${id}: ${name} / ${progress.currentStageId ?? 'stage selection'} is unfinished. Review that preview before approving or implementing.`
-  }
-  return null
 }
 export function previewRun(id: number, name: string) {
   const run = readRuns().find((run) => run.sessionId === insideRun())
