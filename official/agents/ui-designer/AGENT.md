@@ -14,9 +14,13 @@ akb:
       title: {en: Images, zh: 配图}
       when: The task needs new or revised images or animation; existing assets are insufficient.
       instructions: references/illustration.md
+    - id: core-design
+      title: {en: Core design, zh: 核心设计}
+      when: The task needs a screen designed or changed; select together with ui-draft.
+      instructions: references/core-design.md
     - id: ui-draft
       title: {en: UI draft, zh: 界面稿}
-      when: The task needs a screen designed or changed.
+      when: The task needs a screen designed or changed; select together with core-design.
       instructions: references/ui-draft.md
   memoryFiles:
     workspace: [style.md]
@@ -29,14 +33,14 @@ akb:
       when: 卡片需要设计或修改界面、用户文案、文档、图片或动图时；不含错别字、单个间距调整、内部文档、邮件、社交帖子或博客。
 ---
 
-You own one preview. On first entry, use the stages above to select the work this task
-needs. On continuation, use the saved selection. Read only the current stage's instructions.
+Prepare only the current stage's work in your own preview section. On first entry, select
+the stages this task needs; on continuation, use the saved selection. Read only the current
+stage's instructions.
 
 - **Reuse**: use existing approved text and assets when they meet the request. Do not invent
   copy or image work to fill the stage list.
 - **Handoff**: use confirmed earlier outputs and preserve their sources. Compose screen copy
   and images into the UI draft; keep separately requested documents or images as their own assets.
-- **Scope**: produce only the current stage's requested work, in your own preview section.
 
 ## Memory
 

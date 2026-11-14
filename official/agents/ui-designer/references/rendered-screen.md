@@ -4,6 +4,15 @@ A mockup is a folder of files under `<board-state>/assets/<card id>/`, and it st
 of the real screen's own source — never a lookalike written from scratch. Copy first, trim
 second, and design only what this card changes.
 
+### Design the screen
+
+- **Purpose**: include only information, actions and structure needed by the card requirements,
+  actual system capabilities and complete user flow.
+- **Use**: design for realistic content volumes and preserve the main flow's context.
+- **Reuse**: use existing controls and feedback; show information and entry points once, and
+  states only when the system provides their data.
+- **Results**: keep result content visible unless the user asks to hide it.
+
 ### Build the copy
 
 - **Copy the files**: find the components the screen is really built from and copy them into
@@ -16,8 +25,11 @@ second, and design only what this card changes.
 - **Trim the wiring**: remove data fetching, server actions, file and board reads, storage,
   timers, React hooks, `"use client"`, and anything that answers a click. Put fixed sample data
   where they fed, showing the state this mockup is named for.
-- **Keep the look**: layout, controls, sizes and classes stay exactly as the copy had them.
+- **Keep the look**: preserve copied components, theme and details, with implementation-ready
+  layout, controls, copy and visual precision in changed areas from the first version.
 - **Design only the change**: write new markup only where the card adds or changes something.
+- **Shared frame**: share the copied framework across mockups, simplifying unrelated surroundings
+  only where the change's layout and usage context remain clear.
 
 ### What the board can run
 
@@ -38,22 +50,23 @@ second, and design only what this card changes.
 
 Draw terminals and command output as monospaced text inside the mockup too.
 
-If a preview fails to render, fix the errors and try again.
+Before submitting either screen stage:
 
-Point at each screen from your section with one `<Asset>` tag standing in a paragraph of its
-own — a blank line above it and a blank line below:
+- **Get the checker**: save the output of
+  `akb raw file <studio> agents/ui-designer/scripts/check-mockup.mjs` as `check-mockup.mjs`.
+- **Check**: run `node check-mockup.mjs <entry> [<entry> ...]` on all delivered mockups,
+  fixing failures and rerunning until all pass.
+- **Inspect**: check their actual display at the delivered sizes for visual fidelity.
+
+Show each screen with an `<Asset>` tag alone in a paragraph:
 
 ```
 <Asset src=".assets/<card id>/board-empty.tsx" label="Board, nothing on it" device="desktop" />
-
-<Asset src=".assets/<card id>/board-empty-phone.tsx" label="Board on a phone, nothing on it" device="mobile" />
 ```
 
-A tag sharing a line or paragraph with prose is printed as text. `src` is the entry file's name,
-written exactly as above and resolved by the board; `label` is required and is the screen's name
-for a reader, in the board's language. `device` is `mobile` for a 393×852 phone screen or
-`desktop` for a 1280×800 one; write it on every screen. Use `<Asset>` for mockups; cards also support `<Storyboard>`
-for scripts with storyboard manifests. Inside backticks or a fenced block, either remains text.
-With three or more screens, put them in one `<Set>` per purpose instead, giving a screen's desktop
-and phone mockups the same `label`.
-The board's phone frame overlays the iOS status bar and home indicator on a mobile screen as an iPhone does, with the same safe-area insets and status bar style; never draw them.
+- **Display**: use the entry file's path as `src` and a short screen name in the board's
+  language as `label`; set `device` to `mobile` (393×852) or `desktop` (1280×800).
+- **Group**: with three or more screens, use one `<Set>` per purpose; a screen's desktop and
+  phone views share a `label`.
+- **Phone frame**: the board overlays the iOS status bar and home indicator with safe-area
+  insets and status bar style; never draw them.

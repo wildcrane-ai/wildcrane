@@ -61,6 +61,8 @@ const PACKAGES: Record<string, () => Promise<unknown>> = {
   'class-variance-authority': () => import('class-variance-authority'),
 }
 
+export const MOCKUP_IMPORTS = new Set(['react', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'next/link', 'next/image', 'next/navigation', ...Object.keys(PACKAGES)])
+
 async function loadPackage(id: string): Promise<unknown> {
   if (id === 'react') return React
   if (id === 'react/jsx-runtime' || id === 'react/jsx-dev-runtime') return JSX

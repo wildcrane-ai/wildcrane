@@ -2,11 +2,10 @@
 
 Read `references/rendered-screen.md` from this agent's folder for the rendering contract.
 
-- **Design**: give one design matching the existing product's layout, colours, fonts and
-  spacing; use a neutral style when none exists. Show what users see and do, not implementation notes.
-- **Coverage**: draw each requested page and distinct state, including relevant empty and
-  failure states, as a named whole screen. Cover affected desktop and mobile layouts without
-  duplicating states already shown; do not ask the user to choose designs or confirm again.
+- **Design**: reuse the approved core screens, preserving their layout, navigation and visual direction.
+- **Coverage**: add only named whole screens needed to verify the change or meet explicit
+  page, state and adaptation requirements, following studio language rules without
+  automatically multiplying languages, devices and states.
 - **Content**: compose confirmed copy and images into the screen, preserving their content.
 - **Static output**: no click handlers, network requests or board reads; follow the rendering
   contract's asset and display format.

@@ -189,9 +189,9 @@ describe('the agents this command ships', () => {
     assert.match(ui.description, /^Routes copy/)
     assert.match(ui.when!, /^A card needs/)
     assert.deepEqual(ui.after, [])
-    assert.deepEqual(ui.stages?.map((stage) => stage.id), ['copywriting', 'illustration', 'ui-draft'])
+    assert.deepEqual(ui.stages?.map((stage) => stage.id), ['copywriting', 'illustration', 'core-design', 'ui-draft'])
     assert.match(ui.when!, /not a typo/)
-    assert.match(ui.body, /You own one preview/)
+    assert.match(ui.body, /Prepare only the current stage's work/)
     assert.equal(ui.builtIn, true)
   })
 
@@ -364,7 +364,7 @@ describe('what a session is shown', () => {
     assert.doesNotMatch(catalog, /planned by guess|Asking for none is the usual answer/)
     assert.match(catalog, /akb raw previews <agent> 12 <short note>/)
     assert.doesNotMatch(catalog, /Rendered screen/)
-    assert.doesNotMatch(catalog, /You own one preview/)
+    assert.doesNotMatch(catalog, /Prepare only the current stage's work/)
   })
 
   it('lists a project preview in both the selector and command listing', () => {
@@ -417,7 +417,7 @@ describe('what a session is shown', () => {
     assert.match(prompt, /You are the `ui-designer` preview agent on task 12/)
     assert.match(prompt, /guide preview-agent` — read it unless it is already in your context/)
     assert.doesNotMatch(prompt, /Be a preview agent/)
-    assert.match(prompt, /You own one preview/)
+    assert.match(prompt, /Prepare only the current stage's work/)
     assert.match(prompt, /——— your own files ———/)
     assert.match(prompt, /`references\/rendered-screen\.md`/)
     // Named, never pasted in: the run opens it when the work calls for it.
