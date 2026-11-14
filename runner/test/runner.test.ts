@@ -4494,3 +4494,94 @@ describe('the presence connection (#2163)', () => {
     assert.ok(cloud.registrations >= 2)
   })
 })
+
+it('启动前目录变化重新读取后再提交，关键事件不等普通 flush (#722)', async () => {
+  const { readSession } = await import('../../cli/src/lib/cloud/session')
+  const { clearStudioSnapshots } = await import('../src/goals')
+  clearStudioSnapshots()
+  const account = readSession()!.subject
+  const job = cloud.dispatch({ id: 'catalog722', discussion: { id: 'd722', workspace: 'ws_1', ideas: [] } })
+  let version = 'v1'
+  let reads = 0
+  const proof = path.join(runnerHome(), 'catalog-proof')
+  start('', {
+    flushMs: 60_000,
+    api: { ...api,
+      claimJob: async (machine, id) => {
+        const result = await api.claimJob(machine, id)
+        if (result.ok && result.value.claimed) result.value.job.discussion!.catalog = { account, version }
+        return result
+      },
+      listStudios: async () => { reads++; const current = version; version = 'v2'; return { ok: true, value: { data: [{ id: 'wf1', name: current }], next: null, catalogVersion: current } } },
+      renewJob: async (machine, id, progress) => {
+        const result = await api.renewJob(machine, id, progress)
+        return result.ok ? { ok: true, value: { ...result.value, catalog: { account, version } } } : result
+      },
+    },
+    plan: (runtime, prompt, cwd, resume, model) => {
+      const client = createAcpClient()
+      return { ...fakeRuntime(ACP_AGENT)(runtime, prompt, cwd, resume, model),
+        converse: async (child, event) => {
+          fs.writeFileSync(proof, fs.readFileSync(path.join(runnerHome(), 'ideas', 'catalog722.json')))
+          return client.turn({ stdout: child.stdout!, stdin: child.stdin!, prompt, cwd, log: () => {}, gotResumeId: () => {}, gotModel: () => {}, event })
+        },
+      }
+    },
+  })
+  await until(() => job.state === 'finished')
+  assert.equal(job.outcome, 'done', job.reason)
+  assert.equal(reads, 2)
+  assert.equal(JSON.parse(fs.readFileSync(proof, 'utf8')).studios[0].name, 'v2')
+  assert.ok(job.events.some(event => event.kind === 'phase' && event.data?.phase === 'started'))
+  clearStudioSnapshots()
+})
+
+it('首次内容在回复完成前立即推送，普通批次仍未到期 (#722)', async () => {
+  const said = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Live content' }] } })
+  const gated = gatedScript(`console.log(${JSON.stringify(said)})`)
+  const job = cloud.dispatch({ id: 'live722', chat: { message: 'm722', body: 'Hello' } })
+  start('', { flushMs: 60_000, plan: (runtime, prompt, cwd, resume) => ({ ...fakeRuntime(gated.script)(runtime, prompt, cwd, resume), renderer: createStreamRenderer() }) })
+  await until(() => job.events.some(event => event.kind === 'message'), 2000)
+  assert.equal(job.state, 'claimed', 'content waited until the final flush')
+  const eventAt = job.events.find(event => event.kind === 'message')!.data!.eventAt
+  assert.equal(typeof eventAt, 'string')
+  gated.release()
+  await until(() => job.state === 'finished')
+})
+
+it('旧尝试的进度拒绝迟到时不停止新的执行尝试 (#722)', async () => {
+  const job = cloud.dispatch({ id: 'attempt722', chat: { message: 'm722', body: 'Hello' } })
+  let attempts = 0
+  let firstPending = false
+  let secondStarted = false
+  let oldReturned = false
+  start('', {
+    api: { ...api, renewJob: async (machine, id, progress) => {
+      if (progress?.attempt === 1) {
+        firstPending = true
+        await until(() => secondStarted)
+        oldReturned = true
+        return { ok: true, value: { renewed: false } }
+      }
+      return api.renewJob(machine, id, progress)
+    } },
+    plan: (runtime, prompt, cwd, resume) => {
+      const attempt = ++attempts
+      return { ...fakeRuntime('setInterval(() => {}, 1000)')(runtime, prompt, cwd, resume),
+        converse: async (_child, event) => {
+          event({ kind: 'phase', data: { phase: 'preparing', at: new Date().toISOString() } })
+          if (attempt === 1) { await until(() => firstPending); return { ok: false, error: 'initialize timed out' } }
+          secondStarted = true
+          await until(() => oldReturned)
+          await new Promise(resolve => setImmediate(resolve))
+          event({ kind: 'message', data: { text: 'Continued' } })
+          return { ok: true, result: 'Continued' }
+        },
+      }
+    },
+  })
+  await until(() => job.state === 'finished')
+  assert.equal(job.outcome, 'done', job.reason)
+  assert.equal(attempts, 2)
+  assert.equal(job.claims, 1)
+})

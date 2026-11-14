@@ -165,7 +165,12 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
   // that reports it, and every other line of the log as `log`.
   const eventsFile = fs.createWriteStream(eventsPathOf(sessionId), { flags: 'a' })
   eventsFile.on('error', () => {})
-  const event = (e: RunEvent) => eventsFile.write(`${JSON.stringify(e)}\n`)
+  const pendingOperations = new Set<string>()
+  const event = (e: RunEvent) => {
+    if (e.kind === 'tool_call' && !['read', 'search', 'fetch'].includes(e.data.kind) && !['completed', 'failed'].includes(e.data.status)) pendingOperations.add(e.data.toolCallId)
+    if ((e.kind === 'tool_call' || e.kind === 'tool_call_update') && ['completed', 'failed'].includes(e.data.status ?? '')) pendingOperations.delete(e.data.toolCallId)
+    eventsFile.write(`${JSON.stringify(e)}\n`)
+  }
   const log = {
     write(text: string) {
       logFile.write(text)
@@ -403,6 +408,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     // How the conversation ended, on a run the board talked to. It stands in for
     // everything a printing agent's own output would have said.
     let spoken: TurnEnd | undefined
+    let crashed = false
     // The silence window: whether it ran out, and the timer it runs on. `waited` is set
     // when it ran out on background tasks (#1540).
     let silent = false
@@ -465,6 +471,9 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       // closing event is in. A run that failed this way must not close as done: its card
       // would advance and the refinements behind it would run on work that never happened.
       let failure = renderer?.failure?.() ?? (!taskCompleted && renderer?.background?.() ? 'The agent exited with unfinished background tasks.' : undefined)
+      if (!asked && pendingOperations.size > 0 && (code !== 0 || spoken?.ok === false)) {
+        failure = `${failure ?? spoken?.error ?? 'Agent exited.'} Operation results are unconfirmed; automatic recovery was skipped.`
+      }
       const unfinished = blocker || failure
       const result = spoken ? spoken.result : renderer?.result()
 
@@ -481,12 +490,23 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       const offStream = renderer?.offStream?.()
       // A run that went silent is continued too: the agent picks up its own turn.
       const quiet = silent && !asked && !blocker && !sub && !!resumeSessionId(held)
-      const blip = quiet
+      let blip = quiet
         ? { reason: waited ? backgroundSaid(BACKGROUND_WAIT.minutes) : silenceSaid(silenceFor) }
-        : ours || sub || (code === 0 && !said) || !resumeSessionId(held)
+        : ours || sub || pendingOperations.size > 0 || (code === 0 && !said) || !resumeSessionId(held)
           ? undefined
-          : active.transient?.({ failure: said, result, offStream })
-      const again = blip ? planRetry(held.retry, blip, held.startedAt, Date.now(), Math.random, !quiet) : null
+          : active.transient?.({ failure: said, result, offStream }) ?? (crashed && !said ? { reason: `Agent process exited unexpectedly (${child.signalCode}).` } : undefined)
+      if (blip) {
+        const mark = runMark(sessionId, agentStartedAt)
+        const root = child.pid ? { pid: child.pid, since: agentStartedAt } : undefined
+        const until = Date.now() + STOP_GRACE_MS + STOP_CLOSE_MS
+        while (!processesStopped(mark, root) && Date.now() < until) await sleep(100)
+        if (!processesStopped(mark, root)) {
+          blip = undefined
+          failure = 'Previous execution could not be confirmed stopped; existing results were preserved.'
+        }
+      }
+      const serviceClosed = said === 'Codex connection closed before all work and results finished.'
+      const again = blip ? planRetry(held.retry, blip, serviceClosed || crashed ? Date.now() : held.startedAt, Date.now(), Math.random, !quiet) : null
       if (again) {
         log.write(`\n[board] ${retryLine(again)}\n`)
         patch(sessionId, (r) => {
@@ -851,7 +871,8 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
 
     // An agent that exited on its own leaves what it put in the background running, in a
     // worktree about to go and often holding the pipe `close` waits on (#1499).
-    child.once('exit', () => {
+    child.once('exit', (_code, signal) => {
+      crashed = !ending && !!signal && ['SIGKILL', 'SIGTERM', 'SIGSEGV', 'SIGABRT', 'SIGBUS', 'SIGILL'].includes(signal)
       if (!ending) killMarked(runMark(sessionId), child.pid ? { pid: child.pid, since: agentStartedAt } : undefined)
     })
     child.on('close', (code) => void finish(code, peekRun(sessionId)?.stopping === true || stopped))

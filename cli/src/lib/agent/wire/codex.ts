@@ -132,7 +132,7 @@ async function run(io: ClientTurn, options: Options, tasks: ReturnType<typeof cr
     if (failure) io.event?.({ kind: 'error', data: { text: failure } })
     resolve({ ok: !failure, error: failure, result: renderer.result(), replyParts: renderer.replyParts?.(), usage: combinedUsage, context, costUsd, costIncomplete: child.costIncomplete || (cost === undefined && child.costUsd !== undefined) || undefined })
   }
-  const closed = () => end('Codex closed the connection before all work and results finished.')
+  const closed = () => end('Codex connection closed before all work and results finished.')
   io.stdout.once('close', closed)
   const update = (id: string, state: Json, title = '') => {
     if (ended) return

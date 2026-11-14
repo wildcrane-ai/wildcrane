@@ -1,3 +1,6 @@
+import { conversationProgress } from './conversation-progress'
+import { readSession } from '../../cli/src/lib/cloud/session'
+import { accountGeneration } from './settings-control'
 import { previewBridge } from './preview-bridge'
 import { CONVERSATION_MS } from '../../cli/src/lib/shared/conversation'
 import { streamFinished, createBackgroundWait, backgroundWaitMessage } from '../../cli/src/lib/agent/wire/background'
@@ -25,7 +28,7 @@ import { keepChat, keepCloudChat, keepDecisions, markReviewed, reviewMarks } fro
 import { confirmFlowStopped, runAgent, runFlow, runReview, writeTranscript } from './flow'
 import { hold } from './cache'
 import { allowedProjects } from './folders'
-import { goalsFileOf, readGoals, writeGoals } from './goals'
+import { readGoals, writeGoals } from './goals'
 import { replySpent, checkpointEvent, clearCheckpoint, readCheckpoint, saveCheckpoint, stopReply, replyRetry, replayable, resumable, UNCERTAIN, type Checkpoint } from './recovery'
 import { runnerHome } from './home'
 import { trackSubagents } from './subagents'
@@ -191,6 +194,8 @@ const leaseNow = (): Lease => ({ at: Date.now(), monotonic: performance.now() })
  *  or on a renewal, stops what it adopted too, the job still ours to finish. */
 function streamOut(deps: Shared, id: string, lease: Lease) {
   const wire: JobEvent[] = []
+  let firstContent = false
+  let bufferedChars = 0
   let firstSeq: number | null = null
   let pending: RunEvent[] = []
   let size = 0
@@ -320,9 +325,17 @@ function streamOut(deps: Shared, id: string, lease: Lease) {
   const event = (e: RunEvent) => {
     if (!valid()) return
     if (e.kind === 'message') messages.push(e.data.text)
-    pending.push(Object.assign({}, e, { data: { ...e.data, eventAt: new Date().toISOString() } }))
-    size += JSON.stringify(e.data).length
-    if (log.watched && size >= FLUSH_CHARS) flush()
+    const content = ['message', 'tool_call', 'tool_call_update', 'plan'].includes(e.kind) || e.kind === 'phase' && !!e.data.contentAt
+    const immediate = e.kind === 'phase' || content && !firstContent
+    firstContent ||= content
+    const stamped = Object.assign({}, e, { data: { ...e.data, eventAt: 'eventAt' in e.data ? e.data.eventAt : new Date().toISOString() } })
+    const chars = JSON.stringify(stamped).length
+    // Match RunLog's retention cap, including while disconnected or unwatched.
+    if (bufferedChars + chars > 16 * 1024 * 1024) return
+    bufferedChars += chars
+    pending.push(stamped)
+    size += chars
+    if (immediate || log.watched && size >= FLUSH_CHARS) flush()
   }
   const flusher = setInterval(() => {
     if (log.watched && pending.length && Date.now() - flushedAt >= deps.flushMs) flush()
@@ -438,13 +451,13 @@ export async function runJob(id: string, deps: Deps, track: (stop: () => Promise
 
 /** `keep` keeps a project folder out of the cache's cleanup until the job ends. */
 async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<void>) => void, keep: (dir: string) => void, lease: Lease, replyStream?: ReturnType<typeof streamOut>): Promise<void> {
-  const scope: { bridge?: Awaited<ReturnType<typeof replyApprovalBridge>>; preview?: Awaited<ReturnType<typeof previewBridge>> } = {}
+  const scope: { bridge?: Awaited<ReturnType<typeof replyApprovalBridge>>; preview?: Awaited<ReturnType<typeof previewBridge>>; progress?: ReturnType<typeof conversationProgress> } = {}
   try { await runClaimedStep(job, deps, track, keep, lease, scope, replyStream) }
-  finally { scope.bridge?.close(); scope.preview?.close() }
+  finally { scope.progress?.cancel(); scope.bridge?.close(); scope.preview?.close() }
 }
 
 async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Promise<void>) => void, keep: (dir: string) => void,
-  lease: Lease, scope: { bridge?: Awaited<ReturnType<typeof replyApprovalBridge>>; preview?: Awaited<ReturnType<typeof previewBridge>> }, replyStream?: ReturnType<typeof streamOut>): Promise<void> {
+  lease: Lease, scope: { bridge?: Awaited<ReturnType<typeof replyApprovalBridge>>; preview?: Awaited<ReturnType<typeof previewBridge>>; progress?: ReturnType<typeof conversationProgress> }, replyStream?: ReturnType<typeof streamOut>): Promise<void> {
   const id = job.id
   const local = readCheckpoint(id)
   const previous = local ?? (job.recoveryOf ? readCheckpoint(job.recoveryOf) : null)
@@ -598,7 +611,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       discussed = board.board
     }
     if (job.discussion) {
-      const wrote = recovering && fs.existsSync(goalsFileOf(job)) ? { file: goalsFileOf(job) } : await writeGoals({ ...job, discussion: job.discussion }, deps.api.listStudios)
+      const wrote = await writeGoals({ ...job, discussion: job.discussion }, deps.api.listStudios, recovering)
       if ('error' in wrote) throw new Error(wrote.error)
       goalFile = wrote.file
     }
@@ -646,9 +659,20 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   if (deps.authorize && !await deps.authorize(job)) return finishClaimed('failed', '项目目录授权已变化，请重新确认后重试。')
   if (!held(deps, lease)) return
   if (reply) {
-    const renewed = await deps.api.renewJob(deps.machineId, id)
-    if (!renewed.ok || !renewed.value.renewed) return
-    if (renewed.value.stop) return finishClaimed('stopped', '', { stopped: true })
+    for (let check = 0; ; check++) {
+      const requestedAt = leaseNow()
+      const renewed = await deps.api.renewJob(deps.machineId, id)
+      if (!renewed.ok || !renewed.value.renewed || !held(deps, lease)) return
+      if (renewed.value.stop) return finishClaimed('stopped', '', { stopped: true })
+      Object.assign(lease, requestedAt)
+      if (!job.discussion || !renewed.value.catalog || renewed.value.catalog.version === job.discussion.catalog?.version && renewed.value.catalog.account === job.discussion.catalog.account) break
+      if (check >= 2) return finishClaimed('failed', 'The studio catalog keeps changing. Try again.')
+      job.discussion.catalog = renewed.value.catalog
+      const wrote = await writeGoals({ ...job, discussion: job.discussion }, deps.api.listStudios, true)
+      if ('error' in wrote) return finishClaimed('failed', wrote.error)
+      goalFile = wrote.file
+      if (deps.authorize && !await deps.authorize(job)) return finishClaimed('failed', '项目目录授权已变化，请重新确认后重试。')
+    }
   }
   const stream = replyStream ?? streamOut(deps, id, lease)
   if (run?.startNote) stream.out(`${run.startNote}\n`)
@@ -668,23 +692,23 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     return { ...rest, ...replySpent(checkpoint, job.runtime) }
   }
   let replyProgress = false
-  let evidence = Promise.resolve()
-  let lastEvidence = 0
+  const account = readSession()?.subject
+  const generation = accountGeneration()
+  const evidence = scope.progress = conversationProgress(checkpoint.retry?.attempt ?? 1, async progress => {
+    const result = await deps.api.renewJob(deps.machineId, id, { ...progress, ...(job.claim ? { claim: job.claim } : {}) })
+    if (!evidence.active()) return
+    if (!result.ok) throw new Error(result.error)
+    if (!result.value.renewed) await stream.stop()
+    else if (result.value.stop) stream.requestStop()
+  }, () => reply && progressValid(), () => stream.out('[chat-progress] Evidence was not confirmed.\n'))
+  const progressValid = () => !stream.asked() && !stream.lost() && readSession()?.subject === account && accountGeneration() === generation
   const subagents = trackSubagents()
   const remember = (event: RunEvent) => {
     if (['message', 'tool_call', 'tool_call_update'].includes(event.kind)) replyProgress = true
     if (stream.lost()) return
-    const content = ['message', 'tool_call', 'tool_call_update', 'plan'].includes(event.kind) || event.kind === 'phase' && !!event.data.contentAt
-    if (reply && (event.kind === 'phase' && !event.data.contentAt || content && Date.now() - lastEvidence >= 5_000)) {
-      if (content) lastEvidence = Date.now()
-      const progress = { attempt: checkpoint.retry?.attempt ?? 1, ...(event.kind === 'phase' ? { phase: event.data.phase } : {}), ...(content ? { contentAt: new Date().toISOString() } : {}) }
-      evidence = evidence.then(async () => {
-        if (stream.asked() || stream.lost()) return
-        const result = await deps.api.renewJob(deps.machineId, id, progress)
-        if (result.ok && !result.value.renewed) await stream.stop()
-        else if (result.ok && result.value.stop) stream.requestStop()
-      }).catch(() => {})
-    }
+    const at = new Date().toISOString()
+    event = Object.assign({}, event, { data: { ...event.data, eventAt: at } })
+    evidence.observe(event, at)
     subagents.event(event)
     checkpointEvent(checkpoint, event)
     const session = run?.session()
@@ -721,6 +745,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     checkpoint.updating = true
     persist()
     stream.event({ kind: 'log', data: { text: '[chat-recovery] running' } })
+    evidence.cancel()
     await runClaimed({ ...job, manualRecovery: false, retryReplay: safe }, deps, track, keep, lease, stream)
     await stream.end()
     return true
@@ -840,6 +865,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       checkpoint.started = false
       if (checkpoint.retry) checkpoint.retry.attempt++
       persist()
+      evidence.cancel()
       await runClaimed({ ...job, resume: null, fork: false, sessionFallback: true }, deps, track, keep, lease, stream)
       await stream.end()
       return
@@ -849,7 +875,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       persist()
     }
     if (await retry(end.ok ? undefined : end.error)) return
-    await evidence
+    await evidence.drain(deps.endMs)
     const stopped = await stopReply(id, deps.stopMs)
 
     stop(child)

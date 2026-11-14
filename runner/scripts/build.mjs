@@ -38,6 +38,7 @@ for (const [entry, outfile] of [
   ['settings-main.ts', path.join(PKG_DIR, 'dist', 'settings.mjs')],
   ['plugin-main.ts', path.join(PKG_DIR, 'dist', 'plugin.mjs')],
   ['akb-proxy.ts', path.join(PKG_DIR, 'dist', 'akb-proxy.mjs')],
+  ['codex-service-main.ts', path.join(PKG_DIR, 'dist', 'codex-service-main.mjs')],
   ['codex-proxy.ts', path.join(PKG_DIR, 'dist', 'codex-proxy.mjs')],
   ...PLUGIN_DISTS.map((dir) => ['plugin-start.ts', path.join(dir, 'start.mjs')]),
 ]) {

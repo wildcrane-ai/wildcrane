@@ -34,7 +34,7 @@ const fileOf = (id: string) => path.join(directory(), `${encodeURIComponent(id)}
 const stopFile = (id: string) => `${fileOf(id)}.stop`
 export const flowWorkerEntry = fileURLToPath(new URL('./flow-worker-main.mjs', import.meta.url))
 export const canKeepFlow = (job: api.Job): boolean => !!job.task && !!job.flow
-  && ['create', 'refine', 'implement'].includes(job.flow.verb)
+  && ['create', 'refine', 'implement', 'preview'].includes(job.flow.verb)
   && !job.agent && !job.review && !job.discussion && !job.test && !job.secret
 
 function read(id: string): Worker | null {

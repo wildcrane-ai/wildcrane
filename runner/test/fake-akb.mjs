@@ -14,7 +14,8 @@ const cut = argv.indexOf('--')
 const local = argv[0] === 'raw' && !['init', 'create'].includes(argv[1])
   ? argv[1] === 'memory' ? [`${argv[2] === 'review' ? 'review' : 'prune'}-memory`, ...argv.slice(3)] : argv.slice(1)
   : argv
-const words = cut < 0 ? local : local.slice(0, local.indexOf('--'))
+let words = cut < 0 ? local : local.slice(0, local.indexOf('--'))
+if (words[0] === 'previews' && words[1] && !words[1].startsWith('--')) words = ['card', 'preview', words[2], ...words.slice(3)]
 const text = cut < 0 ? '' : argv.slice(cut + 1).join(' ')
 const flag = (name) => (words.includes(name) ? words[words.indexOf(name) + 1] : undefined)
 const board = flag('--board')

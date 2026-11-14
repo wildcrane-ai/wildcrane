@@ -1,4 +1,4 @@
-// wildcrane-runner 0.6.66 — built by runner/scripts/build.mjs. Do not edit.
+// wildcrane-runner 0.6.68 — built by runner/scripts/build.mjs. Do not edit.
 import { createRequire as __ai4kanbanRequire } from 'node:module'
 const require = __ai4kanbanRequire(import.meta.url)
 var __create = Object.create;
@@ -28191,11 +28191,21 @@ var init_cloud_studios = __esm({
   }
 });
 
+// src/settings-control.ts
+var init_settings_control = __esm({
+  "src/settings-control.ts"() {
+    "use strict";
+    init_home();
+  }
+});
+
 // src/goals.ts
 var init_goals = __esm({
   "src/goals.ts"() {
     "use strict";
     init_home();
+    init_session();
+    init_settings_control();
   }
 });
 

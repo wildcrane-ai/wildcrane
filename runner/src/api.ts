@@ -43,6 +43,7 @@ export interface Job {
   /** A task's `plan` job, finished, submits its draft for review (#2040). */
   stage?: 'plan' | 'execute' | null
   attempt?: number
+  claim?: string
   recoveryOf?: string | null
   manualRecovery?: boolean
   retryReplay?: boolean
@@ -58,7 +59,7 @@ export interface Job {
   /** A board verb to run with akb (#2020); null for every other job. Its `prompt` is ignored. */
   flow?: Flow | null
   /** 目标讨论作业；ideas 是旧服务端的读取字段。 */
-  discussion?: { id: string; workspace: string; goals?: Goal[]; ideas: Goal[] } | null
+  discussion?: { id: string; workspace: string; goals?: Goal[]; ideas: Goal[]; catalog?: StudioCatalog } | null
   /** A task chat's reply: the user's message it answers (#2065). */
   chat?: { message: string; body: string } | null
   /** A review of these tasks' chats, which this computer answered (#2065). */
@@ -257,7 +258,7 @@ export const claimJob = (machineId: string, job: string) =>
   move<{ claimed: true; job: Job } | { claimed: false; reason: string }>(job, 'claim', { machineId })
 
 /** `stop`: the user stopped the chat reply this job writes (#2133). */
-export const renewJob = (machineId: string, job: string, progress?: { attempt?: number; phase?: string; contentAt?: string }) => move<{ renewed: boolean; stop?: boolean }>(job, 'renew', { machineId, ...(progress ? { progress } : {}) })
+export const renewJob = (machineId: string, job: string, progress?: ConversationProgress) => move<{ renewed: boolean; stop?: boolean; catalog?: StudioCatalog }>(job, 'renew', { machineId, ...(progress ? { progress } : {}) })
 
 /** One event as Cloud keeps it (#2059): a `log` carries its text, the rest their data. */
 export interface JobEvent {
@@ -502,6 +503,16 @@ export interface TaskStudio {
 
 export const readTaskStudio = (task: string) => request<TaskStudio>('GET', `/v1/tasks/${q(task)}/studio`)
 
+export interface StudioCatalog { account: string; version: string }
+export interface ConversationProgress {
+  claim?: string
+  attempt: number
+  phase?: string
+  phases?: Record<string, string>
+  firstContentAt?: string
+  contentAt?: string
+}
+
 export interface Studio {
   previews?: { agent: string; title: { en?: string; zh?: string }; when: string }[]
   id: string
@@ -512,7 +523,7 @@ export interface Studio {
 }
 
 export const listStudios = (workspace: string, after?: string | null) =>
-  request<{ data: Studio[]; next: string | null }>('GET', `/v1/studios?workspace=${q(workspace)}&limit=100${after ? `&after=${q(after)}` : ''}`)
+  request<{ data: Studio[]; next: string | null; catalogVersion?: string }>('GET', `/v1/studios?workspace=${q(workspace)}&limit=100${after ? `&after=${q(after)}` : ''}`)
 
 /** Read the current files of a workspace Studio. */
 export const readTask = (task: string) =>

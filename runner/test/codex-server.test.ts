@@ -6,7 +6,7 @@ import path from 'node:path'
 import { after, it } from 'node:test'
 import { performance } from 'node:perf_hooks'
 import { once } from 'node:events'
-import { codexServer, threadConfig } from '../src/codex-server'
+import { serveCodex as codexServer, threadConfig } from '../src/codex-service'
 import { connect } from '../../cli/src/lib/agent/wire/rpc'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-singleton-'))

@@ -40,7 +40,7 @@ await esbuild.build({
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wildcrane-test-home-'))
 const run = spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...nodeArgs, ...tests.map((f) => path.join(OUT_DIR, f.replace(/\.ts$/, '.mjs')))], {
   stdio: 'inherit',
-  env: { ...process.env, WILDCRANE_HOME: home, AI4KANBAN_HOME: home, AI4KANBAN_STUDIOS: path.join(PKG_DIR, '..', 'official'), AI4KANBAN_PATH_ONLY: '1', KANBAN_RUN: '', RUNNER_DIST: path.join(PKG_DIR, 'dist') },
+  env: { ...process.env, WILDCRANE_HOME: home, AI4KANBAN_HOME: home, AI4KANBAN_STUDIOS: path.join(PKG_DIR, '..', 'official'), AI4KANBAN_PATH_ONLY: '1', KANBAN_RUN: '', WILDCRANE_JOB: '', WILDCRANE_FLOW_WORKER: '', AI4KANBAN_EXECUTION: '', WILDCRANE_CODEX_IDLE_MS: '200', RUNNER_DIST: path.join(PKG_DIR, 'dist') },
 })
 fs.rmSync(OUT_DIR, { recursive: true, force: true })
 fs.rmSync(home, { recursive: true, force: true })

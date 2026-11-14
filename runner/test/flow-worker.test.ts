@@ -21,7 +21,7 @@ const folder = () => path.join(runnerHome(), 'project')
 const gate = (n: number) => path.join(runnerHome(), `gate-${n}`)
 const calls = () => fs.existsSync(process.env.FAKE_AKB_LOG!)
   ? fs.readFileSync(process.env.FAKE_AKB_LOG!, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[]) : []
-const commands = (verb: string) => calls().filter((c) => c[0] === 'raw' && c[1] === 'card' && c[2] === verb)
+const commands = (verb: string) => calls().filter((c) => c[0] === 'raw' && (verb === 'preview' ? c[1] === 'previews' && c[2] === 'designer' : c[1] === 'card' && c[2] === verb))
 const launch = () => {
   host = spawn(process.execPath, [entry], { env: process.env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] })
   host.stderr!.on('data', (s) => { log += s })
@@ -67,14 +67,14 @@ afterEach(async () => {
   await cloud.stop()
 })
 
-for (const verb of ['create', 'refine', 'implement']) for (const signal of ['SIGTERM', 'SIGKILL', 'update'] as const) {
+for (const verb of ['create', 'refine', 'implement', 'preview']) for (const signal of ['SIGTERM', 'SIGKILL', 'update'] as const) {
   it(`${verb} survives Runner ${signal} without a second execution (#693)`, async () => {
     const action = verb === 'create' ? 'refine' : verb
     if (verb === 'create') cloud.put({ 'todo/2-test.md': null })
     process.env.FAKE_AKB = JSON.stringify({ [action]: { gates: [gate(1), gate(2)], result: 'Original result',
       spent: { costUsd: 0.25, usage: { input: 10, output: 2 } }, ...(verb === 'refine' ? { status: 'planned' } : {}) } })
     const job = cloud.dispatch({ id: 'job', task: 'task_1', project: 'prj_1', projectDir: folder(), number: 2,
-      runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb } })
+      runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb, ...(verb === 'preview' ? { text: 'designer' } : {}) } })
     launch()
     await until(() => commands(action).length === 1, 15_000)
     const record = path.join(runnerHome(), 'flow-workers/job.json')

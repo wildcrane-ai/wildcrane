@@ -1,9 +1,13 @@
-// Each run owns this small pipe adapter; the Runner owns the actual Codex process.
+// Each run connects directly to the independent shared service.
 import net from 'node:net'
 import fs from 'node:fs'
 import { createInterface } from 'node:readline'
+import { codexServer } from './codex-server'
+import { accountGeneration } from './settings-control'
 
-const endpoint = JSON.parse(fs.readFileSync(process.env.WILDCRANE_CODEX_SERVER!, 'utf8')) as { path: string; token: string }
+if (process.env.WILDCRANE_CODEX_GENERATION !== undefined && process.env.WILDCRANE_CODEX_GENERATION !== accountGeneration()) throw Error('Codex task belongs to an expired account session.')
+const owner = await codexServer()
+const endpoint = JSON.parse(fs.readFileSync(owner.env.WILDCRANE_CODEX_SERVER, 'utf8')) as { path: string; token: string }
 const socket = net.connect(endpoint.path)
 const input = createInterface({ input: process.stdin })
 const queued: string[] = []
@@ -18,10 +22,11 @@ socket.once('connect', () => {
 })
 socket.pipe(process.stdout)
 socket.on('error', () => { console.error('Runner Codex connection failed.'); process.exitCode = 1; input.close(); process.stdin.destroy() })
-socket.on('close', () => { input.close(); process.stdin.destroy() })
+socket.on('close', () => { input.close(); process.stdin.destroy(); void owner.close() })
 const close = () => {
   if (closing) return
   closing = true
+  void owner.close()
   // The Runner acknowledges only after this run's threads and commands have stopped.
   if (ready) send(JSON.stringify({ method: 'wildcrane/release' }))
   else socket.destroy()

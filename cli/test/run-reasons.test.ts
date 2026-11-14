@@ -117,3 +117,42 @@ describe('Codex 后台收尾', () => {
     })
   }
 })
+
+
+describe('task recovery after a local Codex service exits (#724)', () => {
+  for (const mode of ['recover', 'agent crash', 'pending operation', 'exhausted'] as const) {
+    it(mode, { timeout: 25000 }, async () => {
+      const agent = path.join(root, 'codex.cjs')
+      const events = [
+        { type: 'thread.started', thread_id: 'saved-task-thread' },
+        ...(mode === 'pending operation' ? [{ type: 'item.started', item: { id: 'write', type: 'command_execution', command: 'publish', status: 'in_progress' } }] : []),
+        ...(mode === 'agent crash' ? [] : [{ type: 'turn.failed', error: { message: 'Codex connection closed before all work and results finished.' } }]),
+      ]
+      fs.writeFileSync(agent, mode === 'agent crash'
+        ? `process.stdout.write(${JSON.stringify(events.map(e => JSON.stringify(e)).join('\n') + '\n')},()=>process.kill(process.pid,'SIGKILL'))`
+        : `console.log(${JSON.stringify(events.map(e => JSON.stringify(e)).join('\n'))}); process.exitCode=1`)
+      const opened = openRun({ action: 'prune-memory' }, 'Finish the task.', [])
+      if ('error' in opened) throw Error(opened.error)
+      opened.spec.plan.argv = [process.execPath, agent]
+      opened.spec.plan.harness = 'codex'
+      fs.writeFileSync(path.join(SESSIONS_DIR, `${opened.run.sessionId}.plan.json`), JSON.stringify(opened.spec))
+      fs.writeFileSync(opened.run.logPath, '')
+      patch(opened.run.sessionId, r => {
+        r.pid = process.pid
+        r.startedAt = Date.now() - 3600_000
+        if (mode === 'exhausted') r.retry = { attempt: 3, of: 3, at: Date.now(), since: Date.now(), reason: 'previous crash' }
+      })
+      let resumed = 0
+      await watchRun(opened.run.sessionId, async id => {
+        resumed++
+        assert.equal(id, opened.run.sessionId)
+        assert.equal(peekRun(id)?.resumeId, 'saved-task-thread')
+        assert.equal(peekRun(id)?.retry?.attempt, 2)
+        return { error: 'test stops after confirming automatic recovery' }
+      })
+      assert.equal(resumed, mode === 'recover' || mode === 'agent crash' ? 1 : 0)
+      if (mode === 'pending operation') assert.match(peekRun(opened.run.sessionId)?.error ?? '', /Operation results are unconfirmed/)
+      assert.equal(peekRun(opened.run.sessionId)?.status, 'error')
+    })
+  }
+})

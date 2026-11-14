@@ -34,7 +34,10 @@ it('讨论元数据跨分页保留目录与已选要点，落卡显式传递空�
     assert.equal(data.workspace, 'ws_1')
     assert.deepEqual(data.studios[1].previews, catalog)
     assert.deepEqual(pages, [null, 'wf_first'])
-    assert.deepEqual(readGoals(result.file), [goal])
+    const revised = { ...goal, title: 'Unsaved local goal' }
+    fs.writeFileSync(result.file, JSON.stringify({ workspace: 'ws_1', studios: [], ideas: [revised] }))
+    await writeGoals({ id: 'job_1', discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [goal] } } as never, async () => ({ ok: true, value: { data: [], next: null } }), true)
+    assert.deepEqual(readGoals(result.file), [revised])
     assert.equal(fs.existsSync(result.file), false)
     assert.deepEqual(cardFlags({ number: 1 } as never, { previews: [] }), ['--previews', ''])
     assert.deepEqual(cardFlags({ number: 1 } as never, { previews: ['custom'] }), ['--previews', 'custom'])
@@ -56,5 +59,45 @@ it('Windows 插件同时提供 cmd 和 shell 的 akb 入口', () => {
   } finally {
     Object.defineProperty(process, 'platform', platform)
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+it('同版本并发目录只读一次，跨账号、版本或缺失版本均不复用，分页变化拒绝启动 (#722)', async () => {
+  const { clearStudioSnapshots } = await import('../src/goals')
+  const { readSession } = await import('../../cli/src/lib/cloud/session')
+  const { writeFakeSession } = await import('./fake-cloud')
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-722-'))
+  const before = process.env.WILDCRANE_HOME
+  const beforeCliHome = process.env.AI4KANBAN_HOME
+  process.env.WILDCRANE_HOME = home
+  process.env.AI4KANBAN_HOME = home
+  try {
+    writeFakeSession(home)
+    clearStudioSnapshots()
+    const account = readSession()!.subject
+    const job = { id: 'j1', discussion: { id: 'd1', workspace: 'ws1', ideas: [], catalog: { account, version: 'v1' } } } as never
+    let reads = 0
+    const list = async () => { reads++; return { ok: true as const, value: { data: [{ id: 'wf1', name: 'One' }], next: null, catalogVersion: 'v1' } } }
+    await Promise.all([writeGoals(job, list), writeGoals(job, list)])
+    assert.equal(reads, 1)
+    await writeGoals(job, list)
+    assert.equal(reads, 1)
+    const other = { id: 'j2', discussion: { id: 'd2', workspace: 'ws1', ideas: [], catalog: { account: 'other', version: 'v1' } } } as never
+    await writeGoals(other, list)
+    assert.equal(reads, 2)
+    clearStudioSnapshots()
+    const changed = await writeGoals(job, async (_ws, after) => ({ ok: true, value: { data: [], next: after ? null : 'page2', catalogVersion: after ? 'v2' : 'v1' } }))
+    assert.ok('error' in changed)
+    const missing = async () => { reads++; return { ok: true as const, value: { data: [], next: null } } }
+    await writeGoals(job, missing)
+    await writeGoals(job, missing)
+    assert.equal(reads, 4)
+  } finally {
+    clearStudioSnapshots()
+    if (beforeCliHome === undefined) delete process.env.AI4KANBAN_HOME
+    else process.env.AI4KANBAN_HOME = beforeCliHome
+    if (before === undefined) delete process.env.WILDCRANE_HOME
+    else process.env.WILDCRANE_HOME = before
+    fs.rmSync(home, { recursive: true, force: true })
   }
 })

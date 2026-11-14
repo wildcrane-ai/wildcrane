@@ -1,3 +1,4 @@
+import { clearStudioSnapshots } from './goals'
 // Staying connected: register, keep a Realtime topic open for hints, re-register on a timer
 // to stay the account's Runner, keep a presence connection so Cloud sees it go (#2163), and
 // read the waiting jobs on every connect and hint. The chats it answered are reviewed for
@@ -455,6 +456,7 @@ export function startRunner(options: Options): Runner {
       const value = fs.readFileSync(path.join(runnerHome(), 'settings-refresh'), 'utf8')
       if (value !== refresh) { refresh = value; redetect = true; if (!closed) schedule(0) }
     } catch {}
+    if (!validAccount()) clearStudioSnapshots()
     if (!closed && !validAccount()) void finish({ reason: 'refused', message: '账号已退出或切换。' })
   }, 200)
   accountWatch.unref()
