@@ -2280,6 +2280,44 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(type(), 'studio')
   })
 
+  it('syncs Studio review dependencies, keeps partial results readable and restores frozen snapshots after local removal (#733)', async () => {
+    const review = { version: 2, base: null, fingerprint: 'draft', agents: [{ agent: 'writer', title: { en: 'Writer' } }], files: [{ path: 'agents/writer/AGENT.md', before: null, after: 'after.txt', diff: 'change.diff' }], results: [{ agent: 'writer', component: 'Asset', src: 'good.html' }, { agent: 'writer', component: 'Asset', src: 'bad.html' }] }
+    const setup = `
+      const fs = require('fs')
+      fs.mkdirSync('todo/review', { recursive: true })
+      fs.writeFileSync('todo/review/review.json', ${JSON.stringify(JSON.stringify(review))})
+      fs.writeFileSync('todo/review/after.txt', 'Write real previews.')
+      fs.writeFileSync('todo/review/change.diff', '+Write real previews.')
+      fs.writeFileSync('todo/review/good.html', '<img src="image.svg"><p>Existing result</p>')
+      fs.writeFileSync('todo/review/image.svg', '<svg/>')
+      fs.writeFileSync('todo/review/bad.html', '<img src="missing.png">')
+      fs.writeFileSync('${CARD}', ${JSON.stringify(BODY)} + '\\n<Studio src="review/review.json" />\\n')
+    `
+    const first = await runTask('studio-review-1', setup)
+    assert.equal(first.outcome, 'done', first.reason)
+    const pins = JSON.parse(cloud.file('assets/task_1.json')!)
+    assert.equal(pins['review/review.json'].error, undefined)
+    assert.match(pins['review/bad.html'].error, /missing.png/)
+    assert.equal(pins['review/good.html'].error, undefined)
+    const uploaded = JSON.parse(cloud.task.artifacts.get(pins['review/review.json'].artifact)![0]!.toString())
+    assert.equal(uploaded.files[0].after, pins['review/after.txt'].artifact)
+    assert.equal(uploaded.results[0].src, pins['review/good.html'].artifact)
+    const uploads = cloud.log.filter(l => l.startsWith('PUT /v1/uploads/')).length
+    fs.rmSync(path.join(board(), 'todo/review'), { recursive: true })
+    const recordFile = path.join(board(), '.sync/task_1.json')
+    const record = JSON.parse(fs.readFileSync(recordFile, 'utf8'))
+    for (const key of Object.keys(record.assets)) if (key.startsWith('review/')) delete record.assets[key]
+    fs.writeFileSync(recordFile, JSON.stringify(record))
+    const pulled = await runTask('studio-review-2')
+    assert.equal(pulled.outcome, 'done', pulled.reason)
+    const restored = JSON.parse(read('todo/review/review.json'))
+    assert.equal(restored.files[0].after, 'after.txt', JSON.stringify({ restored, pins, types: [...cloud.types], log: cloud.log.slice(-25) }))
+    assert.equal(restored.results[0].src, 'good.html')
+    assert.equal(read('todo/review/after.txt'), 'Write real previews.')
+    assert.match(read('todo/review/good.html'), /image.svg/)
+    assert.equal(cloud.log.filter(l => l.startsWith('PUT /v1/uploads/')).length, uploads)
+  })
+
   it('a preview that cannot be drawn never blocks the push; the list says why until it draws (#456)', async () => {
     const first = await runTask('j1', `
       const fs = require('fs')

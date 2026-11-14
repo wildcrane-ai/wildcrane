@@ -2,11 +2,10 @@ import { boardCommandFor } from '../lib/agent/command'
 import { resetPreviewScope } from './preview-confirm'
 import { choosePreviewRevision, previewBaseline } from '../lib/preview-stages'
 import { PREVIEW_BRIDGE_ENV, previewBridge } from '../lib/cloud/preview'
-import { freezePreviewProgress, previewRun, selectLocalPreview, submitLocalPreview, previewStagePrompt, updatePreviewProgress, savePreviewBaseline, readPreviewBaseline } from '../lib/agent/preview-progress'
+import { previewRun, selectLocalPreview, submitLocalPreview, previewStagePrompt, updatePreviewProgress, savePreviewBaseline, readPreviewBaseline } from '../lib/agent/preview-progress'
 // Print specialist instructions here, or request a separate run.
 
 import { insideRun, printFlow } from '../lib/agent/flow'
-import { agentHarness } from '../lib/agent/resolve'
 import { askForSpec, readRuns } from '../lib/agent/sessions'
 import { startRun } from '../lib/agent/start'
 import { titleOf } from '../lib/agent/sessions'
@@ -134,9 +133,8 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
     )
   }
 
-  // One agent on one card at a time. A flow that asks while that agent is still working the
-  // card would get its section written twice from the same plan, and the second run would
-  // land on whatever the first one left — so the ask is dropped, not queued behind it.
+  if (opts.print === true) return printFlow(req, program)
+
   const live = readRuns().find(
     (r) => r.status === 'running' && r.action === 'spec' && r.cardId === id && r.specAgent === name,
   )
@@ -144,15 +142,6 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
     say(`${name} is already working on #${id} — run ${short(live.sessionId)}. One ask is enough; don't wait for it.`)
     return { specAgent: name, cardId: id, queued: false, pending: true }
   }
-
-  // An agent set to another runtime than the caller's runs on its own (#1598), and so does one
-  // that asks for a session of its own (#2152).
-  const caller = inside ? readRuns().find((r) => r.sessionId === inside)?.runtime : undefined
-  const ownRuntime = opts.print === true && !!caller && caller !== agentHarness(name).runtime
-  const ownSession = opts.print === true && (agent.session === 'new' || !!freezePreviewProgress(id, name))
-  const print = opts.print === true && !ownRuntime && !ownSession
-
-  if (print) return printFlow(req, program)
 
   // Separate requests from a board run start after its parent finishes.
   if (inside) {
@@ -175,9 +164,6 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
   if ('error' in started) die(started.error, { kind: 'run-refused', action: 'spec' })
   const { run, spawned } = started
   if (!spawned) die(`couldn't start a process to run ${run.sessionId}`, { kind: 'spawn-failed' })
-  if (ownRuntime || ownSession) {
-    say(`${name} runs in ${ownRuntime ? 'its own runtime' : 'a session of its own'}, so it started as a separate run — don't write its section yourself.`)
-  }
   say(`previews ${name} #${id} — run ${run.sessionId}`)
   say(`  follow it: ${program} raw run log ${short(run.sessionId)} --follow${BOARD_FLAG}`)
   say(`  stop it:   ${program} raw run stop ${short(run.sessionId)}${BOARD_FLAG}`)

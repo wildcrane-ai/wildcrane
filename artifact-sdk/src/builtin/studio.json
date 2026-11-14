@@ -1,21 +1,484 @@
 {
   "name": "studio",
-  "title": { "en": "Studio", "zh": "工作台" },
-  "types": ["studio"],
+  "title": {
+    "en": "Studio",
+    "zh": "工作台"
+  },
+  "types": [
+    "studio"
+  ],
   "schema": {
-    "type": "object",
-    "required": ["rounds", "land", "scheduled"],
-    "properties": {
-      "rounds": {
-        "type": "array",
-        "items": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "type": "object", "required": ["agent", "title"], "properties": { "agent": { "type": "string" }, "title": { "type": "object", "required": ["en"] } } }
+    "anyOf": [
+      {
+        "type": "object",
+        "required": [
+          "rounds",
+          "land",
+          "scheduled"
+        ],
+        "properties": {
+          "rounds": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "agent",
+                  "title"
+                ],
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "object",
+                    "required": [
+                      "en"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "land": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "agent",
+                "title"
+              ]
+            }
+          },
+          "scheduled": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "agent",
+                "title"
+              ]
+            }
+          },
+          "version": {
+            "enum": [
+              1
+            ]
+          }
         }
       },
-      "land": { "type": "array", "items": { "type": "object", "required": ["agent", "title"] } },
-      "scheduled": { "type": "array", "items": { "type": "object", "required": ["agent", "title"] } }
+      {
+        "type": "object",
+        "required": [
+          "version",
+          "base",
+          "fingerprint",
+          "agents",
+          "files",
+          "results"
+        ],
+        "properties": {
+          "version": {
+            "const": 2
+          },
+          "base": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "id",
+                  "version",
+                  "fingerprint"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "version": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "fingerprint": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            ]
+          },
+          "fingerprint": {
+            "type": "string",
+            "minLength": 1
+          },
+          "agents": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "required": [
+                "agent",
+                "title"
+              ],
+              "properties": {
+                "agent": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "title": {
+                  "type": "object",
+                  "required": [
+                    "en"
+                  ],
+                  "properties": {
+                    "en": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "zh": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "files": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "object",
+              "required": [
+                "path",
+                "before",
+                "after"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "before": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "after": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "diff": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "results": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "agent",
+                    "component",
+                    "src"
+                  ],
+                  "properties": {
+                    "agent": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "component": {
+                      "const": "Asset"
+                    },
+                    "src": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "alt": {
+                      "type": "string"
+                    },
+                    "device": {
+                      "enum": [
+                        "mobile",
+                        "desktop"
+                      ]
+                    },
+                    "loop": {
+                      "type": "boolean"
+                    },
+                    "variants": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "agent",
+                    "component",
+                    "label",
+                    "items"
+                  ],
+                  "properties": {
+                    "agent": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "component": {
+                      "const": "Set"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "items": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 500,
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "src"
+                        ],
+                        "properties": {
+                          "src": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "alt": {
+                            "type": "string"
+                          },
+                          "device": {
+                            "enum": [
+                              "mobile",
+                              "desktop"
+                            ]
+                          },
+                          "loop": {
+                            "type": "boolean"
+                          },
+                          "variants": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "agent",
+                    "component",
+                    "a",
+                    "b"
+                  ],
+                  "properties": {
+                    "agent": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "component": {
+                      "const": "Compare"
+                    },
+                    "a": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "b": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "shots": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "a-label": {
+                      "type": "string"
+                    },
+                    "b-label": {
+                      "type": "string"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "agent",
+                    "component",
+                    "src"
+                  ],
+                  "properties": {
+                    "agent": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "component": {
+                      "const": "Storyboard"
+                    },
+                    "src": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "label": {
+                      "type": "string"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  "references": [
+    {
+      "json": "/files/*/before"
+    },
+    {
+      "json": "/files/*/after"
+    },
+    {
+      "json": "/files/*/diff"
+    },
+    {
+      "json": "/results/*/src",
+      "types": [
+        "storyboard",
+        "compare",
+        "spritesheet",
+        "studio",
+        "asset"
+      ]
+    },
+    {
+      "json": "/results/*/variants/*",
+      "types": [
+        "storyboard",
+        "compare",
+        "spritesheet",
+        "studio",
+        "asset"
+      ]
+    },
+    {
+      "json": "/results/*/a",
+      "types": [
+        "storyboard",
+        "compare",
+        "spritesheet",
+        "studio",
+        "asset"
+      ]
+    },
+    {
+      "json": "/results/*/b",
+      "types": [
+        "storyboard",
+        "compare",
+        "spritesheet",
+        "studio",
+        "asset"
+      ]
+    },
+    {
+      "json": "/results/*/shots",
+      "types": [
+        "storyboard",
+        "compare",
+        "spritesheet",
+        "studio",
+        "asset"
+      ]
+    },
+    {
+      "json": "/results/*/items/*/src",
+      "types": [
+        "storyboard",
+        "compare",
+        "spritesheet",
+        "studio",
+        "asset"
+      ]
+    },
+    {
+      "json": "/results/*/items/*/variants/*",
+      "types": [
+        "storyboard",
+        "compare",
+        "spritesheet",
+        "studio",
+        "asset"
+      ]
+    },
+    {
+      "json": "/results/*/items/*/a",
+      "types": [
+        "storyboard",
+        "compare",
+        "spritesheet",
+        "studio",
+        "asset"
+      ]
+    },
+    {
+      "json": "/results/*/items/*/b",
+      "types": [
+        "storyboard",
+        "compare",
+        "spritesheet",
+        "studio",
+        "asset"
+      ]
+    },
+    {
+      "json": "/results/*/items/*/shots",
+      "types": [
+        "storyboard",
+        "compare",
+        "spritesheet",
+        "studio",
+        "asset"
+      ]
     }
-  }
+  ]
 }

@@ -1,6 +1,7 @@
 // 组件清单（wildcrane.component.json）：内置与第三方组件用同一份声明说明内容引用了哪些文件、怎样算有效。
 import builtins from '../builtin';
 import { schemaProblem } from './schema';
+import { isReview, reviewProblem } from './format/studio';
 
 /** Where content names another file. `json`: a `/`-path into JSON content, `*` matching every
  *  item; `text`: a regular expression, matched case-insensitively, whose first group is the
@@ -32,9 +33,10 @@ export const manifestOf = (type: string): Manifest | undefined => BUILTINS.find(
 
 /** The first of `types` whose schema `data` holds; with one type, that type and why it does not. */
 export function typeOf(data: unknown, types: string[]): { type: string | null; problem?: string } {
-  for (const type of types) if (!schemaProblem(manifestOf(type)?.schema, data)) return { type };
+  const problem = (type: string) => type === 'studio' && isReview(data) ? reviewProblem(data) : schemaProblem(manifestOf(type)?.schema, data);
+  for (const type of types) if (!problem(type)) return { type };
   if (types.length !== 1) return { type: null };
-  return { type: types[0]!, problem: `does not match ${types[0]} at ${schemaProblem(manifestOf(types[0]!)?.schema, data)}` };
+  return { type: types[0]!, problem: `does not match ${types[0]} at ${problem(types[0]!)}` };
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -56,14 +58,14 @@ function mapJson(node: unknown, keys: string[], at: string, visit: (src: string,
   return out;
 }
 
-function mapText(text: string, rule: { text: string; list?: string }, skipped: [number, number][], visit: (src: string, line: number) => string): string {
+function mapText(text: string, rule: { text: string; list?: string }, skipped: [number, number][], visit: (src: string, line: number) => string, includeRemote: boolean): string {
   let out = '';
   let last = 0;
   for (const m of text.matchAll(new RegExp(rule.text, 'gid'))) {
     const span = m.indices?.[1];
     if (!span || m[1] === undefined || skipped.some(([a, b]) => span[0] >= a && span[0] < b)) continue;
     const line = text.slice(0, span[0]).split('\n').length;
-    const one = (src: string) => (remote(src) ? src : visit(src, line));
+    const one = (src: string) => (remote(src) && !includeRemote ? src : visit(src, line));
     const value = rule.list
       ? m[1].split(rule.list).map(part => part.replace(/^(\s*)(\S+)/, (_, space: string, src: string) => space + one(src))).join(rule.list)
       : one(m[1]);
@@ -74,22 +76,22 @@ function mapText(text: string, rule: { text: string; list?: string }, skipped: [
 }
 
 /** `content` with each reference `manifest` declares replaced by what `map` returns for it. */
-export function mapReferences(manifest: Manifest | undefined, content: unknown, map: (src: string, found: Found) => string): unknown {
+export function mapReferences(manifest: Manifest | undefined, content: unknown, map: (src: string, found: Found) => string, includeRemote = false): unknown {
   const skipped = (text: string) => (manifest?.skip ?? []).flatMap(re => [...text.matchAll(new RegExp(re, 'gi'))].map(m => [m.index, m.index + m[0].length] as [number, number]));
   for (const rule of manifest?.references ?? []) {
     const types = rule.types ?? [];
     if ('json' in rule) {
       if (typeof content !== 'string') content = mapJson(content, rule.json.split('/').filter(Boolean), '', (src, at) => map(src, { src, types, text: false, at: at || '/' }));
     } else if (typeof content === 'string') {
-      content = mapText(content, rule, skipped(content), (src, line) => map(src, { src, types, text: true, line }));
+      content = mapText(content, rule, skipped(content), (src, line) => map(src, { src, types, text: true, line }), includeRemote);
     }
   }
   return content;
 }
 
 /** Every reference `manifest` declares in `content`, in order. */
-export function referencesOf(manifest: Manifest | undefined, content: unknown): Found[] {
+export function referencesOf(manifest: Manifest | undefined, content: unknown, includeRemote = false): Found[] {
   const found: Found[] = [];
-  mapReferences(manifest, content, (src, ref) => (found.push(ref), src));
+  mapReferences(manifest, content, (src, ref) => (found.push(ref), src), includeRemote);
   return found;
 }

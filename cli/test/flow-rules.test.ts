@@ -134,18 +134,29 @@ describe('in-session spec work', () => {
     assert.equal(JSON.stringify(readRuns()), before)
   })
 
-  // #1598: an agent set to another runtime than the caller's never runs in its session.
-  it('queues an agent on another runtime than the run asking for it', async () => {
+  it('prints even when the agent uses another runtime', async () => {
     process.env[RUN_ENV] = run('implement', 1)
     setAgentRuntime('tech-stack-advisor', addRuntime('Other', 'codex').id!)
     const sink = startCollecting()
     try {
       const result = await cmdSpec({ agent: 'tech-stack-advisor', id: 1, print: true })
-      assert.equal(result.queued, true)
+      assert.equal(result.mode, 'print')
     } finally {
       stopCollecting()
     }
-    assert.match(sink.out.join('\n'), /asked for the tech-stack-advisor preview agent/)
+    assert.match(sink.out.join('\n'), /printed, not started/)
+  })
+
+  it('prints staged agents requesting a new session without creating or queuing a run', async () => {
+    const official = editableOfficial()
+    const file = path.join(official, 'agents/tech-stack-advisor/AGENT.md')
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('akb:', 'akb:\n  session: new'))
+    process.env[RUN_ENV] = run('implement', 1)
+    const before = JSON.stringify(readRuns())
+    startCollecting()
+    try { assert.equal((await cmdSpec({ agent: 'tech-stack-advisor', id: 1, print: true })).mode, 'print') }
+    finally { stopCollecting() }
+    assert.equal(JSON.stringify(readRuns()), before)
   })
 
   it('prints when the caller names no runtime', async () => {

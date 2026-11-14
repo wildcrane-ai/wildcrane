@@ -1,6 +1,7 @@
 import type { Context } from '../index';
 import { manifestOf, mapReferences, referencesOf, type Manifest } from './manifest';
 import { hyperframeDocument } from './hyperframe-document';
+import { parseReview } from './format/studio';
 import { schemaProblem } from './schema';
 import { parseShots, shotsProblem, storyboardShots, type Shot } from './format/compare';
 import type { CompareSides, CompareSpec, ComponentSpec, Drawn, MockupView, SpriteFiles, TiledMapFiles } from './mockup-tag';
@@ -257,8 +258,43 @@ export class Previews {
         };
       case "storyboard":
         return { src, storyboard: () => this.storyboard(v, src) };
-      case "studio":
-        return { src, studio: () => resource.json() };
+      case "studio": {
+        const scoped = (source: string) => {
+          const key = this.relative(source, art.name);
+          const pins = this.shared.card?.assets ?? {};
+          const pin = pins[key] ?? Object.values(pins).find(p => p.artifact === key);
+          if (!pin) throw Error(this.services.copy.card.mockup.missing(source));
+          if (pin.error) throw Error(pin.error);
+          const ref = this.refOfSrc(key);
+          if (!ref) throw Error(this.services.copy.card.mockup.missing(source));
+          if (ref.art.id === art.id || ref.art.type === "studio") throw Error(`Cyclic Studio reference: ${source}`);
+          return { key, ref };
+        };
+        return { src, studio: async () => {
+          const data = await resource.json();
+          if (isObj(data) && data.version === 2 && !parseReview(data)) throw Error("Invalid Studio review");
+          return data;
+        }, studioFiles: {
+          text: async source => {
+            const { ref } = scoped(source);
+            const text = await this.resource(ref.art, ref.version).text("text").catch(error => {
+              throw Object.assign(error instanceof Error ? error : Error(String(error)), { retryable: true });
+            });
+            if (text === null) throw Error(`File unavailable: ${source}`);
+            if (new TextEncoder().encode(text).length > 8 * TEXT_LIMIT) throw Error(`File is too large: ${source}`);
+            return text;
+          },
+          ref: source => { try { return scoped(source).ref; } catch { return null; } },
+          view: source => {
+            try { return this.viewOfSrc(scoped(source).key); }
+            catch (e) { return { src: source, error: e instanceof Error ? e.message : String(e) }; }
+          },
+          compare: tag => ({ ...tag, load: async () => {
+            for (const source of [tag.a, tag.b, tag.shots].filter(Boolean)) scoped(source);
+            return this.compare(tag, source => this.relative(source, art.name)).load();
+          } }),
+        } };
+      }
       case "tiled":
         // A tileset on its own is a file, not a map.
         if (/\.ts[xj]$/i.test(art.name)) return { src, file: this.fileOf(art, v) };
@@ -348,7 +384,7 @@ export class Previews {
   /** What an arrangement holds at `src`: the view an Asset would draw, or the note refusing nesting. */
   private arranged(src: string, nest: string[]): MockupView {
     const type = this.refOfSrc(src)?.art.type;
-    return type && nest.includes(type) ? { src, error: this.services.copy.card.compare.nested } : this.viewOfSrc(src);
+    return type && (nest.includes(type) || type === "studio") ? { src, error: this.services.copy.card.compare.nested } : this.viewOfSrc(src);
   }
 
   private compareOf(c: Record<string, unknown>, src: string): CompareSpec {

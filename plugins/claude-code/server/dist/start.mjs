@@ -1,4 +1,4 @@
-// wildcrane-runner 0.6.69 — built by runner/scripts/build.mjs. Do not edit.
+// wildcrane-runner 0.6.70 — built by runner/scripts/build.mjs. Do not edit.
 import { createRequire as __ai4kanbanRequire } from 'node:module'
 const require = __ai4kanbanRequire(import.meta.url)
 var __create = Object.create;

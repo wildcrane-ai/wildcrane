@@ -114,10 +114,12 @@ export function cmdStudioValidate(folder: string): MoveResult {
       if (text !== null) files[`agents/${name}/${file}`] = text
     }
   }
-  const problems = studioFilesProblems(files).map((p) => `${p.file} ${p.reason}`)
+  let builtin = false
+  try { builtin = JSON.parse(files[VERSION_FILE] ?? 'null')?.id?.startsWith('wf_builtin_') === true } catch {}
+  const problems = studioFilesProblems(files, builtin).map((p) => `${p.file} ${p.reason}`)
   if (problems.length) die(problems.map((p) => `! ${p}`).join('\n'), { kind: 'studio-problems', bare: true, problems })
   say(`${folder}: no problems`)
-  const checked = checkStudioFiles(files)
+  const checked = checkStudioFiles(files, builtin)
   const fingerprint = checked.ok ? crypto.createHash('sha256').update(hashInput({ ...checked.files, ...(files[VERSION_FILE] ? { [VERSION_FILE]: files[VERSION_FILE] } : {}) })).digest('hex') : null
   return { folder: dir, problems, fingerprint }
 }

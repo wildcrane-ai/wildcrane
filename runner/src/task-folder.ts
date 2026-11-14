@@ -823,6 +823,7 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
     return path.relative(real(path.dirname(file)), target).split(path.sep).join('/')
   }
   try {
+    let recoveredReferences = false
     const graph = collect(body, file, {
       resolve: (src, owner) => {
         // 已有 artifact ID 只允许来自本任务清单。
@@ -838,17 +839,25 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
         return { key: canonical(fs.realpathSync(target)), file: target }
       },
       read: referenceText,
-      retained: key => (record.assets[key]?.dependencies ?? []).map(src => {
-        const kind = record.assets[src]?.kind
-        return { src, types: kind ? [kind] : [] }
-      }),
+      retained: (key, types) => {
+        let dependencies = record.assets[key]?.dependencies
+        if (!dependencies && types.length === 1 && types[0] === 'studio' && before[key] && !recoveredReferences) {
+          recoveredReferences = true
+          dependencies = Object.keys(before).filter(src => src !== key)
+        }
+        return (dependencies ?? []).map(src => {
+          const kind = record.assets[src]?.kind
+          return { src, types: kind ? [kind] : [] }
+        })
+      },
     })
     for (const node of graph) {
       const previous = [...node.aliases].map(key => record.assets[key]).find(Boolean)
       const old = [...node.aliases].map(key => before[key]).find(Boolean)
       const kind = node.kind as Kind
       let out: Sent | undefined
-      let why = node.error ?? [...node.dependencies.values()].map(key => refs[key]?.error).find(Boolean)
+      const partialStudio = node.kind === 'studio' && (node.data as { version?: number })?.version === 2
+      let why = node.error ?? (partialStudio ? undefined : [...node.dependencies.values()].map(key => refs[key]?.error).find(Boolean))
       if (!why && node.file) {
         try {
           if (fs.statSync(node.file).size > ASSET_FILE_LIMIT) throw new Error('This asset is over 100 MiB.')

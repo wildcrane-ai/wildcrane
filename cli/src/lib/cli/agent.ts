@@ -66,6 +66,7 @@ import {
 import { cmdTriageAdd, cmdTriageCheck } from '../../commands/triage'
 import { cmdGoalStudios, cmdGoalPreviews, goalsFile } from '../../commands/goal'
 import { cmdSpec } from '../../commands/spec'
+import { cmdStudioPreview } from '../../commands/studio-preview'
 import { cmdTelemetry } from '../../commands/telemetry'
 import { cmdAgentCheck } from '../../commands/agent-check'
 import { HARNESSES } from '../agent/harnesses'
@@ -270,6 +271,15 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
     .summary('report every problem in a studio folder; agents it names but lacks are read from the board')
     .action(async function (this: Command, folder: string) {
       await onBoard(this, cli, () => cmdStudioValidate(folder))
+    })
+  withShared(studio.command('preview'))
+    .argument('<card>', 'the card to review the Studio on', cardId)
+    .requiredOption('--folder <draft>', 'the complete draft Studio folder')
+    .requiredOption('--base <baseline>', 'the baseline folder, or empty for a new Studio')
+    .option('--results <manifest>', 'explicit existing Agent results')
+    .summary('freeze real Studio files, unified diffs and supplied results')
+    .action(async function (this: Command, card: number) {
+      await onBoard(this, cli, () => cmdStudioPreview(card, this.opts()))
     })
   withShared(studio.command('diagram'))
     .argument('<id-or-card>', 'studio id, or card number with --folder')

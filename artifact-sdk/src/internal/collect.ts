@@ -28,7 +28,7 @@ export interface CollectorHost {
   resolve: (src: string, owner: string) => { key: string; file: string | null } | null;
   /** The text a file's references are read from: a page as it will be drawn. */
   read: (file: string) => string;
-  retained: (key: string) => Source[];
+  retained: (key: string, types: string[]) => Source[];
 }
 
 const extOf = (file: string) => /\.[^./\\]+$/.exec(file)?.[0].toLowerCase() ?? '';
@@ -39,10 +39,14 @@ const kindAt = (src: string, types: string[]) => (extOf(src) === '.json' ? (type
 
 /** 依赖优先的可达节点。文件的问题记在该节点上，并传给引用它的节点；只有循环抛错。 */
 export function collect(body: string, card: string, host: CollectorHost): Collected[] {
+  return collectSources(bodyReferences(body), card, host);
+}
+
+export function collectSources(sources: Source[], card: string, host: CollectorHost): Collected[] {
   const nodes = new Map<string, Collected>();
   const active = new Set<string>();
   const out: Collected[] = [];
-  const visit = (src: string, types: string[], owner: string): { key: string | null; error?: string } => {
+  const visit = (src: string, types: string[], owner: string, partial = false): { key: string | null; error?: string } => {
     const path = src.replace(/[?#].*$/, '');
     let resolved: ReturnType<CollectorHost['resolve']>;
     try { resolved = host.resolve(path, owner); }
@@ -57,7 +61,11 @@ export function collect(body: string, card: string, host: CollectorHost): Collec
     }
     if (!resolved) return { key: null };
     const { key, file } = resolved;
-    if (active.has(key)) throw new Error(`${owner}: ${src}: 资源依赖循环`);
+    if (active.has(key)) {
+      const error = `${owner}: ${src}: 资源依赖循环`;
+      if (partial) return { key: null, error };
+      throw new Error(error);
+    }
     const json = !!file && extOf(file) === '.json';
     const held = nodes.get(key);
     if (held) {
@@ -71,10 +79,10 @@ export function collect(body: string, card: string, host: CollectorHost): Collec
     nodes.set(key, node);
     active.add(key);
     const child = (ref: Found | Source, from: string) => {
-      const found = visit(ref.src, ref.types, from);
+      const found = visit(ref.src, ref.types, from, partial || (node.kind === 'studio' && (node.data as { version?: number })?.version === 2));
       if (found.key) node.dependencies.set(ref.src, found.key);
       else if (found.error) node.problems.push({ src: ref.src, ...('line' in ref ? { line: ref.line } : {}), ...('at' in ref ? { at: ref.at } : {}), message: found.error });
-      node.error ??= found.error;
+      if (!(node.kind === 'studio' && (node.data as { version?: number })?.version === 2)) node.error ??= found.error;
     };
     if (file) {
       if (json) {
@@ -94,13 +102,13 @@ export function collect(body: string, card: string, host: CollectorHost): Collec
       node.error = node.problems[0]?.message;
       if (!node.error) for (const ref of referencesOf(manifestOf(node.kind), node.data)) child(ref, file);
     } else {
-      for (const ref of host.retained(key)) child(ref, card);
+      for (const ref of host.retained(key, types)) child(ref, card);
     }
     active.delete(key);
     out.push(node);
     return { key, error: node.error };
   };
-  for (const ref of bodyReferences(body)) visit(ref.src, ref.types, card);
+  for (const ref of sources) visit(ref.src, ref.types, card);
   const sorted: Collected[] = [];
   const done = new Set<string>();
   const order = (node: Collected) => {

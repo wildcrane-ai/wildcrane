@@ -268,3 +268,22 @@ describe('画不出的预览（#456）', () => {
     assert.equal(p.viewOfSrc('.assets/1/y.tsx').error, '画不出:y.tsx:boom')
   })
 })
+
+it('Studio reviews declare frozen files and every result dependency, preserve partial failures and enforce current-task pins', async () => {
+  const review = { version: 2, base: null, fingerprint: 'draft', agents: [{ agent: 'writer', title: { en: 'Writer' } }], files: [{ path: 'agents/writer/AGENT.md', before: null, after: 'after.txt', diff: 'change.diff' }], results: [{ agent: 'writer', component: 'Compare', a: 'cycle.json', b: 'page.html' }] }
+  const files: Record<string, string> = { 'review.json': JSON.stringify(review), 'after.txt': 'Write.', 'change.diff': '+Write.', 'cycle.json': '{"a":"cycle.json","b":"page.html"}', 'page.html': '<p>Existing result</p>' }
+  const graph = collect('<Studio src="review.json" />', 'card.md', { resolve: src => { if (!(src in files)) throw Error(`Missing: ${src}`); return { key: src, file: src } }, read: file => files[file]!, retained: () => [] })
+  assert.equal(graph.at(-1)?.error, undefined)
+  assert.match(graph.find(n => n.key === 'cycle.json')!.error!, /循环/)
+  const p = preview([
+    art('root', 'studio', [version(1, review)]),
+    art('after', 'asset', [version(1, 'Pinned text'), version(2, 'Newer unreviewed text')]),
+    art('unrelated', 'asset', [version(1, 'Must not read')]),
+  ], { 'review.json': { artifact: 'root', version: 1 }, 'after.txt': { artifact: 'after', version: 1 }, 'failed.txt': { artifact: 'after', version: 1, error: 'Upload failed' } })
+  const v = p.viewOfSrc('review.json')
+  assert.equal((await v.studio!() as { version: number }).version, 2)
+  assert.equal(await v.studioFiles!.text('after.txt'), 'Pinned text')
+  await assert.rejects(() => v.studioFiles!.text('unrelated'), /缺失/)
+  await assert.rejects(() => v.studioFiles!.text('failed.txt'), /Upload failed/)
+  assert.match(v.studioFiles!.view('review.json').error!, /Cyclic/)
+})

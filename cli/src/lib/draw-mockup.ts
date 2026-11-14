@@ -87,6 +87,7 @@ function resolveFile(id: string, from: string, folder: string): string {
   const tries = path.extname(at) ? [at] : [...CODE_EXTS.map((e) => at + e), ...CODE_EXTS.map((e) => path.join(at, `index${e}`))]
   const file = tries.find((f) => fs.statSync(f, { throwIfNoEntry: false })?.isFile())
   if (!file) throw new Error(`no such file: ${id}`)
+  if (!fs.realpathSync(file).startsWith(fs.realpathSync(folder) + path.sep)) throw new Error(`${id} is outside the mockup's folder`)
   return file
 }
 
@@ -128,7 +129,7 @@ function run(script: string, context: vm.Context, name: string, deadline: number
   return vm.runInContext(script, context, { timeout: left, filename: name, lineOffset })
 }
 
-async function tailwindFor(markup: string, sheets: Graph['sheets']): Promise<string> {
+async function tailwindFor(markup: string, sheets: Graph['sheets'], folder: string): Promise<string> {
   const source = sheets.length ? sheets.map((s) => s.content).join('\n') : '@import "tailwindcss";'
   const compiler = await compile(source, {
     base: sheets.length ? path.dirname(sheets[0]!.path) : '/',
@@ -136,6 +137,7 @@ async function tailwindFor(markup: string, sheets: Graph['sheets']): Promise<str
       if (id === 'tailwindcss' || id.startsWith('tailwindcss/')) return { path: 'tailwindcss/index.css', base: '/', content: TAILWIND }
       if (!id.startsWith('.')) throw new Error(`a mockup cannot import ${id}`)
       const at = path.resolve(from, id)
+      if (!fs.realpathSync(at).startsWith(fs.realpathSync(folder) + path.sep)) throw new Error(`${id} is outside the mockup's folder`)
       return { path: at, base: path.dirname(at), content: fs.readFileSync(at, 'utf8') }
     },
   })
@@ -179,6 +181,6 @@ export async function drawMockup(entry: string): Promise<string> {
   if (typeof Component !== 'function') throw new Error('the mockup has no default export to draw')
   sandbox.__draw = () => renderToStaticMarkup(React.createElement(Component as React.FunctionComponent))
   const markup = run('__draw()', context, entry, deadline) as string
-  const css = (await tailwindFor(markup, graph.sheets)).replace(/<\/style/gi, '<\\/style')
+  const css = (await tailwindFor(markup, graph.sheets, path.dirname(entry))).replace(/<\/style/gi, '<\\/style')
   return `<!doctype html><html><head>${head}<style>${css}</style></head><body>${markup}</body></html>`
 }

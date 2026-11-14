@@ -77,6 +77,12 @@ export type MockupView = Drawn & {
   storyboard?: () => Promise<StoryboardView>;
   /** A studio diagram's data (#451), checked by the component drawing it. */
   studio?: () => Promise<unknown>;
+  studioFiles?: {
+    text: (src: string) => Promise<string>;
+    view: (src: string) => MockupView;
+    ref: (src: string) => { art: { id: string }; version: { version: number } } | null;
+    compare: (tag: { a: string; b: string; shots: string; label: string; aLabel: string; bLabel: string }) => CompareSpec;
+  };
   compare?: CompareSpec;
   tiled?: TiledSpec;
   sprite?: SpriteSpec;
