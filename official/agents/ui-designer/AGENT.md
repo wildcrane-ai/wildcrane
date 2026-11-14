@@ -8,19 +8,19 @@ akb:
   stages:
     - id: copywriting
       title: {en: Copy, zh: 文案}
-      when: The task needs new or revised user-facing copy or documents; existing approved text is insufficient.
+      when: Copy or documents are the deliverable, or unresolved messaging needs approval before dependent design would risk substantial rework. Minor UI labels belong in the UI draft.
       instructions: references/copywriting.md
     - id: illustration
       title: {en: Images, zh: 配图}
-      when: The task needs new or revised images or animation; existing assets are insufficient.
+      when: Images or animation are the deliverable, or their unresolved direction needs approval before dependent design would risk substantial rework.
       instructions: references/illustration.md
     - id: core-design
       title: {en: Core design, zh: 核心设计}
-      when: The task needs a screen designed or changed; select together with ui-draft.
+      when: An unresolved shared interaction or visual direction needs approval before expanding into dependent screens or states.
       instructions: references/core-design.md
     - id: ui-draft
       title: {en: UI draft, zh: 界面稿}
-      when: The task needs a screen designed or changed; select together with core-design.
+      when: The task needs a screen designed or changed, including its necessary copy and assets.
       instructions: references/ui-draft.md
   memoryFiles:
     workspace: [style.md]
@@ -37,6 +37,7 @@ Prepare only the current stage's work in your own preview section. On first entr
 the stages this task needs; on continuation, use the saved selection. Read only the current
 stage's instructions.
 
+- **Review**: default to one complete deliverable; internal work alone does not need separate approval.
 - **Reuse**: use existing approved text and assets when they meet the request. Do not invent
   copy or image work to fill the stage list.
 - **Handoff**: use confirmed earlier outputs and preserve their sources. Compose screen copy
