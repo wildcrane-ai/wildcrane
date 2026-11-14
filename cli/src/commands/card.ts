@@ -19,7 +19,6 @@ import { locate, locateArchived, enclosingGroupRoot } from '../lib/cards'
 import { sourceRefFrom } from '../lib/source'
 import { cardCreation, readStore } from '../lib/agent/store'
 import { switchStudio } from '../lib/agent/studio-cards'
-import { canonicalSpecAgent } from '../lib/spec-agent-names'
 import { insideRun } from '../lib/agent/env'
 import { workspaceTask } from '../lib/cloud/tasks'
 import { activeDelivery } from '../lib/agent/deliveries'
@@ -246,7 +245,7 @@ function itemStudio(sourceId: string): string | undefined {
 // `--previews`: the chosen preview agents, in their studio's order; `""` chooses none.
 function previewsFlag(said: string[], flow: ReturnType<typeof studioFor>): string[] {
   const offered = flow ? previewAgents(flow).map((h) => h.agent) : []
-  const asked = new Set(said.map((name) => canonicalSpecAgent(name.trim())).filter(Boolean))
+  const asked = new Set(said.map((name) => name.trim()).filter(Boolean))
   const unknown = [...asked].filter((name) => !offered.includes(name))
   if (unknown.length) {
     die(`${unknown.map((n) => `\`${n}\``).join(', ')} ${unknown.length > 1 ? 'are not previews' : 'is not a preview'} of its studio. It offers: ${offered.join(', ') || 'none'}.`, { kind: 'needs-input' })

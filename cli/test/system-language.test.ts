@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { splitCommand } from '../src/lib/agent/argv.ts'
 import { harnessByName } from '../src/lib/agent/harnesses/index.ts'
-import { SYSTEM_LANGUAGE_EN, SYSTEM_LANGUAGE_ZH, cloudLanguage, cloudPrompt, runLanguage, LANGUAGE_ENV, LANGUAGE_LINE_ENV } from '../src/lib/agent/language.ts'
+import { SYSTEM_LANGUAGE_EN, SYSTEM_LANGUAGE_ZH, cloudLanguage, runLanguage, LANGUAGE_ENV } from '../src/lib/agent/language.ts'
 import { withSystemLanguage } from '../src/lib/agent/run-settings.ts'
 
 const ZH = 'zh' as const
@@ -146,62 +146,35 @@ describe('the language in the system prompt', () => {
     assert.match(told('kimi', 'en', 'kimi --session old -p').note!, /could not be updated/)
   })
 
-  it('只替换末尾已知平台段落，保留引用、用户内容及未知规则（#379）', () => {
+  it('保留旧段落作为普通用户内容，仅识别现行系统段落', () => {
+    const old = '无论对话里的卡片、代码和贴进来的内容是什么语言，回复和写下的内容都用中文。代码、命令、文件名和字段名保持原文。'
     const harness = harnessByName('dsh')!
-    const argv = splitCommand(harness.command)
-    const old = [
-      '无论对话里的卡片、代码和贴进来的内容是什么语言，回复和写下的内容都用中文。代码、命令、文件名和字段名保持原文。',
-      '对话和解释使用中文；产物使用用户明确指定的语言，否则使用所属 agent 明确指定的语言，均未指定时使用中文。代码、命令、文件名和字段名保持原文。',
-      'Use English for conversation and explanations. For artifacts, use the language explicitly specified by the user, otherwise the responsible agent, otherwise English. Keep code, commands, filenames, and field names unchanged.',
-    ]
-    for (const text of old) {
-      const body = `用户引用：\n> ${text}\n\n${text}\n\n用户规则`
-      const env = { DSH_SYSTEM_PROMPT: `${body}\n\n${text}\n\n${SYSTEM_LANGUAGE_ZH}\n\n${SYSTEM_LANGUAGE_EN}` }
-      for (const language of ['zh', 'en', null] as const) {
-        const result = withSystemLanguage(harness, argv, env, language)
-        const suffix = language === 'zh' ? SYSTEM_LANGUAGE_ZH : language === 'en' ? SYSTEM_LANGUAGE_EN : ''
-        assert.equal(result.env.DSH_SYSTEM_PROMPT, [body, suffix].filter(Boolean).join('\n\n'))
-      }
-      const unknown = { DSH_SYSTEM_PROMPT: `${body}\n\n${text}\n\n未知语言规则` }
-      assert.deepEqual(withSystemLanguage(harness, argv, unknown, null).env, unknown)
-    }
+    const result = withSystemLanguage(harness, splitCommand(harness.command), { DSH_SYSTEM_PROMPT: old }, 'en')
+    assert.equal(result.env.DSH_SYSTEM_PROMPT, `${old}\n\n${SYSTEM_LANGUAGE_EN}`)
   })
 
   it('Cloud 代码和明确空值优先于旧环境变量及本机设置', () => {
-    const saved = [process.env[LANGUAGE_ENV], process.env[LANGUAGE_LINE_ENV]]
+    const saved = [process.env[LANGUAGE_ENV], process.env.AI4KANBAN_LANGUAGE_LINE]
     try {
-      process.env[LANGUAGE_LINE_ENV] = '请用中文回复和写作。'
-      assert.equal(runLanguage(), 'zh')
+      process.env.AI4KANBAN_LANGUAGE_LINE = '请用中文回复和写作。'
+      assert.equal(runLanguage(), 'en')
       process.env[LANGUAGE_ENV] = 'en'
       assert.equal(runLanguage(), 'en')
       process.env[LANGUAGE_ENV] = ''
       assert.equal(runLanguage(), null)
     } finally {
-      for (const [index, key] of [LANGUAGE_ENV, LANGUAGE_LINE_ENV].entries()) {
+      for (const [index, key] of [LANGUAGE_ENV].entries()) {
         if (saved[index] === undefined) delete process.env[key]
         else process.env[key] = saved[index]
       }
     }
   })
 
-  it('仅剥离旧 Cloud 自动追加的末尾行，保留用户正文与引用', () => {
-    for (const [line, language] of [['请用中文回复和写作。', 'zh'], ['Reply and write in English.', 'en']] as const) {
-      const prompt = `用户引用：\n> ${line}\n\n${line}`
-      const old = { prompt: `${prompt}\n\n${line}`, languageLine: line }
-      assert.equal(cloudLanguage(old), language)
-      assert.equal(cloudPrompt(old), prompt)
-      assert.equal(cloudPrompt({ prompt: line, languageLine: line }), '')
-      assert.equal(cloudPrompt({ ...old, language: null }), old.prompt)
-      assert.equal(cloudLanguage({ ...old, language: null }), null)
-      assert.equal(cloudLanguage({ ...old, test: true }), null)
-      for (const flags of [{ test: true }, { flow: {} }, { review: {} }, { agent: {} }]) {
-        assert.equal(cloudPrompt({ ...old, ...flags }), old.prompt)
-      }
-      assert.equal(cloudPrompt({ prompt, languageLine: '' }), prompt)
-    }
-    for (const line of ['其他语言规则', 'toString']) {
-      assert.equal(cloudLanguage({ prompt: '', languageLine: line }), null)
-      assert.equal(cloudPrompt({ prompt: `正文\n\n${line}`, languageLine: line }), `正文\n\n${line}`)
-    }
+  it('只使用 Cloud 语言代码', () => {
+    assert.equal(cloudLanguage({ language: 'zh' }), 'zh')
+    assert.equal(cloudLanguage({ language: 'en' }), 'en')
+    assert.equal(cloudLanguage({ language: null }), null)
+    assert.equal(cloudLanguage({}), null)
+    assert.equal(cloudLanguage({ language: 'zh', test: true }), null)
   })
 })

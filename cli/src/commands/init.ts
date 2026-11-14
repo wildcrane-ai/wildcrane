@@ -1,25 +1,13 @@
-// ---- init ------------------------------------------------------------------
-//
-// Scaffolding a fresh board, and re-running as the repair step for a board made by an
-// older version.
-
 import fs from 'node:fs'
 
-import { rel, writeRootIgnoreIfMissing, KANBAN, TODO, README, CONFIG, KANBAN_GITIGNORE, MODULES_MD, RELEASES, ARCHIVE, ROOT_GITIGNORE } from '../lib/paths'
+import { rel, writeRootIgnoreIfMissing, KANBAN, TODO, README, CONFIG, KANBAN_GITIGNORE, MODULES_MD, ARCHIVE, ROOT_GITIGNORE } from '../lib/paths'
 import { CONFIG_TEMPLATE } from '../lib/config-template'
 import { say } from '../lib/io'
-import { LOCAL_IGNORE_LINE } from '../lib/agent/local'
 import { walkMd } from '../lib/cards'
-import { PLANNER, agentMemoryDir, migrateMemory, renameProductFile, retireGoal, scaffoldProjectMemory, type Scaffolded } from '../lib/memory'
+import { scaffoldProjectMemory, type Scaffolded } from '../lib/memory'
 import { TASKS_HEADING } from '../lib/readme'
-import { migratePruneMemoryCard, migrateRecurringCards, recurringMigrationLines } from '../lib/recurring'
 import type { MoveResult } from '../lib/types'
 
-// The blank module map. `init` seeds it, the module-map flow fills it in from the repo.
-// It ships empty on purpose: only someone who has read the repo can name its parts, and
-// a made-up line here would validate a card's --modules tag against a lie. An empty map
-// still parses — moduleNames() reads it as "no modules yet", so --modules is a hard error
-// naming what's known, which is the prompt to add the line.
 const MODULES_TEMPLATE = `# Modules
 
 What this project is made of — one line per module, each led by its **bolded name**, then
@@ -43,10 +31,6 @@ _(none)_
 `
 }
 
-// Seed the per-project config at docs/kanban/config.md from the blank template this
-// command carries. The config lives WITH the board (not in the skill folder) so a
-// read-only plugin cache still yields an editable, per-project file. Idempotent: it never
-// overwrites a config that's already there, so a filled-in config survives a re-run.
 function writeConfigIfMissing() {
   if (fs.existsSync(CONFIG)) return false
   fs.mkdirSync(KANBAN, { recursive: true })
@@ -54,10 +38,6 @@ function writeConfigIfMissing() {
   return true
 }
 
-// Seed the blank module map. Same contract as the config: idempotent, and it never
-// touches a map that's already there, so a filled-in map survives a re-run — that's what
-// makes it safe for `init` to double as the repair step for a board made before the map
-// existed.
 function writeModulesIfMissing() {
   if (fs.existsSync(MODULES_MD)) return false
   fs.mkdirSync(KANBAN, { recursive: true })
@@ -65,19 +45,8 @@ function writeModulesIfMissing() {
   return true
 }
 
-// docs/kanban/.env holds the board's API keys, so it must never reach git — and the only
-// thing that can promise that on a board nobody has opened the UI on is `init`. A key
-// written into the file by hand is covered from the first day, before anything else runs.
-//
-// Runtime state is covered by the root .akb/ ignore rule.
-//
-// The rules go in the board's own ignore file, never the repo's root one. An existing file
-// gets the missing line added, not replaced: comments, order and every other rule in it are
-// the user's. The `.env` line is written exactly as the UI writes it, so neither one adds
-// it twice.
 const IGNORE_RULES = [
   { line: '.env', comment: "# The board's API keys — never commit them." },
-  { line: LOCAL_IGNORE_LINE, comment: "# The model each agent runs — this computer's answer, not the repo's." },
 ]
 
 function writeGitignoreIfMissing(): boolean {
@@ -92,9 +61,6 @@ function writeGitignoreIfMissing(): boolean {
   return true
 }
 
-// The parts of a board every move needs: the folder the cards live in and its index. A board
-// can be missing them — a half-finished install, a folder someone deleted from — and then
-// every move but this one turns it away.
 function writeSkeletonIfMissing(): string[] {
   const added: string[] = []
   if (!fs.existsSync(TODO)) {
@@ -110,44 +76,8 @@ function writeSkeletonIfMissing(): string[] {
 
 // Releases are retired (#1671): drop `releases.md` and every card's `release:` line, open or
 // archived. `.release-summaries/` stays as the record of what each closed release held.
-function retireReleases(): string {
-  const done: string[] = []
-  if (fs.existsSync(RELEASES)) {
-    fs.rmSync(RELEASES)
-    done.push(`deleted ${rel(RELEASES)}`)
-  }
-  let cards = 0
-  for (const dir of [TODO, ARCHIVE]) {
-    if (!fs.existsSync(dir)) continue
-    for (const file of walkMd(dir)) {
-      const text = fs.readFileSync(file, 'utf8')
-      const end = text.startsWith('---\n') ? text.indexOf('\n---', 3) : -1
-      if (end < 0) continue
-      const head = text.slice(0, end).replace(/\nrelease:[^\n]*/, '')
-      if (head.length === end) continue
-      fs.writeFileSync(file, head + text.slice(end))
-      cards++
-    }
-  }
-  if (cards) done.push(`cleared the release on ${cards} card${cards === 1 ? '' : 's'}`)
-  return done.join(', ')
-}
-
-/** Scaffold this board, or repair one an older version made. */
 export function cmdInit(): MoveResult {
   if (fs.existsSync(KANBAN)) {
-    // Re-running `init` is the repair step for a board made by an older version: it adds
-    // whatever that version never wrote — docs/kanban/config.md if the board predates the
-    // move out of the skill folder, modules.md if it predates the module map, the
-    // .gitignore that keeps the keys file out of git if it predates that — and never
-    // touches any of them once they're filled in.
-    //
-    // The "Prune the memory" card is not among them — it goes the other way (#514).
-    // Pruning is the Memory pruner agent now, so a board still carrying the card carries two
-    // prune schedules; the repair takes the card off and keeps its cadence beside the agent,
-    // switched off. Once, because after it there is no such card to find.
-    //
-    // Every other recurring card becomes a scheduled agent of its studio (#1414).
     const added: string[] = [
       ...writeSkeletonIfMissing(),
       writeConfigIfMissing() && rel(CONFIG),
@@ -155,37 +85,10 @@ export function cmdInit(): MoveResult {
       writeGitignoreIfMissing() && rel(KANBAN_GITIGNORE),
       writeRootIgnoreIfMissing() && rel(ROOT_GITIGNORE),
     ].filter(Boolean) as string[]
-    // The board's own record and the planner's folder beside it (#805). A module is a topic
-    // inside a memory file now, not a folder, so there is nothing per-module to scaffold —
-    // and an older board's module folders are merged away by the migration this call runs.
     const scaffolded: Scaffolded[] = []
-    // It scaffolds what it needs on the way, so the scaffold below finds the planner's
-    // folder already there and reports only what an older board never had.
-    // Before anything scaffolds an empty `project.md` beside it (#1391).
-    const projectRenamed = renameProductFile()
-    const movedMemory = migrateMemory()
     const project = scaffoldProjectMemory()
     if (project) scaffolded.push(project)
-    // `goal.md` is retired (#1268): what the user wrote moves into the planner's decisions.
-    const goalRetired = retireGoal()
-    const prunedCard = migratePruneMemoryCard()
-    const recurring = migrateRecurringCards()
-    const releasesRetired = retireReleases()
-    say(
-      added.length
-        ? `board already exists at ${rel(KANBAN)}/ — added the missing ${added.join(', ')} (safe to re-run)`
-        : `board already exists at ${rel(KANBAN)}/ — ${scaffolded.length || goalRetired || projectRenamed || releasesRetired || recurring.agents.length || recurring.removed.length ? 'board files all present' : 'nothing to do'} (safe to re-run)`,
-    )
-    for (const s of scaffolded) say(`  memory path ${rel(s.dir)}/ — ${s.fresh ? 'created' : `added ${s.made.join(', ')}`}`)
-    if (movedMemory.length) {
-      say(`  memory now belongs to whoever writes it — moved ${movedMemory.length} file${movedMemory.length === 1 ? '' : 's'} or topic${movedMemory.length === 1 ? '' : 's'}: ${movedMemory.join(', ')}`)
-      say(`  a module's planning notes are in ${rel(agentMemoryDir(PLANNER))}/<module>/`)
-    }
-    if (projectRenamed) say(`  ${projectRenamed}`)
-    if (goalRetired) say(`  docs/kanban/memory/goal.md is retired: ${goalRetired}`)
-    if (releasesRetired) say(`  releases are retired: ${releasesRetired}`)
-    if (prunedCard) say(`  removed ${prunedCard} — pruning is the Memory pruner agent now (Configuration → Board); its cadence is kept there, switched off`)
-    for (const line of recurringMigrationLines(recurring)) say(`  ${line}`)
+    say(added.length ? `board already exists at ${rel(KANBAN)}/ — added the missing ${added.join(', ')}` : `board already exists at ${rel(KANBAN)}/ — nothing to do`)
     if (added.includes(rel(MODULES_MD))) {
       say(`  next: fill in ${rel(MODULES_MD)} (see "The module map")`)
     }

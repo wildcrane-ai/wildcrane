@@ -2,15 +2,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 
-import { takeLocalModels } from '../lib/agent/local'
-import { migrateRuntimes, repairEnvFile } from '../lib/agent/runtimes'
-import { agentNames } from '../lib/agent/roles'
 import { runBoard } from '../lib/board-cli'
 import { missingConfigKeys } from '../lib/config-template'
 import { BoardError, say } from '../lib/io'
-import { setBoardDir } from '../lib/paths'
-import { goalWords } from '../lib/memory'
-import { parseYamlBlock, splitFrontmatter } from '../lib/agents/yaml'
 import type { MoveResult } from '../lib/types'
 import { SKILL_VERSION } from '../version'
 
@@ -18,7 +12,6 @@ const NAME = 'wildcrane'
 const REPO = 'https://github.com/wildcrane-ai/wildcrane'
 
 export const NEWER_LINE = `npm install -g ${NAME}@latest`
-const MEMORY_FILES = ['readme.md', 'goal.md', 'decisions.md', 'redesign.md', 'rejected.md']
 const UNFILLED = '_(not filled in yet'
 
 export interface SetupContext {
@@ -46,14 +39,6 @@ class Report {
 }
 
 const read = (file: string): string | null => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null)
-
-function statOf(p: string): fs.Stats | null {
-  try {
-    return fs.lstatSync(p)
-  } catch {
-    return null
-  }
-}
 
 async function boardMove(root: string, args: string[], board?: string | null): Promise<void> {
   const where = board ? ['--board', board] : ['--dir', root]
@@ -84,143 +69,11 @@ async function repairBoard(root: string, report: Report, named?: string | null):
     report.notes.push('未找到看板，请通过插件连接云端项目。')
     return false
   }
-  moveLegacyMemory(board, report)
-  dropModuleGoals(board, report)
-  movePlanRules(board, report)
-  noteOldStudios(board, report)
   report.sayDid()
   await boardMove(root, ['init'], board)
-  moveRuntimes(root, board, report)
-  const dropped = dropRecordFile(board)
-  if (dropped) report.did.push(dropped)
   checkConfig(board, report)
   checkModules(board, report)
   return true
-}
-function moveRuntimes(root: string, board: string, report: Report): void {
-  try {
-    setBoardDir(board, root)
-    const line = migrateRuntimes(agentNames(), takeLocalModels(board))
-    if (line) report.did.push(line)
-    const keys = repairEnvFile()
-    if (keys) report.did.push(keys)
-  } catch (err) {
-    report.notes.push(
-      `couldn't turn this board's connector settings into runtimes (${err instanceof Error ? err.message : String(err)}) —` +
-        ' set them up in Configuration → Runtimes',
-    )
-  }
-}
-function moveLegacyMemory(board: string, report: Report): void {
-  const memory = path.join(board, 'memory')
-  const moved: string[] = []
-  for (const name of MEMORY_FILES) {
-    const from = path.join(board, name)
-    const st = statOf(from)
-    if (!st || !st.isFile()) continue
-    fs.mkdirSync(memory, { recursive: true })
-    const to = path.join(memory, name)
-    const there = read(to)
-    if (there === null) {
-      fs.renameSync(from, to)
-      moved.push(name)
-    } else if (there === read(from)) {
-      fs.rmSync(from)
-      moved.push(name)
-    } else {
-      report.notes.push(`both docs/kanban/${name} and docs/kanban/memory/${name} exist and differ — merge them by hand`)
-    }
-  }
-  if (moved.length) report.did.push(`moved the memory set into docs/kanban/memory/: ${moved.join(', ')}`)
-}
-
-export function dropRecordFile(board: string): string | null {
-  const file = path.join(board, 'record.csv')
-  if (!fs.existsSync(file)) return null
-  fs.rmSync(file)
-  return 'removed docs/kanban/record.csv (the planning scores it fed are gone)'
-}
-function dropModuleGoals(board: string, report: Report): void {
-  const memory = path.join(board, 'memory')
-  if (!fs.existsSync(memory)) return
-  const root = read(path.join(memory, 'goal.md'))
-  let dropped = 0
-  for (const entry of fs.readdirSync(memory, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue
-    const file = path.join(memory, entry.name, 'goal.md')
-    const text = read(file)
-    if (text === null) continue
-    if (text === root || text.includes(UNFILLED) || !goalWords(text)) {
-      fs.rmSync(file)
-      dropped++
-    } else {
-      report.notes.push(
-        `docs/kanban/memory/${entry.name}/goal.md — fold what it says into` +
-          ` docs/kanban/memory/agents/planner/${entry.name}/decisions.md, then delete it`,
-      )
-    }
-  }
-  if (dropped) report.did.push(`removed ${dropped} leftover per-module goal.md`)
-}
-const PLAN_LEADS: Record<string, string[]> = {
-  coding: ['software-planner', 'planner'],
-  'hyperframes-video': ['scriptwriter'],
-  'slide-deck': ['deck-planner'],
-  'carousel-post': ['carousel-planner'],
-  'blog-post': ['blog-planner'],
-  'video-clone': ['video-cloner'],
-  'studio-builder': ['studio-writer'],
-}
-const GONE_LEADS = ['software-planner', 'planner']
-
-export function planLeads(board: string): Record<string, string[]> {
-  const leads = { ...PLAN_LEADS }
-  const root = path.join(board, 'studios')
-  for (const entry of fs.existsSync(root) ? fs.readdirSync(root, { withFileTypes: true }) : []) {
-    if (!entry.isDirectory()) continue
-    const meta = splitFrontmatter(read(path.join(root, entry.name, 'STUDIO.md')) ?? '').meta
-    const stages = meta === null ? undefined : parseYamlBlock(meta).stages
-    const plan = stages && typeof stages === 'object' && !Array.isArray(stages) ? stages.plan : undefined
-    const lead = plan && typeof plan === 'object' && !Array.isArray(plan) && typeof plan.lead === 'string' ? plan.lead.trim() : ''
-    if (lead) leads[entry.name] = [lead]
-  }
-  return leads
-}
-
-export function movePlanRules(board: string, report: Pick<Report, 'did' | 'notes'>): void {
-  const rules = path.join(board, 'rules')
-  const moved: string[] = []
-  for (const [id, leads] of Object.entries(planLeads(board))) {
-    for (const lead of leads) {
-      const from = path.join(rules, `${lead}.md`)
-      const rule = read(from)?.trim()
-      if (!rule) continue
-      const to = path.join(rules, 'studios', `${id}.md`)
-      const there = read(to)?.trim() ?? ''
-      if (!there.includes(rule)) {
-        fs.mkdirSync(path.dirname(to), { recursive: true })
-        fs.writeFileSync(to, `${[there, rule].filter(Boolean).join('\n\n')}\n`)
-        moved.push(`${lead} → ${id}`)
-      }
-    }
-  }
-  for (const lead of GONE_LEADS) fs.rmSync(path.join(rules, `${lead}.md`), { force: true })
-  if (moved.length) report.did.push(`made each plan agent's rule its studio's card rule (docs/kanban/rules/studios/): ${moved.join(', ')}`)
-}
-export function noteOldStudios(board: string, report: Pick<Report, 'did' | 'notes'>): void {
-  const old = (dir: string, file: string, keys: RegExp) => {
-    const root = path.join(board, dir)
-    return (fs.existsSync(root) ? fs.readdirSync(root, { withFileTypes: true }) : [])
-      .filter((e) => e.isDirectory() && keys.test(splitFrontmatter(read(path.join(root, e.name, file)) ?? '').meta ?? ''))
-      .map((e) => `docs/kanban/${dir}/${e.name}/${file}`)
-  }
-  const files = [...old('studios', 'STUDIO.md', /^(stages|delivers):/m), ...old('agents', 'AGENT.md', /^\s+(hook|lead):/m)]
-  if (files.length) {
-    report.notes.push(
-      `written in the old form, so not read until rewritten — list a studio's agents under \`previews\`, \`land\` and ` +
-        `\`scheduled\`, and drop \`hook\`/\`lead\` from each agent (or ask the Studio builder): ${files.join(', ')}`,
-    )
-  }
 }
 function checkConfig(board: string, report: Report): void {
   const current = read(path.join(board, 'config.md'))

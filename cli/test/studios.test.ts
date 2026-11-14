@@ -492,32 +492,6 @@ describe('studios in files (#1890)', () => {
   })
 })
 
-describe('`akb update` on a board saved before rounds (#2152)', () => {
-  it('makes each plan agent’s rule its studio’s card rule, once, and names the files it no longer reads', async () => {
-    const { movePlanRules, noteOldStudios } = await import('../src/commands/update.ts')
-    fs.mkdirSync(RULES, { recursive: true })
-    fs.writeFileSync(path.join(RULES, 'software-planner.md'), 'Titles in English.\n')
-    fs.writeFileSync(path.join(RULES, 'scriptwriter.md'), 'Keep it under a minute.\n')
-    fs.mkdirSync(path.join(kanban(), 'studios', 'wf-2'), { recursive: true })
-    fs.writeFileSync(path.join(kanban(), 'studios', 'wf-2', 'STUDIO.md'), '---\nname: Old\nstages:\n  plan:\n    lead: outliner\n---\n')
-    fs.writeFileSync(path.join(RULES, 'outliner.md'), 'One page.\n')
-    agent('outliner', ['lead: plan'])
-    const report = { did: [] as string[], notes: [] as string[] }
-    movePlanRules(kanban(), report)
-    const rule = (id: string) => fs.readFileSync(path.join(RULES, 'studios', `${id}.md`), 'utf8')
-    assert.equal(rule('coding'), 'Titles in English.\n')
-    assert.equal(rule('hyperframes-video'), 'Keep it under a minute.\n')
-    assert.equal(rule('wf-2'), 'One page.\n')
-    assert.equal(fs.existsSync(path.join(RULES, 'software-planner.md')), false)
-    assert.ok(fs.existsSync(path.join(RULES, 'scriptwriter.md')), 'a lead that is now a preview keeps its own')
-    assert.match(report.did.join('\n'), /software-planner → coding/)
-    movePlanRules(kanban(), report)
-    assert.equal(rule('hyperframes-video'), 'Keep it under a minute.\n')
-    noteOldStudios(kanban(), report)
-    assert.match(report.notes.join('\n'), /docs\/kanban\/studios\/wf-2\/STUDIO\.md, docs\/kanban\/agents\/outliner\/AGENT\.md/)
-  })
-})
-
 describe('builder 专属指令', () => {
   const heading = 'you, the `builder` agent'
   const once = (text: string): void => {

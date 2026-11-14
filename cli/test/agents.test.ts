@@ -201,11 +201,10 @@ describe('the agents this command ships', () => {
     assert.match(agent.file('references/ui-draft.md')!, /references\/rendered-screen\.md/)
   })
 
-  it('still answers to every name each of them had before', () => {
-    assert.equal(findSpecAgent('recommend-tech-stack')?.name, 'tech-stack-advisor')
-    assert.equal(findSpecAgent('technology-selection')?.name, 'tech-stack-advisor')
-    assert.equal(findSpecAgent('ui-design')?.name, 'ui-designer')
+  it('does not resolve retired names', () => {
+    for (const name of ['recommend-tech-stack', 'technology-selection', 'ui-design', 'video-assets', 'memory-reviewer', 'user-docs']) assert.equal(findSpecAgent(name), null)
   })
+
 })
 
 describe('an agent the project adds', () => {
@@ -266,27 +265,6 @@ describe('an agent the project adds', () => {
 
 // The folder and the filename agents had before #419. Both are read for one release, so a
 // board upgrades without its specialists going quiet — and every hit says to move it.
-describe('an agent still in the folder agents used to live in', () => {
-  it('is used, and reported so the folder gets moved', () => {
-    project('api-contract', { 'AGENT.md': AGENT }, 'skills')
-    const { agents, problems } = specAgentCatalog()
-    assert.ok(agents.some((a) => a.name === 'api-contract'))
-    assert.match(problems.join('\n'), /skills\/api-contract: move it to .*agents\/api-contract\//)
-  })
-
-  it('is read from `SKILL.md` as well as `AGENT.md`', () => {
-    project('api-contract', { 'SKILL.md': AGENT }, 'skills')
-    assert.ok(findSpecAgent('api-contract'))
-  })
-
-  it('is reported when the folder was moved but the filename was not', () => {
-    project('api-contract', { 'SKILL.md': AGENT })
-    const { agents, problems } = specAgentCatalog()
-    assert.ok(agents.some((a) => a.name === 'api-contract'))
-    assert.match(problems.join('\n'), /agents\/api-contract\/SKILL\.md: rename it to AGENT\.md/)
-  })
-})
-
 // `write` joined the retired marketing board's writer (#718). A file still declaring it is
 // listed as a problem rather than registered as something nothing on the board can call.
 describe('the hook an agent declares', () => {
@@ -426,12 +404,11 @@ describe('what a session is shown', () => {
 
   // A board that saved the retired Mockup style gets its run log told, so somebody who never
   // opens the agent's page is not quietly given a different answer than last time (#1003).
-  it('says in the log that a saved mockup style is retired', () => {
+  it('ignores retired mockup settings without compatibility notes', () => {
     board({ specAgents: { 'ui-designer': { mockupStyle: 'ascii' } } })
     const notes: string[] = []
-    const prompt = buildPrompt({ action: 'spec', id: 12, specAgent: 'ui-designer' }, notes)
-    assert.match(notes.join('\n'), /Mockup style is saved on this board.*rendered screen/)
-    assert.doesNotMatch(prompt, /ASCII/)
+    buildPrompt({ action: 'spec', id: 12, specAgent: 'ui-designer' }, notes)
+    assert.deepEqual(notes, [])
   })
 
   it('says nothing about a style no board saved', () => {
@@ -627,43 +604,14 @@ describe("an agent's memory folder", () => {
     assert.doesNotMatch(prompt, /### `/)
   })
 
-  // A board written before the split kept one file. It is moved in on the first read, so the
-  // very run that finds it is handed everything it said (#473).
-  it('moves a board’s one old file into the folder, once, without losing a line', () => {
-    fs.mkdirSync(path.join(kanban(), 'memory', 'agents'), { recursive: true })
-    fs.writeFileSync(
-      path.join(kanban(), 'memory', 'agents', 'ui-designer.md'),
-      '# What `ui-designer` learned\n\n- This product never opens a modal.\n',
-    )
-    const prompt = buildPrompt({ action: 'spec', id: 12, specAgent: 'ui-designer' })
-    assert.match(prompt, /This product never opens a modal\./)
-    assert.equal(remembered('ui-designer'), '# What `ui-designer` was corrected on\n\n- This product never opens a modal.\n')
-    assert.equal(fs.existsSync(path.join(kanban(), 'memory', 'agents', 'ui-designer.md')), false)
-  })
-
-  // The agent was renamed, and what it remembers is kept under its name.
-  it('moves what it remembers off the name it had before, once', () => {
-    const was = path.join(kanban(), 'memory', 'agents', 'ui-design')
-    fs.mkdirSync(was, { recursive: true })
-    fs.writeFileSync(path.join(was, 'redesign.md'), '# What `ui-design` was corrected on\n\n- One figure per tile was rejected.\n')
-    const prompt = buildPrompt({ action: 'spec', id: 12, specAgent: 'ui-designer' })
-    assert.match(prompt, /One figure per tile was rejected\./)
-    assert.match(remembered('ui-designer'), /One figure per tile was rejected\./)
-    assert.equal(fs.existsSync(was), false)
-  })
-
-  // `video-assets` became `hyperframes-assets` (#945), then `hyperframes-editor` (#1057), but its
-  // catalogue of files on this machine is not worth moving: the folder keeps the name it was
-  // written under, and the agent is handed it under its new name.
-  it('reads the asset catalogue from the folder its old name wrote, and leaves it there', () => {
-    const was = path.join(kanban(), 'memory', 'agents', 'video-assets')
-    fs.mkdirSync(was, { recursive: true })
-    fs.writeFileSync(path.join(was, 'assets.md'), '# assets\n\n- board.mp4 — the board, 4s.\n')
-    const prompt = buildPrompt({ action: 'spec', id: 12, specAgent: 'hyperframes-editor' })
-    assert.match(prompt, /board\.mp4 — the board, 4s\./)
-    assert.match(prompt, /`docs\/kanban\/memory\/agents\/video-assets\/`/)
-    assert.ok(fs.existsSync(path.join(was, 'assets.md')))
-    assert.equal(fs.existsSync(path.join(kanban(), 'memory', 'agents', 'hyperframes-editor')), false)
+  it('does not adopt old memories during a read', () => {
+    const dir = path.join(kanban(), 'memory/agents')
+    fs.mkdirSync(path.join(dir, 'video-assets'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'ui-designer.md'), 'old preference')
+    fs.writeFileSync(path.join(dir, 'video-assets/assets.md'), 'old catalogue')
+    assert.doesNotMatch(buildPrompt({ action: 'spec', id: 12, specAgent: 'ui-designer' }), /old preference/)
+    assert.doesNotMatch(buildPrompt({ action: 'spec', id: 12, specAgent: 'hyperframes-editor' }), /old catalogue/)
+    assert.equal(fs.readFileSync(path.join(dir, 'ui-designer.md'), 'utf8'), 'old preference')
   })
 })
 

@@ -22,7 +22,6 @@ import {
   KANBAN,
   MEMORY,
   ASSETS,
-  MOCKUPS,
   MODULES_MD,
   TODO,
 } from '../paths'
@@ -35,7 +34,7 @@ const MAX_DEPTH = 4
  *  nothing a screen draws has changed since the first one. */
 export function boardStamp(): string {
   const parts: string[] = []
-  for (const dir of [TODO, MEMORY, ASSETS, MOCKUPS, path.join(KANBAN, '.mockups')]) walk(dir, parts, 0)
+  for (const dir of [TODO, MEMORY, ASSETS]) walk(dir, parts, 0)
   for (const file of [MODULES_MD, ARCHIVE_MD, CONFIG]) {
     stamp(file, parts)
   }
@@ -48,7 +47,7 @@ function walk(dir: string, parts: string[], depth: number): void {
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true })
   } catch {
-    // Not there — a board without mockups or without a memory folder is a board, and its
+    // Not there — a board without assets or without a memory folder is a board, and its
     // absence is part of the fingerprint by being nothing at all.
     return
   }

@@ -25,7 +25,7 @@ async function listed(): Promise<{ code: number; answer: Record<string, unknown>
 }
 
 describe('a checkout with a retired Cloud pointer', () => {
-  it('opens docs/kanban/ and warns once', async () => {
+  it('opens docs/kanban/ without interpreting the retired pointer', async () => {
     fs.mkdirSync(path.join(root, '.git'))
     fs.mkdirSync(path.join(root, 'docs', 'kanban', 'todo'), { recursive: true })
     fs.writeFileSync(path.join(root, 'docs', 'kanban', 'config.md'), '# Configuration\n')
@@ -36,6 +36,6 @@ describe('a checkout with a retired Cloud pointer', () => {
     assert.equal(code, 0)
     assert.equal(answer.board, path.join(root, 'docs', 'kanban'))
     const warnings = (answer.warnings ?? []) as string[]
-    assert.equal(warnings.filter((w) => w.includes('.ai4kanban.json')).length, 1)
+    assert.equal(warnings.filter((w) => w.includes('.ai4kanban.json')).length, 0)
   })
 })

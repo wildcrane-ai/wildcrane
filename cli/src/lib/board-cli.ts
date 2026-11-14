@@ -17,7 +17,6 @@ import path from 'node:path'
 
 import { die, projectRootOf, setBoardDir, setBoardRoot, useProjectState } from './paths'
 import { BoardError, warn, type Sink } from './io'
-import { POINTER_FILE, hasRetiredPointer } from './cloud/pointer'
 import { backfillCardStudios } from './card-studio-backfill'
 
 // `init` is the one move that may run where no board exists yet — it is what makes one.
@@ -213,15 +212,6 @@ export function rawArgv(argv: string[]): string[] | null {
     else break
   }
   return argv[i] === 'raw' ? [...shared, ...argv.slice(i + 1)] : null
-}
-
-/** A checkout still pointing at a retired Cloud board opens its local copy instead (#2046). */
-export function sayIfRetiredPointer(root: string): void {
-  if (!hasRetiredPointer(root)) return
-  warn(
-    `Cloud boards are retired, so this board opens from docs/kanban/. ` +
-      `Delete ${POINTER_FILE} and take docs/kanban/ out of .gitignore to keep it in git.`,
-  )
 }
 
 export function prose(box: Sink | null): { output?: string; warnings?: string[] } {

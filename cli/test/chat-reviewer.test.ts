@@ -15,7 +15,6 @@ import { taskChatsToReview } from '../src/lib/agent/memory-review.ts'
 import { runtimeOfAgent } from '../src/lib/agent/runtimes.ts'
 import { readRule } from '../src/lib/agent/rules.ts'
 import { readRuns } from '../src/lib/agent/store.ts'
-import { specAgentNames } from '../src/lib/spec-agent-names.ts'
 import { buildAsk } from '../src/lib/agent/prompts.ts'
 import { startCollecting, stopCollecting } from '../src/lib/io.ts'
 import { AGENT_MEMORY, RULES, setBoardRoot } from '../src/lib/paths.ts'
@@ -300,16 +299,5 @@ describe('what the review is handed', () => {
     const said = flow(`${TASK}:1`)
     assert.match(said, /`prompt-writer` — docs\/kanban\/memory\/agents\/prompt-writer\/: style\.md/)
     assert.match(said, /`designer` — docs\/kanban\/memory\/agents\/designer\/: no files yet/)
-  })
-})
-
-// It was `memory-reviewer` before #1502; what a user saved under that name still applies.
-describe('the name it had before', () => {
-  it('keeps the runtime pick and the rule saved under it', () => {
-    assert.equal(runtimeOfAgent(specAgentNames('chat-reviewer'), { 'memory-reviewer': 'fast' }), 'fast')
-    fs.mkdirSync(RULES, { recursive: true })
-    fs.writeFileSync(path.join(RULES, 'memory-reviewer.md'), 'Only remember release decisions.\n')
-    assert.equal(readRule('chat-reviewer'), 'Only remember release decisions.')
-    assert.equal(fs.existsSync(path.join(RULES, 'memory-reviewer.md')), false)
   })
 })

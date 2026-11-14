@@ -107,10 +107,9 @@ describe('declaring a scheduled agent', () => {
     assert.match(bad.problem, /`archived-cards` or `chats` or `dismissals`$/)
   })
 
-  it('reads the retired `akb.reads: commits` as archived cards', () => {
+  it('rejects the retired `akb.reads: commits` value', () => {
     const read = parseSpecAgent(agentFile('night-auditor', 'commits'), 'AGENT.md', () => null)
-    assert.ok('agent' in read)
-    assert.equal(read.agent.reads, 'archived-cards')
+    assert.ok('problem' in read)
   })
 
   it('refuses `akb.hook: schedule`, from before its studio listed it', () => {

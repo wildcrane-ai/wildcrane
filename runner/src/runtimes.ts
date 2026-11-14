@@ -10,7 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { antigravityModels } from '../../cli/src/lib/agent/harnesses/antigravity'
-import { LANGUAGE_ENV, LANGUAGE_LINE_ENV } from '../../cli/src/lib/agent/language'
+import { LANGUAGE_ENV } from '../../cli/src/lib/agent/language'
 import { splitCommand } from '../../cli/src/lib/agent/argv'
 import { HARNESSES as ALL } from '../../cli/src/lib/agent/harnesses'
 import { withSystemProxy } from '../../cli/src/lib/agent/proxy'
@@ -105,7 +105,7 @@ export function plan(runtime: Job['runtime'], prompt: string, cwd: string, resum
   const extra = copied ?? (resume ? harness.resumeArgs(base, resume, cwd) : harness.extraArgs(base, id, cwd))
   const quiet = (line: string) => harness.quietStderr?.(line) ?? false
   // WILDCRANE_JOB keeps the Claude Code plugin a job's own session loads from serving it (#2161).
-  const { argv, env, note } = withSystemLanguage(harness, [...base, ...extra], copyEnv(binary, { ...process.env, ...settingEnv(harness, values, given.secrets ?? {}, cwd), WILDCRANE_JOB: '1', [LANGUAGE_ENV]: language ?? '', [LANGUAGE_LINE_ENV]: undefined }), language)
+  const { argv, env, note } = withSystemLanguage(harness, [...base, ...extra], copyEnv(binary, { ...process.env, ...settingEnv(harness, values, given.secrets ?? {}, cwd), WILDCRANE_JOB: '1', [LANGUAGE_ENV]: language ?? '' }), language)
   const connection = harness.connection?.(argv)
   if (connection || harness.client) {
     const client = connection?.client ?? harness.client!(effectiveValues(harness, values))

@@ -132,11 +132,10 @@ describe('`akb raw agent-file`', () => {
     assert.ok(!findSpecAgent('prompt-writer')!.files.includes('AGENT.md'))
   })
 
-  it('prints a project agent still on the old SKILL.md name', async () => {
+  it('refuses a project agent with only SKILL.md', async () => {
     const dir = path.join(kanban(), 'agents', 'api-contract')
     fs.renameSync(path.join(dir, 'AGENT.md'), path.join(dir, 'SKILL.md'))
-    const said = await move(root, ['agent-file', 'api-contract', 'AGENT.md'])
-    assert.match(String(said.text), /You write the api-contract part\./)
+    await refuses(root, ['agent-file', 'api-contract', 'AGENT.md'], /not an agent/)
   })
 
   it('refuses a path that climbs out of the folder, and one the agent does not offer', async () => {

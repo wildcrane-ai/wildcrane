@@ -1,6 +1,3 @@
-// A card's sources, resolved (#1306): each ref turned into something the card page can link,
-// and the plan or triage item behind one read out whole. A ref whose target cannot be read
-// here — another machine's plan, a card that is gone — is dropped rather than drawn dead.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -11,7 +8,7 @@ import { parseFrontmatter } from './frontmatter'
 import { TRIAGE } from './paths'
 import { planHeading, readPlan, type PlanFile } from './plans'
 import { readAllDismissed, readArchived, readInbox } from './signals/inbox'
-import { legacySourceRefs, parseSourceRef, type SourceRef } from './source'
+import { parseSourceRef, type SourceRef } from './source'
 import type { Meta } from './types'
 import type { Signal, SourceLink } from './view/types'
 
@@ -61,16 +58,13 @@ function itemLink(item: Signal): SourceLink {
   return card ?? { kind: 'triage', ref: item.sourceId, title: item.title }
 }
 
-function link(ref: SourceRef, items: () => Signal[]): SourceLink | null {
+function link(ref: SourceRef): SourceLink | null {
   if (ref.kind === 'plan') return planLink(ref.id)
   if (ref.kind === 'card') return cardLink(ref.id)
-  if (ref.kind === 'url') return urlLink(ref.url)
-  const item = items().find((signal) => path.basename(signal.relPath) === ref.file)
-  return item ? itemLink(item) : null
+  return urlLink(ref.url)
 }
 
-/** Where a card came from, as its page links it. `source:` and `triage:` first; a card with
- *  neither — or whose item is gone — is read off its old `## Source`. */
+/** Resolve only the card's stored `source` and `triage` relationships. */
 export function cardSources(meta: Pick<Meta, 'source' | 'triage'>, body: string): SourceLink[] {
   let held: Signal[] | null = null
   const items = () => (held ??= everyItem())
@@ -80,13 +74,12 @@ export function cardSources(meta: Pick<Meta, 'source' | 'triage'>, body: string)
   }
   for (const raw of meta.source) {
     const ref = parseSourceRef(raw)
-    if (ref) put(link(ref, items))
+    if (ref) put(link(ref))
   }
   if (meta.triage) {
     const item = items().find((signal) => signal.sourceId === meta.triage)
     if (item) put(itemLink(item))
   }
-  if (!meta.source.length && !out.length) for (const ref of legacySourceRefs(body)) put(link(ref, items))
   return out
 }
 

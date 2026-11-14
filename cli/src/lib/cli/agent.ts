@@ -11,7 +11,7 @@ import { Option } from 'commander'
 
 import { BoardError } from '../io'
 import { KANBAN } from '../paths'
-import { resolveBoard, sayIfRetiredPointer, useBoard } from '../board-cli'
+import { resolveBoard, useBoard } from '../board-cli'
 import { syncStudios } from '../agent/cloud-studios'
 import { FLOWS, flowVerb, type Flow, type FlowGroup, type FlowOption } from '../agent/flows'
 import { namedDelivery } from '../agent/deliveries'
@@ -96,7 +96,7 @@ async function onBoard(
   await runAction(ctx, {}, async () => {
     const found = resolveBoard('runs', { board: ctx.board, dir: ctx.dir, cwd: cli.cwd, installHint: cli.installHint })
     useBoard(found, ctx.dir !== null)
-    sayIfRetiredPointer(found.root)
+
     await syncStudios()
     return { board: KANBAN, ...((await work(cli.program)) ?? {}) }
   })

@@ -17,7 +17,7 @@ import crypto from 'node:crypto'
 import { creationReceipt, readCreation, saveCreation, archiveCreation, creationError, triageFile } from '../agent/creation'
 import { peekRun } from '../agent/sessions'
 import { KANBAN, REPO_ROOT } from '../paths'
-import { resolveBoard, sayIfRetiredPointer, useBoard } from '../board-cli'
+import { resolveBoard, useBoard } from '../board-cli'
 import { syncStudios } from '../agent/cloud-studios'
 import { LEVELS, STATUSES } from '../validate'
 import {
@@ -70,7 +70,7 @@ async function dispatch(
     useBoard(found, ctx.dir !== null, move === 'inspect')
     if (move !== 'inspect') await syncStudios()
     const root = found.root
-    sayIfRetiredPointer(root)
+
     const creating = move === 'create' && insideRun() ? peekRun(insideRun()!) : undefined
     if (creating?.triage) {
       if (opts.triage && opts.triage !== creating.triage) throw new BoardError('Creation must keep its original triage source.', { kind: 'refused' })
@@ -363,7 +363,7 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
     .summary('finish a card')
     .description(
       "File it to .archive/, strip its index entry, drop its id from every other card's blocked_by and " +
-        'related, delete its mockups, and count it completed. Ends with a handoff: which memory file the ' +
+        'related, keep its assets, and count it completed. Ends with a handoff: which memory file the ' +
         'note goes in, and every line elsewhere that still mentions the id — read that instead of ' +
         'grepping, because a bare id also matches dates.',
     )

@@ -18,7 +18,6 @@ import {
   findSpecAgent,
   roleSettingsBlock,
   specAgentInstructions,
-  specAgentNames,
   specAgentSelector,
 } from '../agents'
 import { boardCommand, boardCommandFor, commandNote } from './command'
@@ -47,8 +46,7 @@ import {
 } from './studios'
 import { specAgentCatalog } from '../agents/catalog'
 import { roleNamed } from './roles'
-import { migrateFlowRules, ruleBlock, ruleOwner } from './rules'
-import { foldedSettingsNotes } from './settings'
+import { ruleBlock, ruleOwner } from './rules'
 import { readRuns } from './store'
 import type { AgentAction, AgentRequest } from './types'
 import { isRetired, notCompletedWhy } from './types'
@@ -402,11 +400,8 @@ function roster(req: AgentRequest): string {
   return specAgentSelector(req.id, flow?.id, cardMeta(req.id))
 }
 
-/** The words one run is given, and anything the board owes that run's log before the agent
- *  says a word: a spec agent's setting whose saved value is no longer offered and has fallen
- *  back, and the one-time fold of a board's per-flow rules onto its agents (#420). */
 export function buildRun(req: AgentRequest): { prompt: string; notes: string[] } {
-  const notes: string[] = [...migrateFlowRules(), ...(req.specAgent ? foldedSettingsNotes(req.specAgent) : [])]
+  const notes: string[] = []
   let prompt = buildPrompt(req, notes)
   if (req.action === 'spec' && req.id !== undefined && req.specAgent) {
     const stage = realPaths(boardText(previewStagePrompt(req.id, req.specAgent, boardCommand())), req)
@@ -567,24 +562,15 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
       // The one read of what this agent is set to, taken as the run starts and frozen for it
       // (#255).
       const own = agent ? specAgentInstructions(agent) : null
-      if (own) notes.push(...own.notes)
       // What this agent remembers (#421, #833) — after its instructions, so the board's own
       // words end before the agent's do.
       const memory = agent ? agentMemoryBlock(agent) : ''
       const shared = agent ? globalMemoryBlock(agent) : ''
-      // A card written before this agent was renamed heads that section with the old name
-      // (#858, #945). Say so, or a rerun leaves a second section beside the first.
-      const wasCalled = agent ? specAgentNames(agent.name).slice(1) : []
       return [
         [
           `${kb}. You are the \`${req.specAgent}\` preview agent on task ${req.id} ${named}.`,
           `Card: \`${cardFile}\`. Section: \`\`## By \`${req.specAgent}\` agent\`\`.`,
           `How a preview agent works: \`${command} guide preview-agent\` — read it unless it is already in your context.`,
-          wasCalled.length
-            ? `On a card written before this agent was renamed that section is headed ` +
-              `${wasCalled.map((was) => '``## By `' + was + '` agent``').join(' or ')} — rewrite that one ` +
-              `under the name above, in place, rather than adding a second.`
-            : '',
           req.notes ? `What the flow that asked for you wants looked at: ${req.notes}` : '',
           `Don't ask me questions with human-in-the-loop — an open question on the card is how you defer to me.`,
         ]
@@ -608,7 +594,6 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
     case 'scheduled': {
       const agent = findSpecAgent(req.specAgent ?? '')
       const own = agent ? specAgentInstructions(agent) : null
-      if (own) notes.push(...own.notes)
       const memory = agent ? agentMemoryBlock(agent) : ''
       const shared = agent ? globalMemoryBlock(agent) : ''
       const flow = studioById(req.studio ?? '')
@@ -633,7 +618,6 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
     case 'sub': {
       const agent = findSpecAgent(req.specAgent ?? '')
       const own = agent ? specAgentInstructions(agent) : null
-      if (own) notes.push(...own.notes)
       const memory = agent ? agentMemoryBlock(agent) : ''
       const shared = agent ? globalMemoryBlock(agent) : ''
       const whose = agent ? `the \`${agent.name}\` agent's run` : 'run'

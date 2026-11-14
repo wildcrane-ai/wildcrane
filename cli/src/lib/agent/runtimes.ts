@@ -1,35 +1,5 @@
-// A runtime — the whole answer to what a run runs as (#467).
-//
-// Harness, provider, endpoint, key, model id, reasoning and extra arguments are one row on
-// one list, and nothing inherits from anything: reading a runtime tells the whole truth
-// about a run. "Harness" goes back to meaning the CLI itself.
-//
-//   <board-state>/ui.config.json    this person's, never committed
-//   "runtimes": [
-//     { "id": "global", "name": "Global default", "harness": "claude-code",
-//       "settings": { "provider": "subscription", "model": "claude-opus-5" } },
-//     { "id": "my_gateway", "name": "My gateway", "harness": "claude-code",
-//       "settings": { "provider": "endpoint", "baseUrl": "https://…", "model": "glm-4.6" } }
-//   ],
-//   "agentRuntime": { "builder": "my_gateway" }
-//
-//   docs/kanban/.env                this computer's, and git never carries it
-//   ANTHROPIC_API_KEY__MY_GATEWAY=sk-…
-//
-// The first row is **Global default**: every board has it, no board can delete or rename it,
-// and every agent naming no runtime runs it. The default is a POSITION on the list, never a
-// badge that moves.
-//
-// The shape and the key are both this person's, but in separate files, so the id — never the name — keys
-// everything: the agents' picks, a chat's pin, a run's record and the key's own line in
-// `.env`. A name is free text and a rename moves nothing.
-
-import fs from 'node:fs'
-
 import { DEFAULT_HARNESS, HARNESSES, MODEL_KEY, harnessByName } from './harnesses'
-import { LEGACY_UI_CONFIG, UI_CONFIG } from '../paths'
-import { configBlock, readConfigRaw, readEnvFile, safeConfig, setSecret, writeConfig } from './settings'
-import { specAgentNames } from '../spec-agent-names'
+import { configBlock, safeConfig, setSecret, writeConfig } from './settings'
 import { refusal, type RunRefusal, type Saved } from './types'
 
 /** One runtime, as the board holds it. */
@@ -43,6 +13,8 @@ export interface Runtime {
   /** That harness's own declared settings, plus the optional `command` override. A `secret`
    *  is never here: its value lives in `docs/kanban/.env` under `secretVar`'s name. */
   settings: Record<string, string>
+  /** Explicit environment-variable references; never secret values. */
+  secretRefs?: Record<string, string>
   /** Why this computer cannot run it (#625): set by a Runner for a pick bound to another computer. */
   away?: string
 }
@@ -55,14 +27,9 @@ export const GLOBAL_NAME = 'Global default'
 
 // ---- reading ----------------------------------------------------------------
 
-/** Every runtime the board holds, **Global default** first.
- *
- *  A board written before this carries `harness` and `harnessSettings` instead, and reads as
- *  the list the migration would write from them — so upgrading the command runs what the
- *  board already ran, before `akb update` gets to persist it. */
 export function readRuntimes(cfg: Record<string, unknown> = safeConfig()): Runtime[] {
   const saved = Array.isArray(cfg.runtimes) ? cfg.runtimes.map(parseRuntime).filter(isRuntime) : null
-  const list = saved?.length ? dedupe(saved) : fromHarnessBlocks(cfg)
+  const list = saved?.length ? dedupe(saved) : []
   const global = list.find((r) => r.id === GLOBAL_ID)
   const rest = list.filter((r) => r.id !== GLOBAL_ID)
   return [global ?? { id: GLOBAL_ID, name: GLOBAL_NAME, harness: DEFAULT_HARNESS.name, settings: {} }, ...rest]
@@ -81,7 +48,8 @@ function parseRuntime(value: unknown): Runtime | null {
     if (typeof v === 'string' && v.trim()) settings[key] = v.trim()
   }
   const away = typeof raw.away === 'string' && raw.away.trim() ? { away: raw.away.trim() } : {}
-  return { id, name: id === GLOBAL_ID ? GLOBAL_NAME : name, harness, settings, ...away }
+  const secretRefs = Object.fromEntries(Object.entries(configBlock(raw.secretRefs)).filter(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && typeof value === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value))) as Record<string, string>
+  return { id, name: id === GLOBAL_ID ? GLOBAL_NAME : name, harness, settings, ...away, ...(Object.keys(secretRefs).length ? { secretRefs } : {}) }
 }
 
 const isRuntime = (r: Runtime | null): r is Runtime => r !== null
@@ -92,46 +60,10 @@ function dedupe(list: Runtime[]): Runtime[] {
   return list.filter((r) => !seen.has(r.id) && seen.add(r.id))
 }
 
-// The list a board written before runtimes reads as: every `harnessSettings` block becomes a
-// runtime, and the one `harness` names becomes **Global default**. No block is dropped, so a
-// hand-edited `command` on a tool nobody runs survives the upgrade.
-function fromHarnessBlocks(cfg: Record<string, unknown>): Runtime[] {
-  const asked = typeof cfg.harness === 'string' ? cfg.harness.trim() : ''
-  const fallback = (harnessByName(asked) ?? DEFAULT_HARNESS).name
-  const blocks = configBlock(cfg.harnessSettings)
-  const list: Runtime[] = [
-    { id: GLOBAL_ID, name: GLOBAL_NAME, harness: asked || fallback, settings: valuesOf(blocks[asked || fallback]) },
-  ]
-  const taken = new Set([GLOBAL_ID])
-  for (const [harness, block] of Object.entries(blocks)) {
-    if (harness === (asked || fallback)) continue
-    const id = freeId(harness, taken)
-    taken.add(id)
-    list.push({ id, name: harnessByName(harness)?.label ?? harness, harness, settings: valuesOf(block) })
-  }
-  return list
-}
-
-function valuesOf(block: unknown): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const [key, value] of Object.entries(configBlock(block))) {
-    if (typeof value === 'string' && value.trim()) out[key] = value.trim()
-  }
-  return out
-}
-
-/** The runtime one pin names, out of a list.
- *
- *  A pin is an id. A pin written before the upgrade names a HARNESS instead, so it resolves to
- *  the runtime that harness's block became rather than reading as a row that has gone; only a
- *  pin matching neither falls back to **Global default**.
- *
- *  `harness` narrows the list to one CLI, for a resume: the conversation belongs to the command
- *  that opened it, whatever its runtime has been pointed at since. */
 export function pickRuntime(list: Runtime[], pin?: string, harness?: string): Runtime {
   const rows = harness ? list.filter((r) => r.harness === harness) : list
   const want = pin?.trim()
-  const found = want && (rows.find((r) => r.id === want) ?? rows.find((r) => r.harness === want))
+  const found = want && rows.find((r) => r.id === want)
   if (found) return found
   return rows[0] ?? { id: '', name: harness ?? '', harness: harness ?? DEFAULT_HARNESS.name, settings: {} }
 }
@@ -143,16 +75,11 @@ export function runtimeById(id: string, list: Runtime[] = readRuntimes()): Runti
 
 // ---- the keys ---------------------------------------------------------------
 
-/** The line one runtime's key keeps in `docs/kanban/.env`: the variable the setting declares,
- *  then the runtime's own id. **Global default** is named the same way as every other row —
- *  one scheme everywhere, and a rename that costs nothing on any computer.
- *
- *  `__` separates them, and a generated id never holds one, so the two halves always read
- *  apart. A hand-written id is squared off the same way `freeId` writes one, so the line the
- *  key is saved under is always a line that file parses. */
 export function secretVar(env: string, runtimeId: string): string {
   return `${env}__${runtimeId.replace(/[^A-Za-z0-9]+/g, '_').toUpperCase()}`
 }
+
+export const runtimeSecretVar = (env: string, runtime: Runtime): string => runtime.secretRefs?.[env] ?? secretVar(env, runtime.id)
 
 /** Save one runtime's key, or clear it with an empty value. The value is never read back. */
 export function setRuntimeSecret(id: string, settingKey: string, value: string): Saved {
@@ -162,18 +89,13 @@ export function setRuntimeSecret(id: string, settingKey: string, value: string):
   if (!setting?.env || setting.kind !== 'secret') {
     return { ok: false, ...refusal('runtimeKey', `"${settingKey}" is not a key ${runtime.name} takes.`, { key: settingKey, name: runtime.name }) }
   }
-  return setSecret(secretVar(setting.env, runtime.id), value)
+  return setSecret(runtimeSecretVar(setting.env, runtime), value)
 }
 
 // ---- which runtime each agent runs -------------------------------------------
 
-/** Which runtime each agent names, by agent name — only the agents the file names. An agent
- *  that names none runs **Global default**.
- *
- *  A board written before this names a HARNESS under `agentHarness`, which `pickRuntime` reads
- *  as the runtime that harness's block became. */
 export function readAgentRuntime(cfg: Record<string, unknown> = safeConfig()): Record<string, string> {
-  const block = configBlock(cfg.runtimes === undefined && cfg.agentRuntime === undefined ? cfg.agentHarness : cfg.agentRuntime)
+  const block = configBlock(cfg.agentRuntime)
   const out: Record<string, string> = {}
   for (const [agent, value] of Object.entries(block)) {
     const name = typeof value === 'string' ? value.trim() : ''
@@ -182,27 +104,22 @@ export function readAgentRuntime(cfg: Record<string, unknown> = safeConfig()): R
   return out
 }
 
-/** The runtime one agent names, under its current name or one it used to have. */
+/** The runtime bound to this exact agent name. */
 export function runtimeOfAgent(
-  names: string[],
+  name: string,
   table: Record<string, string> = readAgentRuntime(),
 ): string | undefined {
-  for (const name of names) {
-    if (table[name]) return table[name]
-  }
-  return undefined
+  return table[name]
 }
 
 const keepsPick = (id: string): boolean => !!id && id !== GLOBAL_ID
 
-/** Point one agent at a runtime, or back at **Global default** with an empty id — a planning
- *  lead back at the planning helper's. A pick left under a name the agent had before goes
- *  too, or it would win the next read. */
+/** Bind an agent to a runtime, or clear its binding. */
 export function setAgentRuntime(agent: string, runtime: string): Saved {
   if (runtime && !runtimeById(runtime)) return { ok: false, ...noRuntime(runtime) }
   return writeConfig((cfg) => {
     const block = { ...readAgentRuntime(cfg) }
-    for (const name of specAgentNames(agent)) delete block[name]
+    delete block[agent]
     if (keepsPick(runtime)) block[agent] = runtime
     else delete block[agent]
     writePicks(cfg, block)
@@ -217,9 +134,7 @@ export function replaceAgentRuntimes(picks: Record<string, Runtime>): Saved {
     const rows = new Map<string, Runtime>()
     for (const r of Object.values(picks)) if (r.id !== GLOBAL_ID) rows.set(r.id, r)
     cfg.runtimes = [global, ...rows.values()]
-    delete cfg.harnessSettings
-    delete cfg.harness
-    delete cfg.agentHarness
+
     const block = Object.fromEntries(Object.entries(picks).filter(([, r]) => rows.has(r.id)).map(([agent, r]) => [agent, r.id]))
     if (Object.keys(block).length) cfg.agentRuntime = block
     else delete cfg.agentRuntime
@@ -246,13 +161,6 @@ export function addRuntime(name: string, harness: string): Saved & { id?: string
   return res.ok ? { ok: true, id } : res
 }
 
-/** Move one runtime to another harness. Its settings go with it: a key the new harness doesn't
- *  declare is dropped, because a value under a setting nothing reads is a value nobody can see
- *  or clear.
- *
- *  The model is dropped however both declare it. An id is one CLI's own word — `opus` handed
- *  to Cursor is a run that fails to start — so a switch leaves the new harness's own default
- *  running until somebody picks a model for it. */
 export function setRuntimeHarness(id: string, harness: string): Saved {
   const known = harnessByName(harness)
   if (!known) return { ok: false, ...noHarness(harness) }
@@ -265,11 +173,6 @@ export function setRuntimeHarness(id: string, harness: string): Saved {
   })
 }
 
-/** Save one of the settings a runtime's harness declares. An empty value drops the key, which
- *  is how a setting goes back to the harness's own default.
- *
- *  The value is never checked here. Model ids change faster than we ship, so the CLI is the
- *  only validator: a bad one makes the run exit non-zero and the reason is in its log. */
 export function setRuntimeSetting(id: string, key: string, value: string): Saved {
   return change(id, (runtime) => {
     const settings = { ...runtime.settings }
@@ -286,8 +189,6 @@ export function setHarness(name: string): Saved {
   return setRuntimeHarness(GLOBAL_ID, name)
 }
 
-
-
 const noRuntime = (id: string): RunRefusal => refusal('runtimeNotFound', `no runtime called "${id}" on this board.`, { id })
 
 const noHarness = (name: string): RunRefusal =>
@@ -301,29 +202,22 @@ function change(id: string, edit: (runtime: Runtime) => Runtime): Saved {
   return save(list.map((r) => (r.id === id ? edit(r) : r)))
 }
 
-// Write the list, and settle the agents' picks against it in the same write. The pre-runtime
-// keys go with it: the list is the whole truth now, and leaving `harness`, `harnessSettings` or
-// `agentHarness` behind would leave a second answer on disk for the next reader to find.
 function save(list: Runtime[]): Saved {
   return writeConfig((cfg) => {
     const picks = readAgentRuntime(cfg)
     cfg.runtimes = list
-    delete cfg.harnessSettings
-    delete cfg.harness
+
     writePicks(cfg, picks, list)
   })
 }
 
-// Each agent's pick as an id on the list being written — an `agentHarness` name resolves to the
-// row that harness's block became, and a pick nothing answers to falls back to **Global
-// default**, which is written down as no pick at all except on a planning lead.
 function writePicks(cfg: Record<string, unknown>, picks: Record<string, string>, list = readRuntimes(cfg)): void {
   const block: Record<string, string> = {}
   for (const [agent, pin] of Object.entries(picks)) {
     const row = pickRuntime(list, pin)
     if (keepsPick(row.id)) block[agent] = row.id
   }
-  delete cfg.agentHarness
+
   if (Object.keys(block).length) cfg.agentRuntime = block
   else delete cfg.agentRuntime
 }
@@ -346,101 +240,6 @@ function freeId(name: string, taken: Set<string>): string {
     const next = `${base}_${n}`
     if (!taken.has(next)) return next
   }
-}
-
-// ---- the one-time upgrade of a board written the old way ---------------------
-//
-// Before this, how to reach a CLI was one block per harness in `ui.config.json` and the model
-// under it was this computer's, in `.local.json`. `akb update` turns both into runtimes, once:
-// every block becomes a row, the one `harness` named becomes **Global default**, and each
-// agent whose model differed gets a row of its own. A board then runs exactly what it ran.
-//
-
-/** Write the runtimes a pre-#467 board reads as, and clear what they replace. Returns the line
- *  an update reports, or null when the board is already on runtimes. */
-export function migrateRuntimes(
-  agents: string[],
-  /** Each agent's model settings on this computer, by agent and then by harness — what
-   *  `.local.json` held (agent/local.ts). */
-  localModels: Record<string, Record<string, Record<string, string>>>,
-): string | null {
-  let cfg: Record<string, unknown>
-  try {
-    if (!fs.existsSync(UI_CONFIG) && !fs.existsSync(LEGACY_UI_CONFIG)) return null
-    cfg = configBlock(readConfigRaw())
-  } catch {
-    return null // no config, or one nothing can read — an update never rewrites either
-  }
-  if (Array.isArray(cfg.runtimes) && cfg.runtimes.length) return null
-
-  const list = fromHarnessBlocks(cfg)
-  const taken = new Set(list.map((r) => r.id))
-  const picks: Record<string, string> = {}
-  // Each agent's own connector, as `agentHarness` named it, then the model this computer had
-  // under it. An agent whose model differs from the runtime it would otherwise run gets a row
-  // of its own — one per agent that differed, and no more.
-  const bound = configBlock(cfg.agentHarness)
-  for (const agent of agents) {
-    const named = typeof bound[agent] === 'string' ? (bound[agent] as string).trim() : ''
-    const base = pickRuntime(list, named || undefined)
-    const model = localModels[agent]?.[base.harness] ?? {}
-    if (!Object.keys(model).length || sameValues(base.settings, model)) {
-      if (named && base.id !== GLOBAL_ID) picks[agent] = base.id
-      continue
-    }
-    const id = freeId(agent, taken)
-    taken.add(id)
-    list.push({ id, name: agent, harness: base.harness, settings: { ...base.settings, ...model } })
-    picks[agent] = id
-  }
-
-  cfg.runtimes = list
-  if (Object.keys(picks).length) cfg.agentRuntime = picks
-  delete cfg.harness
-  delete cfg.harnessSettings
-  delete cfg.agentHarness
-  fs.writeFileSync(UI_CONFIG, JSON.stringify(cfg, null, 2) + '\n')
-  const minted = list.length - 1
-  return `turned this board's connector settings into ${list.length} runtime${list.length === 1 ? '' : 's'}${
-    minted ? ` — ${GLOBAL_NAME} and ${minted} more` : ''
-  }, and pointed each agent at one`
-}
-
-const sameValues = (block: Record<string, string>, model: Record<string, string>): boolean =>
-  Object.entries(model).every(([key, value]) => block[key] === value)
-
-// ---- this computer's key file, brought to the id-scoped names ----------------
-
-/** Move every key line still under a harness's own declared variable onto the id-scoped line
- *  of each runtime on that harness that has none yet, carrying the same value. A variable no
- *  runtime claims is left exactly where it is: this is the user's file.
- *
- *  It runs off the runtimes LIST rather than off the migration, so a checkout pulled to a
- *  second computer — where `ui.config.json` was converted elsewhere and only the key file is
- *  still old — is repaired there too.
- *
- *  Values are read to be copied and are surfaced nowhere: the board goes on showing a key as
- *  set or not set. */
-export function repairEnvFile(): string | null {
-  const env = readEnvFile()
-  const claimed = new Set<string>()
-  const moved: string[] = []
-  for (const runtime of readRuntimes()) {
-    for (const setting of harnessByName(runtime.harness)?.settings ?? []) {
-      if (setting.kind !== 'secret' || !setting.env) continue
-      const value = env[setting.env]
-      if (!value) continue
-      claimed.add(setting.env)
-      const line = secretVar(setting.env, runtime.id)
-      if (env[line]) continue
-      const res = setSecret(line, value)
-      if (!res.ok) return null
-      moved.push(line)
-    }
-  }
-  for (const name of claimed) setSecret(name, '')
-  if (!moved.length) return null
-  return `renamed this computer's key lines in docs/kanban/.env after the runtimes that use them: ${moved.join(', ')}`
 }
 
 // ---- what a screen draws -----------------------------------------------------

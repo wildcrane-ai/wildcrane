@@ -8,7 +8,7 @@ import { BACKGROUND_WAIT } from '../../cli/src/lib/agent/settings'
 import { saveReplyImages } from './reply-images'
 // 领取作业、运行并回写；断网只能运行到租约到期，失效后停止本地执行。
 
-import { cloudLanguage, cloudPrompt } from '../../cli/src/lib/agent/language'
+import { cloudLanguage } from '../../cli/src/lib/agent/language'
 import { authorizedFolder, progressEvidence, progressFolder, restartFolder } from './handoff'
 import { markEnv, stopMark } from '../../cli/src/lib/agent/stop'
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process'
@@ -615,7 +615,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
         const lines = (head + said).trim()
         const prompt = recovering && !replay && (checkpoint.started || job.recoveryOf)
           ? '连接恢复后继续之前中断的回复。先核对已有进度和结果，保留完成的工作，不要重复已经执行的操作。'
-          : cloudPrompt(job)
+          : job.prompt
         return lines ? `${lines}\n\n---\n\n${prompt}` : prompt
       }
       const planned = (resume: string | null | undefined, fork: boolean, said = '') => {

@@ -295,12 +295,12 @@ describe('a delivery', () => {
     await end(built)
   })
 
-  it('reads a delivery frozen before the rules were keyed by agent', async () => {
+  it('does not read frozen rules under retired flow keys', async () => {
     const built = run('implement', 1)
     // What a build in flight across the upgrade holds: the flow's name, not the agent's.
     const delivery = activeDelivery(1)!
     const frozen = { implement: 'Install dependencies first.' }
-    assert.equal(ruleFor({ action: 'implement', id: delivery.cardId ?? undefined }, frozen), 'Install dependencies first.')
+    assert.equal(ruleFor({ action: 'implement', id: delivery.cardId ?? undefined }, frozen), '')
     await end(built)
   })
 

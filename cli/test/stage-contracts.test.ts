@@ -246,13 +246,13 @@ describe('the helpers, one at a time', () => {
 })
 
 describe('the rules a delivery freezes', () => {
-  it('keys them by the agent, and still reads one an older delivery keyed by flow', () => {
+  it('keys frozen rules only by the agent', () => {
     fs.mkdirSync(RULES, { recursive: true })
     fs.writeFileSync(path.join(RULES, 'builder.md'), 'Install dependencies first.\n')
     assert.deepEqual(deliveryRules('coding'), { builder: 'Install dependencies first.' })
     // A delivery frozen before rules moved onto the agents holds them under the FLOW name,
     // and that key is untouched by the contracts (#420, #714).
     const frozen = { implement: 'The rule as it was frozen.' }
-    assert.equal(ruleFor({ action: 'implement', id: 1, studio: 'coding' }, frozen), 'The rule as it was frozen.')
+    assert.equal(ruleFor({ action: 'implement', id: 1, studio: 'coding' }, frozen), '')
   })
 })

@@ -6,9 +6,8 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { runAgent } from '../src/lib/agent-cli.ts'
 import { logPathOf, readRuns, withStore } from '../src/lib/agent/store.ts'
-import { projectStateDir, legacyProjectStateDir, recordedBoard } from '../src/lib/machine/project.ts'
-import { mockupsDir } from '../src/lib/mockups.ts'
-import { MOCKUPS, SESSIONS, SESSIONS_DIR, setBoardDir, setBoardRoot, useProjectState } from '../src/lib/paths.ts'
+import { projectStateDir, recordedBoard } from '../src/lib/machine/project.ts'
+import { ASSETS, SESSIONS, SESSIONS_DIR, setBoardDir, setBoardRoot, useProjectState } from '../src/lib/paths.ts'
 
 let home = ''
 let root = ''
@@ -167,14 +166,14 @@ describe('what the project folder is left holding', () => {
     const state = projectStateDir(board)
 
     record('r1')
-    fs.mkdirSync(path.join(mockupsDir(), '12'), { recursive: true })
-    fs.writeFileSync(path.join(mockupsDir(), '12', 'a.tsx'), 'export default () => null\n')
+    fs.mkdirSync(path.join(ASSETS, '12'), { recursive: true })
+    fs.writeFileSync(path.join(ASSETS, '12', 'a.tsx'), 'export default () => null\n')
 
     assert.deepEqual(readRuns().map((r) => r.sessionId), ['r1'])
     assert.equal(fs.readFileSync(logPathOf('r1'), 'utf8'), 'a log\n')
     assert.equal(SESSIONS_DIR, path.join(state, 'sessions'))
-    assert.equal(MOCKUPS, path.join(state, 'mockups'))
-    assert.ok(fs.existsSync(path.join(state, 'mockups', '12', 'a.tsx')))
+    assert.equal(ASSETS, path.join(state, 'assets'))
+    assert.ok(fs.existsSync(path.join(state, 'assets', '12', 'a.tsx')))
   })
 })
 
@@ -188,7 +187,7 @@ describe('a board that held it all in docs/kanban', () => {
     useProjectState()
 
     assert.deepEqual(readRuns(), [])
-    assert.equal(fs.existsSync(path.join(mockupsDir(), '12', 'a.tsx')), false)
+    assert.equal(fs.existsSync(path.join(ASSETS, '12', 'a.tsx')), false)
   })
 
   it('leaves every one of those files exactly where it was, unchanged', () => {
@@ -252,7 +251,7 @@ describe('a board that held it all in docs/kanban', () => {
     assert.deepEqual(readRuns(), [])
     assert.ok(fs.existsSync(path.join(board, '.sessions.json')))
     assert.equal(SESSIONS_DIR, path.join(projectStateDir(board, path.join(root, 'app')), 'sessions'))
-    assert.equal(MOCKUPS, path.join(projectStateDir(board, path.join(root, 'app')), 'mockups'))
+    assert.equal(ASSETS, path.join(projectStateDir(board, path.join(root, 'app')), 'assets'))
   })
 })
 
@@ -276,19 +275,3 @@ describe('a command line typed in a folder nested inside another project', () =>
     assert.equal(fs.existsSync(projectStateDir(outer)), false)
   })
 })
-
- it('imports machine-home history once and preserves both copies', () => {
-  const board = makeBoard(path.join(root, 'docs/kanban'))
-  const old = legacyProjectStateDir(board)
-  fs.mkdirSync(path.join(old, 'plans'), { recursive: true })
-  fs.mkdirSync(path.join(old, 'sessions.lock'))
-  fs.writeFileSync(path.join(old, 'plans/8-outcome.md'), '# Original\n')
-  setBoardRoot(root)
-  const local = useProjectState()
-  assert.equal(fs.readFileSync(path.join(local, 'plans/8-outcome.md'), 'utf8'), '# Original\n')
-  assert.equal(fs.existsSync(path.join(local, 'sessions.lock')), false)
-  fs.writeFileSync(path.join(local, 'plans/8-outcome.md'), '# Revised\n')
-  useProjectState()
-  assert.equal(fs.readFileSync(path.join(local, 'plans/8-outcome.md'), 'utf8'), '# Revised\n')
-  assert.equal(fs.readFileSync(path.join(old, 'plans/8-outcome.md'), 'utf8'), '# Original\n')
- })

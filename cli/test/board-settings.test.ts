@@ -8,7 +8,7 @@ import path from 'node:path'
 import { after, beforeEach, describe, it } from 'node:test'
 
 import { readConfigRaw, writeConfig } from '../src/lib/agent/settings.ts'
-import { LEGACY_UI_CONFIG, setBoardRoot, UI_CONFIG } from '../src/lib/paths.ts'
+import { setBoardRoot, UI_CONFIG } from '../src/lib/paths.ts'
 import { forgetMachineState, move } from './helpers/board.ts'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-settings-'))
@@ -21,6 +21,7 @@ beforeEach(() => {
   setBoardRoot(root)
 })
 
+const LEGACY_UI_CONFIG = path.join(root, 'docs/kanban/ui.config.json')
 const writeLegacy = (cfg: unknown): void => {
   fs.mkdirSync(path.dirname(LEGACY_UI_CONFIG), { recursive: true })
   fs.writeFileSync(LEGACY_UI_CONFIG, JSON.stringify(cfg))
@@ -32,29 +33,12 @@ describe('where the board settings live', () => {
     assert.ok(UI_CONFIG.includes(`${path.sep}.akb${path.sep}boards${path.sep}`), UI_CONFIG)
   })
 
-  it('takes over a committed file that is all there is, and deletes it', () => {
-    writeLegacy({ memoryReviewer: false, runtimes: [{ id: 'global', harness: 'codex' }] })
-
-    assert.deepEqual(readConfigRaw(), { memoryReviewer: false, runtimes: [{ id: 'global', harness: 'codex' }] })
-    assert.equal(fs.existsSync(LEGACY_UI_CONFIG), false)
-    assert.deepEqual(JSON.parse(fs.readFileSync(UI_CONFIG, 'utf8')).runtimes, [{ id: 'global', harness: 'codex' }])
-  })
-
-  it('keeps its own file over a pulled one, and still deletes the pulled one', () => {
-    fs.mkdirSync(path.dirname(UI_CONFIG), { recursive: true })
-    fs.writeFileSync(UI_CONFIG, JSON.stringify({ proposer: false }))
-    writeLegacy({ proposer: true })
-
-    assert.deepEqual(readConfigRaw(), { proposer: false })
-    assert.equal(fs.existsSync(LEGACY_UI_CONFIG), false)
-  })
-
-  it('moves a committed file before a save writes over it', () => {
+  it('ignores and preserves a file in the old location', () => {
     writeLegacy({ proposer: false })
-
-    assert.equal(writeConfig((cfg) => { cfg.autoTriage = false }).ok, true)
-    assert.deepEqual(JSON.parse(fs.readFileSync(UI_CONFIG, 'utf8')), { proposer: false, autoTriage: false })
-    assert.equal(fs.existsSync(LEGACY_UI_CONFIG), false)
+    assert.deepEqual(readConfigRaw(), {})
+    assert.equal(writeConfig(cfg => { cfg.autoTriage = false }).ok, true)
+    assert.deepEqual(JSON.parse(fs.readFileSync(UI_CONFIG, 'utf8')), { autoTriage: false })
+    assert.deepEqual(JSON.parse(fs.readFileSync(LEGACY_UI_CONFIG, 'utf8')), { proposer: false })
   })
 
   it('writes no committed file on a new board', async () => {

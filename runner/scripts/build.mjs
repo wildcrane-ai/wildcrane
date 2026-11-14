@@ -89,6 +89,7 @@ async function buildAkb(dir) {
     define: { __AKB_BUILT__: 'true' },
     legalComments: 'none',
   })
+  await esbuild.build({ entryPoints: [path.join(CLI_DIR, 'scripts/retire-legacy/main.ts')], outfile: path.join(dir, 'dist/retire-legacy.mjs'), bundle: true, platform: 'node', format: 'esm', target: 'node22', legalComments: 'none' })
   fs.mkdirSync(path.join(dir, 'bin'), { recursive: true })
   fs.copyFileSync(path.join(CLI_DIR, 'bin', 'ai4kanban.mjs'), path.join(dir, 'bin', 'ai4kanban.mjs'))
   fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify({ name: 'wildcrane', version: CLI_VERSION, akbContract: AKB_CONTRACT, type: 'module', private: true })}\n`)

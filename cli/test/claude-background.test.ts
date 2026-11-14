@@ -62,7 +62,7 @@ const spawns = (): number => fs.readFileSync(path.join(root, 'spawns.log'), 'utf
 function board(script: string, silenceMinutes: number): void {
   fs.writeFileSync(
     uiConfigOf(root, 'docs', 'kanban'),
-    JSON.stringify({ harness: 'claude-code', silenceMinutes, harnessSettings: { 'claude-code': { command: `${process.execPath} ${script}` } } }),
+    JSON.stringify({ silenceMinutes, runtimes: [{ id: 'global', name: 'Global default', harness: 'claude-code', settings: { command: `${process.execPath} ${script}` } }] }),
   )
 }
 

@@ -1,23 +1,9 @@
-// Every spec agent this board can run, from wherever it comes.
-//
-// Two sources, one list:
-//   - the agents the board's Cloud studios bring (./bundled.ts, #409),
-//   - the agents the project adds, under `docs/kanban/agents/<name>/AGENT.md`.
-//
-// Built-ins come first, so a board reads the same list whether or not it has added any of
-// its own. A project agent taking a built-in's name is refused rather than allowed to
-// shadow it: a card would otherwise be planned by instructions nobody at the board could
-// see, and the name in the log would say the built-in ran. A role's name is refused for the
-// same reason — a rule is keyed by the agent's name (#420), so the two would share one file.
-//
-// Whatever cannot be used is reported, never dropped in silence — an agent nobody can see
-// failing is a specialist that quietly stops being asked for.
 
 import fs from 'node:fs'
 import path from 'node:path'
 
 import { ROLE_NAMES } from '../agent/roles'
-import { AGENTS, LEGACY_AGENTS, rel } from '../paths'
+import { AGENTS, rel } from '../paths'
 import { officialAgent, shippedAgentFiles } from './bundled'
 import { cloudStudioSources } from '../agent/cloud-studios'
 import { memoByFiles } from '../file-memo'
@@ -51,7 +37,7 @@ type ReadProblem = AgentProblem & { file?: string; missing?: boolean }
 
 /** Read the catalog — again whenever an agent file changes, so an agent added, edited or
  *  switched off takes effect on the next read. */
-export const specAgentCatalog = memoByFiles(() => [AGENTS, LEGACY_AGENTS, ...cloudStudioSources()], readCatalog)
+export const specAgentCatalog = memoByFiles(() => [AGENTS, ...cloudStudioSources()], readCatalog)
 
 function readCatalog(): SpecAgentCatalog {
   const agents: SpecAgent[] = []
@@ -99,22 +85,7 @@ function readCatalog(): SpecAgentCatalog {
   }
 
   for (const folder of bundledFolders()) take(readBundled(folder), folder)
-  for (const folder of projectFolders(AGENTS)) {
-    const read = readProject(AGENTS, folder)
-    take(read, folder)
-    // Half moved: the folder is the new one, the filename the old one. It works for the same
-    // release the old folder does, and is reported the same way — a spelling that goes on
-    // working with nothing said about it is the one that breaks on the release that drops it.
-    if ('agent' in read && read.agent.from.endsWith(LEGACY_AGENT_FILE)) {
-      problems.push(`${read.agent.from}: rename it to ${AGENT_FILE}`)
-    }
-  }
-  // The folder they used to sit in, read for one release (#419). Anything still there works,
-  // and says so: a board that upgrades keeps running until someone moves the folder.
-  for (const folder of projectFolders(LEGACY_AGENTS)) {
-    take(readProject(LEGACY_AGENTS, folder), folder)
-    problems.push(`${rel(path.join(LEGACY_AGENTS, folder))}: move it to ${rel(path.join(AGENTS, folder))}/`)
-  }
+  for (const folder of projectFolders(AGENTS)) take(readProject(AGENTS, folder), folder)
   return { agents, problems, refused }
 }
 
@@ -207,12 +178,6 @@ function projectFolders(root: string): string[] {
     .sort()
 }
 
-// `SKILL.md` is read beside `AGENT.md` for the same release the old folder is (#419), so a
-// board only has to move its files once and either name works while it does.
-const AGENT_FILE = 'AGENT.md'
-const LEGACY_AGENT_FILE = 'SKILL.md'
-const AGENT_FILES = [AGENT_FILE, LEGACY_AGENT_FILE]
-
 /** Read through one agent's own folder and no further. A reference is agent-relative by
  *  contract (./parse.ts refuses an absolute or climbing one); this is the second lock on it,
  *  so a path that slipped through still cannot reach the rest of the repo. */
@@ -234,7 +199,7 @@ export function agentFileReader(dir: string): (relative: string) => string | nul
  *  `AGENT.md`. Dot files and dot folders are housekeeping — an editor's leftovers, a cache —
  *  and are never named. */
 const ownFiles = (paths: string[]): string[] =>
-  paths.filter((p) => !AGENT_FILES.includes(p) && !p.split('/').some((part) => part.startsWith('.'))).sort()
+  paths.filter((p) => p !== 'AGENT.md' && !p.split('/').some((part) => part.startsWith('.'))).sort()
 
 // One agent's folder, all the way down, as agent-relative paths. No layout is imposed: a
 // file sits wherever its agent put it.
@@ -254,14 +219,14 @@ function walkFolder(dir: string, prefix: string): string[] {
 function readProject(root: string, folder: string): { agent: SpecAgent } | ReadProblem {
   const dir = path.join(root, folder)
   const file = agentFileReader(dir)
-  const found = AGENT_FILES.map((name) => ({ name, text: file(name) })).find((f) => f.text !== null)
-  const missing = rel(path.join(dir, AGENT_FILE))
-  if (!found) return { problem: `${missing} is missing`, file: missing, missing: true }
-  const from = rel(path.join(dir, found.name))
-  const read = parseSpecAgent(found.text!, from, file, false, () => ownFiles(walkFolder(dir, '')))
+  const text = file('AGENT.md')
+  const missing = rel(path.join(dir, 'AGENT.md'))
+  if (text === null) return { problem: `${missing} is missing`, file: missing, missing: true }
+  const from = missing
+  const read = parseSpecAgent(text, from, file, false, () => ownFiles(walkFolder(dir, '')))
   if ('problem' in read) return { ...read, file: from }
   // Where it lives and what it says, whole — a project agent's file is the box the Agents
   // pane writes it through (#422), and only an agent read off disk has one.
-  if ('agent' in read) Object.assign(read.agent, { dir, text: found.text! })
+  if ('agent' in read) Object.assign(read.agent, { dir, text })
   return read
 }

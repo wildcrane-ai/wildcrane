@@ -34,7 +34,7 @@ const RUN = '22222222-2222-4222-8222-222222222222'
 const config = (harness: string): void => {
   const kanban = path.join(root, 'docs', 'kanban')
   fs.mkdirSync(kanban, { recursive: true })
-  fs.writeFileSync(uiConfigOf(kanban), JSON.stringify({ harness }))
+  fs.writeFileSync(uiConfigOf(kanban), JSON.stringify({ runtimes: [{ id: 'global', name: 'Global default', harness, settings: {} }] }))
   setBoardRoot(root)
 }
 

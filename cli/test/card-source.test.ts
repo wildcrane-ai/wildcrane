@@ -11,7 +11,6 @@ import { cardSources } from '../src/lib/card-sources.ts'
 import { parseFrontmatter, serializeFrontmatter } from '../src/lib/frontmatter.ts'
 import { startCollecting, stopCollecting } from '../src/lib/io.ts'
 import { PLANS, PLANS_ARCHIVE, setBoardRoot } from '../src/lib/paths.ts'
-import { legacySourceRefs } from '../src/lib/source.ts'
 import { findCard } from '../src/lib/view/read.ts'
 
 let root = ''
@@ -157,55 +156,11 @@ describe('what a card links', () => {
   })
 })
 
-describe('an old ## Source', () => {
-  it('reads plan paths, item paths, and a line that is only an id or an address', () => {
-    const body = [
-      'Words.',
-      '',
-      '## Source',
-      `- \`${path.join(root, '.akb/boards/docs/kanban/plans/archive/12-one.md')}\``,
-      '- docs/kanban/plans/13-two.md',
-      '- `docs/kanban/triage/archived/typed.md`',
-      '- #7',
-      '<https://example.test/post>',
-      '- from the discussion about #8 and https://example.test/other',
-      '',
-      '## By `ui-designer` agent',
-      '- #9',
-    ].join('\n')
-    assert.deepEqual(legacySourceRefs(body), [
-      { kind: 'plan', id: 12 },
-      { kind: 'plan', id: 13 },
-      { kind: 'item', file: 'typed.md' },
-      { kind: 'card', id: 7 },
-      { kind: 'url', url: 'https://example.test/post' },
-    ])
-  })
-
-  it('resolves an item path by the triage rule', () => {
-    item('archived', 'typed.md', '')
-    item('archived', 'linked.md', 'url: https://example.test/post\n')
-    const body = '## Source\n- docs/kanban/triage/archived/typed.md\n- docs/kanban/triage/linked.md\n'
-    assert.deepEqual(
-      cardSources({ source: [], triage: '' }, body).map((s) => [s.kind, s.ref]),
-      [
-        ['triage', 'typed'],
-        ['url', 'https://example.test/post'],
-      ],
-    )
-  })
-
-  it('is left alone on a card that names sources in frontmatter', () => {
-    plan('12-one.md', '# One\n')
-    assert.deepEqual(cardSources({ source: ['plan:99'], triage: '' }, '## Source\n- plans/12-one.md\n'), [])
-  })
-})
-
 describe('the card page', () => {
   it('carries the sources on one card read and keeps the file as written', () => {
     plan('12-one-outcome.md', '# One outcome\n\n## Problem\nWords.\n')
     const body = 'Words.\n\n## Source\n- docs/kanban/plans/12-one-outcome.md\n\n## Todo\n- [ ] a'
-    card(7, 'priority: med\nroi: med\nstatus: todo\n', body)
+    card(7, 'priority: med\nroi: med\nstatus: todo\nsource: [plan:12]\n', body)
     card(8, 'priority: med\nroi: med\nstatus: todo\n', 'Words.\n\n## Source\n- somebody asked\n')
     const before = fs.readFileSync(path.join(todo(), '7-old.md'), 'utf8')
     assert.deepEqual(findCard(7)!.sources, [{ kind: 'plan', ref: '12', title: 'One outcome' }])

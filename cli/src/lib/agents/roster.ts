@@ -16,7 +16,7 @@ import { forgetFileMemos } from '../file-memo'
 import { forgetStudioAgent, landAgents, previewAgents, scheduledMembers, studios } from '../agent/studios'
 import { forgetAgentRuntime } from '../agent/runtimes'
 import { forgetSpecAgent } from '../agent/settings'
-import { agentMemoryDir, legacyAgentMemoryFile } from '../memory'
+import { agentMemoryDir } from '../memory'
 import { rel, RULES } from '../paths'
 import type { WriteResult } from '../view/types'
 import { specAgentCatalog } from './catalog'
@@ -59,7 +59,7 @@ export function deleteAgent(name: string): WriteResult & { removed?: string[] } 
   }
   const removed: string[] = []
   try {
-    for (const file of [agent.dir, path.join(RULES, `${name}.md`), agentMemoryDir(name), legacyAgentMemoryFile(name)]) {
+    for (const file of [agent.dir, path.join(RULES, `${name}.md`), agentMemoryDir(name)]) {
       if (!fs.existsSync(file)) continue
       fs.rmSync(file, { recursive: true, force: true })
       removed.push(rel(file))

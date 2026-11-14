@@ -10,7 +10,6 @@
 import { ICON_COLORS, ICON_NAMES, readIcon, type AgentIcon } from '../agents/icon.ts'
 import { memoryPaths } from '../agents/parse.ts'
 import { parseYamlBlock, splitFrontmatter, type YamlValue } from '../agents/yaml.ts'
-import { canonicalSpecAgent } from '../spec-agent-names.ts'
 import type { StudioHelper } from './types.ts'
 import { yamlScalar } from '../yaml.ts'
 
@@ -75,7 +74,7 @@ const text = (value: YamlValue | undefined): string => (typeof value === 'string
 
 function readAgent(item: YamlValue): StudioHelper | null {
   const row = typeof item === 'string' ? { agent: item } : box(item)
-  const agent = canonicalSpecAgent(text(row.agent))
+  const agent = text(row.agent)
   if (!agent) return null
   return { agent, extra: typeof row.extra === 'string' ? row.extra : '', ...(text(row.off) === 'true' ? { off: true } : {}) }
 }
@@ -147,7 +146,7 @@ export function parseStudioFile(id: string, source: string, from: string): { def
   const scheduled: StudioDef['scheduled'] = []
   for (const item of Array.isArray(raw.scheduled) ? raw.scheduled : []) {
     const row = typeof item === 'string' ? { agent: item } : box(item)
-    const agent = canonicalSpecAgent(text(row.agent))
+    const agent = text(row.agent)
     if (!agent || scheduled.some((s) => s.agent === agent)) continue
     scheduled.push({ agent, ...(text(row.cadence) ? { cadence: text(row.cadence) } : {}) })
   }

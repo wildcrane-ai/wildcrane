@@ -1,7 +1,6 @@
 // 目标草稿沿用 KANBAN_IDEAS 和 ideas 文件字段，兼容旧 Runner。
 
 import fs from 'node:fs'
-import { canonicalSpecAgent } from '../lib/spec-agent-names'
 
 import { say } from '../lib/io'
 import { die } from '../lib/paths'
@@ -166,7 +165,7 @@ export function goalPreviews(held: GoalsFile, studio: string, asked = ''): strin
   if (!asked.trim()) return []
   const catalog = held.studios.find((w) => w.id === studio)?.previews
   if (!catalog) die('Preview agents are unavailable; update Runner and try again.')
-  const names = asked.split(',').map((p) => canonicalSpecAgent(({ ui: 'ui-designer', api: 'api-designer' } as Record<string, string>)[p.trim()] ?? p.trim()))
+  const names = asked.split(',').map((p) => p.trim())
   if (names.length > 50) die('previews must contain at most 50 agent names.')
   for (const name of names) if (!catalog.some((p) => p.agent === name)) die(`Preview agent ${name} is not enabled in studio ${studio}.`)
   return catalog.filter((p) => names.includes(p.agent)).map((p) => p.agent)

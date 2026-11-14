@@ -14,7 +14,7 @@ import { after, beforeEach, describe, it } from 'node:test'
 import { cmdRemove } from '../src/commands/remove.ts'
 import { parseFrontmatter } from '../src/lib/frontmatter.ts'
 import { startCollecting, stopCollecting } from '../src/lib/io.ts'
-import { MOCKUPS, setBoardRoot } from '../src/lib/paths.ts'
+import { ASSETS, setBoardRoot } from '../src/lib/paths.ts'
 import { readArchive } from '../src/lib/view/archive.ts'
 import { forgetMachineState } from './helpers/board.ts'
 
@@ -88,7 +88,7 @@ const metaOf = (file: string) => parseFrontmatter(fs.readFileSync(file, 'utf8'))
 
 describe('mockups after removal', () => {
   function mockup(id: number): string {
-    const file = path.join(MOCKUPS, String(id), 'screen.html')
+    const file = path.join(ASSETS, String(id), 'screen.html')
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, '<h1>Preview</h1>')
     return file
@@ -97,7 +97,7 @@ describe('mockups after removal', () => {
   it('keeps an archived card’s referenced mockup', () => {
     const file = card(91)
     const preview = mockup(91)
-    const tag = '<Mockup src=".mockups/91/screen.html" label="Preview" />'
+    const tag = '<Asset src=".assets/91/screen.html" label="Preview" />'
     fs.appendFileSync(file, `\n${tag}\n`)
     remove(91, 'completed')
     assert.ok(fs.readFileSync(path.join(archive(), '91-a-card.md'), 'utf8').includes(tag))

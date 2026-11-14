@@ -115,7 +115,7 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
     let watcher: fs.FSWatcher
     try {
       const state = path.relative(ws.board, projectStateDir(ws.board)).split(path.sep).join('/')
-      const assets = ['assets', 'mockups'].map(dir => `${state}/${dir}/`)
+      const assets = ['assets'].map(dir => `${state}/${dir}/`)
       watcher = fs.watch(path.dirname(ws.board), { recursive: true }, (_event, name) => {
         const p = name && path.relative(ws.board, path.join(path.dirname(ws.board), String(name))).split(path.sep).join('/')
         const held = watched.get(ws.cwd)

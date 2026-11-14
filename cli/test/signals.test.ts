@@ -691,18 +691,18 @@ describe('a file written before the source list (#560)', () => {
 
   const stamps = 'collected_at: 2026-09-06 21:40\nimported_at: 2026-09-06 21:41'
 
-  it('reads a free-text source the list knows as that type', () => {
+  it('ignores a retired free-text source', () => {
     write('old.md', `source_id: old\ntitle: An old one\nsource: 知乎\n${stamps}`)
     const [only] = readSignals().signals
-    assert.equal(only!.sourceType, 'zhihu')
+    assert.equal(only!.sourceType, '')
     assert.deepEqual(only!.meta, [])
   })
 
-  it('reads one the list has not got as a source meta entry, and leaves the file alone', () => {
+  it('leaves retired platform fields uninterpreted and intact', () => {
     write('old.md', `source_id: old\ntitle: An old one\nplatform: A newsletter\n${stamps}`)
     const [only] = readSignals().signals
     assert.equal(only!.sourceType, '')
-    assert.deepEqual(only!.meta, [{ key: 'source', value: 'A newsletter' }])
+    assert.deepEqual(only!.meta, [])
     assert.match(fs.readFileSync(path.join(triage(), 'old.md'), 'utf8'), /platform: A newsletter/)
   })
 

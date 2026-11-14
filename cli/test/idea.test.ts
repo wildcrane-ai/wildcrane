@@ -75,7 +75,7 @@ it('新旧命令共用草稿且保存不会开始任务', () => {
     assert.equal(read().ideas.length, 2)
     assert.equal(read().ideas[1].title, '更新')
     assert.equal(read().ideas[1].start, true)
-    assert.equal(findGuide('discuss-goal')?.text, findGuide('discuss-idea')?.text)
+    assert.ok(findGuide('discuss-goal')); assert.equal(findGuide('discuss-idea'), null)
   } finally { delete process.env.KANBAN_GOALS }
 })
 
@@ -104,17 +104,17 @@ it('保存独立审阅选择，按工作台去重；省略保留，清空与切�
   held.studios[0].previews = [{ agent: 'ui-designer', when: 'UI' }, { agent: 'api-designer', when: 'API' }]
   held.studios[1].previews = []
   fs.writeFileSync(file, JSON.stringify(held))
-  cmdGoal(['new'], { title: 'Review', bodyFile: draft('Deliver.'), previews: 'api,ui,api' })
+  cmdGoal(['new'], { title: 'Review', bodyFile: draft('Deliver.'), previews: 'api-designer,ui-designer,api-designer' })
   assert.deepEqual(read().ideas[1].previews, ['ui-designer', 'api-designer'])
   cmdGoal(['new'], { title: 'Other', bodyFile: draft('Other.') })
   cmdGoal(['save'], { id: 'new_1', title: 'Changed' })
   assert.deepEqual(read().ideas.map((i: { previews?: string[] }) => i.previews), [undefined, ['ui-designer', 'api-designer'], []])
   const before = fs.readFileSync(file, 'utf8')
-  assert.throws(() => cmdGoal(['save'], { id: 'new_1', title: 'Invalid', studio: 'slide-deck', previews: 'ui' }), /Preview agent ui-designer is not enabled/)
+  assert.throws(() => cmdGoal(['save'], { id: 'new_1', title: 'Invalid', studio: 'slide-deck', previews: 'ui-designer' }), /Preview agent ui-designer is not enabled/)
   assert.equal(fs.readFileSync(file, 'utf8'), before)
   cmdGoal(['save'], { id: 'new_1', previews: '' })
   assert.deepEqual(read().ideas[1].previews, [])
-  cmdGoal(['save'], { id: 'new_1', previews: 'api' })
+  cmdGoal(['save'], { id: 'new_1', previews: 'api-designer' })
   cmdGoal(['save'], { id: 'new_1', studio: 'slide-deck' })
   assert.deepEqual(read().ideas[1].previews, [])
 })

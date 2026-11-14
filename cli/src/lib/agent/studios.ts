@@ -19,13 +19,12 @@ import path from 'node:path'
 
 import { locate, locateArchived } from '../cards'
 import { parseFrontmatter } from '../frontmatter'
-import { AGENTS, die, LEGACY_AGENTS, LEGACY_UI_CONFIG, RULES, UI_CONFIG, STUDIOS } from '../paths'
+import { AGENTS, die, RULES, UI_CONFIG, STUDIOS } from '../paths'
 import { memoByFiles } from '../file-memo'
 import type { Meta } from '../types'
 import { AUTO_CADENCE, formatStamp, isAuto, parseCadence } from '../cadence'
 import { safeConfig, configBlock, writeConfig } from './settings'
 import { checkAgentKeys, specAgentCatalog, type AgentPlaces, type RefusedAgent } from '../agents/catalog'
-import { canonicalSpecAgent } from '../spec-agent-names'
 import { cloudStudioSources, heldStudioName } from './cloud-studios'
 import { translating } from './language'
 import { boardStudioDefs, builtinDefs, stagesOf, type StudioDef } from './studio-file'
@@ -95,7 +94,7 @@ function readRows(raw: unknown): StudioHelper[] | undefined {
   const out: StudioHelper[] = []
   for (const entry of rows) {
     const row = configBlock(entry)
-    const agent = typeof row.agent === 'string' ? canonicalSpecAgent(row.agent) : ''
+    const agent = typeof row.agent === 'string' ? row.agent : ''
     if (!agent || out.some((h) => h.agent === agent)) continue
     out.push({ agent, extra: typeof row.extra === 'string' ? row.extra : '', ...(row.off === true ? { off: true } : {}) })
   }
@@ -108,7 +107,7 @@ function readScheduled(raw: unknown): StudioScheduled[] | undefined {
   const out: StudioScheduled[] = []
   for (const entry of rows) {
     const row = configBlock(entry)
-    const agent = typeof row.agent === 'string' ? canonicalSpecAgent(row.agent) : ''
+    const agent = typeof row.agent === 'string' ? row.agent : ''
     if (!agent || out.some((h) => h.agent === agent)) continue
     const text = (key: string): string => (typeof row[key] === 'string' ? (row[key] as string).trim() : '')
     out.push({
@@ -171,7 +170,7 @@ interface Resolved {
 // in the first studio, off and nobody's, both among its previews and its scheduled agents:
 // switching it on as a preview makes it that studio's.
 const resolved = memoByFiles(
-  () => [UI_CONFIG, LEGACY_UI_CONFIG, STUDIOS, AGENTS, LEGACY_AGENTS, ...cloudStudioSources()],
+  () => [UI_CONFIG, STUDIOS, AGENTS, ...cloudStudioSources()],
   (): Resolved => {
     const flows = writtenStudios()
     const catalog = specAgentCatalog().agents
@@ -420,7 +419,7 @@ export function listedScheduled(flow: Studio): string[] {
 /** One scheduled agent of one studio, or undefined when it has no such agent. */
 export const scheduledAgent = (id: string, agent: string): StudioScheduled | undefined => {
   const flow = studioById(id)
-  return flow ? scheduledMembers(flow).find((h) => h.agent === canonicalSpecAgent(agent.trim())) : undefined
+  return flow ? scheduledMembers(flow).find((h) => h.agent === agent.trim()) : undefined
 }
 
 // The rows written are the ones this studio owns, and `claim`, an agent only sitting here.
@@ -451,24 +450,6 @@ export function stampScheduledRun(id: string, agent: string, startedAt: Date): b
     },
     agentStudio(agent) ? '' : agent,
   ).ok
-}
-
-/** Take in the agent a retired recurring card became (#1414), with the cadence and last pass
- *  the card carried. On only with a cadence; no `since`, so the cadence counts from that pass. */
-export function adoptStudioScheduled(id: string, agent: string, from: { cadence: string; lastRun: string }): Write {
-  const refused = elsewhere(agent, id)
-  if (refused) return refused
-  return setScheduled(id, (rows) => {
-    const at = rows.findIndex((h) => h.agent === agent)
-    if (at >= 0) rows.splice(at, 1)
-    rows.push({
-      agent,
-      extra: '',
-      ...(from.cadence ? {} : { off: true }),
-      cadence: from.cadence || AUTO_CADENCE,
-      lastRun: from.lastRun,
-    })
-  })
 }
 
 // ---- the studio one card runs on -----------------------------------------

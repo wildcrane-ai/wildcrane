@@ -2,10 +2,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { ASSETS, BOARD_STATE } from '../paths'
-import { agentMemoryDir } from '../memory'
 import { withLock } from '../lock'
 import { findSpecAgent, specAgentAssigned, specHeadingRe } from '../agents'
-import { canonicalSpecAgent } from '../spec-agent-names'
 import { findCard } from '../view/read'
 import { cardStudioId } from './studios'
 import { studioFiles } from './studio-shared'
@@ -63,7 +61,6 @@ export function previewStagePrompt(id: number, name: string, command: string): s
   return [
     `Selected stages: ${progress.stages.map((stage) => stage.id).join(', ')}. Current stage: ${current.id}.`,
     progress.files[current.instructions] === progress.body ? '' : progress.files[current.instructions],
-    ...(name === 'ui-designer' ? [current.id === 'copywriting' ? legacyPreviewMemory('copywriting') : current.id === 'illustration' ? legacyPreviewMemory('illustrator') : ''] : []),
     ...progress.stages.filter((stage) => stage.status === 'confirmed').map((stage) => `Confirmed ${stage.id} v${stage.version}:\n${stage.artifact?.body ?? ''}`),
     `Submit with: ${command} raw previews ${name} ${id} --submit --stage ${current.id}.`,
   ].join('\n\n')
@@ -73,7 +70,7 @@ function previewOwner(id: number, name: string, inside = insideRun()): string {
   if (!found) throw Error('The task is no longer open.')
   const card = found.kind === 'group' ? path.join(found.target, 'root.md') : found.target
   const { meta } = parseFrontmatter(fs.readFileSync(card, 'utf8'))
-  if (!specAgentAssigned(name, meta?.studio) || !meta?.previews?.some((agent) => canonicalSpecAgent(agent) === name)) throw Error('Choose this preview agent on the task first.')
+  if (!specAgentAssigned(name, meta?.studio) || !meta?.previews?.includes(name)) throw Error('Choose this preview agent on the task first.')
   if (inside) {
     const run = readRuns().find((run) => run.sessionId === inside)
     if (!run || run.status !== 'running' || run.cardId !== id) throw Error('Only the active task session can prepare its selected previews.')
@@ -184,9 +181,4 @@ export function frozenPreviewFile(agent: string, relative: string): string | und
   const run = readRuns().find((run) => run.sessionId === insideRun())
   if (run?.action !== 'spec' || run.specAgent !== agent || run.cardId === null) return undefined
   return readPreviewProgress(run.cardId)[agent]?.files[relative]
-}
-
-function legacyPreviewMemory(agent: string): string {
-  const folder = agentMemoryDir(agent)
-  try { return fs.readdirSync(folder).filter((name) => name.endsWith('.md')).map((name) => `Existing ${agent} preferences (${name}):\n${fs.readFileSync(path.join(folder, name), 'utf8')}`).join('\n\n') } catch { return '' }
 }

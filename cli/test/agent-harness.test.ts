@@ -14,13 +14,10 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { agentInfo, agentRun, openPlan, planResume, planRun, skillCall } from '../src/lib/agent/resolve.ts'
 import { agentForRun } from '../src/lib/agent/runner.ts'
-import { takeLocalModels } from '../src/lib/agent/local.ts'
 import {
   addRuntime,
-  migrateRuntimes,
   readAgentRuntime,
   readRuntimes,
-  repairEnvFile,
   secretVar,
   setAgentRuntime,
 } from '../src/lib/agent/runtimes.ts'
@@ -214,13 +211,6 @@ describe('writing the list', () => {
     assert.match(addRuntime('cheap', 'codex').error ?? '', /already has a runtime/)
   })
 
-  it('carries an older board’s agentHarness picks over on the first write', () => {
-    config({ harness: 'claude-code', harnessSettings: { codex: {} }, agentHarness: { builder: 'codex' } })
-    addRuntime('Cheap', 'cursor')
-    assert.deepEqual(held().agentRuntime, { builder: 'codex' })
-    assert.equal(held().agentHarness, undefined)
-    assert.equal(agentRun('builder').harness, 'codex')
-  })
 
   it('drops a pick back to Global default without writing one down', () => {
     const { id } = addRuntime('Cheap', 'codex')
@@ -246,20 +236,7 @@ describe('writing the list', () => {
   // `video-assets` became `hyperframes-assets` (#945), then `hyperframes-editor` (#1057); a pick
   // still under the old name is read, so every write clears it, or it wins again the moment the
   // new one is gone.
-  it('clears a pick saved under the name the agent had before', () => {
-    const { id } = addRuntime('Cheap', 'codex')
-    const other = addRuntime('Other', 'codex').id!
-    config({ ...held(), agentRuntime: { 'video-assets': id, builder: id } })
-    assert.equal(agentRun('hyperframes-editor').runtime, id)
-    assert.equal(setAgentRuntime('hyperframes-editor', '').ok, true)
-    assert.deepEqual(held().agentRuntime, { builder: id })
-    assert.equal(agentRun('hyperframes-editor').runtime, 'global')
-    config({ ...held(), agentRuntime: { 'video-assets': id, builder: id } })
-    setAgentRuntime('hyperframes-editor', other)
-    assert.deepEqual(held().agentRuntime, { builder: id, 'hyperframes-editor': other })
-    setAgentRuntime('hyperframes-editor', '')
-    assert.deepEqual(held().agentRuntime, { builder: id })
-  })
+
 })
 
 describe('the raw arguments', () => {
@@ -306,122 +283,11 @@ describe('a resume', () => {
     assert.ok(picked?.argv.includes('b'))
   })
 
-  it('reads a pin written before runtimes as the row that harness’s block became', () => {
-    config({ harness: 'claude-code', harnessSettings: { codex: { model: 'gpt-5.1-codex' } } })
-    const picked = planResume({ harness: 'codex', resumeId: 'abc', cwd: root }, 'builder', { pin: 'codex' })
-    assert.equal(picked?.harness, 'codex')
-    assert.ok(picked?.argv.includes('gpt-5.1-codex'))
-  })
+
 })
 
 // The one-time move `akb update` makes (#467): how to reach a CLI was one block per harness and
 // the model under it was this computer's, and both become rows.
-describe('turning an older board into runtimes', () => {
-  beforeEach(() =>
-    config({
-      harness: 'claude-code',
-      harnessSettings: {
-        'claude-code': { baseUrl: 'https://gw.example', command: 'claude -p' },
-        codex: { provider: 'api' },
-      },
-      agentHarness: { builder: 'codex' },
-    }),
-  )
-
-  it('writes one row per block, with the board’s own first', () => {
-    const line = migrateRuntimes(['planner', 'builder'], takeLocalModels(kanban()))
-    assert.match(line ?? '', /runtimes/)
-    assert.deepEqual(
-      readRuntimes().map((r) => [r.id, r.harness]),
-      [
-        ['global', 'claude-code'],
-        ['codex', 'codex'],
-      ],
-    )
-    assert.equal(held().harnessSettings, undefined)
-    assert.equal(held().harness, undefined)
-    assert.equal(held().agentHarness, undefined)
-    assert.equal(agentRun('builder').harness, 'codex')
-  })
-
-  it('mints one row for each agent whose model differed, and no more', () => {
-    local({
-      agents: {
-        builder: { codex: { model: 'gpt-5.1-codex' } },
-        planner: { 'claude-code': { model: 'claude-opus-5' } },
-        reviewer: { 'claude-code': {} },
-      },
-    })
-    migrateRuntimes(['planner', 'builder', 'reviewer'], takeLocalModels(kanban()))
-    assert.deepEqual(
-      readRuntimes().map((r) => r.id),
-      ['global', 'codex', 'planner', 'builder'],
-    )
-    assert.equal((held().agentRuntime as Record<string, string>).planner, 'planner')
-    assert.equal(agentRun('builder').model, 'gpt-5.1-codex')
-    assert.equal(agentRun('code-reviewer').runtime, 'global')
-    // …and the block it moved is cleared, so a second update finds nothing.
-    assert.deepEqual(heldLocal(), {})
-  })
-
-  it('runs what this computer ran before the move — the block and the model together', () => {
-    local({ agents: { builder: { codex: { model: 'gpt-5.1-codex' } } } })
-    migrateRuntimes(['planner', 'builder', 'reviewer'], takeLocalModels(kanban()))
-    setBoardRoot(root)
-    const run = openPlan(plan({ action: 'implement', studio: 'coding' }))
-    assert.ok(run.argv.includes('model="gpt-5.1-codex"'))
-    // …and the rest of what that block said about reaching the CLI came with it: the
-    // provider Codex was set to, and the hand-edited command Global default ran.
-    assert.equal(readRuntimes().find((r) => r.harness === 'codex')?.settings.provider, 'api')
-    assert.deepEqual(readRuntimes()[0]!.settings, { baseUrl: 'https://gw.example', command: 'claude -p' })
-    assert.deepEqual(plan({ action: 'clarify' }).argv.slice(0, 2), ['claude', '-p'])
-  })
-
-  it('moves once, so a second update finds nothing', () => {
-    migrateRuntimes(['builder'], takeLocalModels(kanban()))
-    assert.equal(migrateRuntimes(['builder'], takeLocalModels(kanban())), null)
-  })
-
-  it('discards a pre-#443 `runtimes` block rather than reading it under the new rules', () => {
-    config({
-      harness: 'claude-code',
-      runtimes: { names: ['default', 'cheap'], global: 'default', agents: { cheap: { harness: 'codex' } } },
-    })
-    assert.deepEqual(
-      readRuntimes().map((r) => [r.id, r.harness]),
-      [['global', 'claude-code']],
-    )
-    assert.equal(plan({ action: 'implement', studio: 'coding' }).harness, 'claude-code')
-  })
-})
-
-// The key file is brought over off the runtimes LIST, so a second computer — where the config
-// was converted elsewhere and only `.env` is still old — is repaired there too.
-describe('bringing this computer’s key lines to the id-scoped names', () => {
-  it('moves one line onto every row that has none, and leaves what nothing claims', () => {
-    config({
-      runtimes: [runtime('global', 'claude-code'), runtime('gateway', 'claude-code'), runtime('cheap', 'codex')],
-    })
-    env('ANTHROPIC_API_KEY=sk-ant\nSOMETHING_ELSE=keep-me\n')
-    assert.match(repairEnvFile() ?? '', /ANTHROPIC_API_KEY__GLOBAL/)
-    const after = readEnvFile()
-    assert.equal(after.ANTHROPIC_API_KEY__GLOBAL, 'sk-ant')
-    assert.equal(after.ANTHROPIC_API_KEY__GATEWAY, 'sk-ant')
-    assert.equal(after.ANTHROPIC_API_KEY, undefined)
-    assert.equal(after.SOMETHING_ELSE, 'keep-me')
-  })
-
-  it('never writes over a key a row already has, and repairs once', () => {
-    config({ runtimes: [runtime('global', 'claude-code')] })
-    env('ANTHROPIC_API_KEY=sk-old\nANTHROPIC_API_KEY__GLOBAL=sk-new\n')
-    repairEnvFile()
-    assert.equal(readEnvFile().ANTHROPIC_API_KEY__GLOBAL, 'sk-new')
-    assert.equal(repairEnvFile(), null)
-  })
-})
-
-// Planning runs the discussion's runtime (#1316), so a card's planning can carry on the session
-// a discussion opened. It has no pick of its own (#2152).
 describe('planning', () => {
   const board = {
     runtimes: [

@@ -22,6 +22,7 @@ import { referenceText } from '../../cli/src/lib/dress-page'
 import * as api from './api'
 import type { Assets, Job } from './api'
 import { busy, kept as cacheKept, markUsed, markUnsent } from './cache'
+import { AKB_CONTRACT } from './protocol'
 import { keepOutOfGit } from './kanban-skill'
 import { sharedMemory, type Shared } from './memory-files'
 import { countSync, logSync, syncDebug } from './sync-debug'
@@ -75,6 +76,7 @@ interface Base {
   /** A base from before the workspace's board (#2114) is read again whole. */
   layout?: 'workspace'
   head_seq: number | null
+  akbContract?: number
   workspace?: string | null
   project?: string
   /** Cards with deferred assets stay excluded from later job writebacks. */
@@ -462,16 +464,15 @@ function dropPlacedAgents(ws: TaskFolder): void {
   fs.rmSync(agentsRecord(ws), { force: true })
 }
 
-/** An asset path the body names: akb's `.assets/` and `.mockups/` in the board's state folder,
- *  anything else relative to the card; never outside either. */
+/** Resolve an asset inside this card's allowed files. */
 function assetPath(ws: TaskFolder, name: string, owner: string): string | null {
   if (/^[a-z][\w+.-]*:/i.test(name) || name.startsWith('#') || name.startsWith('//')) return null
   if (path.isAbsolute(name)) throw new Error(`absolute path: ${name}`)
-  const held = /^\.(assets|mockups)\//.exec(name)
+  const held = /^\.assets\//.exec(name)
   const state = stateDir(ws)
-  const root = held && state ? path.join(state, held[1]!) : ws.board
+  const root = held && state ? path.join(state, 'assets') : ws.board
   const file = held && state ? path.resolve(root, name.slice(held[0].length)) : path.resolve(path.dirname(owner), name)
-  const roots = [ws.board, ...(state ? ['assets', 'mockups'].map(folder => path.join(state, folder, ...(ws.number ? [String(ws.number)] : []))) : [])]
+  const roots = [ws.board, ...(state ? ['assets'].map(folder => path.join(state, folder, ...(ws.number ? [String(ws.number)] : []))) : [])]
   const inside = (file: string, root: string) => file.startsWith(root + path.sep)
   if (!roots.some(root => inside(file, root))) throw new Error(`outside the board: ${name}`)
   // A file not here yet resolves through its nearest existing folder, so it is judged where it will land.
@@ -481,7 +482,7 @@ function assetPath(ws: TaskFolder, name: string, owner: string): string | null {
   let stateParent = state
   while (stateParent && !fs.existsSync(stateParent) && path.dirname(stateParent) !== stateParent) stateParent = path.dirname(stateParent)
   const realState = state && stateParent ? path.resolve(fs.realpathSync(stateParent), path.relative(stateParent, state)) : null
-  const realRoots = [fs.realpathSync(ws.board), ...(realState ? ['assets', 'mockups'].map(folder => path.join(realState, folder, ...(ws.number ? [String(ws.number)] : []))) : [])]
+  const realRoots = [fs.realpathSync(ws.board), ...(realState ? ['assets'].map(folder => path.join(realState, folder, ...(ws.number ? [String(ws.number)] : []))) : [])]
   if (!realRoots.some(root => real === root || inside(real, root))) throw new Error(`link outside the board: ${name}`)
   return file
 }
@@ -511,11 +512,30 @@ function assetsOf(text: string | null | undefined): Assets {
 
 const assetsText = (assets: Assets) => `${JSON.stringify(Object.fromEntries(Object.entries(assets).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)), null, 2)}\n`
 
+export async function formatReady(ws: TaskFolder, required = AKB_CONTRACT): Promise<api.Call<void>> {
+  const base = readBase(ws)
+  if ((base.akbContract ?? 1) >= required) return { ok: true, value: undefined }
+  const project = await api.readProject(ws.project)
+  if (!project.ok) return project
+  if ((project.value.akbContract ?? 1) < required) return { ok: false, error: 'This project needs its one-time CLI format conversion.', code: 'format_conversion_required' }
+  const state = stateDir(ws)
+  const marker = state && readText(path.join(state, 'akb-contract.json'))
+  let local = 0
+  try { local = Number(JSON.parse(marker ?? '{}').contract) || 0 } catch {}
+  if ((base.head_seq !== null || filesUnder(ws.board).some(kept)) && local < required) return { ok: false, error: 'Convert this computer’s project files before switching CLI versions.', code: 'format_conversion_required' }
+  base.akbContract = project.value.akbContract
+  base.workspace = project.value.workspace ?? null
+  writeBase(ws, base)
+  return { ok: true, value: undefined }
+}
+
 /** Bring the folder up to Cloud: what changed here goes first, then what changed since the base,
  *  in one call, and the board's files reset to it. Nothing here is overwritten while it cannot
  *  be sent. */
 export function pull(ws: TaskFolder, machineId: string): Promise<api.Call<void>> {
   return inFolder(ws.cwd, async () => {
+    const format = await formatReady(ws)
+    if (!format.ok) return format
     const sent = await sendBoard(boardFolder(ws), machineId)
     if (!sent.ok) {
       const refused = sent.tasks ? sent.tasks[ws.cloudTask ?? ''] : { ...sent, blocking: true }
@@ -716,7 +736,7 @@ async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets): Prom
         try { child = assetPath(ws, name, file) } catch { /* 留作原引用。 */ }
         if (!child) return src
         dependencies.push(name)
-        const back = !found.text && /^\.(assets|mockups)\//.test(name) ? name : path.relative(path.dirname(target), child).split(path.sep).join('/')
+        const back = !found.text && /^\.assets\//.test(name) ? name : path.relative(path.dirname(target), child).split(path.sep).join('/')
         if (back !== src) changed = true
         return back
       })
@@ -774,7 +794,7 @@ export const undrawnPreviews = (ws: TaskFolder): string[] =>
 /** Why a preview cannot be drawn, with its paths as the card names them. */
 function undrawn(ws: TaskFolder, reason: string): string {
   const state = stateDir(ws)
-  for (const [root, shown] of [...(state ? [[path.join(state, 'assets'), '.assets'], [path.join(state, 'mockups'), '.mockups']] : []), [ws.board, '']]) {
+  for (const [root, shown] of [...(state ? [[path.join(state, 'assets'), '.assets']] : []), [ws.board, '']]) {
     reason = reason.split(`file://${root}${path.sep}`).join(shown && `${shown}/`).split(`${root}${path.sep}`).join(shown && `${shown}/`)
   }
   return reason.replace(/ \(at [^)]*file:\/\/[^)]*\)$/, '').slice(0, 500)
@@ -816,7 +836,7 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
       : path.dirname(file) === file ? file : path.join(real(path.dirname(file)), path.basename(file))
     target = real(target)
     const state = stateDir(ws)
-    for (const folder of ['assets', 'mockups']) {
+    for (const folder of ['assets']) {
       const root = state && real(path.join(state, folder))
       if (root && target.startsWith(root + path.sep)) return `.${folder}/${path.relative(root, target).split(path.sep).join('/')}`
     }

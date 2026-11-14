@@ -106,7 +106,7 @@ export interface Harness
   forkArgs?(argv: string[], resumeId: string, sessionId: string, cwd: string): string[]
   /** The settings this harness takes, in the order a dialog draws them. This list is the
    *  whole of its configuration: a run appends the ones that carry a flag, and the file
-   *  keeps them in this harness's own block under `harnessSettings`. */
+   *  keeps them in each runtime's `settings`. */
   settings: HarnessSetting[]
   /** The model ids to offer under this connector's Model box, read off its CLI's own files
    *  on this machine (`agent/models.ts`) — most of these CLIs cache a current list, so what

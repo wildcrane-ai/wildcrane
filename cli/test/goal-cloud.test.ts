@@ -53,7 +53,7 @@ afterEach(() => {
 })
 it('外部会话按会话与项目保存，返回 Cloud 目标 id；后续编辑与开始使用同一讨论', async () => {
   const body = path.join(root, 'body.md'); fs.writeFileSync(body, 'Deliver.\n\n## Done when\n- Done')
-  const created = await cloudGoal(['new'], { title: 'Goal', bodyFile: body, studio: 'coding', previews: 'api,ui,ui' })
+  const created = await cloudGoal(['new'], { title: 'Goal', bodyFile: body, studio: 'coding', previews: 'api-designer,ui-designer,ui-designer' })
   assert.equal(created.id, 'idea_1')
   assert.equal(created.url, 'https://app.wildcrane.ai/discussions/dsc_test')
   assert.deepEqual(goals[0].previews, ['ui-designer', 'api-designer'])

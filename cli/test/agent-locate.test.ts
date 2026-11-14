@@ -1,3 +1,4 @@
+import { uiConfigOf } from './helpers/board.ts'
 // Every connector finds its CLI wherever it was installed and runs the newest copy that starts,
 // and all of them answer the same way (#131).
 
@@ -102,7 +103,7 @@ describe('locating a CLI', { skip: process.platform === 'win32' }, () => {
   }
   const nvm = (version: string, name: string) => path.join(root, '.nvm', 'versions', 'node', version, 'bin', name)
   const board = (settings: Record<string, string> = {}, harness = 'claude-code') =>
-    fs.writeFileSync(path.join(root, 'docs/kanban/ui.config.json'), JSON.stringify({ runtimes: [{ id: 'global', name: 'Global default', harness, settings }] }))
+    fs.writeFileSync(uiConfigOf(root, 'docs/kanban'), JSON.stringify({ runtimes: [{ id: 'global', name: 'Global default', harness, settings }] }))
 
   beforeEach(() => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'akb-locate-')))

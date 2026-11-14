@@ -6,7 +6,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { canonicalSpecAgent } from '../spec-agent-names'
 import { locateArchived } from '../cards'
 import { parseFrontmatter } from '../frontmatter'
 import { agentMemoryDir, memoryNamesOf } from '../memory'
@@ -137,7 +136,7 @@ function settledBy(body: string): string {
 
 // The agents whose `## By `<agent>` agent` sections a card holds, by the name each goes by now.
 function agentsOn(body: string): string[] {
-  return [...body.matchAll(/^##\s+By\s+`([^`]+)`\s+(?:skill|agent)\s*$/gim)].map((m) => canonicalSpecAgent(m[1]!))
+  return [...body.matchAll(/^##\s+By\s+`([^`]+)`\s+agent\s*$/gim)].map((m) => m[1]!)
 }
 
 // The user's messages whole; the agent's without the lines that echo a command (`⏺`) or

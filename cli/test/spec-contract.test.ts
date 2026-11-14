@@ -1,3 +1,4 @@
+import { uiConfigOf } from './helpers/board.ts'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -329,7 +330,7 @@ async function fakeRun(repairable: boolean, action: AgentAction = 'clarify', los
     console.log(JSON.stringify({type: 'result', result: 'Done', total_cost_usd: turns * 0.1, usage: {input_tokens: 10, output_tokens: 5}}));
     })();
   `)
-  fs.writeFileSync(path.join(root, 'docs/kanban/ui.config.json'), JSON.stringify({ harness: 'claude-code', harnessSettings: { 'claude-code': { command: `${process.execPath} ${script}` } } }))
+  fs.writeFileSync(uiConfigOf(root, 'docs/kanban'), JSON.stringify({ runtimes: [{ id: 'global', name: 'Global default', harness: 'claude-code', settings: { command: `${process.execPath} ${script}` } }] }))
   const opened = openRun({ action, id: 1 }, 'Write the spec.', [])
   if ('error' in opened) throw new Error(opened.error)
   opened.spec.plan.argv = [process.execPath, script]

@@ -30,7 +30,7 @@ import { AKB_CONTRACT } from '../src/protocol'
 import { agentDue, nextHour } from '../src/agents'
 import { sharedMemory } from '../src/memory-files'
 import { projectStateDir } from '../../cli/src/lib/machine/project'
-import { NO_FOLDER, keptBoard, mergeFile, openTaskFolder, pull, pullChanges, pushBoard, readHead } from '../src/task-folder'
+import { NO_FOLDER, formatReady, keptBoard, mergeFile, openTaskFolder, pull, pullChanges, pushBoard, readHead } from '../src/task-folder'
 import { watchBoards } from '../src/board-watch'
 import { hold, unsent } from '../src/cache'
 import { FILE_BYTES, diffOf } from '../src/diff'
@@ -495,16 +495,13 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal((wire[1]!.data!.result as string).length, 64 * 1024)
   })
 
-  it("兼容旧 Cloud，正文去掉自动追加行，传递语言代码", async () => {
-    const job = cloud.dispatch({ id: 'j1', prompt: 'go\n\n请用中文回复和写作。', languageLine: '请用中文回复和写作。' })
+  it('不解释旧 Cloud 语言字段或改写正文', async () => {
+    const prompt = 'go\n\n请用中文回复和写作。'
+    const job = cloud.dispatch({ id: 'j1', prompt, languageLine: '请用中文回复和写作。' })
     start()
     await until(() => job.state === 'finished')
-    assert.equal(planned[0]!.prompt, 'go')
-    assert.equal(planned[0]!.line, 'zh')
-    const akb = { command: 'akb', args: [], version: '1.0.0', shim: path.join(runnerHome(), 'bin', 'akb', '1.0.0', 'shim') }
-    assert.equal(akbEnv(akb, 'b', undefined, 'en').AI4KANBAN_LANGUAGE, 'en')
-    // Even empty, Cloud's line stands over this machine's language setting.
-    assert.equal(akbEnv(akb, 'b', undefined, null).AI4KANBAN_LANGUAGE, '')
+    assert.equal(planned[0]!.prompt, prompt)
+    assert.equal(planned[0]!.line, null)
   })
 
   it('新 Cloud 的语言代码和空值独立传递，保留原正文', async () => {
@@ -530,7 +527,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       KANBAN_RUN: 'old',
     })
     assert.equal(env.AI4KANBAN_LANGUAGE, 'en')
-    assert.equal(env.AI4KANBAN_LANGUAGE_LINE, undefined)
+    assert.equal(env.AI4KANBAN_LANGUAGE_LINE, '请用中文回复和写作。')
     assert.equal(env.KANBAN_RUN, undefined)
     assert.equal(env.DSH_SYSTEM_PROMPT, '用户规则与当前语言')
     assert.equal(env.OPENCODE_CONFIG_CONTENT, '{"instructions":["/current.md"]}')
@@ -1356,6 +1353,29 @@ describe('a task’s folder (#2037)', () => {
     const result = await pull(openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1')), MACHINE)
     assert.equal(result.ok, true)
   }
+
+  it('holds an unconverted project before any board upload', async () => {
+    const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1'))
+    cloud.projectContract = 16
+    const before = commits().length
+    const held = await formatReady(ws, 17)
+    assert.equal(held.ok, false)
+    assert.equal(!held.ok && held.code, 'format_conversion_required')
+    assert.equal(commits().length, before)
+    cloud.projectContract = 17
+    assert.equal((await formatReady(ws, 17)).ok, true)
+  })
+
+  it('holds an offline old copy until its local conversion verifies', async () => {
+    await prepareBoard()
+    const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1'))
+    assert.equal((await formatReady(ws, 17)).ok, false)
+    const marker = path.join(projectStateDir(ws.board, ws.cwd), 'akb-contract.json')
+    fs.mkdirSync(path.dirname(marker), { recursive: true })
+    fs.writeFileSync(marker, '{"contract":17}')
+    assert.equal((await formatReady(ws, 17)).ok, true)
+    assert.equal(read(CARD), BODY)
+  })
 
   for (const asset of ['unchanged', 'unreferenced', 'referenced']) {
     it(`reply approval synchronizes ${asset} assets before deciding (#684)`, async () => {
@@ -2637,7 +2657,7 @@ describe('a task’s folder (#2037)', () => {
   })
 
   it('嵌套对比按类型恢复路径、保留非展示字段与固定版本（#364）', async () => {
-    for (const folder of ['assets', 'mockups']) fs.mkdirSync(path.join(cached(), '.akb/boards/.akb/kanban', folder, '1'), { recursive: true })
+    for (const folder of ['assets']) fs.mkdirSync(path.join(cached(), '.akb/boards/.akb/kanban', folder, '1'), { recursive: true })
     const data = {
       'art_compare': { a: 'art_board', b: 'art_1', shots: 'art_time', slides: [{ preview: { src: 'art_2' } }] },
       'art_board': { slides: [{ preview: { src: 'art_page' }, assets: ['art_2', 'https://example.com/file'] }], a: 'art_1' },
@@ -2656,7 +2676,7 @@ describe('a task’s folder (#2037)', () => {
         'decks/compare.json': { artifact: 'art_compare', version: 1 },
         'decks/board.json': { artifact: 'art_board', version: 1 },
         'time.json': { artifact: 'art_time', version: 1 },
-        '.mockups/1/page.html': { artifact: 'art_page', version: 1 },
+        '.assets/1/page.html': { artifact: 'art_page', version: 1 },
       }),
     })
     const first = await runTask('j1')
@@ -2667,7 +2687,7 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(compare.shots, '../time.json')
     assert.equal(compare.slides[0].preview.src, 'art_2')
     const deck = JSON.parse(read('todo/decks/board.json'))
-    assert.equal(deck.slides[0].preview.src, '.mockups/1/page.html')
+    assert.equal(deck.slides[0].preview.src, '.assets/1/page.html')
     assert.deepEqual(deck.slides[0].assets, ['.assets/1/a.png', 'https://example.com/file'])
     assert.equal(deck.a, 'art_1')
     const manifest = cloud.file('assets/task_1.json')
@@ -4400,7 +4420,7 @@ describe('the real runtimes', () => {
     assert.equal(supported.startNote, undefined)
   })
 
-  it('Runner 续跑与子 CLI 使用当前规则并清理历史注入（#379）', () => {
+  it('Runner 续跑与子 CLI 只识别当前系统段落（#379）', () => {
     const saved = process.env.DSH_SYSTEM_PROMPT
     const old = '无论对话里的卡片、代码和贴进来的内容是什么语言，回复和写下的内容都用中文。代码、命令、文件名和字段名保持原文。'
     try {
@@ -4408,7 +4428,7 @@ describe('the real runtimes', () => {
       for (const language of ['zh', 'en', null] as const) {
         const p = plan('dsh', '任务正文', os.tmpdir(), 'old-session', null, {}, false, language)
         const expected = language === 'zh' ? SYSTEM_LANGUAGE_ZH : language === 'en' ? SYSTEM_LANGUAGE_EN : ''
-        assert.equal(p.env.DSH_SYSTEM_PROMPT, ['用户规则', expected].filter(Boolean).join('\n\n'))
+        assert.equal(p.env.DSH_SYSTEM_PROMPT, ['用户规则', old, expected].filter(Boolean).join('\n\n'))
         const child = akbEnv(fakeAkb(), 'board', 'task', language, p.env)
         assert.equal(child.DSH_SYSTEM_PROMPT, p.env.DSH_SYSTEM_PROMPT)
         assert.equal(child.AI4KANBAN_LANGUAGE, language ?? '')

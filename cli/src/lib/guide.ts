@@ -81,18 +81,9 @@ export const GUIDES: Guide[] = [
 /** The names this board answers to. */
 export const guideNames = (): string[] => GUIDES.map((g) => g.name)
 
-/** Names a flow answered to before it was renamed. Asked for by the old one, the flow still
- *  comes back — every board, card and habit that spells it the old way keeps working. */
-const RENAMED: Record<string, string> = {
-  'discuss-idea': 'discuss-goal',
-  'spec-skill': 'preview-agent',
-  'spec-agent': 'preview-agent',
-}
-
 /** One flow as this board reads it, spelling this board's own path. */
 export function findGuide(name: string): Guide | null {
-  const wanted = RENAMED[name] ?? name
-  const guide = GUIDES.find((g) => g.name === wanted)
+  const guide = GUIDES.find((g) => g.name === name)
   return guide ? { ...guide, text: boardText(guide.text) } : null
 }
 

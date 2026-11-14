@@ -41,10 +41,10 @@ import {
   providerSetting,
   shownForProvider,
 } from './providers'
-import { specAgentNames } from '../spec-agent-names'
 import { readEnvFile, safeConfig } from './settings'
 import {
   GLOBAL_ID,
+  runtimeSecretVar,
   pickRuntime,
   readAgentRuntime,
   readRuntimes,
@@ -158,6 +158,7 @@ export function readBlock(
   argv: string[],
   /** Whose key lines to look for — a runtime's keys are named after its id (#467). */
   runtimeId: string,
+  secretRefs: Record<string, string> = {},
 ): { values: Record<string, string>; secretsSet: string[]; ignored: string[] } {
   const values: Record<string, string> = {}
   const ignored: string[] = []
@@ -170,7 +171,7 @@ export function readBlock(
     // ignored rather than used: the file we promised to keep it out of would be the one
     // holding it.
     if (setting.kind === 'secret') {
-      if (setting.env && env[secretVar(setting.env, runtimeId)]) secretsSet.push(setting.key)
+      if (setting.env && env[secretRefs[setting.env] ?? secretVar(setting.env, runtimeId)]) secretsSet.push(setting.key)
       continue
     }
     const value = block[setting.key]?.trim() ?? ''
@@ -198,7 +199,7 @@ export function onOwnEndpoint(runtimeId: string | undefined): boolean {
     const runtime = runtimeId ? runtimeById(runtimeId) : undefined
     const harness = harnessByName(runtime?.harness)
     if (!runtime || !harness) return false
-    const { values, secretsSet } = readBlock(harness, runtime.settings, [], runtime.id)
+    const { values, secretsSet } = readBlock(harness, runtime.settings, [], runtime.id, runtime.secretRefs)
     return !!activeProviderOf({ harness, values, secretsSet })?.needs.includes('baseUrl')
   } catch {
     return true
@@ -237,7 +238,7 @@ function resolveHarness(ask: HarnessAsk = {}): ResolvedHarness {
   // **Global default** when it named none (agent/runtimes.ts).
   const table = readAgentRuntime(cfg)
   const owner = agent ? runtimeOwner(agent) : ''
-  const picked = owner ? runtimeOfAgent(specAgentNames(owner), table) : undefined
+  const picked = owner ? runtimeOfAgent(owner, table) : undefined
   // `pin` wins over the board: a run already committed to a runtime spawns that runtime,
   // whatever the settings have been changed to since.
   const asked = ask.pin ?? picked
@@ -255,6 +256,7 @@ function resolveHarness(ask: HarnessAsk = {}): ResolvedHarness {
     runtime.settings,
     splitCommand(command),
     runtime.id,
+    runtime.secretRefs,
   )
   return {
     runtime,
@@ -348,7 +350,7 @@ function runEnv(resolved: ResolvedHarness, cwd = REPO_ROOT): NodeJS.ProcessEnv {
   const secrets: Record<string, string> = {}
   for (const setting of harness.settings) {
     if (setting.kind !== 'secret' || !setting.env) continue
-    const value = file[secretVar(setting.env, runtime.id)]
+    const value = file[runtimeSecretVar(setting.env, runtime)]
     if (value) secrets[setting.key] = value
   }
   return settingEnv(harness, resolved, secrets, cwd)
@@ -734,7 +736,7 @@ function runtimeView(
  *  The one answer the Agents pane and `akb raw agent` both draw. */
 export function agentRun(agent: string, table = readAgentRuntime()): HarnessRun {
   const owner = runtimeOwner(agent)
-  const picked = runtimeOfAgent(specAgentNames(owner), table)
+  const picked = runtimeOfAgent(owner, table)
   const resolved = resolveHarness({ agent })
   return {
     ...(owner !== agent ? { follows: owner } : {}),

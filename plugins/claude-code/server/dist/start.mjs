@@ -1,4 +1,4 @@
-// wildcrane-runner 0.6.71 — built by runner/scripts/build.mjs. Do not edit.
+// wildcrane-runner 0.6.72 — built by runner/scripts/build.mjs. Do not edit.
 import { createRequire as __ai4kanbanRequire } from 'node:module'
 const require = __ai4kanbanRequire(import.meta.url)
 var __create = Object.create;
@@ -27355,7 +27355,7 @@ function parseSpecAgent(text2, from, file2, builtIn = false, list = () => []) {
       { keys: old }
     );
   }
-  const declaredReads = str(akb.reads) === "commits" ? "archived-cards" : str(akb.reads);
+  const declaredReads = str(akb.reads);
   if (declaredReads && !isScheduleReads(declaredReads)) {
     return bad(`\`${name}\` declares \`akb.reads: ${declaredReads}\` \u2014 it is \`${SCHEDULE_READS.join("` or `")}\``);
   }
@@ -27465,34 +27465,10 @@ var init_parse = __esm({
   }
 });
 
-// ../cli/src/lib/spec-agent-names.ts
-var LEGACY_SPEC_AGENT_NAMES, canonicalSpecAgent;
-var init_spec_agent_names = __esm({
-  "../cli/src/lib/spec-agent-names.ts"() {
-    "use strict";
-    LEGACY_SPEC_AGENT_NAMES = {
-      "recommend-tech-stack": "tech-stack-advisor",
-      "technology-selection": "tech-stack-advisor",
-      "ui-design": "ui-designer",
-      // Renamed in #945 and folded into the editor in #1057; its asset memory stays in
-      // `memory/agents/video-assets/`.
-      "video-assets": "hyperframes-editor",
-      // Renamed in #1502: it reads chats, and writes memory as a result.
-      "memory-reviewer": "chat-reviewer",
-      // Folded into `copywriting` in #1582.
-      "user-docs": "copywriting"
-    };
-    canonicalSpecAgent = (name) => {
-      const asked = name.trim();
-      return LEGACY_SPEC_AGENT_NAMES[asked] ?? asked;
-    };
-  }
-});
-
 // ../cli/src/lib/agent/studio-def.ts
 function readAgent(item) {
   const row = typeof item === "string" ? { agent: item } : box(item);
-  const agent = canonicalSpecAgent(text(row.agent));
+  const agent = text(row.agent);
   if (!agent) return null;
   return { agent, extra: typeof row.extra === "string" ? row.extra : "", ...text(row.off) === "true" ? { off: true } : {} };
 }
@@ -27534,7 +27510,7 @@ function parseStudioFile(id, source, from) {
   const scheduled = [];
   for (const item of Array.isArray(raw.scheduled) ? raw.scheduled : []) {
     const row = typeof item === "string" ? { agent: item } : box(item);
-    const agent = canonicalSpecAgent(text(row.agent));
+    const agent = text(row.agent);
     if (!agent || scheduled.some((s) => s.agent === agent)) continue;
     scheduled.push({ agent, ...text(row.cadence) ? { cadence: text(row.cadence) } : {} });
   }
@@ -27565,7 +27541,6 @@ var init_studio_def = __esm({
     init_icon();
     init_parse();
     init_yaml2();
-    init_spec_agent_names();
     init_yaml();
     STUDIO_ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
     OLD_KEYS = ["stages", "delivers", "helpers", "every"];
@@ -27999,15 +27974,13 @@ function projectStateDir(board, root2 = stateRootOf(board)) {
   }
   return path10.join(realPathOf(root2), ".akb", "boards", relative || "_root");
 }
-var SESSIONS_FILE, SESSIONS_FOLDER, ASSETS_FOLDER, MOCKUPS_FOLDER, SESSIONS_LOCK, INDEX_LOCK, UI_CONFIG_FILE;
+var SESSIONS_FILE, SESSIONS_FOLDER, ASSETS_FOLDER, SESSIONS_LOCK, INDEX_LOCK, UI_CONFIG_FILE;
 var init_project = __esm({
   "../cli/src/lib/machine/project.ts"() {
     "use strict";
-    init_home2();
     SESSIONS_FILE = "sessions.json";
     SESSIONS_FOLDER = "sessions";
     ASSETS_FOLDER = "assets";
-    MOCKUPS_FOLDER = "mockups";
     SESSIONS_LOCK = "sessions.lock";
     INDEX_LOCK = "index.lock";
     UI_CONFIG_FILE = "ui.config.json";
@@ -28036,18 +28009,14 @@ function setBoard(kanban, root2, flag) {
   RELEASE_SUMMARIES = path11.join(KANBAN, ".release-summaries");
   AGENTS = path11.join(KANBAN, "agents");
   STUDIOS = path11.join(KANBAN, "studios");
-  LEGACY_AGENTS = path11.join(KANBAN, "skills");
   MEMORY = path11.join(KANBAN, "memory");
   AGENT_MEMORY = path11.join(MEMORY, "agents");
   PROJECT_MD = path11.join(MEMORY, "project.md");
-  LEGACY_UI_CONFIG = path11.join(KANBAN, UI_CONFIG_FILE);
-  LOCAL_CONFIG = path11.join(KANBAN, ".local.json");
   ENV_FILE = path11.join(KANBAN, ".env");
   const machine = projectStateDir(KANBAN, REPO_ROOT);
   BOARD_STATE = machine;
   UI_CONFIG = path11.join(machine, UI_CONFIG_FILE);
   ASSETS = path11.join(machine, ASSETS_FOLDER);
-  MOCKUPS = path11.join(machine, MOCKUPS_FOLDER);
   SESSIONS = path11.join(machine, SESSIONS_FILE);
   SESSIONS_DIR = path11.join(machine, SESSIONS_FOLDER);
   SESSIONS_LOCK2 = path11.join(machine, SESSIONS_LOCK);
@@ -28071,7 +28040,7 @@ function setBoardRoot(root2, named = false) {
   const project = path11.resolve(root2);
   return setBoard(path11.join(project, "docs", "kanban"), project, named ? ` --dir ${project}` : "");
 }
-var REPO_ROOT, KANBAN, TODO, ARCHIVE, ARCHIVE_MD, README, MODULES_MD, CONFIG, KANBAN_GITIGNORE, RELEASES, RELEASE_SUMMARIES, AGENTS, STUDIOS, LEGACY_AGENTS, ASSETS, BOARD_STATE, MOCKUPS, MEMORY, AGENT_MEMORY, PROJECT_MD, LOCK, UI_CONFIG, LEGACY_UI_CONFIG, LOCAL_CONFIG, ENV_FILE, SESSIONS, SESSIONS_DIR, SESSIONS_LOCK2, INDEX_LOCK2, DELIVERIES, PLANS, PLANS_ARCHIVE, RULES, TRIAGE, SIGNALS_ARCHIVED, SIGNALS_DISMISSED, SIGNALS_FILES, SIGNALS_OLD_INBOX, SIGNALS_OLD_HANDLED, AKB_DIR, ROOT_GITIGNORE, BOARD_FLAG;
+var REPO_ROOT, KANBAN, TODO, ARCHIVE, ARCHIVE_MD, README, MODULES_MD, CONFIG, KANBAN_GITIGNORE, RELEASES, RELEASE_SUMMARIES, AGENTS, STUDIOS, ASSETS, BOARD_STATE, MEMORY, AGENT_MEMORY, PROJECT_MD, LOCK, UI_CONFIG, ENV_FILE, SESSIONS, SESSIONS_DIR, SESSIONS_LOCK2, INDEX_LOCK2, DELIVERIES, PLANS, PLANS_ARCHIVE, RULES, TRIAGE, SIGNALS_ARCHIVED, SIGNALS_DISMISSED, SIGNALS_FILES, SIGNALS_OLD_INBOX, SIGNALS_OLD_HANDLED, AKB_DIR, ROOT_GITIGNORE, BOARD_FLAG;
 var init_paths = __esm({
   "../cli/src/lib/paths.ts"() {
     "use strict";
@@ -28090,17 +28059,13 @@ var init_paths = __esm({
     RELEASE_SUMMARIES = "";
     AGENTS = "";
     STUDIOS = "";
-    LEGACY_AGENTS = "";
     ASSETS = "";
     BOARD_STATE = "";
-    MOCKUPS = "";
     MEMORY = "";
     AGENT_MEMORY = "";
     PROJECT_MD = "";
     LOCK = "";
     UI_CONFIG = "";
-    LEGACY_UI_CONFIG = "";
-    LOCAL_CONFIG = "";
     ENV_FILE = "";
     SESSIONS = "";
     SESSIONS_DIR = "";

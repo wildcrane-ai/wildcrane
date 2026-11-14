@@ -10,7 +10,7 @@ import { FLOWS } from '../src/lib/agent/flows.ts'
 import { buildRun } from '../src/lib/agent/prompts.ts'
 import { agentNames, agentRoster, roleNamed } from '../src/lib/agent/roles.ts'
 import { agentForFlow } from '../src/lib/agent/stages.ts'
-import { migrateFlowRules, readRule } from '../src/lib/agent/rules.ts'
+import { readRule } from '../src/lib/agent/rules.ts'
 import { specAgentProblems } from '../src/lib/agents/index.ts'
 import { RULES, setBoardRoot, UI_CONFIG } from '../src/lib/paths.ts'
 
@@ -72,51 +72,3 @@ describe('the board helpers are always on (#1208)', () => {
     }
   })
 })
-
-describe("the one-time move onto the agents", () => {
-  it('folds a per-flow rule file into its agent, in flow order, and deletes it', () => {
-    rule('implement', 'Install dependencies first.')
-    rule('conflict', 'Keep the target branch.')
-
-    const notes = migrateFlowRules()
-    assert.equal(ruleText('builder'), 'Install dependencies first.\n\nKeep the target branch.')
-    for (const gone of ['implement', 'conflict']) {
-      assert.equal(fs.existsSync(path.join(RULES, `${gone}.md`)), false, gone)
-    }
-    // Said out loud: what the user wrote for one flow now reaches two more.
-    assert.equal(notes.length, 1)
-    assert.match(notes.join('\n'), /implement\.md, conflict\.md/)
-    assert.match(notes.join('\n'), /builder\.md/)
-  })
-
-  it('runs once — the second read finds nothing to move and says nothing', () => {
-    rule('implement', 'Install dependencies first.')
-    assert.equal(readRule('builder'), 'Install dependencies first.')
-    assert.deepEqual(migrateFlowRules(), [])
-    assert.deepEqual(buildRun({ action: 'clarify', id: 1 }).notes, [])
-  })
-
-  it("keeps a rule the agent already had in front of the flows'", () => {
-    rule('builder', 'The board rule.')
-    rule('run', 'The recurring rule.')
-    migrateFlowRules()
-    assert.equal(ruleText('builder'), 'The board rule.\n\nThe recurring rule.')
-  })
-
-  it('reports the move in the run log the first time a run is built', () => {
-    rule('implement', 'Run the smoke tests.')
-    const { notes, prompt } = buildRun({ action: 'implement', id: 1, title: 'card one', studio: 'coding' })
-    assert.match(notes.join('\n'), /a rule is one per agent now/)
-    assert.match(prompt, /smoke tests/)
-  })
-
-  // The agent was renamed, and a rule is saved under the agent's name.
-  it('moves a spec agent’s rule off the name it had before, once', () => {
-    fs.mkdirSync(RULES, { recursive: true })
-    fs.writeFileSync(path.join(RULES, 'ui-design.md'), 'Keep to the existing palette.\n')
-    assert.equal(readRule('ui-designer'), 'Keep to the existing palette.')
-    assert.equal(ruleText('ui-designer'), 'Keep to the existing palette.')
-    assert.equal(fs.existsSync(path.join(RULES, 'ui-design.md')), false)
-  })
-})
-

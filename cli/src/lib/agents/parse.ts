@@ -138,8 +138,7 @@ export function parseSpecAgent(
     )
   }
 
-  // `commits` was retired so no schedule depends on git: what it stood for is finished cards.
-  const declaredReads = str(akb.reads) === 'commits' ? 'archived-cards' : str(akb.reads)
+  const declaredReads = str(akb.reads)
   if (declaredReads && !isScheduleReads(declaredReads)) {
     return bad(`\`${name}\` declares \`akb.reads: ${declaredReads}\` — it is \`${SCHEDULE_READS.join('` or `')}\``)
   }

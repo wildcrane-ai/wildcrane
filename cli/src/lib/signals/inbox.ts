@@ -138,11 +138,6 @@ export function parse(file: string, lenient = false): Signal | null {
   const required = lenient ? (['source_id'] as const) : FIELDS
   if (required.some((field) => !held[field])) return null
 
-  // A file written before #560 carried a free-text source — `source`, or `platform` before
-  // #499 renamed it. It reads through the one match rule: a hit is the type, a miss keeps
-  // the words as a `source` meta entry, ahead of whatever the file wrote under `meta:`.
-  const legacy = held.source_type ? '' : held.source || held.platform || ''
-  const missed = legacy && !matchSourceType(legacy) ? metaPair('source', legacy) : null
   return {
     sourceId: held.source_id!,
     title: held.title ?? '',
@@ -151,8 +146,8 @@ export function parse(file: string, lenient = false): Signal | null {
       .join('\n')
       .replace(/^\n+/, '')
       .replace(/\s+$/, ''),
-    sourceType: held.source_type ? readSourceType(held.source_type) : matchSourceType(legacy),
-    meta: missed ? [missed, ...written] : written,
+    sourceType: readSourceType(held.source_type ?? ''),
+    meta: written,
     url: held.url || '',
     ...(held.agent ? { agent: held.agent } : {}),
     ...(held.studio ? { studio: held.studio } : {}),

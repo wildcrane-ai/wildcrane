@@ -1,3 +1,4 @@
+import { uiConfigOf } from './helpers/board.ts'
 // A `codex` on the PATH that cannot start gives way to the copy a desktop app ships (#1270):
 // a wrapper left pointing at ChatGPT.app's old layout exits 126 on every run otherwise.
 
@@ -51,7 +52,7 @@ beforeEach(() => {
   fs.writeFileSync(path.join(root, 'docs/kanban/next-id'), '1\n')
   fs.writeFileSync(path.join(root, 'docs/kanban/todo/README.md'), '# Tasks\n')
   fs.writeFileSync(
-    path.join(root, 'docs/kanban/ui.config.json'),
+    uiConfigOf(root, 'docs/kanban'),
     JSON.stringify({ runtimes: [{ id: 'global', name: 'Global default', harness: 'codex', settings: {} }] }),
   )
 })

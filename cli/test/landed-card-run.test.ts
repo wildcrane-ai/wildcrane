@@ -1,3 +1,4 @@
+import { uiConfigOf } from './helpers/board.ts'
 // A run whose card lands under it still succeeds (#682).
 //
 // Landing archives the card it built, and that can happen while another run is still
@@ -64,8 +65,8 @@ function fakeRun(what: string, action: 'clarify' | 'resolve' = 'resolve'): strin
     console.log(JSON.stringify({type: 'result', result: 'Done'}));
   `)
   fs.writeFileSync(
-    path.join(root, 'docs/kanban/ui.config.json'),
-    JSON.stringify({ harness: 'claude-code', harnessSettings: { 'claude-code': { command: `${process.execPath} ${script}` } } }),
+    uiConfigOf(root, 'docs/kanban'),
+    JSON.stringify({ runtimes: [{ id: 'global', name: 'Global default', harness: 'claude-code', settings: { command: `${process.execPath} ${script}` } }] }),
   )
   const opened = openRun({ action, id: 1 }, 'Apply the answers.', [])
   if ('error' in opened) throw new Error(opened.error)

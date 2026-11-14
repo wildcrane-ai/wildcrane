@@ -55,16 +55,16 @@ afterEach(() => {
 })
 
 describe('the board repair on a board that had releases', () => {
-  it('deletes releases.md and every card’s release line, and keeps the summaries', async () => {
+  it('preserves retired ledgers, card metadata and summaries', async () => {
     await move(root, ['init'])
 
-    assert.equal(fs.existsSync(kanban('releases.md')), false)
+    assert.equal(fs.existsSync(kanban('releases.md')), true)
     assert.equal(fs.readFileSync(kanban('.release-summaries', 'v1.md'), 'utf8'), '# v1\n\nWhat shipped.\n')
     for (const [file, expected] of [
       [kanban('todo', 'features', '12-open.md'), card('Open')],
       [kanban('.archive', '9-shipped.md'), card('Shipped', ['archived: 2026-09-01'])],
     ]) {
-      assert.equal(fs.readFileSync(file, 'utf8'), expected.replace('release: v1\n', ''), file)
+      assert.equal(fs.readFileSync(file, 'utf8'), expected, file)
     }
   })
 })

@@ -4,7 +4,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { PLANS, PLANS_ARCHIVE, KANBAN, boardPath } from './paths'
-import { legacyProjectStateDir } from './machine/project'
 
 /** One plan file, as a screen draws it. `text` is empty for a path whose file is not there
  *  — a plan named the instant before it is first written, or one mid-rewrite. */
@@ -86,8 +85,6 @@ function renamedPlan(rel: string): string | null {
  *  this board's. A run carries the spelled form (`AgentRequest.plan`), and reading the file
  *  it names has to start from a path `planFile` will take. */
 export function planFromText(text: string): string | null {
-  const legacy = `${legacyProjectStateDir(KANBAN)}/`
-  if (text.startsWith(legacy)) text = text.slice(legacy.length)
   const local = `${path.dirname(PLANS)}/`
   if (text.startsWith(local)) text = text.slice(local.length)
   if (text.startsWith(`${KANBAN}/`)) text = text.slice(KANBAN.length + 1)

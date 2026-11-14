@@ -38,8 +38,6 @@ card's approval. The agent chooses its steps, not the planner; the program saves
 them. Omit `stages` for a single preview. Stage IDs are unique; instruction paths stay inside
 the agent folder. A task freezes its definition, files and selection.
 
-**Dependencies**: `akb.after` names other previews in the same studio to approve first when the card requests them too.
-
 ## Other fields
 
 Only `name`, `description` and nonempty body instructions are required. Omit unused fields.
@@ -47,7 +45,8 @@ Only `name`, `description` and nonempty body instructions are required. Omit unu
 | Field | Use |
 | --- | --- |
 | `akb.when` | When to request a preview; omitted means every task on its studio. |
-| `akb.session: new` | A preference for a separate session; the calling agent decides. |
+| `akb.after` | Previews whose approval this agent waits for, when selected on the same card. |
+| `akb.session: new` | Separate session recommended; the calling agent chooses whether to use it. |
 | `akb.components` | Asset, Set, Compare or Storyboard; default `[Asset]`, `[]` loads no component docs. |
 | `akb.icon` | Glyph name, or 1–12 `{d, f?, o?: true, s?, w?}` parts using supported colours. |
 | `akb.i18n` | Display-only title, description and when by language; missing text falls back to English. Keep titles short and name the output. |
