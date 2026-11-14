@@ -189,7 +189,7 @@ describe('the prompt a restarted run is given', () => {
     const prompt = restartPrompt({ action: 'implement', id: 12 }, 'abc123')
     assert.match(prompt ?? '', /Continue delivery abc123/)
     assert.match(prompt ?? '', /implement 12 --print/)
-    assert.match(prompt ?? '', /is gone, and this one holds nothing of it/)
+    assert.match(prompt ?? '', /Continue work\./)
   })
 
   // Retired (#1203): an old record's review restarts as nothing.
@@ -198,7 +198,7 @@ describe('the prompt a restarted run is given', () => {
   })
 
   it('says the task is being done again, not carried on', () => {
-    assert.match(restartPrompt({ action: 'clarify', id: 12 }) ?? '', /is gone, and this one holds nothing of it/)
+    assert.match(restartPrompt({ action: 'clarify', id: 12 }) ?? '', /Continue work\./)
   })
 
   it('comes back with nothing for a run whose ask was the words the user typed', () => {

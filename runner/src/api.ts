@@ -322,7 +322,7 @@ export interface JobReport {
   /** A flow job's akb card id on this Runner's board. */
   card?: number
   /** The card's first open question, `position` 1-based in its `questions:`. */
-  review?: { question: string; options: string[]; position: number }
+  review?: { question: string; options: string[]; position: number } | Record<string, never>
   /** How long a connection test took to answer. */
   ms?: number
   /** 讨论结束时的目标；写入只选择 goals 或兼容 ideas。 */

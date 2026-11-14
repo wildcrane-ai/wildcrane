@@ -2,7 +2,7 @@ import http from 'node:http'
 import crypto from 'node:crypto'
 import type { Call } from './api'
 
-export async function previewBridge(work: (agent: string, fields: Record<string, unknown>) => Promise<Call<unknown>>) {
+export async function previewBridge(work: (agent: string, fields: Record<string, unknown>) => Promise<Call<unknown>>, card?: number) {
   const token = crypto.randomBytes(32).toString('hex')
   let serial = Promise.resolve()
   const server = http.createServer((req, res) => {
@@ -14,6 +14,7 @@ export async function previewBridge(work: (agent: string, fields: Record<string,
       serial = serial.then(async () => {
         try {
           const fields = JSON.parse(raw)
+          if (card !== undefined && fields.cardId !== undefined && fields.cardId !== card) throw Error('Only the current task can manage previews from this session.')
           if (typeof fields.agent !== 'string' || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(fields.agent)) throw Error('Invalid preview agent.')
           answer(200, await work(fields.agent, fields))
         } catch (error) { answer(400, { ok: false, error: error instanceof Error ? error.message : 'Preview submission failed.' }) }

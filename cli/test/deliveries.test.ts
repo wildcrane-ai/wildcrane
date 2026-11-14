@@ -313,7 +313,7 @@ describe('a delivery with no card', () => {
   it('quotes the typed sentence to a run that has to start over', () => {
     const id = startCardless(session({ cardId: null }))
     const prompt = restartPrompt({ action: 'implement' }, id) ?? ''
-    assert.match(prompt, /is gone, and this one holds nothing of it/)
+    assert.match(prompt, /Continue work\./)
     assert.match(prompt, new RegExp(`Continue delivery ${id}`))
     assert.match(prompt, /create no card and build exactly this approved requirement/)
     assert.doesNotMatch(prompt, /write (?:it|its card)/)
@@ -854,16 +854,16 @@ describe('carrying an ended delivery on', () => {
     assert.match(res.error ?? '', /is building #5 now/)
   })
 
-  it('refuses one whose card has left the board', async () => {
+  it('reuses the saved delivery when its card is missing', async () => {
     stopped('carrybbb', { cardId: 404 })
     const res = await resumeDelivery('carrybbb')
-    assert.equal(res.ok, false)
-    assert.match(res.error ?? '', /#404 is no longer on the board/)
+    assert.equal(res.ok, true)
+    assert.equal(res.deliveryId, 'carrybbb')
   })
 
   it('refuses a delivery that finished, and one still in flight', async () => {
     stopped('carryccc', { status: 'finished' })
-    assert.match((await resumeDelivery('carryccc')).error ?? '', /finished/)
+    assert.equal((await resumeDelivery('carryccc')).landed, true)
     const live = start(session({ pid: process.pid, startedAt: Date.now() }))
     assert.match((await resumeDelivery(live)).error ?? '', /still has a running agent/)
   })

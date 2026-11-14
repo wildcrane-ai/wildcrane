@@ -18,15 +18,12 @@ import { spawn, type ChildProcessByStdio, type StdioNull, type StdioPipe } from 
 import type { Readable, Writable } from 'node:stream'
 import fs from 'node:fs'
 
-import { rel, TODO, REPO_ROOT, SESSIONS_DIR } from '../paths'
-import { boardComplaints } from '../reconcile'
-import { boardCheckErrors, boardProblems, snapshotSpecs, type ContractError } from '../spec-contract'
+import { REPO_ROOT, SESSIONS_DIR } from '../paths'
 import { eventsPathOf, readRuns, withStore } from './store'
 import { lastSessionTotal, ownCost, reportsSessionTotal } from './own-cost'
 import { cleanupDiscardedCards } from '../../commands/remove'
 import { discardedCardsPrompt } from './prompts'
 import { contextLimit, refreshCatalog } from './catalog'
-import { boardCommand } from './command'
 import { BACKGROUND_WAIT, silenceMinutes } from './settings'
 import { runEnv } from './flow'
 import { spawnable } from './spawnable'
@@ -36,7 +33,7 @@ import { queueCompleted } from './propose'
 import { costLine, durationLine, modelLine, RESULT_MARKER, usageLine } from './log'
 import { backgroundWaitMessage as backgroundSaid } from './wire/background'
 import { createStderrFilter, streamFinished, type RunEvent } from './wire'
-import { contractRepairPrompt, restartPrompt, resumePrompt } from './prompts'
+import { restartPrompt, resumePrompt } from './prompts'
 import { openPlan } from './resolve'
 import { planRetry, retryLine } from './retry'
 import {
@@ -56,8 +53,6 @@ import {
   carriesSession,
   closeRun,
   forgetRun,
-  leftBoardOnLanding,
-  leftBoardRejected,
   needsIndexLock,
   patch,
   peekRun,
@@ -73,7 +68,6 @@ import {
 } from './sessions'
 import { startResume, startRun } from './start'
 import type { TurnEnd } from './wire'
-import { holdsCard } from './types'
 import type { AgentRequest, ContextWindow, RunReason, RunRecord, RunStatus } from './types'
 
 // How long a run gets to end on its own after a stop asks it to, before it is killed
@@ -97,7 +91,6 @@ const STOP_FINISH_MS = 10_000
 const silenceSaid = (minutes: number): string =>
   `the agent said nothing for ${minutes} minute${minutes === 1 ? '' : 's'}, so the run was ended.`
 
-const MAX_FORMAT_REPAIRS = 3
 
 export async function watchRun(sessionId: string, resume = startResume): Promise<number> {
   const spec = readSpec(sessionId)
@@ -201,20 +194,14 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     }
   }
   const stagePrompt = record.action === 'spec' && record.cardId !== null && record.specAgent ? previewStagePrompt(record.cardId, record.specAgent, boardCommandFor(record.cardId)) : ''
-  const basePrompt = record.formatRepair ? contractRepairPrompt(requestOf(record), record.formatRepair.errors) : (record.resumedFrom ? spec.prompt || resumePrompt(record.deliveryId, record.action) : spec.prompt)
-  const prompt = [basePrompt, stagePrompt, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n')
+  const basePrompt = record.resumedFrom ? spec.prompt || resumePrompt(record.deliveryId, record.action) : spec.prompt
+  const prompt = [basePrompt, basePrompt.includes(stagePrompt) ? '' : stagePrompt, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n')
 
   // The board as it was the moment before the agent touched it. The difference between this
   // and the same read at the close is what this run could be answerable for; which of it
   // really is its own — and not a neighbouring run's — is settled at the close by
   // `claimChanges`, and that is what earns a card the refine that follows.
   const before = markBoard()
-  const sources = snapshotSpecs()
-  // And what was already broken about it. Only what a run BREAKS is worth reporting on that
-  // run: a board carrying a stale link from last month would otherwise put the same line on
-  // the end of every run forever, which is how a real warning gets read as furniture.
-  const wasBroken = new Set(boardComplaints())
-
   // Where the pictures the sheet was pasted into go is the connector's own answer
   // (agent/harnesses/types.ts): one that reads a path out of the words has them in the
   // prompt already (agent/prompts.ts), and one with a flag per file is handed them here.
@@ -234,8 +221,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
   // in the conversation rather than spelled on the command line, and its stdin stays open,
   // because that is the half of the conversation this end writes (agent/wire/client.ts).
   const client = active.client
-  // 构建续跑不自动重建；其他 ACP 会话可用完整任务重开。
-  const restartBase = !client || record.formatRepair || (record.action === 'implement' && record.resumedFrom) ? undefined
+  const restartBase = !client ? undefined
     : record.resumedFrom ? restartPrompt(requestOf(record), record.deliveryId)
     : record.continues && !record.continues.fork ? spec.prompt : undefined
   const restart = restartBase ? [restartBase, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n') : undefined
@@ -551,86 +537,9 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       // A connector the board TALKS to hands its reading back with the turn rather than on
       // the stream, so this is where its ring gets its one update (#675).
       if (spoken) gotContext(spoken.context)
-      const repairable = status === 'done'
-      const required = new Set(record.formatRepair?.cardIds ?? [])
-      const heldElsewhere = withStore((store) => new Set(store.runs
-        .filter((r) => r.sessionId !== sessionId && r.status === 'running' && holdsCard(r.action))
-        .flatMap((r) => [r.cardId, ...(r.createdCardIds ?? [])]).filter((id): id is number => id !== null)))
-      let formatErrors: ContractError[] = []
-      let broken: string[] = []
-      if (!sub) {
-        try {
-          const discarded = new Set(cleanupDiscardedCards(sessionId))
-          for (const [file, card] of sources) if (discarded.has(card.id)) sources.delete(file)
-          for (const id of discarded) required.delete(id)
-          const current = snapshotSpecs()
-          const onBoard = (id: number): boolean => [...current.values()].some((card) => card.id === id)
-          // A card off the board is missing only if it did not leave the way a finished card
-          // does (#682): a delivery that lands archives its card, and a run still working on
-          // that card when it happens has destroyed nothing. A rejected card is filed the same
-          // way, by the run itself or anyone else. Those ids are logged below and kept out of
-          // `required`, so no format repair is ever asked to restore them.
-          const departed = new Set<number>()
-          const rejected = new Set<number>()
-          const missing = (id: number): boolean => {
-            if (discarded.has(id) || onBoard(id)) return false
-            if (leftBoardRejected(id)) {
-              rejected.add(id)
-              return false
-            }
-            if (leftBoardOnLanding(id)) {
-              departed.add(id)
-              return false
-            }
-            return true
-          }
-          for (const id of [...required]) if (!onBoard(id) && !missing(id)) required.delete(id)
-          for (const [file, card] of current) {
-            if (card.id === record.cardId || (!heldElsewhere.has(card.id) && sources.get(file)?.text !== card.text)) required.add(card.id)
-          }
-          for (const id of record.formatRepair?.cardIds ?? []) {
-            if (missing(id)) {
-              formatErrors.push({ file: rel(TODO), line: 1, rule: 'missing-card', message: `Task #${id} disappeared. Restore its card file.` })
-            }
-          }
-          if (record.cardId !== null && !['archive', 'reject'].includes(record.action)
-            && [...sources.values()].some((card) => card.id === record.cardId)
-            && missing(record.cardId)) {
-            required.add(record.cardId)
-            formatErrors.push({ file: rel(TODO), line: 1, rule: 'missing-card', message: `Task #${record.cardId} disappeared. Restore its card file; this run must not delete it.` })
-          }
-          // A board this run left inconsistent goes back to the agent like a format error.
-          if (repairable) {
-            const owed = new Set(record.formatRepair?.broken ?? [])
-            broken = boardComplaints().filter((line) => owed.has(line) || !wasBroken.has(line))
-            formatErrors.push(...broken.map((line) => ({ file: rel(TODO), line: 1, rule: 'board-broken', message: `${line} Take a card off the board with \`${boardCommand()} raw archive <id>\` or \`${boardCommand()} raw reject <id>\`, never by deleting its file.` })))
-          }
-          for (const id of departed) log.write(`\n[board] Task #${id} left the board with its landing; there is nothing to restore.\n`)
-          for (const id of rejected) log.write(`\n[board] Task #${id} was rejected; there is nothing to restore.\n`)
-        } catch (error) {
-          formatErrors = [{ file: rel(TODO), line: 1, rule: 'read-error', message: `Cannot validate the card files: ${String(error)}. Restore readable Markdown files and retry.` }]
-        }
-      }
-      const contractError = formatErrors.length ? boardCheckErrors(formatErrors) : undefined
-      // A repair about to start is not a failure yet; only one that cannot fix it is said.
-      const repairing = !!contractError && repairable && (record.formatRepair?.attempt ?? 0) < MAX_FORMAT_REPAIRS
-      const problems = formatErrors.length && !repairing ? boardProblems(formatErrors) : undefined
-      if (contractError) {
-        log.write(`\n[validation] ${contractError}\n`)
-        if (status === 'done') status = 'error'
-        if (record.cardId !== null && !record.deliveryId) await setCardStatus(record.cardId, 'todo')
-      }
-      // What this run changed, taken now and taken once (agent/refine.ts). Every ending
-      // claims, a failure included: a half-written card is not a card to refine, but leaving
-      // its edits unclaimed would hand them to whichever run closes next.
-      const changed = sub ? [] : [...new Set([...(record.formatRepair?.changedIds ?? []), ...claimChanges(before, sessionId)])].filter((id) => !peekRun(sessionId)?.discardedCards?.some((c) => c.id === id))
-      const original = record.formatRepair ? new Map(record.formatRepair.existingIds.map((id) => [id, ''])) : before
-      patch(sessionId, (r) => {
-        r.formatRepair = contractError ? {
-          attempt: record.formatRepair?.attempt ?? 0, errors: contractError, ...(broken.length ? { broken } : {}),
-          cardIds: [...required], changedIds: changed, existingIds: [...original.keys()],
-        } : undefined
-      })
+      if (!sub) cleanupDiscardedCards(sessionId)
+      const changed = sub ? [] : claimChanges(before, sessionId).filter((id) => !peekRun(sessionId)?.discardedCards?.some((c) => c.id === id))
+      const original = before
       // The log is closed here and not before it, so what the board had to say about the run
       // sits with the agent's output rather than after the marker that ends it.
       //
@@ -661,13 +570,6 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       //
       // Worked out BEFORE the record closes, so anything watching for the run to end sees
       // the note it ended with rather than catching the record a beat too early.
-      if (status === 'done' && record.action === 'spec' && record.cardId !== null && record.specAgent) {
-        const progress = readPreviewProgress(record.cardId)[record.specAgent]
-        if (progress && !['awaiting_confirmation', 'ready'].includes(progress.stages.find((stage) => stage.id === progress.currentStageId)?.status ?? '')) {
-          status = 'error'
-          failure = 'The preview agent exited without submitting its current stage.'
-        }
-      }
       if (status !== 'done' && record.action === 'spec' && record.cardId !== null && record.specAgent) {
         updatePreviewProgress(record.cardId, (all) => {
           const progress = all[record.specAgent!]
@@ -682,7 +584,6 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       // and a screen shows nothing for it (#1241).
       const saidOurs = !asked && silent && !spawnError
       const errorWhy: RunReason[] = [
-        ...(problems ? [{ kind: 'format' as const }] : []),
         ...(spawnWhy ? [spawnWhy] : []),
         ...(saidOurs ? [waited
           ? { kind: 'backgroundSilent' as const, args: { n: String(BACKGROUND_WAIT.minutes / 60) } }
@@ -710,25 +611,13 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
         // What went wrong, in whoever's words know: ours when the command wouldn't start or
         // when it went quiet, the agent's own when the conversation ended badly or its
         // stream said so. That cause leads; a card it left half-written follows.
-        error: joinNotes(spawnError ?? (asked ? undefined : silent ? quietSaid : (spoken?.error ?? failure)),
-          problems),
+        error: spawnError ?? (asked ? undefined : silent ? quietSaid : (spoken?.error ?? failure)),
         note,
         errorWhy,
         noteWhy,
         endedAt,
       })
       letGo()
-      if (repairing) {
-        const next = await resume(sessionId)
-        if ('error' in next) patch(sessionId, (r) => {
-          r.error = `${boardProblems(formatErrors)}\nCannot resume board repair: ${next.error}`
-          r.errorWhy = [{ kind: 'format' }, { kind: 'repairUnstarted', refusals: [next] }]
-        })
-      }
-      // The next attempt (#525), started the instant the failed one is written down — the
-      // same handoff a format repair makes, so the card is between runs for as long as one
-      // record write takes and no longer. A retry and a repair are never both on: a repair
-      // follows a run that finished, and this one failed.
       if (retrying) {
         const next = await resume(sessionId)
         if ('error' in next) patch(sessionId, (r) => {
@@ -736,9 +625,12 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
           r.errorWhy = [...r.errorWhy ?? [], { kind: 'retryUnstarted', refusals: [next] }]
         })
       }
-      if (lost && status === 'error') {
-        const next = await startRun(spec.again!)
-        if (!('error' in next)) forgetRun(sessionId)
+      const missingSession = record.resumedFrom && !/auth|unauthorized|forbidden|login|log.in/i.test(failure ?? spoken?.error ?? '') && /(?:no (?:conversation|session|thread) found|(?:session|conversation|thread)[^\n]*(?:not found|does not exist))/i.test(failure ?? spoken?.error ?? '')
+      if (status === 'error' && !asked && (lost || missingSession)) {
+        const next = missingSession
+          ? await startResume(sessionId, { deliveryId: record.deliveryId, fresh: true })
+          : await startRun(spec.again!)
+        if (!missingSession && !('error' in next)) forgetRun(sessionId)
       }
       // And the proposer's queue (#534, #1467): every card that reached the archive while this
       // run was up — the one it archived itself, the one its landing completed, a group closed

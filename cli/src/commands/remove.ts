@@ -13,7 +13,7 @@ import { runnerProject } from '../lib/cloud/tasks'
 import { insideRun } from '../lib/agent/env'
 import { withCreationLock } from '../lib/agent/creation-lock'
 import { withBoardLock } from '../lib/lock'
-import { creationRefusal, planDeliverables, planDeliveryGap } from '../lib/view/rules'
+import { creationRefusal } from '../lib/view/rules'
 import { allCards, findCard } from '../lib/view/read'
 import { formatDay } from '../lib/cadence'
 import { die, warn, rel, KANBAN, TODO, MEMORY, ARCHIVE, ASSETS, REPO_ROOT } from '../lib/paths'
@@ -143,27 +143,6 @@ export interface RemoveOptions {
   reason?: string
 }
 
-// Why a card finishing in planning (#1057) is not ready to archive, or null: the same check its
-// Archive button draws from, plus what only this machine can see — the finished file on disk.
-function unfinishedDelivery(id: number): string | null {
-  const card = findCard(id)
-  if (card?.deliversIn !== 'plan') return null
-  const gap = planDeliveryGap(card)
-  if (gap) {
-    const what = {
-      questions: 'it still has open questions',
-      deliverable: 'no finished deliverable is on the card',
-      command: 'no ticked todo records where it was delivered or the command that rebuilds it',
-      todos: 'not every todo is ticked',
-    }[gap]
-    return `#${id} is not finished: ${what}.`
-  }
-  const missing = planDeliverables(card.body)
-    .filter((src) => src.startsWith('.assets/'))
-    .find((src) => !fs.existsSync(path.join(ASSETS, src.slice('.assets/'.length))))
-  return missing ? `#${id} is not finished: ${missing} is not on this machine.` : null
-}
-
 // The top-level bullets under `## Decided by the agent`, and those of them under its
 // `### Overruled by the user`.
 function agentDecisions(text: string): { stood: number; overruled: number } {
@@ -195,8 +174,6 @@ function removeCard(id: number, metric: Metric, options: RemoveOptions): MoveRes
   if (creating) die(creating, { kind: 'card-being-created' })
   const found = locate(id)
   if (!found) die(`no task with id ${id} under ${rel(TODO)}`, { kind: 'card-not-found', id })
-  const unfinished = metric === 'completed' ? unfinishedDelivery(id) : null
-  if (unfinished) die(unfinished, { kind: 'plan-delivery-unfinished' })
   // Either way the card is filed under .archive/. Resolve the destination before anything
   // is written, so a name clash fails with the board untouched rather than half-updated.
   // The one delete left: a discarded card an old conversation wrote back, whose original is

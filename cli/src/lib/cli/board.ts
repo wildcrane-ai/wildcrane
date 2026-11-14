@@ -67,8 +67,8 @@ async function dispatch(
   // had open (#407).
   const data = await runAction(ctx, {}, async () => {
     const found = resolveBoard(move, { board: ctx.board, dir: ctx.dir, cwd: cli.cwd, installHint: cli.installHint })
-    useBoard(found, ctx.dir !== null)
-    await syncStudios()
+    useBoard(found, ctx.dir !== null, move === 'inspect')
+    if (move !== 'inspect') await syncStudios()
     const root = found.root
     sayIfRetiredPointer(root)
     const creating = move === 'create' && insideRun() ? peekRun(insideRun()!) : undefined
@@ -285,6 +285,13 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
     .option('--agent <name>', 'the preview agent whose section the op before it is about', opInOrder('agent'))
     .action(async function (this: Command, id: number) {
       await dispatch('update-questions', this, [String(id)], { ops: questionOps }, cli)
+    })
+
+  move('inspect')
+    .argument('<id>', ID, cardId)
+    .summary('read task facts, saved work and execution references')
+    .action(async function (this: Command, id: number) {
+      await dispatch('inspect', this, [String(id)], this.opts(), cli)
     })
 
   move('validate')

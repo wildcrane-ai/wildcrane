@@ -772,17 +772,11 @@ function declareRunning(run: Command, cli: AgentCliOptions): void {
 
   verb('resume')
     .argument('[id]', RUN_ID, String)
-    .summary('continue a run that failed, was cut off or was stopped')
-    .description(
-      "The one command that reaches past the board: it picks the coding agent's own session back up — " +
-        'the conversation it was having, with everything it had already read — while the board counts the ' +
-        'work as a fresh run. Before resuming a creation with no card, check sign-in, project access and connection. ' +
-        'A refusal starts no run and leaves triage unchanged. Keep the triage source and request identity; reuse any task already created in Cloud. ' +
-        'Repairing an existing card creates no other task. Example: akb raw run resume abc12345',
-    )
+    .summary('continue a run from its saved work')
+    .description('Reuse its session when available; otherwise continue the original task in the same directory. Preserve task, delivery, triage source and request identities.')
     .option('-f, --follow', 'watch its log instead of returning')
     .option('--events', 'with --follow: print its structured events, one JSON object per line')
-    .option('--require-session', 'refuse if the original conversation cannot be resumed')
+    .option('--require-session', 'legacy option; missing sessions still use the saved task context')
     .action(async function (this: Command, ...vals: unknown[]) {
       const [id] = positional(vals) as [string | undefined]
       await onBoard(this, cli, () => cmdResume(id, this.opts()))

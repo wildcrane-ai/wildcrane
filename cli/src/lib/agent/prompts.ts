@@ -57,8 +57,7 @@ import { isRetired, notCompletedWhy } from './types'
 // work done, the error it died on — so this is the "continue" you would type in the
 // terminal, not the whole action prompt again.
 export const RESUME_PROMPT = [
-  `Continue. The previous run ended before it finished the task.`,
-  `Pick up where you left off and carry it through.`,
+  `Continue work.`,
 ].join(' ')
 
 // What a build resumed in its own session says, then why the delivery is still open.
@@ -106,15 +105,6 @@ function deliveryRequirements(deliveryId: string, cardId: number | null): string
   return `Follow \`akb guide implement\`: create no card and build exactly this approved requirement and nothing more — "${approved}".`
 }
 
-/** A board repair continues the same run without repeating its task. */
-export function contractRepairPrompt(req: AgentRequest, errors: string): string {
-  return boardText([
-    'The task left the board broken. Fix only the errors below. Preserve planned behavior and completed work; do not repeat the task or request other agents.',
-    errors,
-    ruleBlock(req, frozenRules(req)),
-  ].filter(Boolean).join('\n\n'))
-}
-
 // The actions whose ask can be said again from the record alone. A resume drops what the
 // user typed on purpose — it was already in the conversation being continued — so an action
 // that is mostly those words (a revise's request, a reject's reason, a create's requirement,
@@ -133,8 +123,7 @@ const RESTARTABLE: ReadonlySet<AgentAction> = new Set<AgentAction>([
 // What opens a restart. Everything the resume prompt leans on is gone, so the whole ask
 // follows this line — the run does the task again rather than finishing a sentence.
 const RESTART_LEAD = [
-  `The session you were continuing is gone, and this one holds nothing of it.`,
-  `Do the task below from the top, checking each step's precondition before you do it — work an earlier run already finished is done, so don't repeat it.`,
+  `Continue work.`,
 ].join(' ')
 
 /** Whether `restartPrompt` has an ask to write for this run — the cheap half, for a list. */
@@ -418,7 +407,12 @@ function roster(req: AgentRequest): string {
  *  back, and the one-time fold of a board's per-flow rules onto its agents (#420). */
 export function buildRun(req: AgentRequest): { prompt: string; notes: string[] } {
   const notes: string[] = [...migrateFlowRules(), ...(req.specAgent ? foldedSettingsNotes(req.specAgent) : [])]
-  return { prompt: buildPrompt(req, notes), notes }
+  let prompt = buildPrompt(req, notes)
+  if (req.action === 'spec' && req.id !== undefined && req.specAgent) {
+    const stage = realPaths(boardText(previewStagePrompt(req.id, req.specAgent, boardCommand())), req)
+    if (stage) prompt = prompt.replace(stage, '')
+  }
+  return { prompt, notes }
 }
 
 /** What a conflict run is aimed at, and what its flow is typed with: the card

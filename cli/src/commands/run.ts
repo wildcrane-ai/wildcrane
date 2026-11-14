@@ -333,6 +333,12 @@ function readRequest(
 /** Send one more turn into a run that stopped short: same agent, same conversation, same
  *  card — and the prompt is just "carry on". */
 export async function cmdResume(id: string | undefined, opts: { follow?: boolean; events?: boolean; requireSession?: boolean }): Promise<MoveResult> {
+  const previous = await getRun(id ?? 'last')
+  const completed = previous?.deliveryId ? findDelivery(previous.deliveryId) : undefined
+  if (completed?.status === 'finished' && completed.completions?.some((receipt) => receipt.finished)) {
+    say(`delivery ${completed.deliveryId} is complete.`)
+    return { sessionId: previous!.sessionId, resumedFrom: previous!.resumedFrom, delivery: deliveryOutcome(completed.deliveryId) }
+  }
   const opened = await startResume(id ?? 'last', opts.requireSession)
   if ('error' in opened) die(opened.error, { kind: 'run-refused', ...('reason' in opened ? { reason: opened.reason } : {}) })
   const { run } = opened
@@ -358,6 +364,7 @@ export async function cmdResumeDelivery(named: string): Promise<MoveResult> {
   if (!res.ok) die(res.error ?? 'that delivery could not be carried on', {
     kind: 'run-refused', ...(res.kind === 'refused' ? { reason: res.reason, args: res.args } : {}),
   })
+  if (res.landed) return { deliveryId: res.deliveryId, landed: true }
   const delivery = findDelivery(res.deliveryId!)!
   const started = await startRun({ action: 'implement', id: delivery.cardId ?? undefined,
     deliveryId: delivery.deliveryId, title: delivery.title })
@@ -588,9 +595,7 @@ export async function followRun(sessionId: string, already = '', program = 'akb'
   const failed =
     last.status !== 'done'
       ? `run ${short(last.sessionId)} ended ${last.status}${last.error ? `: ${last.error}` : ''}`
-      : delivery && delivery.status !== 'finished'
-        ? `delivery ${delivery.id} did not land${idle.timedOut ? ` — nothing moved it for ${ago(follow.idleMs)}` : ''}: ${delivery.line}`
-        : undefined
+      : undefined
   // The agent's own session, for a Cloud task to carry on (#2146).
   const held = peekRun(last.sessionId)
   const agentSession = held ? resumeSessionId(held) : undefined

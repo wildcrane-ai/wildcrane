@@ -27,21 +27,24 @@ export interface PreviewProgress {
 export interface PreviewBaseline { definitionRevision: string; generation: number; stageId: string; execution: string }
 
 export function selectPreviewStages(progress: PreviewProgress, ids: string[]): void {
-  if (progress.stages.length) throw Error('The stage selection is frozen. Revise the task to change its scope.')
   const wanted = new Set(ids)
   if (!ids.length || wanted.size !== ids.length || ids.some((id) => !progress.definitions.some((stage) => stage.id === id))) throw Error('Choose a nonempty list of unique known stage IDs.')
-  const chosen = progress.definitions.filter((stage) => wanted.has(stage.id))
-  if (chosen.some((stage, i) => stage.id !== ids[i]) || progress.definitions.some((stage) => !stage.when && !wanted.has(stage.id))) throw Error('Keep definition order and include every required stage.')
-  progress.stages = chosen.map((stage, i) => ({ ...stage, status: i === 0 ? 'running' : 'pending', version: null }))
-  progress.currentStageId = chosen[0]!.id
+  const chosen = ids.map((id) => progress.definitions.find((stage) => stage.id === id)!)
+  if (progress.stages.length) {
+    if (JSON.stringify(progress.stages.map((stage) => stage.id)) === JSON.stringify(ids)) return
+    progress.archivedSelections = [...progress.archivedSelections ?? [], structuredClone(progress.stages)]
+    progress.generation++
+  }
+  progress.stages = chosen.map((stage, i) => structuredClone(progress.stages.find((held) => held.id === stage.id) ?? { ...stage, status: i === 0 ? 'running' : 'pending', version: null }))
+  progress.currentStageId = progress.stages.find((stage) => !['confirmed', 'ready'].includes(stage.status))?.id ?? chosen.at(-1)!.id
 }
 
 export function previewBaseline(progress: PreviewProgress, stageId: string, execution: string): PreviewBaseline {
   const stage = progress.stages.find((stage) => stage.id === stageId)
-  if (progress.currentStageId !== stageId || !stage || !['pending', 'queued', 'running', 'failed', 'stale'].includes(stage.status)) throw Error('This stage is not available for execution.')
+  if (progress.currentStageId !== stageId || !stage) throw Error('Unknown current stage.')
   progress.execution = execution
   delete progress.failure
-  stage.status = 'running'
+  if (!['awaiting_confirmation', 'ready', 'confirmed'].includes(stage.status)) stage.status = 'running'
   return { definitionRevision: progress.definitionRevision, generation: progress.generation, stageId, execution }
 }
 
@@ -50,7 +53,7 @@ export function submitPreviewStage(progress: PreviewProgress, baseline: PreviewB
   if (baseline.definitionRevision !== progress.definitionRevision || baseline.generation !== progress.generation || baseline.execution !== progress.execution
     || progress.currentStageId !== baseline.stageId || !stage) throw Error('This execution is outdated. Reload the task.')
   if (['awaiting_confirmation', 'ready'].includes(stage.status) && stage.artifact) return stage.artifact
-  if (stage.status !== 'running' || !body.trim()) throw Error('Submit nonempty work for the running stage.')
+  if (stage.status !== 'running') throw Error('This stage is not the current execution.')
   const artifact = { stageId: stage.id, version: (stage.version ?? 0) + 1, body, assets: structuredClone(assets) }
   stage.history = [...stage.history ?? [], artifact]
   stage.version = artifact.version
@@ -101,10 +104,13 @@ export function beginPreviewRevision(progress: PreviewProgress, execution: strin
   progress.execution = execution
 }
 export function choosePreviewRevision(progress: PreviewProgress, from: string, execution: string): void {
-  if (!progress.revisionBase || progress.execution !== execution) throw Error('Only a newly requested revision can choose its starting stage.')
-  const at = progress.revisionBase.findIndex((stage) => stage.id === from)
-  if (at < 0 || progress.revisionBase.slice(0, at).some((stage) => stage.status !== 'confirmed')) throw Error('Revise from the earliest unconfirmed or affected stage.')
-  progress.stages = structuredClone(progress.revisionBase)
+  if (progress.execution !== execution) throw Error('This execution is outdated. Reload the task.')
+  const saved = progress.revisionBase ?? progress.stages
+  const at = saved.findIndex((stage) => stage.id === from)
+  if (at < 0) throw Error('Unknown stage.')
+  progress.archivedSelections = [...progress.archivedSelections ?? [], structuredClone(saved)]
+  progress.stages = structuredClone(saved)
+  progress.generation++
   for (const stage of progress.stages.slice(at)) { stage.status = 'stale'; delete stage.confirmation }
   progress.currentStageId = from
   progress.displayedArtifact = progress.stages.slice(0, at).at(-1)?.artifact ?? null

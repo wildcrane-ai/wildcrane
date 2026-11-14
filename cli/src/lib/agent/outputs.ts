@@ -5,11 +5,9 @@
 // the card when the delivery started belongs to an earlier one (#1941).
 
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 
 import { locate, locateArchived } from '../cards'
-import { ASSETS, REPO_ROOT } from '../paths'
 import type { DeliveryRecord } from './types'
 
 const TODO = /^\s*[-*]\s+\[([ xX])\]\s+(.*)$/
@@ -38,13 +36,6 @@ export const plannedTodos = (cardId: number): string[] => todos(cardId).map((t) 
 const looksLikePath = (token: string): boolean =>
   !/\s/.test(token) && !token.includes('://') && !token.startsWith('-') && token.includes('/')
 
-const resolveOutput = (file: string): string => {
-  if (file.startsWith('~/')) return path.join(os.homedir(), file.slice(2))
-  if (path.isAbsolute(file)) return file
-  if (file.startsWith('.assets/')) return path.join(ASSETS, file.slice('.assets/'.length))
-  return path.join(REPO_ROOT, file)
-}
-
 /** The files this delivery's card records, in the order it names them. */
 export function recordedOutputs(delivery: Pick<DeliveryRecord, 'cardId' | 'planned'>): string[] {
   if (delivery.cardId === null) return []
@@ -58,17 +49,4 @@ export function recordedOutputs(delivery: Pick<DeliveryRecord, 'cardId' | 'plann
     }
   }
   return out
-}
-
-/** Why a `files` delivery has not delivered, or nothing when it has. */
-export function filesStop(delivery: DeliveryRecord): { reason: 'outside' | 'output'; why: string; paths: string[] } | undefined {
-  const outputs = recordedOutputs(delivery)
-  if (!outputs.length) {
-    return { reason: 'output', why: 'the card records no output file', paths: [] }
-  }
-  const missing = outputs.filter((f) => !fs.existsSync(resolveOutput(f)))
-  if (missing.length) {
-    return { reason: 'output', why: `recorded output files are missing: ${missing.join(', ')}`, paths: missing }
-  }
-  return undefined
 }

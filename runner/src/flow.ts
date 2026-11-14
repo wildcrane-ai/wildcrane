@@ -12,7 +12,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { SCHEDULED_AGENTS_ENV, SESSION_COST_ENV } from '../../cli/src/lib/agent/env'
-import { NOT_COMPLETED } from '../../cli/src/lib/agent/types'
 import { parseFrontmatter } from '../../cli/src/lib/frontmatter'
 import { asEvent, type RunEvent } from '../../cli/src/lib/agent/wire'
 import { reviewOf as cardReviewOf } from '../../cli/src/lib/card-review'
@@ -194,7 +193,7 @@ export function deliveryEnding(ws: TaskFolder, id: string | undefined, asked = f
   if (held.status === 'cancelled') {
     return held.steps?.some((s) => s.step === 'discarded') ? { ok: false, reason: 'The build was discarded.' } : { ok: false, reason: '', stopped: true }
   }
-  if (held.status === 'active' && !asked) return { ok: false, reason: reasonOf(stopped?.why) ?? NOT_COMPLETED }
+  if (held.status === 'active' && stopped?.why) return { ok: false, reason: reasonOf(stopped.why) ?? stopped.why }
   return null
 }
 
@@ -291,7 +290,7 @@ function boardAkb(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo, task?: s
         if (!replyAssetsSynced(ws)) return { ok: false, error: 'Preview uploads are still pending.' }
       }
       return previewOperation(deps.machineId, job.id, agent, fields)
-    }) : null
+    }, ws.number ?? undefined) : null
     try {
     const ran = await runAkb(deps.akb, full, { cwd: ws.cwd, board: ws.board, task, language: cloudLanguage(job), env: { ...env, ...(bridge ? { AI4KANBAN_PREVIEW_BRIDGE: bridge.env } : {}), AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId }) }, show: log?.push, track: io.track })
     log?.end()
@@ -613,9 +612,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
           .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0]
         // With no run to rejoin, a fresh build run works inside the same delivery.
         if (previous) {
-          continuation = previous.status === 'done'
-            ? ['raw', 'run', 'log', previous.sessionId]
-            : ['raw', 'run', 'resume', previous.sessionId, '--require-session']
+          continuation = ['raw', 'run', 'resume', previous.sessionId, '--require-session']
         }
       }
     } else if (verb === 'implement' && text) {
@@ -643,7 +640,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       result?: string
       lastSessionId?: string
       agentSession?: string
-      delivery?: { id?: string; commit?: string; branch?: string }
+      delivery?: { id?: string; status?: string; commit?: string; branch?: string }
       error?: { message?: string; result?: string; lastSessionId?: string; agentSession?: string; delivery?: { id?: string } }
     }
     const answer = answerOf<Ended>(ran)
@@ -666,9 +663,10 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     const said = ((last ? runs.find((r) => r.sessionId === last)?.result : undefined) ?? answer?.result ?? answer?.error?.result)?.trim()
     const spent = spentBy([...learned, ...runs.filter((r) => (r.startedAt ?? 0) >= since)], job)
     const commit = !rejected && ran.code === 0 ? answer?.delivery?.commit : undefined
+    const pending = verb === 'implement' && answer?.delivery?.status === 'active' ? { review: {} } : {}
     const landing = commit ? { landing: { commit, branch: answer?.delivery?.branch ?? '' } } : {}
     const session = answer?.agentSession ?? answer?.error?.agentSession
-    return { ok: true, report: { ...(said ? { reply: said } : {}), ...(session ? { session } : {}), ...spent, card: id, ...(review ? { review } : {}), ...landing } }
+    return { ok: true, report: { ...(said ? { reply: said } : {}), ...(session ? { session } : {}), ...spent, card: id, ...pending, ...(review ? { review } : {}), ...landing } }
   }
 
   /** A discarded build (#61): every delivery on the card still holding a checkout gives it up. */

@@ -32,6 +32,7 @@ import {
 } from './deliveries'
 import { DELIVERY_FLOWS } from './flows'
 import { deliveryCwd, prepareDelivery, type DeliveryStart } from './commit-mode'
+import { reportsSessionTotal } from './own-cost'
 import { durationLine, pruneLogs, readLogTail, splitLog } from './log'
 import { adoptsSessionId, harnessLabel, onOwnEndpoint, planFork, planResume, planRun, resumesUnder, shipsHarness, type RunPlan } from './resolve'
 import { moveRunPictures } from './pictures'
@@ -334,7 +335,7 @@ const canPickUp = (r: RunRecord): boolean =>
  *  longer be carried on — cancelled, finished, or its checkout gone (#930). A failed one that
  *  worked in the project itself has no checkout to lose, so its run still resumes there. */
 function endedDeliveryRefusal(r: RunRecord, refusals?: Map<string, RunRefusal | undefined>): RunRefusal | undefined {
-  if (!r.deliveryId || !canPickUp(r)) return undefined
+  if (!r.deliveryId) return undefined
   if (refusals?.has(r.deliveryId)) return refusals.get(r.deliveryId)
   const delivery = findDelivery(r.deliveryId)
   const ended = delivery && delivery.status !== 'active' && (delivery.status !== 'failed' || delivery.worktree)
@@ -363,8 +364,7 @@ const CARDLESS = new Set<AgentAction>(['prune-memory', 'review-memory', 'review-
  *  way. Nothing where the record does not hold it: a run that is itself a resume, nor a run
  *  whose work is done and only its format is owed. */
 function retryAsk(r: RunRecord): AgentRequest | undefined {
-  if (r.resumedFrom || isRetired(r.action)) return undefined
-  if (r.formatRepair && !neverStarted(r)) return undefined
+  if (isRetired(r.action)) return undefined
   const id = r.cardId ?? undefined
   const base: AgentRequest = {
     action: r.action,
@@ -395,7 +395,7 @@ function retryAsk(r: RunRecord): AgentRequest | undefined {
 }
 
 function toView(r: RunRecord, gone?: ReadonlySet<number>, refusals?: Map<string, RunRefusal | undefined>): RunView {
-  const cardOffBoard = r.cardId !== null && !!gone?.has(r.cardId)
+  const cardOffBoard = r.status !== 'done' && r.cardId !== null && !!gone?.has(r.cardId)
   // A sub-run is started again by its parent, never on its own (#1421).
   const open = r.action !== 'sub' && canPickUp(r) && !endedDeliveryRefusal(r, refusals)
   const session = !lacksSession(r)
@@ -848,6 +848,7 @@ export function requestOf(record: RunRecord): AgentRequest {
     // the CLI actually spawned takes it.
     runtime: record.runtime,
     specAgent: record.specAgent,
+    notes: record.input,
     ...(record.action === 'scheduled' ? { studio: record.studio } : {}),
     triage: record.triage,
     cards: record.cards,
@@ -865,9 +866,9 @@ interface FreshStart {
   retry?: boolean
 }
 
-export async function openResume(id: string, options?: boolean | { deliveryId: string; notes?: string }): Promise<{ run: RunRecord; spec: RunSpec } | RunRefusal> {
-  const build = typeof options === 'object' ? options : undefined
-  const requireSession = options === true || !!build
+export async function openResume(id: string, options?: boolean | { deliveryId?: string; notes?: string; fresh?: boolean }): Promise<{ run: RunRecord; spec: RunSpec } | RunRefusal> {
+  const build = typeof options === 'object' && options.deliveryId ? { deliveryId: options.deliveryId, notes: options.notes } : undefined
+  const forced = typeof options === 'object' && options.fresh
   const restore: RunRecord[] = []
   const runs = withRuns((all) => {
     reap(all, [], restore)
@@ -886,15 +887,6 @@ export async function openResume(id: string, options?: boolean | { deliveryId: s
   if (build && (prev.action !== 'implement' || prev.deliveryId !== build.deliveryId || delivery?.status !== 'active')) {
     return refusal('deliveryTakenOver', '原构建不属于当前待续跑的交付，不会启动新会话。', { id: build.deliveryId })
   }
-  const completedBuild = prev.status === 'done' && prev.action === 'implement'
-    && delivery?.status === 'active' && prev.deliveryId === delivery.deliveryId
-  if (!canPickUp(prev) && !completedBuild) return refusal('runNotResumable', 'only a failed, interrupted or stopped run can be continued')
-  const retrying = lacksSession(prev)
-  if (requireSession && (!resumeSessionId(prev) || !resumesUnder(prev.harness))) {
-    return refusal('runNoSession', '原构建没有可恢复的会话标识，或原 Agent 不支持续跑；本次未启动新会话。')
-  }
-  const ask = retrying && prev.status !== 'stopped' ? retryAsk(prev) : undefined
-  if (retrying && !ask) return refusal('runNoSession', 'that run never reported a session id to continue by')
   const ended = endedDeliveryRefusal(prev)
   if (ended) return ended
   // Resumed where the run it continues worked: a delivery's own worktree, or the project
@@ -904,26 +896,17 @@ export async function openResume(id: string, options?: boolean | { deliveryId: s
   const sessionId = randomUUID()
   let plan: RunPlan | null
   let fresh: FreshStart | undefined
-  if (ask) {
-    if (prev.cardId !== null && goneCards([prev]).has(prev.cardId)) {
-      return { error: `#${prev.cardId} has left the board, so there is nothing to try again` }
-    }
+  const session = forced ? undefined : resumeSessionId(prev)
+  if (session) {
+    plan = planResume({ harness: prev.harness, resumeId: session, cwd }, prev.agent, prev.runtime ? { pin: prev.runtime } : {})
+  } else {
+    const ask = retryAsk(prev) ?? requestOf(prev)
     const started = await planRetry(prev, ask, sessionId, cwd)
     if ('error' in started) return started
     ;({ plan, fresh } = started)
-  } else if (resumesUnder(prev.harness)) {
-    plan = planResume(
-      { harness: prev.harness, resumeId: resumeIdOf(prev)!, cwd },
-      prev.agent,
-      prev.runtime ? { pin: prev.runtime } : {},
-    )
-  } else {
-    // A connector this build cannot resume (#1321): a new session on the one its agent runs
-    // now, told the task from the top.
-    const prompt = restartPrompt({ ...requestOf(prev), runtime: undefined }, prev.deliveryId)
-    const started = prompt ? planRun(sessionId, cwd, prev.agent) : null
-    plan = started
-    if (started && prompt) fresh = { prompt, notes: started.note ? [started.note] : [] }
+    const restart = prev.action === 'spec' ? undefined : restartPrompt({ ...requestOf(prev), runtime: plan.runtime }, prev.deliveryId)
+    fresh.prompt = restart ?? ['Continue work.', fresh.prompt].join('\n\n')
+    if (!lacksSession(prev) && !forced) fresh.retry = false
   }
   if (!plan) {
     const agent = prev.harness || 'the agent that started it'
@@ -934,7 +917,6 @@ export async function openResume(id: string, options?: boolean | { deliveryId: s
   const buildResume = prev.action === 'implement' && prev.deliveryId ? resumePrompt(prev.deliveryId, prev.action) : undefined
   const opened = await resumeHeld(prev, plan, sessionId, resuming, fresh)
   if ('error' in opened) return opened
-  if (build) opened.spec.notes = [...(opened.spec.notes ?? []), '继续原构建会话；若原会话不可用，本次不会新建会话。']
   if (!opened.spec.prompt && buildResume) opened.spec.prompt = buildResume
   if (build?.notes?.trim()) opened.spec.prompt = [opened.spec.prompt || resumePrompt(prev.deliveryId, prev.action), build.notes.trim()].join('\n\n')
   if (build || buildResume) writeSpec(opened.spec)
@@ -976,10 +958,9 @@ async function resumeHeld(
     action: prev.action,
     status: 'running',
     startedAt: Date.now(),
-    // No `input` on a resume: the note the user typed is already in the conversation being
-    // resumed — repeating it would read as a second instruction they never gave. A retry is
-    // the ask itself again, so it keeps everything the ask was written down with.
-    ...(retry ? { input: prev.input, studio: prev.studio } : {}),
+    // Keep the original ask available if a later resume loses its session.
+    input: prev.input,
+    studio: prev.studio,
     harness: plan.harness,
     runtime: plan.runtime,
     agent: plan.agent,
@@ -994,8 +975,7 @@ async function resumeHeld(
           resumeId: plan.resumeId ?? undefined,
           resumedFrom: prev.sessionId,
           // Taken now: the run being continued is dropped once this one starts (#1483).
-          sessionCostFrom: prev.sessionCostUsd ?? prev.sessionCostFrom,
-          formatRepair: prev.formatRepair ? { ...prev.formatRepair, attempt: prev.formatRepair.attempt + 1 } : undefined,
+          sessionCostFrom: reportsSessionTotal(prev.harness) ? prev.sessionCostUsd ?? prev.sessionCostFrom : undefined,
           // The retry chain carries on rather than starting over (#525): this run IS the attempt
           // the failed one scheduled, so its count and its window come with it.
           retry: prev.retry,
@@ -1017,23 +997,12 @@ async function resumeHeld(
       return refusal('discardUnfinished', 'A card discard did not finish. Retry discarding it before resuming creation.')
     }
     record.discardedCards = latest.discardedCards
-    const discarded = new Set(record.discardedCards?.map((c) => c.id) ?? [])
-    if (record.formatRepair && discarded.size) {
-      const repair = record.formatRepair
-      repair.cardIds = repair.cardIds.filter((id) => !discarded.has(id))
-      repair.changedIds = repair.changedIds.filter((id) => !discarded.has(id))
-      repair.existingIds = repair.existingIds.filter((id) => !discarded.has(id))
-      repair.errors = repair.errors.split('\n').filter((line) => !record.discardedCards!.some((c) => line.includes(c.path) || new RegExp(`Task #${c.id}(?![0-9])`).test(line))).join('\n')
-      if (!repair.cardIds.length) record.formatRepair = undefined
-    }
     const heldCreation = all.find((r) => runIsLive(r) && (r.cardId !== null && (latest.createdCardIds ?? []).includes(r.cardId) || (r.createdCardIds ?? []).some((id) => (latest.createdCardIds ?? []).includes(id))))
     if (heldCreation) return refusal('creationHeld', 'A card from this creation is already being worked on. Wait for that run to finish.')
     const locked = lockedBy(all, prev.action, prev.cardId, prev.discard)
     if (locked) return locked
     all.push(record)
     const delivery = store.deliveries.find((d) => d.deliveryId === prev.deliveryId && d.status === 'active')
-    // A format repair after landing stays under its finished delivery, so a failure keeps the card where it is.
-    if (!delivery && record.formatRepair) record.deliveryId = prev.deliveryId
     if (delivery) {
       delivery.sessions.push(record.sessionId)
       delivery.steps.push({ step: 'resume', at: record.startedAt })
@@ -1053,12 +1022,6 @@ async function resumeHeld(
   const inherited = readAsks(prev.sessionId)
   if (inherited.asks.length || inherited.refines.length) writeAsks(sessionId, inherited)
   clearAsks(prev.sessionId)
-  try {
-    fs.unlinkSync(prev.logPath)
-    fs.rmSync(eventsPathOf(prev.sessionId), { force: true })
-  } catch {
-    // already pruned, or never written — the record is gone either way
-  }
   if (retry && prev.pictures?.length) {
     record.pictures = moveRunPictures(prev.sessionId, sessionId, prev.pictures)
     patch(sessionId, (r) => {
@@ -1356,6 +1319,7 @@ export async function resumeDelivery(
   const put = resumeRecord(id, execution)
   if (!put.ok) return put
   const delivery = put.delivery
+  if (delivery.status === 'finished') return { ok: true, deliveryId: delivery.deliveryId, landed: true }
   const carryOn = carryOnFrom(delivery.deliveryId)
   // The card is this delivery's again, and a delivery in flight rests at `implementing`.
   if (delivery.cardId !== null) await setCardStatus(delivery.cardId, 'implementing')

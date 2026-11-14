@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { afterEach, beforeEach, it } from 'node:test'
 import { buildAkbProgram } from '../src/lib/cli/akb.ts'
 import { buildBoardProgram } from '../src/lib/cli/board.ts'
+import { cmdResume } from '../src/commands/run.ts'
 import { completeDelivery } from '../src/lib/agent/complete.ts'
 import { activeDelivery, findDelivery, joinDelivery, settleOrphanedDeliveries } from '../src/lib/agent/deliveries.ts'
 import { RUN_ENV } from '../src/lib/agent/env.ts'
@@ -78,7 +79,7 @@ it('lets the builder finish without a commit outside git', () => {
   assert.equal(fs.existsSync(card), false)
   assert.equal(findDelivery(deliveryId)?.landing, undefined)
 })
-it('archives once and returns the same handoff on repeated completion', () => {
+it('archives once and returns the same handoff on repeated completion', async () => {
   const result = completeDelivery('1', { commit: sha, branch: 'main' })
   assert.equal(result.finished, true)
   assert.ok(result.note)
@@ -86,25 +87,14 @@ it('archives once and returns the same handoff on repeated completion', () => {
   assert.deepEqual(completeDelivery(deliveryId, { commit: sha, branch: 'main' }), result)
   assert.throws(() => completeDelivery(deliveryId, { commit: 'b'.repeat(40), branch: 'main' }), /different/)
   assert.equal(findDelivery(deliveryId)?.landing?.commit, sha)
+  const resumed = await cmdResume('first', {})
+  assert.equal((resumed.delivery as { id: string }).id, deliveryId)
+  assert.equal(withStore((store) => store.runs.length), 1)
 })
-it('keeps a failed archive retryable and lets a resumed run finish the receipt', async () => {
-  fs.appendFileSync(card, '\n## Todo\n- [ ] Finish validation\n')
-  assert.throws(() => completeDelivery(deliveryId, { commit: sha, branch: 'main' }))
-  assert.equal(findDelivery(deliveryId)?.status, 'active')
-  assert.equal(deliveryStep(findDelivery(deliveryId)!), 0)
-  fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replaceAll('- [ ] ', '- [x] '))
-  await closeRun('first', { status: 'stopped' })
-  open('resumed')
-  process.env[RUN_ENV] = 'resumed'
-  assert.equal(completeDelivery(deliveryId, { commit: sha, branch: 'main' }).finished, true)
-})
-it('keeps a delivery active when landing needs a user answer', async () => {
+it('records explicit completion with open questions', async () => {
   await move(root, ['update-questions', '1', '--append', 'Grant deployment access?',
     '--recommended-option', 'Grant this account access', '--option', 'Use another account'])
-  assert.throws(() => completeDelivery(deliveryId, { commit: sha, branch: 'main' }), /open questions/)
-  assert.equal(findDelivery(deliveryId)?.status, 'active')
-  assert.equal(findDelivery(deliveryId)?.completions?.length ?? 0, 0)
-  assert.ok(fs.existsSync(card))
+  assert.equal(completeDelivery(deliveryId, { commit: sha, branch: 'main' }).finished, true)
 })
 it('records studio steps in order and retains the earlier code result', async () => {
   patch((d) => { d.studio!.land = [{ agent: 'builder', extra: '' }, { agent: 'blog-writer', extra: '' }]; d.rules = { builder: 'Builder rule', 'blog-writer': 'Writer rule' } })
@@ -122,15 +112,10 @@ it('records studio steps in order and retains the earlier code result', async ()
   assert.equal(completeDelivery(deliveryId).finished, true)
   assert.equal(findDelivery(deliveryId)?.landing?.commit, sha)
 })
-it('validates file outputs without a Git repository', () => {
+it('records explicit completion without Todo or Output prerequisites', () => {
   patch((d) => { d.studio!.needsArtifact = true; d.studio!.land = [{ agent: 'blog-writer', extra: '' }] })
-  assert.throws(() => completeDelivery(deliveryId), /no output/)
-  fs.appendFileSync(card, '\n- [x] Output: `out/article.md`\n')
-  assert.throws(() => completeDelivery(deliveryId), /missing/)
-  fs.mkdirSync(path.join(root, 'out'))
-  fs.writeFileSync(path.join(root, 'out/article.md'), 'Delivered')
+  fs.appendFileSync(card, '\n- [ ] Verify output\n- [x] Output: `missing/article.md`\n')
   assert.equal(completeDelivery(deliveryId).finished, true)
-  assert.equal(fs.existsSync(path.join(root, '.git')), false)
 })
 it('retains old Git context and leaves directories intact on cancel', async () => {
   const tree = path.join(root, '.akb/worktrees/1/legacy')

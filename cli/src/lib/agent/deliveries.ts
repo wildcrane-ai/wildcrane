@@ -293,29 +293,15 @@ export function resumeRefusal(delivery: DeliveryRecord, store?: Store): RunRefus
   const id = delivery.deliveryId
   const what = delivery.cardId === null ? 'the build' : `#${delivery.cardId}`
   const task = delivery.cardId === null ? '' : String(delivery.cardId)
-  if (delivery.status === 'active') {
-    return refusal('deliveryActive', `delivery ${id} has not ended — it is still in flight on ${what}.`, { id, task })
-  }
-  if (delivery.status === 'finished') {
-    return refusal('deliveryFinished', `delivery ${id} finished; resume carries on one that ended abnormally.`, { id })
-  }
   if (delivery.status === 'cancelled') {
     return refusal('deliveryCancelled', `delivery ${id} was cancelled, and its files were preserved. Start ${what} again.`, { id, task })
   }
   // A **Start now** delivery holds no card (#428), so there is nothing here to check.
   if (delivery.cardId === null) return undefined
   const card = String(delivery.cardId)
-  const pendingArchive = delivery.completions?.some((c) => !c.finished && c.step + 1 >= (delivery.studio?.land?.length ?? 1))
-  if (cardOnBoard(delivery.cardId) === false && !(pendingArchive && locateArchived(delivery.cardId))) {
-    return refusal(
-      'deliveryCardGone',
-      `#${card} is no longer on the board, so delivery ${id} has nothing left to finish.`,
-      { id, card },
-    )
-  }
   const live = store ?? readStore()
   const holder = activeIn(live, delivery.cardId)
-  if (holder) {
+  if (holder && holder.deliveryId !== id) {
     const command = `${boardCommand()} raw delivery cancel ${holder.deliveryId}`
     return refusal(
       'deliveryHeld',
@@ -366,6 +352,7 @@ export const isResumable = (delivery: DeliveryRecord): boolean => !resumeRefusal
 export function resumeRecord(id: string, execution?: CloudExecution): { ok: true; delivery: DeliveryRecord } | ({ ok: false } & RunRefusal) {
   const found = namedDelivery(id) ?? endedDelivery(id)
   if (!found) return { ok: false, ...unknownDelivery(id) }
+  if (found.status === 'finished') return { ok: true, delivery: found }
   const refused = resumeRefusal(found)
   if (refused && found.status !== 'active') return { ok: false, ...refused }
   const out = withStore<{ ok: true; delivery: DeliveryRecord } | ({ ok: false } & RunRefusal)>((store) => {
@@ -379,6 +366,7 @@ export function resumeRecord(id: string, execution?: CloudExecution): { ok: true
         return { ok: false, ...refusal('deliveryRunGoing', 'the delivery still has a running agent; stop it before continuing') }
       }
     } else if (again) return { ok: false, ...again }
+    if (row.status === 'finished') return { ok: true, delivery: row }
     const at = Date.now()
     const resumed: DeliveryRecord = {
       ...row,

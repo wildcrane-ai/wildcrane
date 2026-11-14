@@ -4,13 +4,11 @@ import { locate } from '../cards'
 import { quietly } from '../io'
 import { withBoardLock } from '../lock'
 import { withCreationLock } from './creation-lock'
-import { endedDelivery, namedDelivery, openQuestions, syncAudit } from './deliveries'
+import { endedDelivery, namedDelivery, syncAudit } from './deliveries'
 import { deliveryStep } from './progress'
 import { answerOutcome } from './answers'
 import { insideRun } from './env'
-import { filesStop } from './outputs'
 import type { MoveResult } from '../types'
-import { findCard } from '../view/read'
 import { readStore, withStore } from './store'
 import { landAgents, noStudioMessage, studioFor } from './studios'
 import { specAgentCatalog } from '../agents/catalog'
@@ -60,7 +58,6 @@ export function completeDelivery(named: string, result: { commit?: string; branc
         throw new Error('Only the current owning run can complete this delivery.')
       }
       if (answerOutcome(delivery) === 'changed') throw new Error('The approved requirements were superseded. Continue with the updated delivery.')
-      if (delivery.cardId !== null && openQuestions(delivery.cardId)) throw new Error('Answer the open questions before completing.')
       if (pending && run === current) {
         if (pending.commit !== commit || pending.branch !== branch) throw new Error('This step already recorded a different result.')
         pending.resumedSessions = [...(pending.resumedSessions ?? []), sessionId]
@@ -69,15 +66,8 @@ export function completeDelivery(named: string, result: { commit?: string; branc
       const agent = delivery.scheduled?.agent ?? deliveryAgents(delivery)[deliveryStep(delivery)]?.agent
       if (!agent) throw new Error('No studio step remains to complete.')
       if (delivery.cardId !== null && !locate(delivery.cardId)) throw new Error('The card is missing before completion.')
-      const finalStep = !!delivery.scheduled || receipts.length + 1 >= deliveryAgents(delivery).length
-      const card = delivery.cardId === null ? undefined : findCard(delivery.cardId)
-      if (finalStep && card && /[-*]\s+\[ \]/.test(card.body)) throw new Error('Complete every Todo before finishing the delivery.')
       const merges = specAgentCatalog().agents.find((a) => a.name === agent)?.merges
       if (merges && !commit && delivery.base) throw new Error(`\`${agent}\` must report its merged commit and target branch.`)
-      if (delivery.studio?.needsArtifact && !delivery.scheduled) {
-        const stop = filesStop(delivery)
-        if (stop) throw new Error(stop.why)
-      }
       const receipt: DeliveryCompletion = { sessionId, step: receipts.length, at: Date.now(), commit, branch, finished: false }
       receipts.push(receipt)
       return { delivery, receipt }
@@ -86,12 +76,6 @@ export function completeDelivery(named: string, result: { commit?: string; branc
     syncAudit(delivery.deliveryId)
     const final = !!delivery.scheduled || receipt.step + 1 >= deliveryAgents(delivery).length
     if (final && !receipt.finished) {
-      if (delivery.studio?.needsArtifact && !delivery.scheduled) {
-        const stop = filesStop(delivery)
-        if (stop) throw new Error(stop.why)
-      }
-      const card = delivery.cardId === null ? undefined : findCard(delivery.cardId)
-      if (card && /[-*]\s+\[ \]/.test(card.body)) throw new Error('Complete every Todo before finishing the delivery.')
       let handoff = receipt.handoff
       if (delivery.cardId !== null) {
         const source = locate(delivery.cardId)

@@ -368,40 +368,11 @@ describe('run completion validation', () => {
     }
   })
 
-  it('asks the agent to restore a card it deleted, and a repaired run finishes', async () => {
+  it('leaves deleted cards for the agent to diagnose without a repair run', async () => {
     const id = await fakeRun(true)
-    const last = await watchWithResume(id)
-    const prompts = fs.readFileSync(path.join(root, 'prompts.log'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string)
-    assert.equal(prompts.length, 2)
-    assert.match(prompts[1]!, /\[missing-card\] Task #1 disappeared/)
-    assert.ok(fs.existsSync(file))
-    assert.equal(peekRun(last)?.status, 'done')
-    assert.equal(peekRun(last)?.costUsd, 0.1)
-    assert.equal(peekRun(last)?.usage?.input, 10)
-    const args = fs.readFileSync(path.join(root, 'args.log'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[])
-    assert.ok(args[1]!.includes('--resume'))
-    assert.ok(!args[1]!.includes('--session-id'))
-  })
-
-  it('keeps the failure when no harness conversation id is available', async () => {
-    const id = await fakeRun(false)
-    patch(id, (r) => { r.harness = 'dsh'; r.resumeId = undefined })
-    await watchRun(id, async (previous) => {
-      const opened = await openResume(previous)
-      assert.ok('error' in opened)
-      return opened
-    })
-    assert.equal(peekRun(id)?.status, 'error')
-    assert.match(peekRun(id)?.error ?? '', /^Board problems:[\s\S]*\nCannot resume board repair: [^\n]*never reported a session id/)
+    await watchRun(id, async () => { throw Error('No automatic repair') })
+    assert.equal(peekRun(id)?.status, 'done')
+    assert.equal(fs.existsSync(file), false)
     assert.equal(fs.readFileSync(path.join(root, 'prompts.log'), 'utf8').trim().split('\n').length, 1)
-  })
-
-  it('fails with detailed errors after bounded repair attempts', async () => {
-    const id = await fakeRun(false)
-    const last = await watchWithResume(id)
-    assert.equal(peekRun(last)?.status, 'error')
-    assert.equal(peekRun(last)?.ok, false)
-    assert.match(peekRun(last)?.error ?? '', /^Board problems:\n- Task #1 disappeared\./)
-    assert.equal(fs.readFileSync(path.join(root, 'prompts.log'), 'utf8').trim().split('\n').length, 4)
   })
 })

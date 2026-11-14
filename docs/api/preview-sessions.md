@@ -18,8 +18,7 @@ akb raw previews ui-designer 738 --revise-from ui-draft
 akb raw previews ui-designer 738 --submit --stage ui-draft
 ```
 
-Enter the role before working on stages. Each task, role and execution has its own baseline;
-re-entering the same request and submitting again preserve saved versions. A new revision
-retains saved work and asks for the earliest affected stage, preserving its confirmed prefix.
+Each task, role and execution has its own baseline;
+re-entering the same request and submitting again preserve saved versions. Use `--revise-from` to revise saved work while preserving its confirmed prefix.
 Old executions, other tasks and unselected roles cannot submit. User confirmation still gates
 later stages. Existing command parameters and JSON results are unchanged.

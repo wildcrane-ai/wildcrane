@@ -18,7 +18,7 @@ import { deliveryFor } from './deliveries'
 import { readRuns } from './store'
 import { buildRun } from './prompts'
 import { NEEDS_CLOUD, NOT_DOWNLOADED, pinMissing, studiosReachable } from './cloud-studios'
-import { archivesOnApproval, cardStudioId, noStudioMessage, studioFor, studioIssues } from './studios'
+import { archivesOnApproval, cardStudioId, noStudioMessage, studioFor } from './studios'
 import { cancelDelivery, carriedSession, closeRun, markSpawned, openResume, openRun, peekRun } from './sessions'
 import { runtimeById } from './runtimes'
 import { scheduledBusy, stalePasses } from './scheduled'
@@ -45,14 +45,6 @@ export async function startRun(req: AgentRequest): Promise<{ run: RunRecord; spa
   return open(req, sessionId)
 }
 
-// Why this run's card cannot start on the studio it names (#715): a land agent this board
-// cannot run. It is read before the card lock is taken, so a refused run leaves nothing behind.
-//
-// The whole studio is checked rather than only the stage this run is: a card that cannot be
-// reviewed is a card that should not be built, and finding that out after the build is worse
-// than finding it out now. A run already inside a delivery is not checked — that delivery
-// froze its own answer, and re-reading the board would refuse a build in flight over a change
-// made after it started.
 export function studioRefusal(req: AgentRequest): RunRefusal | null {
   if (!Number.isInteger(req.id)) return null
   if (!studiosReachable().ok) return refusal('needsCloud', NEEDS_CLOUD)
@@ -65,8 +57,7 @@ export function studioRefusal(req: AgentRequest): RunRefusal | null {
   if (archivesOnApproval(flow) && req.action === 'implement') {
     return refusal('planDelivered', `#${req.id} lands nothing, so its last approval archives it rather than building it.`, { card: String(req.id) })
   }
-  const [problem] = studioIssues(flow.id)
-  return problem ?? null
+  return null
 }
 
 // Why a scheduled agent's new pass cannot start (#1401): its last pass is still running or
@@ -138,7 +129,7 @@ function open(req: AgentRequest, sessionId: string): { run: RunRecord; spawned: 
 }
 
 /** Continue the saved harness conversation through the same path as the Resume command. */
-export async function startResume(id: string, options?: boolean | { deliveryId: string; notes?: string }): Promise<{ run: RunRecord; spawned: boolean } | RunRefusal> {
+export async function startResume(id: string, options?: boolean | { deliveryId?: string; notes?: string; fresh?: boolean }): Promise<{ run: RunRecord; spawned: boolean } | RunRefusal> {
   const opened = await openResume(id, options)
   if ('error' in opened) return opened
   const pid = spawnWatcher(opened.run.sessionId)

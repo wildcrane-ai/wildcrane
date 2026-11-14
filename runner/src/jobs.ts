@@ -29,7 +29,7 @@ import { confirmFlowStopped, runAgent, runFlow, runReview, writeTranscript } fro
 import { hold } from './cache'
 import { allowedProjects } from './folders'
 import { readGoals, writeGoals } from './goals'
-import { replySpent, checkpointEvent, clearCheckpoint, readCheckpoint, saveCheckpoint, stopReply, replyRetry, replayable, resumable, UNCERTAIN, type Checkpoint } from './recovery'
+import { replySpent, checkpointEvent, clearCheckpoint, readCheckpoint, saveCheckpoint, stopReply, replyRetry, replayable, resumable, type Checkpoint } from './recovery'
 import { runnerHome } from './home'
 import { trackSubagents } from './subagents'
 import { followProxy } from './proxy'
@@ -483,12 +483,6 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   const replay = (job.manualRecovery === true && !!previous && replayable(previous))
     || (job.retryReplay === true && (!local || replayable(local)))
     || (!!previous?.retry?.at && replayable(previous))
-  if (reply && job.recoveryOf && !previous && !replay) {
-    return finishClaimed('failed', 'recovery_unsafe')
-  }
-  if (job.manualRecovery && (!previous && !replay || previous && !replayable(previous) && (previous.effects === undefined || previous.pending.length || previous.opaque || !previous.session))) {
-    return finishClaimed('failed', 'recovery_unsafe')
-  }
   if (job.manualRecovery && !local) checkpoint.retry = undefined
   if (reply) checkpoint.retry ??= { since: Date.now(), attempt: 1 }
   const recovering = checkpoint.updating === true || !!job.recoveryOf
@@ -502,10 +496,6 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     delete checkpoint.attempts
   }
   checkpoint.session ??= job.resume ?? undefined
-  if (recovering && !checkpoint.completed && (checkpoint.pending.length || checkpoint.opaque || (!job.flow && checkpoint.started && !checkpoint.session && !replay))) {
-    saveCheckpoint(id, checkpoint)
-    return finishClaimed('failed', job.recoveryOf ? 'recovery_failed' : UNCERTAIN)
-  }
   if (reply && previous?.started && checkpoint.completed?.outcome !== 'done' && !await stopReply(readCheckpoint(id) ? id : job.recoveryOf ?? id, deps.stopMs)) {
     return finishClaimed('failed', 'recovery_unsafe')
   }
@@ -582,7 +572,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
         if (!sent.ok) return sent
         if (!replyAssetsSynced(folder)) return { ok: false, error: 'Preview uploads are still pending.' }
         return api.previewOperation(deps.machineId, id, agent, fields)
-      }))
+      }), folder.number ?? undefined)
       scope.bridge = await replyApprovalBridge(job.task!, job.number!, (comment, asked) => withBoard(folder, async (send) => {
         if (checkpoint.approvalCancelled) return { ok: false, error: 'This reply failed before. Ask again in a new reply.' }
         const pushed = await send({ id, machineId: deps.machineId })

@@ -34,6 +34,7 @@ import { cmdRemove, type RemoveOptions } from '../../commands/remove'
 import { cmdAgentFile } from '../../commands/agent-file'
 import { cmdStudioFile } from '../../commands/studio-file'
 import { cmdMemoryFile } from '../../commands/memory-file'
+import { cmdInspect } from '../../commands/inspect'
 import { cmdValidate } from '../../commands/validate'
 import { quietly } from '../io'
 import { withBoardLock } from '../lock'
@@ -74,6 +75,7 @@ type RunMove = (input: MoveInput) => MoveOutput | void | Promise<MoveOutput>
 const as = <T,>(opts: Record<string, unknown>): T => opts as T
 
 const MOVES: Record<string, RunMove> = {
+  inspect: ({ args }) => cmdInspect(Number(args[0])),
   validate: ({ args }) => cmdValidate(args[0] === undefined ? undefined : Number(args[0])),
   init: () => cmdInit(),
   create: ({ opts }) => cmdCreate(as<CreateOptions>(opts)),
@@ -92,7 +94,7 @@ export const BOARD_MOVES: ReadonlySet<string> = new Set(Object.keys(MOVES))
 
 /** The moves that only read. They take no lock and no envelope — nothing they do can be
  *  half-written, and a board someone is mid-write on is still readable. */
-export const READ_ONLY_MOVES: ReadonlySet<string> = new Set(['list', 'validate', 'file', 'agent-file', 'memory-file'])
+export const READ_ONLY_MOVES: ReadonlySet<string> = new Set(['inspect', 'list', 'validate', 'file', 'agent-file', 'memory-file'])
 
 // ---- the provider ----------------------------------------------------------
 

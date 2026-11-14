@@ -372,7 +372,7 @@ describe('what lands a studio', () => {
     assert.match(buildPrompt({ action: 'clarify', id, studio: 'wf-2' }), /Write one card per template\./)
   })
 
-  it('refuses a build while a land agent cannot be run, and says why', async () => {
+  it('diagnoses a later land agent without blocking the current run', async () => {
     writeStudio('wf-2', '---\nname: Templates\nland: [publisher]\n---\n')
     assert.equal(studioIssues('wf-2')[0]!.reason, 'studioLandMissing')
     agent('publisher', ['lead: execute'])
@@ -381,8 +381,8 @@ describe('what lands a studio', () => {
     assert.match(issue.error, /remove `lead`/)
     const id = (await move(root, ['create', '--title', 'A template', '--studio', 'wf-2'])).id as number
     const started = await startRun({ action: 'implement', id })
-    assert.ok('error' in started)
-    assert.deepEqual(readStore().runs, [])
+    assert.ok(!('error' in started))
+    assert.equal(readStore().runs.length, 1)
   })
 
 })

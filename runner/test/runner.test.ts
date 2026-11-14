@@ -207,11 +207,11 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
           log: () => {}, gotResumeId: () => {}, gotModel: () => {}, event,
         }) }
       } })
-      await until(() => job.events.some(e => e.kind === 'message' && e.data?.text === 'STARTED'))
+      await until(() => job.events.some(e => e.kind === 'message' && e.data?.text === 'STARTED')).catch(error => { throw Error(`${error}: ${JSON.stringify({ state: job.state, reason: job.reason, events: job.events })}`) })
       assert.equal(job.state, 'claimed')
       if (cancel) job.stop = true
       else fs.writeFileSync(gate, '')
-      await until(() => job.state === 'finished')
+      await until(() => job.state === 'finished').catch(error => { throw Error(`${error}: ${JSON.stringify({ state: job.state, reason: job.reason, events: job.events })}`) })
       assert.equal(job.outcome, 'done', job.reason)
       if (cancel) assert.equal(job.report?.stopped, true)
       if (!cancel) {
@@ -917,14 +917,13 @@ process.stdin.on('data', () => { if (read) return; read = true;
   })
 
   for (const checkpoint of [null, { pending: ['write'], effects: true, started: true, session: 's1' }, { pending: [], effects: false, started: true }]) {
-    it(`手动重试不能绕过缺失进度、未确认调用或未知旧进程 ${JSON.stringify(checkpoint)}`, async () => {
+    it(`手动续跑把缺失或未确认进度交给 Agent 核对 ${JSON.stringify(checkpoint)}`, async () => {
       if (checkpoint) saveCheckpoint('old-turn', checkpoint)
       const job = cloud.dispatch({ id: 'manual-turn', recoveryOf: 'old-turn', manualRecovery: true, chat: { message: 'm1', body: '修改' } })
       start()
       await until(() => job.state === 'finished')
-      assert.equal(planned.length, 0)
-      assert.equal(job.reason, 'recovery_unsafe')
-      assert.notEqual((job.report?.recovery as { safe?: boolean } | undefined)?.safe, true)
+      assert.equal(planned.length, 1)
+      assert.equal(job.outcome, 'done', job.reason)
     })
   }
 
@@ -1024,8 +1023,8 @@ process.stdin.on('data', () => { if (read) return; read = true;
     const unsafe = cloud.dispatch({ id: 'unsafe-recovery', recoveryOf: 'uncertain-original', chat: { message: 'm1', body: '继续' } })
     start()
     await until(() => unsafe.state === 'finished')
-    assert.equal(unsafe.reason, 'recovery_failed')
-    assert.equal(planned.length, 0)
+    assert.equal(unsafe.outcome, 'done', unsafe.reason)
+    assert.equal(planned.length, 1)
     const spent = { usage: { input: 10, cacheCreation: 0, cacheRead: 0, output: 2 }, costUsd: 0.25 }
     saveCheckpoint('completed-original', { pending: [], started: true, attempts: [spent],
       completed: { outcome: 'done', report: { reply: '已有结果', ...spent } } })
@@ -1034,7 +1033,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal(done.report?.reply, '已有结果')
     assert.equal(done.report?.costUsd, 0.25)
     assert.deepEqual(done.report?.usage, spent.usage)
-    assert.equal(planned.length, 0)
+    assert.equal(planned.length, 1)
   })
 
   it('换机原会话缺失时用云端上下文建新会话', async () => {
@@ -3555,13 +3554,13 @@ describe('flow jobs (#2020)', () => {
       assert.deepEqual(flowReport(landed), { card: 2 })
     })
 
-    it('follows a completed build through landing without opening a conversation', async () => {
+    it('continues a cleanly ended build inside its existing delivery', async () => {
       await flowJob('j1', { verb: 'create' })
       priorBuild({ status: 'done' })
       const job = await flowJob('j2', { verb: 'implement', card: 2, resume: true })
       assert.equal(job.outcome, 'done', job.reason)
-      assert.ok(calls().some((c) => c[0] === 'run' && c[1] === 'log' && c[2] === 'old-build'))
-      assert.ok(!calls().some((c) => c[0] === 'run' && c[1] === 'resume'))
+      assert.ok(calls().some((c) => c[0] === 'run' && c[1] === 'resume' && c[2] === 'old-build'))
+      assert.equal(calls().filter((c) => c[0] === 'run' && c[1] === 'resume').length, 1)
       assert.ok(!cardCalls().some((c) => c.startsWith('card implement')))
     })
 

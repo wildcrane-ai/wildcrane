@@ -70,7 +70,7 @@ export function checkpointEvent(checkpoint: Checkpoint, event: RunEvent): void {
 /** 恢复前确认所有带本轮标记的进程已结束。 */
 export async function stopReply(id: string, timeout: number): Promise<boolean> {
   const checkpoint = readCheckpoint(id)
-  if (!checkpoint?.mark) return checkpoint?.started === false
+  if (!checkpoint?.mark) return true
   killMarked(checkpoint.mark, checkpoint.process)
   const until = Date.now() + timeout
   while (!processesStopped(checkpoint.mark, checkpoint.process)) {

@@ -29,104 +29,18 @@ describe('the deliverable a card finishing in planning carries', () => {
   })
 })
 
-describe('archiving a carousel post', () => {
-  let root = ''
-  const kanban = () => path.join(root, 'docs', 'kanban')
-
-  beforeEach(() => {
-    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'akb-carousel-')))
-    fs.mkdirSync(path.join(root, '.git'), { recursive: true })
-    fs.mkdirSync(path.join(kanban(), 'todo'), { recursive: true })
-    fs.writeFileSync(path.join(kanban(), 'next-id'), '1\n')
-    fs.writeFileSync(path.join(kanban(), 'todo', 'README.md'), '# Tasks\n\n## Tasks\n')
-    fs.writeFileSync(path.join(kanban(), 'config.md'), '# Configuration\n\n- **Project** — a project.\n')
-    setBoardRoot(root)
-  })
-  afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
-
-  it('is refused until the pages are on the card and on this machine', async () => {
-    const id = (await move(root, ['create', '--title', 'Launch post', '--studio', 'carousel-post'])).id as number
-    const file = path.join(kanban(), 'todo', fs.readdirSync(path.join(kanban(), 'todo')).find((f) => f.startsWith(`${id}-`))!)
-    const head = fs.readFileSync(file, 'utf8').split('\n---\n')[0]
-    const write = (body: string) => fs.writeFileSync(file, `${head}\n---\n\nA post.\n\n${body}\n`)
-
-    write('## Todo\n- [x] Pages: `node render.mjs`')
-    await assert.rejects(move(root, ['archive', String(id)]), /no finished deliverable/)
-
-    write(`<Storyboard src=".assets/${id}/pages-3x4.json" label="3:4" />\n\n## Todo\n- [x] Pages: \`node render.mjs\``)
-    await assert.rejects(move(root, ['archive', String(id)]), /pages-3x4\.json is not on this machine/)
-
-    fs.mkdirSync(path.join(ASSETS, String(id)), { recursive: true })
-    fs.writeFileSync(path.join(ASSETS, String(id), 'pages-3x4.json'), '{}')
-    await move(root, ['archive', String(id)])
-  })
-})
-
-describe('archiving a blog post', () => {
-  let root = ''
-  const kanban = () => path.join(root, 'docs', 'kanban')
-
-  beforeEach(() => {
-    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'akb-blog-')))
-    fs.mkdirSync(path.join(root, '.git'), { recursive: true })
-    fs.mkdirSync(path.join(kanban(), 'todo'), { recursive: true })
-    fs.writeFileSync(path.join(kanban(), 'next-id'), '1\n')
-    fs.writeFileSync(path.join(kanban(), 'todo', 'README.md'), '# Tasks\n\n## Tasks\n')
-    fs.writeFileSync(path.join(kanban(), 'config.md'), '# Configuration\n\n- **Project** — a project.\n')
-    setBoardRoot(root)
-  })
-  afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
-
-  it('is refused with only its images, and archived once the article is on the card', async () => {
-    const id = (await move(root, ['create', '--title', 'Launch post', '--studio', 'blog-post'])).id as number
-    const file = path.join(kanban(), 'todo', fs.readdirSync(path.join(kanban(), 'todo')).find((f) => f.startsWith(`${id}-`))!)
-    const head = fs.readFileSync(file, 'utf8').split('\n---\n')[0]
-    const write = (body: string) => fs.writeFileSync(file, `${head}\n---\n\nA post.\n\n${body}\n`)
-    const images = `<Asset src=".assets/${id}/cover.png" label="Cover" />`
-    const article = `<Asset src=".assets/${id}/launch.md" label="Launch" />`
-
-    write(`${images}\n\n## Todo\n- [x] Delivered \`.assets/${id}/launch.md\``)
-    await assert.rejects(move(root, ['archive', String(id)]), /no finished deliverable/)
-
-    write(`${article}\n\n${images}\n\n## Todo\n- [x] Delivered \`.assets/${id}/launch.md\`\n- [ ] The user reviewed the article`)
-    await assert.rejects(move(root, ['archive', String(id)]), /not every todo is ticked/)
-
-    fs.mkdirSync(path.join(ASSETS, String(id)), { recursive: true })
-    fs.writeFileSync(path.join(ASSETS, String(id), 'launch.md'), '# Launch\n')
-    write(`${article}\n\n${images}\n\n## Todo\n- [x] Delivered \`.assets/${id}/launch.md\`\n- [x] The user reviewed the article`)
-    await move(root, ['archive', String(id)])
-  })
-})
-
-describe('archiving a video clone', () => {
-  let root = ''
-  const kanban = () => path.join(root, 'docs', 'kanban')
-
-  beforeEach(() => {
-    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'akb-clone-')))
-    fs.mkdirSync(path.join(root, '.git'), { recursive: true })
-    fs.mkdirSync(path.join(kanban(), 'todo'), { recursive: true })
-    fs.writeFileSync(path.join(kanban(), 'next-id'), '1\n')
-    fs.writeFileSync(path.join(kanban(), 'todo', 'README.md'), '# Tasks\n\n## Tasks\n')
-    fs.writeFileSync(path.join(kanban(), 'config.md'), '# Configuration\n\n- **Project** — a project.\n')
-    setBoardRoot(root)
-  })
-  afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
-
-  it('is refused with only the recipe keyframes, and archived once the template render is on the card', async () => {
-    const id = (await move(root, ['create', '--title', 'Clone the launch film', '--studio', 'video-clone'])).id as number
-    const file = path.join(kanban(), 'todo', fs.readdirSync(path.join(kanban(), 'todo')).find((f) => f.startsWith(`${id}-`))!)
-    const head = fs.readFileSync(file, 'utf8').split('\n---\n')[0]
-    const write = (body: string) => fs.writeFileSync(file, `${head}\n---\n\nA clone.\n\n${body}\n`)
-    const keyframe = `<Asset src=".assets/${id}/shot-1.png" label="Shot 1" />`
-    const todo = '## Todo\n- [x] Template rendered: `npx hyperframes render`'
-
-    write(`${keyframe}\n\n${todo}`)
-    await assert.rejects(move(root, ['archive', String(id)]), /no finished deliverable/)
-
-    fs.mkdirSync(path.join(ASSETS, String(id)), { recursive: true })
-    fs.writeFileSync(path.join(ASSETS, String(id), 'template.mp4'), '')
-    write(`<Asset src=".assets/${id}/template.mp4" label="Template" />\n\n${keyframe}\n\n${todo}`)
-    await move(root, ['archive', String(id)])
+describe('explicit archival after agent checks (#735)', () => {
+  it('does not gate archival on Todos, output records or missing files', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-agent-archive-'))
+    try {
+      fs.mkdirSync(path.join(root, 'docs/kanban/todo'), { recursive: true })
+      setBoardRoot(root)
+      for (const [index, studio] of ['carousel-post', 'blog-post', 'video-clone'].entries()) {
+        const id = index + 1
+        await move(root, ['create', '--id', String(id), '--title', 'Explicit completion', '--studio', studio])
+        await move(root, ['archive', String(id)])
+        assert.equal(fs.existsSync(path.join(root, `docs/kanban/.archive/${id}-explicit-completion.md`)), true)
+      }
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 })

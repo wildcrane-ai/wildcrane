@@ -147,9 +147,9 @@ describe('the akb the Runner carries (#171)', () => {
     const builder = { id: 'rt_builder', name: 'Builder', harness: 'claude-code', settings: { model: 'opus' } }
     ok(await onBoard(['raw', 'agent', 'picks', JSON.stringify({ builder })]))
     const ran = await onBoard(['raw', 'card', 'implement', '2', ...follow])
-    assert.notEqual(ran.code, 0, 'an unregistered result must remain unfinished')
-    const answer = answerOf<{ error?: { delivery?: { id?: string } } }>(ran)
-    const id = answer?.error?.delivery?.id
+    ok(ran)
+    const answer = answerOf<{ delivery?: { id?: string } }>(ran)
+    const id = answer?.delivery?.id
     assert.equal(typeof id, 'string')
     const held = JSON.parse(fs.readFileSync(path.join(board, 'deliveries', `${id}.json`), 'utf8')) as { deliveryId?: string; cardId?: number; status?: string; steps?: { step?: string }[] }
     assert.equal(held.deliveryId, id)

@@ -131,32 +131,6 @@ describe('a card archived by its own landing mid-run', () => {
     assert.equal(peekRun(id)?.status, 'done')
     const log = logOf(id)
     assert.doesNotMatch(log, /missing-card/)
-    assert.match(log, /\[board\] Task #1 left the board with its landing/)
-  })
-
-  it('is not reported again by a format repair that already listed it', async () => {
-    const id = fakeRun(archives())
-    patch(id, (r) => {
-      r.formatRepair = { attempt: 1, errors: 'Task #1 disappeared.', cardIds: [1], changedIds: [], existingIds: [] }
-    })
-    await watchRun(id, async () => ({ error: 'no resume' }))
-    assert.equal(peekRun(id)?.status, 'done')
-    assert.doesNotMatch(logOf(id), /missing-card/)
-    assert.equal(peekRun(id)?.formatRepair, undefined)
-  })
-
-  it('is dropped from the repair list while another card still fails', async () => {
-    const other = path.join(path.dirname(file), '2-other.md')
-    fs.writeFileSync(other, card.replace('title: A feature', 'title: Another feature'))
-    const id = fakeRun(`${archives()}\n    fs.rmSync(${JSON.stringify(other)});`)
-    patch(id, (r) => {
-      r.formatRepair = { attempt: 1, errors: 'Task #1 disappeared.', cardIds: [1, 2], changedIds: [], existingIds: [] }
-    })
-    await watchRun(id, async () => ({ error: 'no resume' }))
-    assert.equal(peekRun(id)?.status, 'error')
-    assert.doesNotMatch(logOf(id), /Task #1 disappeared/)
-    assert.match(logOf(id), /\[board\] Task #1 left the board with its landing/)
-    assert.deepEqual(peekRun(id)?.formatRepair?.cardIds, [2])
   })
 
   it('is recognised off a landed delivery when the board keeps no archive', async () => {
@@ -175,7 +149,6 @@ describe('a planning run that rejects its own card', () => {
     const log = logOf(id)
     assert.doesNotMatch(log, /missing-card/)
     assert.doesNotMatch(log, /left the board with its landing/)
-    assert.match(log, /\[board\] Task #1 was rejected/)
   }
 
   for (const action of ['clarify', 'resolve'] as const) {
@@ -292,11 +265,11 @@ describe('a discard answer to a build held on a question (#241)', () => {
 })
 
 describe('a card a run simply deleted', () => {
-  it('still fails the run and asks for the card back', async () => {
+  it('leaves missing-card diagnosis to the agent', async () => {
     const id = fakeRun(deletes())
     await watchRun(id, async () => ({ error: 'no resume' }))
-    assert.equal(peekRun(id)?.status, 'error')
-    assert.match(peekRun(id)?.error ?? '', /- Task #1 disappeared/)
+    assert.equal(peekRun(id)?.status, 'done')
+    assert.equal(peekRun(id)?.error, undefined)
     assert.equal(leftBoardRejected(1), false)
   })
 })

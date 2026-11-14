@@ -43,7 +43,9 @@ describe('preview confirmation boundaries (#704)', () => {
     const second = previewBaseline(p, 'images', 'second')
     assert.throws(() => submitPreviewStage(p, first, 'racing', {}))
     submitPreviewStage(p, second, 'new images', {})
-    assert.throws(() => selectPreviewStages(p, ['layout']))
+    const oldHistory = structuredClone(p.stages)
+    selectPreviewStages(p, ['layout'])
+    assert.deepEqual(p.archivedSelections?.at(-1), oldHistory)
     assert.throws(() => confirmPreviewStage(p, 'images', 0, 'frozen', 'stale'))
   })
   it('handles conditional omission and single-stage delivery, rejecting empty, unknown, unordered and incomplete selections', () => {
@@ -56,9 +58,10 @@ describe('preview confirmation boundaries (#704)', () => {
         assert.throws(() => confirmPreviewStage(p, ids[0], 1, 'frozen', 'not-needed'))
       }
     }
-    for (const ids of [[], ['unknown'], ['copy', 'copy'], ['layout', 'copy']]) assert.throws(() => selectPreviewStages(fresh(), ids))
+    for (const ids of [[], ['unknown'], ['copy', 'copy']]) assert.throws(() => selectPreviewStages(fresh(), ids))
     const p = fresh(); delete p.definitions[0].when
-    assert.throws(() => selectPreviewStages(p, ['layout']))
+    selectPreviewStages(p, ['layout'])
+    assert.deepEqual(p.stages.map((stage) => stage.id), ['layout'])
   })
   it('routes a requested revision without losing a confirmed prefix and retains history on explicit scope changes', () => {
     const p = fresh(); selectPreviewStages(p, ['copy', 'images', 'layout'])
@@ -72,6 +75,7 @@ describe('preview confirmation boundaries (#704)', () => {
     assert.throws(() => choosePreviewRevision(p, 'images', 'old-run'))
     choosePreviewRevision(p, 'images', 'requested-revision')
     assert.equal(p.stages[0].status, 'confirmed')
+    assert.equal(p.archivedSelections?.at(-1)?.[1]?.confirmation?.action, 'c')
     assert.equal(p.displayedArtifact?.body, 'original words')
     assert.equal(p.stages[2].status, 'stale')
     assert.throws(() => confirmPreviewStage(p, 'images', 1, 'frozen', 'old-confirmation'))
@@ -79,7 +83,7 @@ describe('preview confirmation boundaries (#704)', () => {
     assert.equal(p.stages[1].version, 2)
     assert.equal(p.stages[1].history?.[0].body, 'original image')
     resetPreviewSelection(p)
-    assert.equal(p.archivedSelections?.[0][1].artifact?.body, 'revised image')
+    assert.equal(p.archivedSelections?.at(-1)?.[1].artifact?.body, 'revised image')
     selectPreviewStages(p, ['layout'])
     assert.deepEqual(p.stages.map((stage) => stage.id), ['layout'])
   })

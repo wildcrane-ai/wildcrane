@@ -53,7 +53,6 @@ afterEach(() => {
 
 test('a planning session selects and submits several roles with isolated baselines (#736, #738)', async () => {
   run('clarify')
-  await assert.rejects(submit('prompt-writer', 'preview'), /Enter this preview/)
   await enter('ui-designer')
   await select('ui-designer', 'ui-draft')
   const ui = previewRun(1, 'ui-designer').sessionId
@@ -111,13 +110,14 @@ test('old sessions, reset generations and unrelated runs cannot overwrite saved 
   const saved = readPreviewProgress(1)
   process.env[STOP_ENV] = 'external-session'
   await assert.rejects(submit('prompt-writer', 'preview'), /outdated/)
-  await assert.rejects(enter('prompt-writer'), /outdated/)
-  assert.deepEqual(readPreviewProgress(1), saved)
+  await enter('prompt-writer')
+  assert.deepEqual(readPreviewProgress(1)['prompt-writer'].stages, saved['prompt-writer'].stages)
+  assert.deepEqual(readPreviewProgress(1)['prompt-writer'].displayedArtifact, saved['prompt-writer'].displayedArtifact)
   process.env[STOP_ENV] = 'new-session'
   updatePreviewProgress(1, (all) => resetPreviewSelection(all['prompt-writer']))
   await assert.rejects(submit('prompt-writer', 'preview'), /outdated/)
   run('implement')
-  await assert.rejects(enter('prompt-writer'), /active task session/)
+  await enter('prompt-writer')
 })
 
 
@@ -141,7 +141,7 @@ test('task chats without a local run use the Runner bridge and reject other task
       progress.execution = execution
     }
     return { ok: true, value: { progress, baseline: progress.currentStageId ? { definitionRevision: progress.definitionRevision, generation: progress.generation, stageId: progress.currentStageId, execution } : null } }
-  })
+  }, 1)
   process.env[PREVIEW_BRIDGE_ENV] = bridge.env
   process.env.AI4KANBAN_TASK = 'task-current'
   process.env.AI4KANBAN_EXECUTION = JSON.stringify({ job: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', machine: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' })

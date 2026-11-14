@@ -1,5 +1,5 @@
 import { answerOutcome } from './answers'
-import { approvedRequirements, openQuestions, syncAudit } from './deliveries'
+import { approvedRequirements, syncAudit } from './deliveries'
 import { readStore, withStore } from './store'
 import type { AgentRequest, DeliveryRecord } from './types'
 
@@ -16,7 +16,7 @@ export function nextDeliveryRun(deliveryId?: string): AgentRequest | undefined {
   for (const delivery of store.deliveries) {
     if (deliveryId && delivery.deliveryId !== deliveryId) continue
     if (delivery.status !== 'active' || delivery.cardId === null) continue
-    if (openQuestions(delivery.cardId) || store.runs.some((r) => r.deliveryId === delivery.deliveryId && r.status === 'running')) continue
+    if (store.runs.some((r) => r.deliveryId === delivery.deliveryId && r.status === 'running')) continue
     if (answerOutcome(delivery) === 'changed') {
       const superseded = withStore((live) => {
         const row = live.deliveries.find((d) => d.deliveryId === delivery.deliveryId)

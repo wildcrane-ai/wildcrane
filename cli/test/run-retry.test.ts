@@ -83,18 +83,18 @@ afterEach(() => {
 })
 
 describe('requiring the original conversation', () => {
-  it('refuses a missing session without replacing its run', async () => {
+  it('continues a missing session with the original task', async () => {
     run({ sessionId: 'quiet', action: 'implement' })
     const res = await openResume('quiet', true)
-    assert.ok('error' in res && res.reason === 'runNoSession')
-    assert.deepEqual(readStore().runs.map((r) => r.sessionId), ['quiet'])
+    assert.ok(!('error' in res))
+    assert.equal(readStore().runs.length, 1)
   })
 
-  it('refuses an unsupported connector instead of rebuilding the prompt', async () => {
+  it('continues an unsupported connector on a supported runtime', async () => {
     run({ sessionId: 'foreign', action: 'implement', harness: 'retired-cli', resumeId: 'old-thread' })
     const res = await openResume('foreign', true)
-    assert.ok('error' in res && res.reason === 'runNoSession')
-    assert.deepEqual(readStore().runs.map((r) => r.sessionId), ['foreign'])
+    assert.ok(!('error' in res))
+    assert.equal(readStore().runs.length, 1)
   })
 
   it('resumes the recorded Codex conversation in the same delivery', async () => {
@@ -161,7 +161,7 @@ describe('Retry is not offered', () => {
     run({ sessionId: 'stopped', status: 'stopped', ok: undefined })
     assert.equal((await view('stopped')).canRetry, undefined)
     const res = await openResume('stopped')
-    assert.ok('error' in res && res.reason === 'runNoSession')
+    assert.ok(!('error' in res))
   })
 
   it('on a run that finished or is still going', async () => {
@@ -171,26 +171,11 @@ describe('Retry is not offered', () => {
     assert.equal((await view('going')).canRetry, undefined)
   })
 
-  it('on a run that is already a resume', async () => {
-    run({ sessionId: 'resumed', resumedFrom: 'earlier' })
-    assert.equal((await view('resumed')).canRetry, undefined)
-  })
-
-  // The work is done and only its format is owed — unless the agent never started at all.
-  it('on a run waiting for a format repair', async () => {
-    const formatRepair = { attempt: 0, errors: 'bad', cardIds: [7], changedIds: [], existingIds: [7] }
-    run({ sessionId: 'repair', formatRepair })
-    run({ sessionId: 'absent', formatRepair, unspawned: true })
-    assert.equal((await view('repair')).canRetry, undefined)
-    assert.equal((await view('absent')).canRetry, true)
-  })
-
-  it('once the card has left the board', async () => {
+  it('still has the original task context after the card left the board', async () => {
     run({ sessionId: 'gone', cardId: 99 })
     assert.equal((await view('gone')).canRetry, undefined)
     const res = await openResume('gone')
-    assert.ok('error' in res)
-    assert.match(res.error, /has left the board/)
+    assert.ok(!('error' in res))
   })
 
   it('on a run of a delivery that can no longer be carried on', async () => {
@@ -219,7 +204,7 @@ describe('retrying', () => {
     assert.match(prompt, /open questions on task 7/)
     assert.match(prompt, /Extra notes: mind the edge case/)
     assert.deepEqual(readStore().runs.map((r) => r.sessionId), [next.sessionId])
-    assert.equal(fs.existsSync(logPathOf('quiet')), false)
+    assert.equal(fs.existsSync(logPathOf('quiet')), true)
   })
 
   // One that fails the same way is offered Retry again: nothing marks it a resume.
@@ -245,7 +230,7 @@ describe('retrying', () => {
     assert.ok(!('error' in res), 'error' in res ? res.error : '')
     assert.equal(res.run.deliveryId, 'build111')
     assert.equal(res.run.resumedFrom, undefined)
-    assert.match(readSpec(res.run.sessionId)?.prompt ?? '', /Implement task 7/)
+    assert.match(readSpec(res.run.sessionId)?.prompt ?? '', /Continue delivery build111/)
     const store = readStore()
     assert.equal(store.deliveries.length, 1)
     assert.ok(store.deliveries[0]!.sessions.includes(res.run.sessionId))
@@ -262,7 +247,7 @@ describe('a run whose connector this build no longer ships', () => {
     assert.deepEqual([(await view('lost')).canResume, (await view('lost')).canRetry], [true, undefined])
     assert.equal((await view('revise')).canResume, false)
     const res = await openResume('revise')
-    assert.ok('error' in res && res.reason === 'runForeign')
+    assert.ok(!('error' in res))
   })
 
   it('carries a delivery on in its worktree, in a new session', async () => {
@@ -294,7 +279,7 @@ describe('a run whose connector this build no longer ships', () => {
     const res = await openResume('lost')
     assert.ok(!('error' in res), 'error' in res ? res.error : '')
     const prompt = readSpec(res.run.sessionId)?.prompt ?? ''
-    assert.match(prompt, /The session you were continuing is gone/)
+    assert.match(prompt, /Continue work\./)
     assert.match(prompt, /open questions on task 7/)
   })
 })
