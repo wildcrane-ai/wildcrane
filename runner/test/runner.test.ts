@@ -2017,6 +2017,43 @@ describe('a task’s folder (#2037)', () => {
     }
   })
 
+  it('uploads mockup resources but no local checker cache or temporary sources (#719)', async () => {
+    await prepareBoard()
+    const assets = path.join(projectStateDir(board()), 'assets/1')
+    const local = path.join(runnerHome(), '.cache/wildcrane/mockup-check')
+    fs.mkdirSync(assets, { recursive: true })
+    fs.writeFileSync(path.join(assets, 'page.html'), '<img alt="Preview" src="picture.png">')
+    fs.writeFileSync(path.join(assets, 'picture.png'), 'preview image')
+    const cacheFiles = ['env/node_modules/pkg/index.js', 'env/browsers/shell', 'work/source.tsx']
+    for (const name of cacheFiles) {
+      fs.mkdirSync(path.dirname(path.join(local, name)), { recursive: true })
+      fs.writeFileSync(path.join(local, name), 'LOCAL_CHECKER_CACHE')
+    }
+    fs.writeFileSync(path.join(board(), CARD), '# Mockup\n\n<Asset src=".assets/1/page.html" />\n')
+    assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
+    const refs = JSON.parse(cloud.file('assets/task_1.json')!)
+    assert.deepEqual(Object.keys(refs).sort(), ['.assets/1/page.html', '.assets/1/picture.png'])
+    const uploaded = Object.values(refs as api.Assets).flatMap(ref => cloud.task.artifacts.get(ref.artifact) ?? [])
+    assert.equal(uploaded.length, 2)
+    assert.match(uploaded.find(bytes => bytes.toString().includes('<img'))!.toString(), new RegExp(refs['.assets/1/picture.png'].artifact))
+    assert.ok(uploaded.some(bytes => bytes.toString() === 'preview image'))
+    assert.ok(uploaded.every(bytes => !bytes.toString().includes('LOCAL_CHECKER_CACHE')))
+    const puts = () => cloud.log.filter(line => line.startsWith('PUT /v1/uploads/')).length
+    const storedBytes = () => [...cloud.task.artifacts.values()].flat().reduce((sum, file) => sum + file.byteLength, 0)
+    const count = puts(), bytes = storedBytes()
+    for (let revision = 0; revision < 2; revision++) {
+      fs.writeFileSync(path.join(local, 'work/source.tsx'), `revision ${revision}`)
+      assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
+      assert.equal(puts(), count)
+      assert.equal(storedBytes(), bytes)
+    }
+    fs.symlinkSync(path.join(local, 'env/browsers/shell'), path.join(assets, 'cache.bin'))
+    fs.appendFileSync(path.join(board(), CARD), '\n<Asset src=".assets/1/cache.bin" />\n')
+    assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
+    assert.match(JSON.parse(cloud.file('assets/task_1.json')!)['.assets/1/cache.bin'].error, /outside the board/)
+    assert.equal(puts(), count)
+  })
+
   it('reuses a newly created artifact when an upload fails and is retried', async () => {
     await prepareBoard()
     const file = path.join(board(), 'todo/data.bin')

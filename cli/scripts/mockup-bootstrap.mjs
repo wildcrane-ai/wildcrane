@@ -5,9 +5,63 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 
 const PAYLOAD = '__MOCKUP_PAYLOAD__'
+
+function inventory(dir, prefix = '') {
+  return fs.readdirSync(path.join(dir, prefix), { withFileTypes: true }).flatMap(entry => {
+    const name = path.join(prefix, entry.name)
+    if (entry.isDirectory()) return inventory(dir, name)
+    const stat = fs.statSync(path.join(dir, name))
+    return [[name, stat.size, stat.mtimeMs, stat.mode]]
+  })
+}
+
+function cached(bucket) {
+  try {
+    const name = fs.readFileSync(path.join(bucket, 'current'), 'utf8')
+    if (!/^env-[\w-]+$/.test(name)) return
+    const dir = path.join(bucket, name)
+    const files = JSON.parse(fs.readFileSync(path.join(dir, 'ready.json'), 'utf8'))
+    if (!files.length || !files.every(([file, size, mtime, mode]) => {
+      const stat = fs.statSync(path.join(dir, file))
+      return stat.isFile() && stat.size === size && stat.mtimeMs === mtime && stat.mode === mode
+    })) return
+    return dir
+  } catch { /* Incomplete or damaged environments are rebuilt under the preparation lock. */ }
+}
+
+async function lock(dir, interrupted) {
+  const token = `${process.pid}-${randomUUID()}`
+  const candidate = fs.mkdtempSync(`${dir}.`)
+  fs.writeFileSync(path.join(candidate, token), '')
+  const remove = name => {
+    try { if (name) fs.unlinkSync(path.join(dir, name)) } catch (error) { if (error.code !== 'ENOENT') throw error }
+    try { fs.rmdirSync(dir) } catch (error) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error }
+  }
+  const until = Date.now() + 900000
+  try {
+    while (!interrupted()) {
+      try {
+        fs.renameSync(candidate, dir)
+        return () => remove(token)
+      } catch (error) { if (!['ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error }
+      let names
+      try { names = fs.readdirSync(dir) } catch (error) { if (error.code === 'ENOENT') continue; throw error }
+      if (names.length === 1 && /^\d+-[a-f0-9-]{36}$/.test(names[0])) {
+        let alive = true
+        try { process.kill(Number(names[0].split('-')[0]), 0) } catch (error) { alive = error.code !== 'ESRCH' }
+        if (!alive) { remove(names[0]); continue }
+      }
+      if (Date.now() > until) throw new Error('Timed out waiting for mockup environment preparation')
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    throw new Error('Check interrupted')
+  } finally { fs.rmSync(candidate, { recursive: true, force: true }) }
+}
+
 const entries = process.argv.slice(2).map(file => path.resolve(file))
 if (!entries.length) {
   console.error('Usage: node check-mockup.mjs <entry.html|entry.tsx> [<entry> ...]')
@@ -20,9 +74,9 @@ if (!entries.length) {
   const stop = () => { interrupted = true; controller.abort(); child?.kill('SIGTERM') }
   process.once('SIGINT', stop)
   process.once('SIGTERM', stop)
-  const run = (command, args, env, timeout = 240000) => new Promise((resolve, reject) => {
+  const run = (command, args, cwd, env, timeout = 240000) => new Promise((resolve, reject) => {
     if (interrupted) return reject(new Error('Check interrupted'))
-    child = spawn(command, args, { cwd: work, env, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' })
+    child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' })
     let stderr = ''
     const record = data => { stderr = (stderr + data).slice(-8000) }
     child.stdout.on('data', record)
@@ -38,16 +92,44 @@ if (!entries.length) {
   })
   try {
     if (Number(process.versions.node.split('.')[0]) < 20) throw new Error('Node 20 or newer is required')
-    work = fs.mkdtempSync(path.join(os.tmpdir(), 'wildcrane-mockup-'))
+    // Neither the reusable environment nor per-check sources belong to a task's upload tree.
+    const root = path.join(os.homedir(), '.cache', 'wildcrane', 'mockup-check')
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 })
+    work = fs.mkdtempSync(path.join(root, 'work-'))
     const payload = JSON.parse(Buffer.from(PAYLOAD, 'base64').toString())
-    for (const [name, content] of Object.entries(payload)) fs.writeFileSync(path.join(work, name), content)
-    const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: path.join(work, 'browsers'), PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1', TMPDIR: work, TMP: work, TEMP: work }
-    console.error(`Preparing isolated mockup checker for ${entries.join(', ')} …`)
-    await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], env)
-    console.error('Preparing offline Chromium …')
-    await run(process.execPath, [path.join(work, 'node_modules/playwright/cli.js'), 'install', 'chromium', '--only-shell'], env, 600000)
-    process.env.PLAYWRIGHT_BROWSERS_PATH = env.PLAYWRIGHT_BROWSERS_PATH
-    const { checkMockups } = await import(pathToFileURL(path.join(work, 'runtime.mjs')).href)
+    const key = createHash('sha256').update([PAYLOAD, process.platform, process.arch, process.versions.modules].join('\0')).digest('hex')
+    const bucket = path.join(root, key)
+    fs.mkdirSync(bucket, { recursive: true })
+    let environment = cached(bucket)
+    if (!environment) {
+      const release = await lock(`${bucket}.lock`, () => interrupted)
+      let preparing
+      try {
+        environment = cached(bucket)
+        if (!environment) {
+          preparing = fs.mkdtempSync(path.join(bucket, 'env-'))
+          for (const [name, content] of Object.entries(payload)) fs.writeFileSync(path.join(preparing, name), content)
+          const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: path.join(preparing, 'browsers'), PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1', TMPDIR: work, TMP: work, TEMP: work }
+          console.error('Preparing mockup checker dependencies …')
+          await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'], preparing, env)
+          console.error('Preparing offline Chromium …')
+          await run(process.execPath, [path.join(preparing, 'node_modules/playwright/cli.js'), 'install', 'chromium', '--only-shell'], preparing, env, 600000)
+          fs.writeFileSync(path.join(preparing, 'ready.json'), JSON.stringify(inventory(preparing)))
+          const pointer = path.join(bucket, `current-${process.pid}`)
+          fs.writeFileSync(pointer, path.basename(preparing))
+          fs.renameSync(pointer, path.join(bucket, 'current'))
+          environment = preparing
+          preparing = undefined
+        }
+      } finally {
+        if (preparing) fs.rmSync(preparing, { recursive: true, force: true })
+        release()
+      }
+    }
+    process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(environment, 'browsers')
+    process.env.TMPDIR = process.env.TMP = process.env.TEMP = work
+    fs.symlinkSync(path.join(environment, 'node_modules'), path.join(work, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir')
+    const { checkMockups } = await import(pathToFileURL(path.join(environment, 'runtime.mjs')).href)
     if (!await checkMockups(entries, work, controller.signal) || interrupted) process.exitCode = 1
   } catch (error) {
     console.error(`FAIL ${entries.join(', ')}\n${error instanceof Error ? error.message : String(error)}`)
