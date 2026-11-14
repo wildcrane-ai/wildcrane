@@ -508,7 +508,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
         .join(' ')
     case 'clarify': {
       return [
-        `Plan task ${req.id} ${named} in this one session following \`akb guide refine\`. Work the board only through \`akb\`; a command with \`--print\` prints its flow for you to follow here, and without it starts a separate agent.`,
+        `Plan task ${req.id} ${named} following \`akb guide refine\`. Work the board only through \`akb\`; a command with \`--print\` prints its flow for you to follow here, and without it starts a separate session.`,
         carriedNote(req),
         // A refine has no note box of its own, but one SCHEDULED on a blocked card
         // carries whatever was typed when it was scheduled — often the very reason the user

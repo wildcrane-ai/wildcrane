@@ -339,7 +339,7 @@ describe('an agent nobody can read', () => {
       assert.deepEqual([got.agent.when, got.agent.after, got.agent.session], ['w', ['ui-designer'], 'new'])
       const bad = read('session: resume')
       assert.ok('problem' in bad)
-      assert.match(bad.problem, /`akb.session: resume` — it is `new`/)
+      assert.match(bad.problem, /`akb.session: resume` — use `new` to recommend a separate session/)
     })
   })
 
@@ -804,7 +804,8 @@ describe('preview command queries (#397)', () => {
     assert.equal(old.data.error.kind, 'unknownCommand')
     const uiFile = path.join(editableOfficial(), 'agents/ui-designer/AGENT.md')
     fs.writeFileSync(uiFile, fs.readFileSync(uiFile, 'utf8').replace(/  stages:\n[\s\S]*?(?=  memoryFiles:)/, ''))
-    card(12)
+    const previewCard = card(12)
+    fs.writeFileSync(previewCard, fs.readFileSync(previewCard, 'utf8').replace('questions: []', 'previews: [tech-stack-advisor]\nquestions: []'))
     const printed = await query(['raw', 'previews', 'tech-stack-advisor', '12', '--print'])
     assert.equal(printed.code, 0)
     assert.match(printed.data.output, /You are the `tech-stack-advisor` preview agent on task 12/)

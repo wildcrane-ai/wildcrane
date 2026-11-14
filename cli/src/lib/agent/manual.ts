@@ -12,30 +12,14 @@ export const HELP_AFTER = {
   /** Under every flow: print it, or run it. The one choice each of them has. */
   flow: `
 Print it, or run it
-  --print     say what to do and start nothing. What it prints is filled in for this board:
+  --print     print the flow to follow in the current session, filled in for this board:
               the card's own path, the steps it has left, the memory file its modules point
               at, the flows the job is done by in full, and the
               command that closes the job — because nothing is watching you finish.
-  (no flag)   start a run: a second agent, its own context, working on its own.
+  (no flag)   start a separate session with its own context.
 
-  Print when the user is asking you for the action here, in a session. You do the job in the
-  conversation you are already in: it costs no second agent and can't collide with the
-  changes already in the working tree.
-
-  Start a run when the user wants the work to happen on its own — in the background, while
-  they do something else, on a card they are not watching. That is the explicit ask. It also
-  wins on long read-heavy jobs that need nothing from the conversation.
-
-  Some jobs are better done by the agent that was there. It just built the card, so it knows
-  which steps it really did; a fresh agent sees unticked boxes and works the rest out from
-  the diff.
-
-  When it is not clear which was meant, print. A printed flow costs nothing and can still be
-  followed by starting a run; a started run costs a second agent, a second context, and money
-  nobody asked to spend.
-
-  One caller does not choose: an agent already working inside a run the board started always
-  prints, because a run never starts another.
+  Choose either mode for preview work. Other board actions inside a board run print their
+  flows; preview requests can queue a separate session.
 `,
 
   /** Under `delivery`: what one is, which no verb of it says on its own. */

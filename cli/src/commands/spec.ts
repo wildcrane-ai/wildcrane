@@ -2,7 +2,7 @@ import { boardCommandFor } from '../lib/agent/command'
 import { resetPreviewScope } from './preview-confirm'
 import { choosePreviewRevision, previewBaseline } from '../lib/preview-stages'
 import { PREVIEW_BRIDGE_ENV, previewBridge } from '../lib/cloud/preview'
-import { previewRun, selectLocalPreview, submitLocalPreview, previewStagePrompt, updatePreviewProgress, savePreviewBaseline, readPreviewBaseline } from '../lib/agent/preview-progress'
+import { assertPreviewTask, activatePreviewRun, previewRun, selectLocalPreview, submitLocalPreview, previewStagePrompt, updatePreviewProgress, savePreviewBaseline, readPreviewBaseline } from '../lib/agent/preview-progress'
 // Print specialist instructions here, or request a separate run.
 
 import { insideRun, printFlow } from '../lib/agent/flow'
@@ -89,22 +89,23 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
 
   if (opts.stages !== undefined || opts.submit || opts.reviseFrom) {
     try {
+      await assertPreviewTask(id)
       const run = previewRun(id, name)
       const ids = opts.stages?.split(',').map((id) => id.trim())
-      const result = await previewBridge(name, ids ? 'select' : opts.reviseFrom ? 'revise' : 'submit', { run: run.sessionId, ...(ids ? { stages: ids } : opts.reviseFrom ? { stageId: opts.reviseFrom } : { baseline: readPreviewBaseline(run.sessionId), stageId: opts.stage }) })
+      const result = await previewBridge(name, ids ? 'select' : opts.reviseFrom ? 'revise' : 'submit', { run: run.sessionId, ...(ids ? { stages: ids } : opts.reviseFrom ? { stageId: opts.reviseFrom } : { baseline: readPreviewBaseline(id, name, run.sessionId), stageId: opts.stage }) })
       if (result?.progress) {
         updatePreviewProgress(id, (all) => { all[name] = result.progress! })
-        if (result.baseline) savePreviewBaseline(run.sessionId, result.baseline)
+        if (result.baseline) savePreviewBaseline(id, name, run.sessionId, result.baseline)
       } else if (opts.reviseFrom) {
         updatePreviewProgress(id, (all) => {
           const progress = all[name]!
           choosePreviewRevision(progress, opts.reviseFrom!, run.sessionId)
-          savePreviewBaseline(run.sessionId, previewBaseline(progress, opts.reviseFrom!, run.sessionId))
+          savePreviewBaseline(id, name, run.sessionId, previewBaseline(progress, opts.reviseFrom!, run.sessionId))
         })
       } else if (ids) {
         const selected = selectLocalPreview(id, name, ids)
-        savePreviewBaseline(run.sessionId, selected.baseline)
-      } else submitLocalPreview(id, name, opts.stage!, readPreviewBaseline(run.sessionId))
+        savePreviewBaseline(id, name, run.sessionId, selected.baseline)
+      } else submitLocalPreview(id, name, opts.stage!, readPreviewBaseline(id, name, run.sessionId))
       if (ids || opts.reviseFrom) say(previewStagePrompt(id, name, boardCommandFor(id)))
       else say('Preview stage submitted. Stop here; the program controls confirmation and continuation.')
       return { specAgent: name, cardId: id, submitted: !!opts.submit }
@@ -133,7 +134,10 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
     )
   }
 
-  if (opts.print === true) return printFlow(req, program)
+  if (opts.print === true) {
+    try { await activatePreviewRun(id, name, undefined, notes) } catch (error) { die(error instanceof Error ? error.message : 'Could not prepare the preview.', { kind: 'preview-refused' }) }
+    return printFlow(req, program)
+  }
 
   const live = readRuns().find(
     (r) => r.status === 'running' && r.action === 'spec' && r.cardId === id && r.specAgent === name,

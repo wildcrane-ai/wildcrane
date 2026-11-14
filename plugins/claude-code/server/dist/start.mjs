@@ -27363,7 +27363,7 @@ function parseSpecAgent(text2, from, file2, builtIn = false, list = () => []) {
   const after = names(akb.after);
   const declaredSession = str(akb.session);
   if (declaredSession && declaredSession !== "new") {
-    return bad(`\`${name}\` declares \`akb.session: ${declaredSession}\` \u2014 it is \`new\`, or left out to run in the planning session`);
+    return bad(`\`${name}\` declares \`akb.session: ${declaredSession}\` \u2014 use \`new\` to recommend a separate session, or omit the preference`);
   }
   let stages;
   if (akb.stages !== void 0) {

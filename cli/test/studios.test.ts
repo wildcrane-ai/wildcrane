@@ -237,8 +237,8 @@ describe('the approvals a card goes through (#2154)', () => {
     assert.match(stage1, /`scriptwriter`/)
     assert.doesNotMatch(stage1, /demo-rehearser|hyperframes-editor|After:/)
     assert.match(specAgentSelector(id, 'hyperframes-video', { ...chosen, phase: 2 }), /`hyperframes-editor`/)
-    // A preview that asks for a session of its own is run apart.
-    assert.match(specAgentSelector(id, 'video-clone', { previews: ['video-cloner'], phase: 0 }), /`video-cloner`[\s\S]*runs in a session of its own: leave out `--print`/)
+    // The session declaration recommends a separate session.
+    assert.match(specAgentSelector(id, 'video-clone', { previews: ['video-cloner'], phase: 0 }), /`video-cloner`[\s\S]*separate session recommended/)
   })
 })
 

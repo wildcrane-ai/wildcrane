@@ -32,8 +32,8 @@ export interface SpecAgent {
   /** The new input it runs on as a scheduled agent (#1475) — `akb.reads`. Absent: it runs on
    *  its cadence alone. */
   reads?: ScheduleReads
-  /** It runs as a preview in a session of its own (#1824, #2152) — `akb.session: new`. Absent:
-   *  planning runs it in the card's planning session. */
+  /** Preview session preference — `akb.session: new` recommends a separate session;
+   *  the calling agent decides. */
   session?: 'new'
   /** The global memories it keeps (#1575) — `akb.memory`, by name. A name no memory has is
    *  kept here and skipped where the run is written. */
@@ -147,7 +147,7 @@ export function parseSpecAgent(
   const after = names(akb.after)
   const declaredSession = str(akb.session)
   if (declaredSession && declaredSession !== 'new') {
-    return bad(`\`${name}\` declares \`akb.session: ${declaredSession}\` — it is \`new\`, or left out to run in the planning session`)
+    return bad(`\`${name}\` declares \`akb.session: ${declaredSession}\` — use \`new\` to recommend a separate session, or omit the preference`)
   }
 
   let stages: PreviewStageDefinition[] | undefined

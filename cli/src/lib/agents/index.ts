@@ -230,7 +230,7 @@ export function specAgentSelector(id: number | string, studio: string | undefine
       `\`akb raw previews --triggers --studio ${flow.id}\` whose conditions the card meets, always including those marked \`Always\`. Save them with`,
       `\`akb raw update ${id} --previews <agents>\` (\`""\` when that leaves none); its stages follow from them.`,
       'Then run only the chosen agents whose `After` is empty — the first stage; the rest run after its approval.',
-      `Command: \`akb raw previews <agent> ${id} <short note>\` — add \`--print\` to run it in this session, as \`akb guide refine\` says.`,
+      `Command: \`akb raw previews <agent> ${id} <short note>\` — choose \`--print\` for this session or omit it for a separate session.`,
       '</preview-agents>',
     ].join('\n')
   }
@@ -242,8 +242,8 @@ export function specAgentSelector(id: number | string, studio: string | undefine
     // own job.
     '<preview-agents>',
     "The preview agents of this card's current stage, each writing one part of the card.",
-    ...agents.map((a) => `- \`${a.name}\` — ${a.description}${a.session || agentRun(a.name).own ? ' · runs in a session of its own: leave out `--print`' : ''}`),
-    `Command: \`akb raw previews <agent> ${id} <short note>\` — add \`--print\` to run it in this session, as \`akb guide refine\` says.`,
+    ...agents.map((a) => `- \`${a.name}\` — ${a.description}${a.session === 'new' ? ' · separate session recommended' : ''}`),
+    `Command: \`akb raw previews <agent> ${id} <short note>\` — choose \`--print\` for this session or omit it for a separate session.`,
     '</preview-agents>',
   ].join('\n')
 }

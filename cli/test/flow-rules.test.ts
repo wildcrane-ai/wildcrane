@@ -81,7 +81,7 @@ const studioRule = (text: string): void => {
   fs.writeFileSync(path.join(RULES, 'studios', 'coding.md'), `${text}\n`)
 }
 
-function run(action: 'implement', id: number): string {
+function run(action: 'implement' | 'clarify', id: number): string {
   const opened = openRun({ action, id, title: 'card one' }, 'prompt', [])
   if ('error' in opened) throw new Error(opened.error)
   return opened.run.sessionId
@@ -95,6 +95,8 @@ async function end(sessionId: string): Promise<void> {
 
 describe('in-session spec work', () => {
   beforeEach(() => {
+    const cardFile = path.join(root, 'docs/kanban/todo/features/1-card.md')
+    fs.writeFileSync(cardFile, fs.readFileSync(cardFile, 'utf8').replace('questions: []', 'previews: [tech-stack-advisor]\nquestions: []'))
     const official = editableOfficial()
     const file = path.join(official, 'agents/ui-designer/AGENT.md')
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/  stages:\n[\s\S]*?(?=  memoryFiles:)/, ''))
@@ -122,7 +124,7 @@ describe('in-session spec work', () => {
   })
 
   it('prints inside a board run without queuing a specialist', async () => {
-    process.env[RUN_ENV] = run('implement', 1)
+    process.env[RUN_ENV] = run('clarify', 1)
     const before = JSON.stringify(readRuns())
     startCollecting()
     try {
@@ -135,7 +137,7 @@ describe('in-session spec work', () => {
   })
 
   it('prints even when the agent uses another runtime', async () => {
-    process.env[RUN_ENV] = run('implement', 1)
+    process.env[RUN_ENV] = run('clarify', 1)
     setAgentRuntime('tech-stack-advisor', addRuntime('Other', 'codex').id!)
     const sink = startCollecting()
     try {
@@ -151,7 +153,7 @@ describe('in-session spec work', () => {
     const official = editableOfficial()
     const file = path.join(official, 'agents/tech-stack-advisor/AGENT.md')
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('akb:', 'akb:\n  session: new'))
-    process.env[RUN_ENV] = run('implement', 1)
+    process.env[RUN_ENV] = run('clarify', 1)
     const before = JSON.stringify(readRuns())
     startCollecting()
     try { assert.equal((await cmdSpec({ agent: 'tech-stack-advisor', id: 1, print: true })).mode, 'print') }

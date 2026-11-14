@@ -94,7 +94,7 @@ export const FLOWS: Flow[] = [
     group: 'card',
     action: 'refine',
     argument: '<id>',
-    gloss: 'plan the card in one session',
+    gloss: 'plan the card',
     options: CARRY_OPTIONS,
   },
   {
