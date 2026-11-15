@@ -83,7 +83,7 @@ it('retains execution subscriptions and adopts services without a shared daemon 
  await a.rpc.call('wildcrane/settled',{threadId:id,...a.hello.wildcrane as object,execution:'kept',confirmed:true,kept:[{threadId:id,itemId:'service',processId:'42'}]})
  await a.close();await manager.close();manager=await codexServer()
  const different=await peer(['-c','model="changed"']);await assert.rejects(different.rpc.call('thread/resume',{threadId:id}),/cannot change execution settings/);await different.close()
- const b=await peer();const resumed=await b.rpc.call('thread/resume',{threadId:id});assert.deepEqual(resumed.retainedThreads,[{id}])
+ const b=await peer();const resumed=await b.rpc.call('thread/resume',{threadId:id});assert.deepEqual(resumed.retainedThreads,[{id}]);assert.deepEqual(resumed.retainedTerminals,[{threadId:id,itemId:'service',processId:'42'}])
  assert.equal(((await b.rpc.call('thread/backgroundTerminals/list',{threadId:id})).data as any[]).length,1)
  await b.rpc.call('turn/start',{threadId:id,input:[{text:'finish-service'}]});await b.close()
  assert.equal(fs.existsSync(path.join(root,'codex-service-v2.json')),false)

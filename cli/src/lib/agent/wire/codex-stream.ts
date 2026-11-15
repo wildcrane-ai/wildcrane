@@ -237,7 +237,7 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
         // the tail by the registry.
         if (item.type === 'agent_message') {
           const said = str(item.text).trim()
-          if (said || pictures.length) final = said
+          if (item.phase !== 'commentary' && (said || pictures.length)) final = said
         }
         return renderCompleted(item)
       }

@@ -188,8 +188,8 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
  if (m.method === 'turn/start') {
   starts++; answer({ turn: { id: 't'+starts } });
   if (starts === 1) note('item/completed', { item: { id: 'spawn', type: 'collabAgentToolCall', tool: 'spawnAgent', receiverThreadIds: ['child'], agentsStates: { child: { status: 'running' } } } });
-  const schema=m.params.outputSchema;
-  const text=schema ? JSON.stringify({execution:schema.properties.execution.enum[0],items:schema.properties.items.items.properties.id.enum.map(id=>({id,outcome:'await',service:false,detail:'necessary child result'}))}) : starts===1?'STARTED':'FINISHED';
+  if (m.params.outputSchema) throw Error('cleanup must use an ordinary turn');
+  const text=starts===1?'STARTED':'FINISHED: Background result';
   note('item/completed', { item: { id: 'm'+starts, type: 'agentMessage', text } });
   note('turn/completed', { turn: { id: 't'+starts, status: 'completed', items: [] } }); return;
  }
@@ -218,12 +218,47 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
       assert.equal(job.outcome, 'done', job.reason)
       if (cancel) assert.equal(job.report?.stopped, true)
       if (!cancel) {
-        assert.equal(job.report?.reply, 'FINISHED')
+        assert.equal(job.report?.reply, 'FINISHED: Background result')
+        assert.equal(job.events.filter(e => e.kind === 'message' && e.data?.text === 'FINISHED: Background result').length, 1)
         assert.equal((job.report?.subagents as api.Subagents | undefined)?.items[0]?.state, 'done')
         assert.equal(planned.length, 1)
       }
     })
   }
+
+  for (const exit of [0, 7]) it(`delivers the result of a command completed during Codex cleanup (exit ${exit}, #757)`, async () => {
+    const result = exit ? 'CHECK FAILED: exit 7; diagnostic saved' : 'CHECK PASSED: result 42'
+    const script = `
+const out=m=>console.log(JSON.stringify(m));let starts=0,running=true;
+const note=(method,params)=>out({method,params:{threadId:'main',...params}});
+require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+ const m=JSON.parse(line);if(m.id===undefined)return;const answer=result=>out({id:m.id,result});
+ if(m.method==='thread/start')return answer({thread:{id:'main'}});
+ if(m.method==='thread/backgroundTerminals/list')return answer({data:running?[{itemId:'cmd',processId:'42',command:'check'}]:[]});
+ if(m.method==='turn/start'){
+  starts++;if(m.params.outputSchema)throw Error('unexpected receipt schema');answer({turn:{id:'t'+starts}});
+  if(starts===1)note('item/started',{item:{id:'cmd',type:'commandExecution',processId:'42',command:'check',status:'inProgress'}});
+  else {running=false;note('item/completed',{item:{id:'cmd',type:'commandExecution',processId:'42',command:'check',status:'completed',exitCode:${exit},aggregatedOutput:${JSON.stringify(result)}}});}
+  note('item/completed',{item:{id:'reply'+starts,type:'agentMessage',phase:'final_answer',text:starts===1?'STARTED':${JSON.stringify(result)}}});
+  return note('turn/completed',{turn:{id:'t'+starts,status:'completed',items:[]}});
+ }
+ answer({});
+});`
+    const job = cloud.dispatch({ id: 'cleanup-result', runtime: 'codex' })
+    start('', { plan: (...args) => {
+      const p = fakeRuntime(script)(...args)
+      const client = createCodexClient()
+      return { ...p, renderer: undefined, converse: (child, event) => client.turn({
+        stdout: child.stdout!, stdin: child.stdin!, cwd: args[2], prompt: args[1],
+        log: () => {}, gotResumeId: () => {}, gotModel: () => {}, event,
+      }) }
+    } })
+    await until(() => job.state === 'finished')
+    assert.equal(job.report?.reply, result, JSON.stringify(job))
+    assert.equal(job.events.filter(e => e.kind === 'message' && e.data?.text === result).length, 1)
+    assert.equal(job.outcome, exit ? 'failed' : 'done', job.reason)
+    assert.equal(planned.length, 1)
+  })
 
   it('Claude Code 首次回复后继续等待后台工作 (#682)', async () => {
     const gate = path.join(runnerHome(), 'claude-background-done')

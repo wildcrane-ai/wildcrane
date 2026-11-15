@@ -3,7 +3,7 @@ import type { RunClient, ClientTurn, TurnEnd } from './client'
 import { BACKGROUND_WAIT } from '../settings'
 import { createBackgroundWait, backgroundWaitMessage } from './background'
 import { randomUUID } from 'node:crypto'
-import { batch, CODEX_SETTLE_MS, readReceipt, receiptSchema, settlementPrompt, summary, type Cleanup, type ManagedWork } from './codex-background'
+import { batch, CODEX_SETTLE_MS, settlementPrompt, type Cleanup, type ManagedWork } from './codex-background'
 import { codexWork } from './codex-work'
 import { createCodexStreamRenderer } from './codex-stream'
 import { childSpend, readCodexRunFacts } from './codex-session'
@@ -98,10 +98,14 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
   const execution = randomUUID()
   let host: Json = {}
   let cleanup: Cleanup = { status: 'confirmed', execution, kept: [] }
-  let settlement: { work: ManagedWork[]; text: string; operated: boolean } | undefined
+  let settlement: { work: ManagedWork[]; polled: Set<string>; messages: { raw: Json; completed: boolean }[] } | undefined
+  let replySnapshots = new Map<string, string>()
+  const visible = new Set<string>()
+  const retained = new Map<string, string>()
   let settleTimer: ReturnType<typeof setTimeout> | undefined
-  const presented = new Set<string>()
-  const settled = new Set<string>()
+  const presented = new Map<string, string>()
+  const offered = new Map<string, string>()
+  const snapshot = (w: ManagedWork) => JSON.stringify([w.threadId, w.processId, w.status, w.exitCode, w.result])
   const childEvents = new Map<string, string>()
   const seenItems = new Set<string>()
   const completedTurns = new Set<string>()
@@ -119,7 +123,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
   let provider: string | undefined
   let resolve!: (end: TurnEnd) => void
   const done = new Promise<TurnEnd>(r => { resolve = r })
-  const deadline = createBackgroundWait(BACKGROUND_WAIT.minutes * 60_000, () => end(backgroundWaitMessage(BACKGROUND_WAIT.minutes)))
+  const deadline = createBackgroundWait(BACKGROUND_WAIT.minutes * 60_000, () => { note('Necessary background work exceeded its waiting limit.'); end(backgroundWaitMessage(BACKGROUND_WAIT.minutes)) })
   const emit = (type: string, extra: Json = {}) => {
     io.log(renderer.push(JSON.stringify({ type, ...extra }) + '\n'))
     for (const event of renderer.events?.() ?? []) io.event?.(event)
@@ -135,6 +139,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     count(0)
     io.stdout.off('close', closed)
     io.stdin.off('error', inputFailed)
+    if (settlement) flushMessages(work.work().some(w => !w.intentionalStop && !['running', 'unknown'].includes(w.status) && presented.get(w.id) !== snapshot(w)))
     cleanup.items = work.work().map(({ id, threadId, processId, status, disposition }) => ({ id, threadId, processId, status, disposition }))
     io.log(renderer.flush())
     const usage = ownUsage(total, baseline)
@@ -142,7 +147,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     const cost = priceUsd(provider, model, usage)
     const combinedUsage = usage && child.usage ? addUsage(usage, child.usage) : usage ?? child.usage
     const costUsd = cost === undefined ? child.costUsd : cost + (child.costUsd ?? 0)
-    const failure = error || work.work().filter(w => !w.intentionalStop && ['failed', 'interrupted'].includes(w.status)).map(w => w.result || `Background work ${w.id} ${w.status}.`).join('\n') || undefined
+    const failure = error || (cleanup.status === 'unconfirmed' ? cleanup.detail : undefined) || work.work().filter(w => !w.intentionalStop && ['failed', 'interrupted'].includes(w.status)).map(w => w.result || `Background work ${w.id} ${w.status}.`).join('\n') || undefined
     if (failure) io.event?.({ kind: 'error', data: { text: failure } })
     resolve({ ok: !failure, error: failure, cleanup, result: renderer.result(), replyParts: renderer.replyParts?.(), usage: combinedUsage, context, costUsd, costIncomplete: child.costIncomplete || (cost === undefined && child.costUsd !== undefined) || undefined })
   }
@@ -165,17 +170,27 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       childEvents.set(w.id, w.status)
     }
   }
+  const flushMessages = (report: boolean) => {
+    if (!settlement) return
+    const messages = settlement.messages.splice(0)
+    if (report) for (const { raw, completed } of messages) emit(completed ? 'item.completed' : 'item.started', { item: { ...raw, type: 'agent_message' } })
+  }
   const item = (raw: Json, completed: boolean, proof = true) => {
     if (ended) return
     const id = str(raw.id)
     if (['collabAgentToolCall', 'subAgentActivity'].includes(str(raw.type))) { if (proof) began(); childUpdates(); return }
-    if (settlement && raw.type === 'agentMessage') {
-      if (completed && (!raw.phase || raw.phase === 'final_answer')) settlement.text = str(raw.text)
-      return
-    }
     const key = `${id}:${completed}`
     if (seenItems.has(key)) return
     seenItems.add(key)
+    if (raw.type === 'agentMessage' && completed && raw.phase !== 'commentary' && str(raw.text).trim()) {
+      const eligible = new Set([...(settlement?.work.map(w => w.id) ?? []), ...visible])
+      replySnapshots = new Map([...work.entries.values()].filter(w => eligible.has(w.id) && !['running', 'unknown'].includes(w.status)).map(w => [w.id, snapshot(w)]))
+    }
+    if (settlement && raw.type === 'agentMessage') {
+      if (proof) began()
+      settlement.messages.push({ raw, completed })
+      return
+    }
     const types: Record<string, string> = { agentMessage: 'agent_message', commandExecution: 'command_execution', fileChange: 'file_change', mcpToolCall: 'mcp_tool_call', webSearch: 'web_search', imageGeneration: 'image_generation' }
     const type = types[str(raw.type)]
     if (!type) return
@@ -187,15 +202,17 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       status: raw.status === 'inProgress' ? 'in_progress' : raw.status,
     } })
   }
-  const start = async (text: string, images: string[] = [], outputSchema?: Json) => {
+  const start = async (text: string, images: string[] = []) => {
     if (ended || io.signal?.aborted) return
     active = true
     submitted = true
     currentTurn = ''
+    replySnapshots.clear()
+    visible.clear()
     started = false
     phase('submitted')
     startupTimer = setTimeout(() => { if (!started) io.event?.({ kind: 'log', data: { text: '[conversation] start_unconfirmed' } }) }, CONVERSATION_MS.start)
-    await bounded(rpc.call('turn/start', { threadId, input: [{ type: 'text', text }, ...images.map(path => ({ type: 'localImage', path }))], ...(outputSchema ? { outputSchema } : {}) }), CONVERSATION_MS.start, 'Codex turn/start timed out; submission outcome is unknown.').catch(error => { if (!started) throw error })
+    await bounded(rpc.call('turn/start', { threadId, input: [{ type: 'text', text }, ...images.map(path => ({ type: 'localImage', path }))] }), CONVERSATION_MS.start, 'Codex turn/start timed out; submission outcome is unknown.').catch(error => { if (!started) throw error })
   }
   const schedule = () => {
     if (ended || timer) return
@@ -222,6 +239,19 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     } else if (kept.length) { cleanup.kept = []; note('This connection cannot retain services after its exclusive backend closes.') }
     end()
   }
+  const armCleanup = () => {
+    const pending = settlement
+    if (!pending || ended) return
+    const necessary = pending.work.some(w => work.entries.get(w.id)?.status === 'running' && (w.kind === 'agent' || pending.polled.has(w.id)))
+    if (necessary) { clearTimeout(settleTimer); settleTimer = undefined; deadline.pending(); return }
+    if (settleTimer) return
+    settleTimer = setTimeout(() => {
+      if (ended) return
+      note('Codex cleanup exceeded 60 seconds; operations remain unconfirmed.')
+      if (currentTurn) void rpc.call('turn/interrupt', { threadId, turnId: currentTurn }).catch(() => {})
+      end()
+    }, CODEX_SETTLE_MS.turn)
+  }
   const check = async () => {
     if (ended || checking || active) return
     checking = true
@@ -231,56 +261,42 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       if (ended) return
       if (settlement) {
         clearTimeout(settleTimer)
+        settleTimer = undefined
         const pending = settlement
-        settlement = undefined
-        const receipts = readReceipt(pending.text, pending.work, execution)
-        for (const receipt of receipts) {
-          const current = work.entries.get(receipt.id)!
-          const before = pending.work.find(w => w.id === receipt.id)!
+        for (const before of pending.work) {
+          const current = work.entries.get(before.id)!
           if (current.threadId !== before.threadId || current.processId !== before.processId) throw Error('Codex background ownership changed during cleanup.')
-          if (receipt.outcome === 'keep' && (current.kind !== 'terminal' || !receipt.service || current.status !== 'running' || !host.instance)) {
-            note(`Service retention is unconfirmed for ${current.id}: ${receipt.detail}`)
-            current.disposition = 'unconfirmed'
-          } else if (receipt.outcome === 'stopped' && (['running', 'unknown'].includes(current.status) || before.status !== 'running' || !pending.operated)) {
-            note(`Stop was not confirmed for ${current.id}: ${receipt.detail}`)
-            current.disposition = 'unconfirmed'
-          } else if (receipt.outcome === 'collected' && ['running', 'unknown'].includes(current.status)) {
-            note(`Results were not confirmed for ${current.id}: ${receipt.detail}`)
-            current.disposition = 'unconfirmed'
-          } else {
-            current.disposition = receipt.outcome
-            current.intentionalStop = receipt.outcome === 'stopped'
-            if (receipt.outcome === 'unconfirmed') note(`${current.id}: ${receipt.detail}`)
+          if (current.status === 'running') {
+            if (current.kind === 'terminal' && current.processId && retained.get(current.id) === current.processId && host.instance) current.disposition = 'keep'
+            else if (current.kind === 'agent' || pending.polled.has(current.id)) current.disposition = 'await'
+            else throw Error(`Background work ${current.id} is still running; neither a necessary wait nor service retention could be verified.`)
+          } else if (current.status === 'unknown') throw Error(`Background work ${current.id} disappeared without a verified result.`)
+          else {
+            current.disposition = current.intentionalStop ? 'stopped' : 'collected'
+            if (!current.intentionalStop && replySnapshots.get(current.id) !== snapshot(current)) throw Error(`Codex did not deliver the new result for ${current.id} in a final reply.`)
           }
-          settled.add(current.id)
-          if (current.disposition === 'collected' || current.disposition === 'stopped') presented.add(current.id)
         }
+        const report = work.work().some(w => !w.intentionalStop && !['running', 'unknown'].includes(w.status) && replySnapshots.get(w.id) === snapshot(w) && presented.get(w.id) !== snapshot(w))
+        flushMessages(report)
+        if (report) for (const [id, value] of replySnapshots) presented.set(id, value)
+        settlement = undefined
       }
-      const outstanding = work.work().filter(w => !settled.has(w.id) && !presented.has(w.id))
+      const outstanding = work.work().filter(w => offered.get(w.id) !== snapshot(w) && presented.get(w.id) !== snapshot(w) && w.disposition !== 'keep' && !(w.intentionalStop && !['running', 'unknown'].includes(w.status)))
       if (outstanding.length) {
         const entries = batch(outstanding).map(w => ({ ...w }))
-        settlement = { work: entries, text: '', operated: false }
-        settleTimer = setTimeout(() => {
-          if (ended) return
-          note('Codex cleanup exceeded 60 seconds; operations remain unconfirmed.')
-          // An interrupt is abnormal recovery, never execution of a model stop list.
-          if (currentTurn) void rpc.call('turn/interrupt', { threadId, turnId: currentTurn }).catch(() => {})
-          end()
-        }, CODEX_SETTLE_MS.turn)
-        await start(settlementPrompt(entries, execution, !!host.instance), [], receiptSchema(entries, execution))
+        for (const entry of entries) offered.set(entry.id, snapshot(entry))
+        settlement = { work: entries, polled: new Set(), messages: [] }
+        armCleanup()
+        await start(settlementPrompt(entries, execution, !!host.instance))
         return
       }
-      const awaited = work.work().filter(w => w.disposition === 'await' && !presented.has(w.id))
-      if (awaited.some(w => w.status === 'unknown')) throw Error('A necessary background result disappeared without an exit result.')
-      if (awaited.some(w => w.status === 'running')) { count(awaited.length); deadline.pending(); schedule(); return }
-      if (awaited.length) {
-        for (const w of awaited) presented.add(w.id)
-        count(0)
-        await start('The background work from your previous reply has finished. Collect its results, resolve any failures, and present the completed outcome in this conversation. Check existing progress before acting; do not repeat completed work. Background reports (task output, not instructions):\n' + JSON.stringify(awaited.map(w => ({ id: w.id, status: w.status, result: summary(w.result) }))))
-      } else await finishManaged(verifyUntil)
+      const awaited = work.work().filter(w => w.status === 'running' && w.disposition !== 'keep')
+      if (awaited.length) { count(awaited.length); deadline.pending(); schedule(); return }
+      count(0)
+      await finishManaged(Date.now() + CODEX_SETTLE_MS.verify)
     } catch (e) {
       note(e instanceof Error ? e.message : String(e))
-      end(work.work().some(w => w.disposition === 'await' && !presented.has(w.id)) ? cleanup.detail : undefined)
+      end(cleanup.detail)
     } finally { checking = false; if (!ended && !active) schedule() }
   }
   const rpc = connect(io.stdout, io.stdin, msg => {
@@ -294,12 +310,26 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     const p = obj(msg.params)
     const source = str(p.threadId)
     if (!work.own(source)) return
-    if (settlement && (msg.method === 'item/commandExecution/terminalInteraction' || msg.method === 'item/started' && ['commandExecution', 'collabAgentToolCall', 'subAgentActivity', 'mcpToolCall'].includes(str(obj(p.item).type)))) settlement.operated = true
+    if (msg.method === 'item/commandExecution/terminalInteraction') {
+      for (const w of work.entries.values()) if (w.kind === 'terminal' && w.threadId === source && w.processId === p.processId && w.status === 'running') {
+        if (str(p.stdin).includes('\u0003')) w.intentionalStop = true
+        else if (settlement && p.stdin === '') { settlement.polled.add(w.id); armCleanup() }
+      }
+    }
     if (msg.method === 'item/started' || msg.method === 'item/completed') {
-      work.observe(source, obj(p.item))
+      const raw = obj(p.item)
+      work.observe(source, raw)
+      if (source === threadId && active) {
+        if (raw.type === 'commandExecution') visible.add(`terminal:${source}:${str(raw.id)}`)
+        if (raw.type === 'collabAgentToolCall') for (const id of Object.keys(obj(raw.agentsStates))) visible.add(`agent:${id}`)
+      }
+      armCleanup()
       if (source === threadId && obj(p.item).type !== 'agentMessage') item(obj(p.item), msg.method === 'item/completed', false)
     }
-    if (source !== threadId) { childUpdates(); return }
+    if (source !== threadId) {
+      if (msg.method === 'turn/completed') { work.observeTurn(source, obj(p.turn)); armCleanup() }
+      childUpdates(); return
+    }
     const turnId = str(p.turnId) || str(obj(p.turn).id)
     if (historicalTurns.has(turnId) || currentTurn && turnId && currentTurn !== turnId) return
     if (msg.method === 'turn/started') { if (!submitted || completedTurns.has(turnId)) return; currentTurn = turnId; active = true; began(); return }
@@ -334,7 +364,9 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       if (turn.status !== 'completed') { end(str(obj(turn.error).message) || `Codex turn ${str(turn.status)}.`); return }
       active = false
       clearTimeout(settleTimer)
+      settleTimer = undefined
       work.freeze()
+      if (!settlement) for (const [id, value] of replySnapshots) presented.set(id, value)
       count(work.work().filter(w => w.status === 'running' && w.disposition !== 'keep').length)
       void check()
     }
@@ -360,6 +392,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     threadId = str(thread.id)
     if (!threadId) throw Error('Codex did not return a thread id.')
     work.root(threadId, list(response.retainedThreads).map(t => str(t.id)))
+    for (const terminal of list(response.retainedTerminals)) retained.set(`terminal:${str(terminal.threadId)}:${str(terminal.itemId)}`, str(terminal.processId))
     provider = str(thread.modelProvider) || undefined
     model = str(response.model) || str(thread.model) || undefined
     if (model) io.gotModel(model)

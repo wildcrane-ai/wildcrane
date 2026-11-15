@@ -61,6 +61,13 @@ export function codexWork() {
       result: summary(str(raw.aggregatedOutput) || previous?.result || ''), exitCode,
     })
   }
+  const observeTurn = (threadId: string, turn: Json) => {
+    if (!children.has(threadId)) return
+    const status = str(turn.status)
+    if (!['completed', 'failed', 'interrupted'].includes(status)) return
+    const message = list(turn.items).filter(i => i.type === 'agentMessage' && i.phase !== 'commentary').map(i => str(i.text)).join('\n\n')
+    agent(threadId, { status: status === 'failed' ? 'errored' : status, message: str(obj(turn.error).message) || message })
+  }
   const readThread = async (rpc: Rpc, threadId: string) => {
     let thread = obj((await rpc.call('thread/read', { threadId, includeTurns: false })).thread)
     let turns = list(thread.turns)
@@ -76,14 +83,13 @@ export function codexWork() {
       const status = str(turn?.status)
       if (obj(thread.status).type === 'systemError') agent(threadId, { status: 'errored', message: 'Codex subagent reported a system error.' })
       else if (obj(thread.status).type !== 'active' && ['completed', 'failed', 'interrupted'].includes(status)) {
-        const message = list(turn?.items).filter(i => i.type === 'agentMessage').map(i => str(i.text)).join('\n\n')
-        agent(threadId, { status: status === 'failed' ? 'errored' : status, message: str(obj(turn?.error).message) || message })
+        observeTurn(threadId, turn ?? {})
       }
     }
     return thread
   }
   return {
-    children, entries, background, own, observe,
+    children, entries, background, own, observe, observeTurn,
     root(id: string, retained: string[] = []) { root = id; for (const child of retained) if (child !== id) children.add(child) },
     freeze() { for (const [id, entry] of entries) if (entry.status === 'running') background.add(id) },
     work: () => [...entries.values()].filter(e => background.has(e.id)),

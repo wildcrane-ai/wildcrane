@@ -197,6 +197,7 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
           writeLease(backend, child, state())
         }
         result.retainedThreads = [...threads].map(id => ({ id }))
+        result.retainedTerminals = previous.retained!.kept
         writeLease(backend, thread, state())
       }
       if (id !== undefined) send({ id, result })
