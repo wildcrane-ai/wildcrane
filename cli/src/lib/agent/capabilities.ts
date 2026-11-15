@@ -7,7 +7,7 @@
 // where the agent is picked rather than found out on a run.
 //
 // A capability is DERIVED wherever the harness already answers it (`resumes`,
-// `adoptsSessionId`, `skillCall`), and read from a field declared for it only where nothing
+// `adoptsSessionId`), and read from a field declared for it only where nothing
 // existing could (`reports`, `stopsOnRateLimit`, `savesSessionAtOpen`). One answer per
 // capability, so a connector can't claim one thing here and do another on a run.
 //
@@ -15,7 +15,7 @@
 // connector's name: the gaps go out on `HarnessOption`, and every screen draws whatever it
 // is handed.
 
-import { SKILL_SENTENCE, type Harness } from './harnesses'
+import type { Harness } from './harnesses'
 import type { HarnessGap } from './types'
 
 interface Capability extends HarnessGap {
@@ -77,12 +77,6 @@ const CAPABILITIES: Capability[] = [
     label: 'Provider retry',
     blurb: 'A passing provider failure ends the run.',
     has: (h) => h.transient !== undefined,
-  },
-  {
-    id: 'skill-call',
-    label: 'Direct skill call',
-    blurb: 'Prompts ask for the board skill in a sentence.',
-    has: (h) => h.skillCall !== SKILL_SENTENCE,
   },
   {
     id: 'images',

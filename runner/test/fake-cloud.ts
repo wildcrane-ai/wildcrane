@@ -29,6 +29,7 @@ export interface FakeJob {
   manualRecovery?: boolean
   retryReplay?: boolean
   resume?: string | null
+  resumeCostUsd?: number | null
   fork?: boolean
   transcript?: string | null
   flow?: { verb: string; studio: string; card?: number; text?: string; title?: string; resume?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null

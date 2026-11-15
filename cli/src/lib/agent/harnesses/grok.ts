@@ -2,7 +2,7 @@ import { join } from 'node:path'
 
 import { createAcpClient } from '../wire'
 import { home, modelsIn, obj } from './models'
-import { MCP_CONFIG, namesFlag, SKILL_SENTENCE, type Harness } from './types'
+import { MCP_CONFIG, namesFlag, type Harness } from './types'
 
 // The fence a Grok run works behind, and the only place it can be said.
 //
@@ -144,11 +144,6 @@ export const GROK: Harness = {
   // And it has written that session down before it answers: killed the instant
   // `session/new` returns, grok reopens the id from a fresh command.
   savesSessionAtOpen: true,
-
-  // Grok lists its skills as slash names, but a slash typed into an ACP `session/prompt` is
-  // not the same thing as one typed into its TUI, and the sentence is proved: asked this
-  // way, grok found `.agents/skills/kanban/SKILL.md` in the project and read it.
-  skillCall: SKILL_SENTENCE,
 
   installs: () => [...(process.env.GROK_BIN_DIR ? [join(process.env.GROK_BIN_DIR, 'grok')] : []), home('.grok', 'bin', 'grok')],
   install: 'curl -fsSL https://x.ai/cli/install.sh | bash',

@@ -425,11 +425,6 @@ export const CODEX: Harness = {
   // read the prompt from a stdin the board never opens and send an empty turn.
   images: { as: 'args', args: (file) => [`--image=${file}`] },
 
-  // Codex ignores a slash name — it reads as plain chat text — and triggers a skill from a
-  // `$` name. The install already writes the skill to `.agents/skills/kanban/`, which is
-  // where Codex looks.
-  skillCall: '$kanban',
-
   // `codex login status` prints one line and nothing else: "Logged in using ChatGPT" —
   // or an API key, which is why the reading stops at the first two words — and "Not logged
   // in".

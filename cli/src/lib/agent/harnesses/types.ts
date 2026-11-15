@@ -210,10 +210,6 @@ export interface Harness
    *  the user back in (#392). Left out by a connector whose runs don't use a CLI login —
    *  then nothing is probed for it and no warning about it ever appears. */
   login?: LoginProbe
-  /** How a fresh prompt calls the ai4kanban skill for this agent. Claude Code triggers a
-   *  skill from a slash name (`/kanban`); Codex reads a slash as plain chat text and
-   *  triggers on a `$` name instead. */
-  skillCall: string
   /** How this connector takes a picture on disk (#441). Left out by one whose CLI takes
    *  none — then it cannot see images at all, and a paste into its conversation is turned
    *  away rather than sent to an agent that would ignore it. */
@@ -221,10 +217,6 @@ export interface Harness
   /** 通过参数或环境追加系统提示词；空结果表示无法注入，不回退到正文。 */
   systemPrompt?(text: string, argv: string[], env: NodeJS.ProcessEnv): { args?: string[]; env?: NodeJS.ProcessEnv }
 }
-
-// How a prompt asks for the skill on an agent with no direct skill syntax. A fresh chat
-// ensures the skill is installed before using this sentence.
-export const SKILL_SENTENCE = 'Use the kanban skill'
 
 // ---- WORKING FOLDER --------------------------------------------------------
 //

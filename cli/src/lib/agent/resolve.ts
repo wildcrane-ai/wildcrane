@@ -571,14 +571,6 @@ export function adoptsSessionId(harnessName: string): boolean {
   return !!harness && harness.resumes && harness.adoptsSessionId
 }
 
-/** How a fresh prompt calls the skill under the connector one agent runs — `/kanban` for
- *  Claude Code, `$kanban` for Codex, or a sentence when the connector has no direct syntax.
- *  With no agent named it is the board's default connector. `pin` is the runtime one run was
- *  started on over its agent's own (#518), whose connector the call then follows. */
-export function skillCall(agent?: string, pin?: string): string {
-  return resolveHarness({ agent, pin }).harness.skillCall
-}
-
 // ---- what the Model box offers ---------------------------------------------
 //
 // The board ships no list of models and never will: one written into this build would be

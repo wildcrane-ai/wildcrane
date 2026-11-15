@@ -12,7 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
-import { agentInfo, agentRun, openPlan, planResume, planRun, skillCall } from '../src/lib/agent/resolve.ts'
+import { agentInfo, agentRun, openPlan, planResume, planRun } from '../src/lib/agent/resolve.ts'
 import { agentForRun } from '../src/lib/agent/runner.ts'
 import {
   addRuntime,
@@ -140,11 +140,6 @@ describe('an agent with a runtime of its own', () => {
     // A key the board no longer reads is carried, not acted on (#1003).
     assert.deepEqual(specAgentEntries()['ui-designer'], { enabled: true, extra: { mockupStyle: 'ascii' } })
     assert.equal(agentRun('ui-designer').harness, 'codex')
-  })
-
-  it('calls the skill the way that row’s CLI expects', () => {
-    assert.equal(skillCall(agentForRun({ action: 'implement', studio: 'coding' })), '$kanban')
-    assert.equal(skillCall(agentForRun({ action: 'clarify' })), '/kanban')
   })
 
   it('says which agent runs each flow, for a front end that keeps no list', () => {

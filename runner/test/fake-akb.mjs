@@ -84,6 +84,7 @@ if (a === 'raw' && b === 'init') {
   if (runs.some((r) => r.cardId === id && r.status === 'running')) fail(`#${id} is already being worked on`)
   // The board every `akb` the agent types reaches.
   fs.writeFileSync(path.join(state, 'agent-board'), process.env.AI4KANBAN_BOARD ?? '')
+  fs.writeFileSync(path.join(state, 'session-cost'), process.env.AI4KANBAN_SESSION_COST ?? '')
   // The discussion a Cloud task carries (#2146), gone once the job ends.
   if (flag('--transcript')) fs.writeFileSync(path.join(state, 'transcript'), fs.readFileSync(flag('--transcript'), 'utf8'))
   const sessionId = `run-${b}-${runs.length + 1}`

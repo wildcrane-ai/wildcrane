@@ -42,6 +42,8 @@ Use this order and keep the English section titles and empty scaffold sections:
   until the card leaves no room to repeat them.
 - **Writing**: write clear behavior and necessary tradeoffs for a fresh reader, keep the human
   half self-contained, and state each fact once.
+- **Agent half**: keep only implementation-critical information not stated elsewhere; omit
+  process logs and routine implementation planning, and leave unneeded sections empty.
 - **Frontmatter**: never edit frontmatter by hand; use `akb raw create`, `update`, or
   `update-questions`.
 - **Validate**: run `akb raw validate <id>` after edits and fix every reported file and line.

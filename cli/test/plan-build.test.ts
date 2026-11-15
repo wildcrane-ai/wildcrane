@@ -8,7 +8,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { findDelivery, joinDelivery } from '../src/lib/agent/deliveries.ts'
-import { restartPrompt } from '../src/lib/agent/prompts.ts'
+import { buildPrompt, restartPrompt } from '../src/lib/agent/prompts.ts'
 import { openRun } from '../src/lib/agent/sessions.ts'
 import { withStore } from '../src/lib/agent/store.ts'
 import type { AgentRequest, RunRecord } from '../src/lib/agent/types.ts'
@@ -106,6 +106,13 @@ describe('the delivery a plan build opens', () => {
 describe('the run a plan build opens', () => {
   const openBuild = (plan: string) =>
     openRun({ action: 'implement', plan } as AgentRequest, 'build it')
+
+  it('builds from the approved plan without depending on the conversation (#768)', () => {
+    const prompt = buildPrompt({ action: 'implement', plan: `docs/kanban/${PLAN_REL}`, carry: { transcript: '/tmp/discussion.md' } })
+    assert.match(prompt, /Build the approved plan at/)
+    assert.match(prompt, new RegExp(`docs/kanban/${PLAN_REL}`))
+    assert.doesNotMatch(prompt, /conversation|discussion/)
+  })
 
   it('reads the file once, here, and freezes what it says as the delivery', () => {
     const opened = openBuild(`docs/kanban/${PLAN_REL}`)

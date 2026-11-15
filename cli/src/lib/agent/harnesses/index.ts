@@ -14,7 +14,7 @@ import { OPENCODE } from './opencode'
 import { RAW_ARGS, type Harness } from './types'
 import { ZCODE } from './zcode'
 
-export { SKILL_SENTENCE, RAW_ARGS_KEY, MODEL_KEY, namesFlag, type Harness, type ImageInput, type LoginProbe, type RunFailure, type TransientFailure } from './types'
+export { RAW_ARGS_KEY, MODEL_KEY, namesFlag, type Harness, type ImageInput, type LoginProbe, type RunFailure, type TransientFailure } from './types'
 export { uniqueIds } from './models'
 
 // The raw arguments are every harness's, added here rather than written into each file: it

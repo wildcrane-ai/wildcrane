@@ -317,7 +317,7 @@ function readRequest(
   // The one run's own runtime (#518) — declared by `implement` alone among these, so
   // nothing else can be given one.
   if (action === 'implement') req.runtime = opts.runtime
-  if (opts.session || opts.transcript) {
+  if (action !== 'implement' && (opts.session || opts.transcript)) {
     // Set by the Runner (#627): an env var, so an older akb ignores it.
     const costFrom = Number(process.env[SESSION_COST_ENV])
     req.carry = {

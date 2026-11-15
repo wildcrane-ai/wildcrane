@@ -793,8 +793,7 @@ export function planningSession(cardId: number, cwd = REPO_ROOT): { session: Age
 export function carriedSession(
   req: AgentRequest,
 ): { note: string; carried?: CarriedSession } | undefined {
-  const carries = PLANNING.has(req.action) || (req.action === 'implement' && !!req.carry?.resumeId)
-  if (!Number.isInteger(req.id) || !carries) return undefined
+  if (!Number.isInteger(req.id) || !PLANNING.has(req.action)) return undefined
   const fresh = (why: string) => ({ note: `new session — ${why}` })
   if (req.session === 'new') return fresh('the earlier one is gone, so this step was started again')
   const agent = agentForRun(req)

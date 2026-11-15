@@ -1,7 +1,7 @@
 import { latestIn } from '../locate'
 import { home } from './models'
 import { createAcpClient } from '../wire'
-import { MCP_CONFIG, SKILL_SENTENCE, type Harness } from './types'
+import { MCP_CONFIG, type Harness } from './types'
 
 // Cursor, reached through ACP: `cursor-agent acp` holds the conversation over stdin and stdout,
 // driven by the same wire/acp.ts client dsh and grok run on.
@@ -70,8 +70,6 @@ export const CURSOR: Harness = {
 
   // Its own file reading opens a picture from a path written into the words.
   images: { as: 'message' },
-
-  skillCall: SKILL_SENTENCE,
 
   // `cursor-agent status` exits 0 whether or not anybody is signed in, so its output is the
   // whole of the answer.

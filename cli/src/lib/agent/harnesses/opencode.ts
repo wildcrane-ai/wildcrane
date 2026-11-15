@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { createAcpClient } from '../wire'
 import { home, modelsIn, obj } from './models'
-import { machineFile, MCP_CONFIG, SKILL_SENTENCE, type Harness } from './types'
+import { machineFile, MCP_CONFIG, type Harness } from './types'
 
 // OpenCode, reached through ACP: `opencode acp` holds the conversation over stdin and stdout,
 // driven by the same wire/acp.ts client dsh and grok run on. The session is opened with the
@@ -97,10 +97,6 @@ export const OPENCODE: Harness = {
 
   // Its own file reading opens a picture from a path written into the words.
   images: { as: 'message' },
-
-  // No slash or `$` skill syntax in a sent message, so the prompt asks for the skill in a
-  // sentence. It scans `.agents/skills/` and `.claude/skills/`, where an install writes.
-  skillCall: SKILL_SENTENCE,
 
   // No login probe: OpenCode's free models need no sign-in, so a machine with no saved
   // credential is not logged out.

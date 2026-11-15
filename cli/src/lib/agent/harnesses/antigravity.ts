@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { locate, copyEnv } from '../locate'
 import { spawnable } from '../spawnable'
 import { home } from './models'
-import { namesFlag, SKILL_SENTENCE, type Harness } from './types'
+import { namesFlag, type Harness } from './types'
 import { translating } from '../language'
 import { createAntigravityRenderer } from '../wire/antigravity'
 
@@ -68,7 +68,6 @@ export const ANTIGRAVITY: Harness = {
   adoptsSessionId: false,
   savesSessionAtOpen: false,
   stopsOnRateLimit: false,
-  skillCall: SKILL_SENTENCE,
   // `models` is read-only. Only explicit authentication errors mean signed out.
   login: {
     args: ['models'],

@@ -3,7 +3,7 @@ import path from 'node:path'
 
 import { shimTarget } from '../spawnable'
 import { createAcpClient } from '../wire'
-import { MCP_CONFIG, namesFlag, SKILL_SENTENCE, type Harness } from './types'
+import { MCP_CONFIG, namesFlag, type Harness } from './types'
 
 // The folder `dsh-acp` was installed into, so the dsh it boots is the one sitting beside
 // it.
@@ -166,10 +166,6 @@ export const DSH: Harness = {
   // And it has written that session down before it answers: killed right after
   // `session/new`, dsh-acp reopens the id from a fresh command about half a second later.
   savesSessionAtOpen: true,
-
-  // dsh has no slash or `$` skill syntax a headless run can use, so the prompt asks for the
-  // skill in a sentence. It reads `.agents/skills/`, the folder an install already writes.
-  skillCall: SKILL_SENTENCE,
 
   // No login probe: dsh has no login to probe. Its own command offers `web` and `plugin` and
   // nothing else — a run signs with the key in `$DSH_HOME`'s settings, or with the box above

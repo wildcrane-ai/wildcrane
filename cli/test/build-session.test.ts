@@ -85,7 +85,7 @@ describe('交付的构建会话续接（#368）', () => {
     it(`${harness} 使用原构建的真实会话，而非讨论会话或新运行 ID`, async () => {
       runtime(harness)
       const old = build('stopped', harness === 'claude-code' ? undefined : `${harness}-conversation`)
-      const started = await startRun({ action: 'implement', id: 1, carry: { resumeId: 'discussion', fork: true } })
+      const started = await startRun({ action: 'implement', id: 1, carry: { resumeId: 'discussion', fork: true, transcript: '/tmp/discussion.md', costFrom: 100 } })
       if ('error' in started) throw new Error(started.error)
       assert.equal(started.run.resumeId, old.resumeId ?? old.sessionId)
       assert.equal(started.run.resumedFrom, old.sessionId)
@@ -132,10 +132,14 @@ describe('交付的构建会话续接（#368）', () => {
   it('缺失真实会话 ID 时在原交付目录接续', async () => {
     runtime('codex')
     const old = build()
-    const result = await startRun({ action: 'implement', id: 1 })
+    const result = await openResume(old.sessionId, { deliveryId: old.deliveryId! })
     assert.ok(!('error' in result))
     assert.equal(result.run.deliveryId, old.deliveryId)
     assert.equal(result.run.cwd, old.cwd)
+    assert.equal(result.run.resumeId, undefined)
+    const prompt = result.spec.prompt
+    assert.match(prompt, /raw card implement 1 --print/)
+    assert.doesNotMatch(prompt, /discussion/)
   })
 
   it('原会话不存在时保留交付并提供原任务', async () => {
@@ -153,6 +157,11 @@ describe('交付的构建会话续接（#368）', () => {
     assert.equal(rows.length, 1)
     assert.notEqual(rows[0]!.sessionId, opened.run.sessionId)
     assert.equal(rows[0]!.deliveryId, old.deliveryId)
+    assert.ok(!rows[0]!.argv?.includes('--resume'))
+    const rebuilt = await openResume(rows[0]!.sessionId, { deliveryId: old.deliveryId!, fresh: true })
+    assert.ok(!('error' in rebuilt))
+    assert.match(rebuilt.spec.prompt, /raw card implement 1 --print/)
+    assert.doesNotMatch(rebuilt.spec.prompt, /discussion/)
   })
 
   it('修改默认 Agent 后仍使用原构建的 Agent 和运行环境', async () => {

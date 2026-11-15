@@ -683,10 +683,9 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     return { ok: true, report: { card } }
   }
 
-  /** A discussion task's planning step (#2146) or direct build (#271): the session it carries,
-   *  and the discussion. Cloud gives neither to a build that follows a plan. */
+  /** Only planning carries the discussion's session and transcript. */
   function carryArgs(verb: string): string[] {
-    if (!['refine', 'resolve', 'revise', 'implement'].includes(verb)) return []
+    if (!['refine', 'resolve', 'revise'].includes(verb)) return []
     const transcript = writeTranscript(job, path.join(ws.board, '.sync', `${ws.task}.discussion`))
     return [
       ...(job.resume ? ['--session', job.resume, ...(job.fork ? ['--fork'] : [])] : []),

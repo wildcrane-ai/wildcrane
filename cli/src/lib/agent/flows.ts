@@ -87,7 +87,7 @@ export const FLOWS: Flow[] = [
     argument: '<id> [note...]',
     argumentNote: NOTE,
     gloss: 'build the card',
-    options: [RUNTIME_OPTION, ...CARRY_OPTIONS],
+    options: [RUNTIME_OPTION, ...CARRY_OPTIONS.map((option) => ({ ...option, description: 'accepted for compatibility; ignored by implementation' }))],
   },
   {
     command: 'refine',

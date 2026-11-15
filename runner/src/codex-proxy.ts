@@ -30,8 +30,8 @@ async function proxy() {
   timer.unref()
   try {
     const argv = process.argv.slice(2)
-    const backend = await requestCodexBackend(argv, process.env)
-    execution = await codexExecution(backend, argv, process.env, process.cwd(), send)
+    const prepared = await requestCodexBackend(argv, process.env)
+    execution = await codexExecution(prepared.backend, prepared.config, process.env, process.cwd(), send)
     execution.closed.once('close', () => { void close() })
     if (ending) await execution.close()
     else for (const line of queued) receive(line)

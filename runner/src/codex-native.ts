@@ -6,7 +6,7 @@ import { PassThrough, Writable } from 'node:stream'
 import { Agent, WebSocket } from 'undici'
 import { bounded } from '../../cli/src/lib/shared/conversation'
 import { connectionIdentity, connectionStopped } from '../../cli/src/lib/agent/connection-process'
-import { connect, type Message } from '../../cli/src/lib/agent/wire/rpc'
+import { connect, RpcError, type Message } from '../../cli/src/lib/agent/wire/rpc'
 import { obj, type Json } from '../../cli/src/lib/agent/wire/json'
 import { runnerCwd } from './home'
 
@@ -31,6 +31,10 @@ export interface ThreadLease {
   retained?: { root: string; execution: string; kept: Json[] }
   uncertain?: boolean
   adopting?: string
+  thread?: string
+  run?: string
+  task?: string
+  job?: string
 }
 export const nativeDirectory = () => path.join(runnerCwd(), 'codex-native')
 export const codexRecordFile = () => path.join(nativeDirectory(), 'runner.json')
@@ -49,6 +53,9 @@ export function writePrivate(file: string, value: unknown) {
 export function readPrivate<T>(file: string): T | undefined {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) as T }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
+}
+export function writeLease(backend: NativeBackend, thread: string, value: ThreadLease) {
+  writePrivate(leaseFile(backend, thread), { ...value, thread })
 }
 export function nativeEndpoint(key: string): string {
   const directory = path.join(os.tmpdir(), `wc-codex-${crypto.createHash('sha256').update(runnerCwd()).digest('hex').slice(0, 12)}`)
@@ -98,10 +105,36 @@ export async function backgroundTerminals(rpc: ReturnType<typeof connect>, threa
     if (seen.has(cursor)) throw Error('Codex repeated a terminal cursor.')
     seen.add(cursor)
     const page = await rpc.call('thread/backgroundTerminals/list', { threadId, ...(cursor ? { cursor } : {}) })
-    for (const value of Array.isArray(page.data) ? page.data : []) result.push({ ...obj(value), threadId })
+    if (!Array.isArray(page.data) || page.nextCursor != null && typeof page.nextCursor !== 'string') throw Error('Codex background terminal state is unconfirmed.')
+    for (const value of page.data) result.push({ ...obj(value), threadId })
     cursor = page.nextCursor
   } while (cursor)
   return result
+}
+
+export async function releaseNativeThread(connection: Awaited<ReturnType<typeof nativeConnection>>, threadId: string, turnId: string | undefined, stopWork: boolean, unloading: Map<string, () => void>) {
+  const missing = (error: unknown) => error instanceof RpcError && /thread not (?:found|loaded)/i.test(error.message)
+  try {
+    await bounded((async () => {
+      if (stopWork) {
+        if (turnId) {
+          try { await connection.rpc.call('turn/interrupt', { threadId, turnId }) }
+          catch (error) { if (!missing(error)) throw error }
+        }
+        try { await connection.rpc.call('thread/backgroundTerminals/clean', { threadId }) }
+        catch (error) { if (!(error instanceof RpcError) || error.code !== -32601 && !missing(error)) throw error }
+      }
+      const unloaded = new Promise<void>(resolve => unloading.set(threadId, resolve))
+      let result
+      try { result = await connection.rpc.call('thread/unsubscribe', { threadId }) }
+      catch (error) { if (!missing(error)) throw error; result = { status: 'notLoaded' } }
+      if (result.status === 'unsubscribed') await unloaded
+      else if (result.status !== 'notLoaded') {
+        const snapshot = obj((await connection.rpc.call('thread/read', { threadId })).thread)
+        if (obj(snapshot.status).type !== 'notLoaded') throw Error('Codex thread unload is unconfirmed.')
+      }
+    })(), CODEX_TIMEOUT, 'Codex thread cleanup timed out; ownership remains unconfirmed.')
+  } finally { unloading.delete(threadId) }
 }
 
 export function stopNativeBackends() {

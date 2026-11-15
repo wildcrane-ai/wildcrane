@@ -3307,7 +3307,7 @@ describe('flow jobs (#2020)', () => {
     await flowJob('j1', { verb: 'create' })
     const commit = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
     process.env.FAKE_AKB = JSON.stringify({ implement: { result: 'Built it.', landed: 'Landed it.', delivery: { commit, branch: 'main' } } })
-    const built = await flowJob('j5', { verb: 'implement', card: 2 })
+    const built = await flowJob('j5', { verb: 'implement', card: 2 }, { resume: 'planning-session', transcript: 'Planning history', resumeCostUsd: 2 })
     const b = board()
     assert.deepEqual(cardCalls(), [
       `card refine 2 --follow --events --json --board ${b}`,
@@ -3339,15 +3339,16 @@ describe('flow jobs (#2020)', () => {
     assert.equal(cardCalls()[2], `card approve 2 --follow --events --json --board ${b}`)
   })
 
-  it('hands a direct build of an idea its session and discussion, and skips the plan (#271)', async () => {
+  it('starts a direct build without discussion context and skips the plan (#768)', async () => {
     process.env.FAKE_AKB = JSON.stringify({ implement: { result: 'Built.', agentSession: 'bs1' } })
     const transcript = 'User: Tiers?\n\nAgent: Two.'
-    const built = await flowJob('j1', { verb: 'create', skip_plan: true }, { resume: 'ds1', fork: true, transcript })
+    const built = await flowJob('j1', { verb: 'create', skip_plan: true }, { resume: 'ds1', fork: true, transcript, resumeCostUsd: 2 })
     assert.equal(built.outcome, 'done', built.reason)
     const b = board()
     const file = path.join(b, '.sync', 'task_1.discussion', 'discussion.md')
-    assert.deepEqual(cardCalls(), [`card implement 2 --follow --events --json --session ds1 --fork --transcript ${file} --board ${b}`])
-    assert.equal(fs.readFileSync(path.join(b, '.fake', 'transcript'), 'utf8'), `${transcript}\n`)
+    assert.deepEqual(cardCalls(), [`card implement 2 --follow --events --json --board ${b}`])
+    assert.ok(!fs.existsSync(path.join(b, '.fake', 'transcript')))
+    assert.equal(fs.readFileSync(path.join(b, '.fake', 'session-cost'), 'utf8'), '')
     assert.ok(!fs.existsSync(file), 'the discussion was left on the board')
     assert.equal((built.report as { session?: string }).session, 'bs1')
   })

@@ -3,8 +3,7 @@ import { deliveryStep } from './progress'
 // The one place a board action turns into words for an agent.
 //
 // Every prompt lives here, so a run started in a terminal and the same run started from a
-// button say exactly the same thing. Only the opening — how this agent is asked for the
-// skill — follows the agent that runs; everything after it is the same for all of them.
+// button say exactly the same thing.
 
 import { agentComponents, studioComponents, componentDocsText } from '../components'
 import path from 'node:path'
@@ -27,7 +26,7 @@ import { field } from './facts'
 import { recordedOutputs } from './outputs'
 import { readArchive } from '../view/archive'
 import { DELIVERY_FLOWS } from './flows'
-import { agentImages, skillCall } from './resolve'
+import { agentImages } from './resolve'
 import { agentForRun, studioForRun } from './runner'
 import { studioFiles, studioHoldsAgent, studioSections } from './studio-shared'
 import { CARD_TEMPLATE_FILE } from '../shared/studio-files'
@@ -147,15 +146,8 @@ export function restartPrompt(req: AgentRequest, deliveryId?: string): string | 
 // carries it — create has its own "Create task only" line.
 const NO_IMPLEMENT = `(Unless the request explicitly asks for implementation, don't implement it; revising the card's drafts is not implementing.)`
 
-/** The words one run is given, WITHOUT this board's own rule for the flow.
- *
- *  Every prompt ends with how the board's command is spelled on this machine, when it isn't
- *  `akb`. The skill's note carries the same rule, but a run is not owed a working note: it
- *  can be started from a button by someone who never installed one, and the first `akb` line
- *  it copies out of a flow is a poor place to find that out.
- *
- *  Split out from `buildPrompt` for the one caller that needs the ask alone: a printed flow
- *  puts the rule at the very end, after the flows themselves (`flow.ts`). */
+/** The ask and the board command to use, without the flow's rules.
+ *  Printed flows append those rules separately (`flow.ts`). */
 export function buildAsk(rawReq: AgentRequest, notes: string[] = []): string {
   const req = withStudio(rawReq)
   // A delivery's runs work in that delivery's own worktree, so their board commands
@@ -447,11 +439,6 @@ function carriedNote(req: AgentRequest): string {
 }
 
 function actionPrompt(req: AgentRequest, command: string, notes: string[]): string {
-  // How this agent calls the skill — the only part of a prompt that follows the connector.
-  // It is the connector THIS RUN spawns: the one its agent runs (#443), or the runtime the
-  // run was started on instead (#518) — never the board's default. A `/kanban` sent to Codex
-  // is plain chat text and the skill never loads.
-  const kb = skillCall(agentForRun(req), req.runtime)
   const tag = req.id ? `#${req.id}` : ''
   const named = req.title ? `${tag} ("${req.title}")` : tag
   // Retired (#438, #1203): nothing starts these any more, so there is no ask left to write.
@@ -462,23 +449,22 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
       if (req.id === undefined) {
         return [
           req.plan
-            ? `${kb}. Build the plan at \`${req.plan}\`, written in this conversation. The plan is the contract; use what was said here only to clarify its intent.`
-            : `${kb}. Build this: "${req.description?.trim() ?? ''}".`,
+            ? `Build the approved plan at \`${req.plan}\`.`
+            : `Build this: "${req.description?.trim() ?? ''}".`,
           `Follow \`akb guide implement\` — build exactly the approved requirement; create no card.`,
         ]
           .filter(Boolean)
           .join(' ')
       }
       return [
-        `${kb}. Implement task ${req.id} ${named} following \`akb guide implement\`.`,
-        carriedNote(req),
+        `Implement task ${req.id} ${named} following \`akb guide implement\`. Read its current card before starting.`,
         req.notes ? `Extra notes: ${req.notes}` : '',
       ]
         .filter(Boolean)
         .join(' ')
     case 'archive':
       return [
-        `${kb}. Archive task ${req.id} ${named}.`,
+        `Archive task ${req.id} ${named}.`,
         `Follow \`akb guide archive\`.`,
         req.notes ? `Extra notes: ${req.notes}` : '',
         `Don't ask me questions with human-in-the-loop. Leave any questions as open questions.`,
@@ -487,7 +473,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
         .join(' ')
     case 'edit':
       return [
-        `${kb}. Revise task ${req.id} ${named}: "${req.notes || ''}" ${NO_IMPLEMENT}`,
+        `Revise task ${req.id} ${named}: "${req.notes || ''}" ${NO_IMPLEMENT}`,
         carriedNote(req),
         `Apply the requested change following \`akb guide revise\`.`,
         `Don't ask me questions with human-in-the-loop. Leave any questions as open questions.`,
@@ -512,7 +498,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
     // anything it cannot settle stays in the memory file it is rewriting.
     case 'prune-memory':
       return [
-        `${kb}. Prune this board's memory following \`akb guide prune-memory\`.`,
+        `Prune this board's memory following \`akb guide prune-memory\`.`,
         `Cover the board's own record at \`${rel(MEMORY)}/\` and every agent's memory at \`${rel(MEMORY)}/agents/<agent>/\`, the ${PLANNER}'s among them, and each studio's at \`${rel(MEMORY)}/studios/<studio>/\`.`,
         `Change nothing but those files: no card, no question for anyone.`,
       ].join(' ')
@@ -522,15 +508,15 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
     // is no card to leave a question on.
     case 'review-memory':
       return [
-        `${kb}. Review what this board's conversations settled and write it into memory, following \`akb guide review-memory\`.`,
+        `Review what this board's conversations settled and write it into memory, following \`akb guide review-memory\`.`,
         req.tasks?.length ? `The conversations are the ones \`${command} raw memory review --task ${req.tasks.join(' ')} --print\` prints.` : '',
       ].filter(Boolean).join(' ')
     // The dismissal review (#929). The flow lists the dismissals and restored ids; the guide
     // holds every rule.
     case 'review-dismissals':
-      return `${kb}. Learn what the user does not want from their rejections and dismissals, following \`akb guide review-rejections\`.`
+      return `Learn what the user does not want from their rejections and dismissals, following \`akb guide review-rejections\`.`
     case 'describe-project':
-      return `${kb}. Describe this project following \`akb guide describe-project\`.`
+      return `Describe this project following \`akb guide describe-project\`.`
     // Reflecting on the cards the board has just completed (#534, #1467). They are off the
     // board, so the ask names the archive: nothing else can find them. It only writes inbox
     // items or starts a revise — it never edits or archives a card itself.
@@ -540,7 +526,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
       const titles = ids.map((id) => (archived.get(id) ? `#${id} ("${archived.get(id)}")` : `#${id}`))
       return [
         [
-          `${kb}. These tasks have just been completed: ${titles.join(', ')}. Propose the work that should follow them, following \`akb guide reflect\`.`,
+          `These tasks have just been completed: ${titles.join(', ')}. Propose the work that should follow them, following \`akb guide reflect\`.`,
           `They have left the board — read each in its own <card> block below, with the discussion it came from when the block lists one.`,
           `Don't ask me questions with human-in-the-loop.`,
         ].join(' '),
@@ -562,7 +548,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
       const shared = agent ? globalMemoryBlock(agent) : ''
       return [
         [
-          `${kb}. You are the \`${req.specAgent}\` preview agent on task ${req.id} ${named}.`,
+          `You are the \`${req.specAgent}\` preview agent on task ${req.id} ${named}.`,
           `Card: \`${cardFile}\`. Section: \`\`## By \`${req.specAgent}\` agent\`\`.`,
           `How a preview agent works: \`${command} guide preview-agent\` — read it unless it is already in your context.`,
           req.notes ? `What the flow that asked for you wants looked at: ${req.notes}` : '',
@@ -635,7 +621,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
     // The flow supplies conflict facts; the guide owns the procedure.
     case 'approve':
       return [
-        `${kb}. Task ${req.id} ${named} has been approved: write the previews that were waiting on that Approve from the card as it stands.`,
+        `Task ${req.id} ${named} has been approved: write the previews that were waiting on that Approve from the card as it stands.`,
         req.notes ? `Extra notes: ${req.notes}` : '',
         `Don't ask me questions with human-in-the-loop. Leave any questions as open questions.`,
       ]
@@ -643,7 +629,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
         .join(' ')
     case 'resolve':
       return [
-        `${kb}. Apply my answers to the open questions on task ${req.id} ${named} following \`akb guide resolve\`.`,
+        `Apply my answers to the open questions on task ${req.id} ${named} following \`akb guide resolve\`.`,
         carriedNote(req),
         answeredNote(req.id, command),
         req.notes ? `Extra notes: ${req.notes}` : '',

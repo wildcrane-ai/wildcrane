@@ -262,53 +262,36 @@ describe("a Cloud task's session (#2146)", () => {
   })
 })
 
-describe('a direct build of an idea (#271)', () => {
+describe('a new implementation session (#768)', () => {
   const TRANSCRIPT = '/tmp/task_1.discussion/discussion.md'
 
-  it('starts from a copy of the discussion, told its rules are over and the card wins', async () => {
-    const run = await start({ action: 'implement', id: 1, carry: { resumeId: 'ds1', fork: true, transcript: TRANSCRIPT } })
-    assert.ok(run.argv?.includes('--fork-session'))
-    assert.equal(after(run.argv, '--resume'), 'ds1')
-    assert.ok(run.deliveryId)
-    assert.deepEqual(notes(run), ["started from a copy of the discussion's session"])
-    const { prompt } = readSpec(run.sessionId)!
-    assert.match(prompt, /Implement task 1/)
-    assert.match(prompt, /rules ended with it/)
-    assert.match(prompt, /dropped along the way stays dropped/)
-    assert.doesNotMatch(prompt, /came out of a discussion/)
-  })
+  for (const carry of [
+    { resumeId: 'ds1', fork: true, transcript: TRANSCRIPT, costFrom: 2 },
+    { resumeId: 'ts1', transcript: TRANSCRIPT, costFrom: 2 },
+    { transcript: TRANSCRIPT },
+  ]) {
+    it(`ignores discussion context: ${JSON.stringify(carry)}`, async () => {
+      await planned1()
+      const run = await start({ action: 'implement', id: 1, carry, notes: 'Keep the approved preview' })
+      assert.equal(run.continues, undefined)
+      assert.equal(run.sessionCostFrom, undefined)
+      assert.equal(after(run.argv, '--session-id'), run.sessionId)
+      assert.ok(!run.argv?.includes('--resume') && !run.argv?.includes('--fork-session'))
+      assert.ok(run.deliveryId)
+      const spec = readSpec(run.sessionId)!
+      assert.equal(spec.again, undefined)
+      assert.deepEqual(notes(run), [])
+      assert.match(spec.prompt, /Implement task 1.*Read its current card before starting/)
+      assert.match(spec.prompt, /Keep the approved preview/)
+      assert.doesNotMatch(spec.prompt, /discussion|planned this card|ds1|ts1|discussion\.md/)
+    })
+  }
 
-  it('opens a new session reading the discussion with none to carry', async () => {
-    const run = await start({ action: 'implement', id: 1, carry: { transcript: TRANSCRIPT } })
-    assert.equal(run.continues, undefined)
-    assert.ok(!run.argv?.includes('--resume'))
-    const { prompt } = readSpec(run.sessionId)!
-    assert.match(prompt, new RegExp(`came out of a discussion.*final word.*${TRANSCRIPT}`))
-  })
-
-  it('reads the discussion when the CLI cannot copy a session', async () => {
+  it('does not fall back to a transcript on a connector that cannot fork', async () => {
     board('kimi')
     const run = await start({ action: 'implement', id: 1, carry: { resumeId: 'ds1', fork: true, transcript: TRANSCRIPT } })
-    assert.ok(!run.argv?.includes('--resume'))
-    assert.deepEqual(notes(run), [`new session — ${harnessLabel('kimi')} cannot copy a session`])
-    assert.match(readSpec(run.sessionId)!.prompt, new RegExp(`came out of a discussion.*${TRANSCRIPT}`))
-  })
-
-  it('starts again in the same delivery, reading the discussion, once the session turns out to be gone', async () => {
-    board('claude-code', true)
-    const lost = await start({ action: 'implement', id: 1, carry: { resumeId: 'ds1', fork: true, transcript: TRANSCRIPT } })
-    patch(lost.sessionId, (r) => { r.pid = process.pid })
-    fs.writeFileSync(lost.logPath, '')
-    await watchRun(lost.sessionId, async () => ({ error: 'no resume' }))
-
-    assert.equal(peekRun(lost.sessionId), undefined)
-    const again = readRuns().filter((r) => r.cardId === 1 && r.action === 'implement')
-    assert.equal(again.length, 1)
-    const [run] = again
-    assert.equal(run!.status, 'running')
-    assert.equal(run!.deliveryId, lost.deliveryId)
-    assert.ok(!run!.argv?.includes('--resume'))
-    assert.deepEqual(notes(run!), ['new session — the earlier one is gone, so this step was started again'])
-    assert.match(readSpec(run!.sessionId)!.prompt, new RegExp(`came out of a discussion.*${TRANSCRIPT}`))
+    assert.equal(run.continues, undefined)
+    assert.deepEqual(notes(run), [])
+    assert.doesNotMatch(readSpec(run.sessionId)!.prompt, /discussion/)
   })
 })

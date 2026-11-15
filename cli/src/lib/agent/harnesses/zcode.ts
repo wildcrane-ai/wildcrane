@@ -1,6 +1,6 @@
 import { createZcodeClient } from '../wire'
 import { home, modelsIn, obj } from './models'
-import { SKILL_SENTENCE, type Harness } from './types'
+import type { Harness } from './types'
 
 // The environment every ZCode run starts under.
 //
@@ -125,11 +125,6 @@ export const ZCODE: Harness = {
   // answers "Session not found" ten seconds after the id came back. So a ZCode run that
   // dies before its first turn has nothing to go back to.
   savesSessionAtOpen: false,
-
-  // ZCode's slash and `$` names are its terminal UI's, not something a sent prompt
-  // triggers, so the prompt asks for the skill in a sentence. It reads `.agents/skills/`,
-  // the folder an install already writes, and finds the board's rules there by itself.
-  skillCall: SKILL_SENTENCE,
 
   // No login probe: a ZCode run signs with the Coding Plan key above and never with a
   // `zcode login`, whose credential the command's own config never points at (#282). Its

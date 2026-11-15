@@ -2,7 +2,7 @@ import { join } from 'node:path'
 
 import { home } from './models'
 import { createKimiStreamRenderer } from '../wire'
-import { machineFile, namesFlag, SKILL_SENTENCE, type Harness } from './types'
+import { machineFile, namesFlag, type Harness } from './types'
 
 // Kimi Code CLI, Moonshot's coding agent (#377). The binary is `kimi`, and what this
 // targets is what `curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash` installs — not the
@@ -238,14 +238,6 @@ export const KIMI: Harness = {
   adoptsSessionId: false,
 
   savesSessionAtOpen: false,
-
-  // Kimi does have a slash name for a skill — `/skill:kanban` — but whether one typed into
-  // a `-p` prompt is read as a command or as plain chat text is unprobed. The sentence
-  // works either way, because Kimi's model picks a skill from its description on its own.
-  //
-  // PROBE: if `/skill:kanban` triggers the skill from a `-p` prompt, this becomes that and
-  // the connector stops showing a "Direct skill call" gap.
-  skillCall: SKILL_SENTENCE,
 
   // No login probe, so Kimi is never called logged out. `kimi login` is the way in, but
   // nothing was found that PRINTS whether that login is there, and `kimi` was not on the

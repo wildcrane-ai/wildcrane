@@ -636,6 +636,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
           const { CLAUDE_CODE_MAX_RETRIES: _, ...env } = p.env
           p = { ...p, env }
         }
+        p = { ...p, env: { ...p.env, AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId }), AI4KANBAN_TASK: job.task ?? '' } }
         return p
       }
       // A discussion task's session (#2146), else a new one reading the discussion.

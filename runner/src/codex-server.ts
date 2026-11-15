@@ -9,11 +9,12 @@ import { bounded } from '../../cli/src/lib/shared/conversation'
 import { spawnable } from '../../cli/src/lib/agent/spawnable'
 import { connectionIdentity as processIdentityFor } from '../../cli/src/lib/agent/connection-process'
 import { markEnv, stopMark } from '../../cli/src/lib/agent/stop'
-import { obj } from '../../cli/src/lib/agent/wire/json'
+import { obj, type Json } from '../../cli/src/lib/agent/wire/json'
 import { providerCredentials, threadConfig, tomlValue } from './codex-config'
 import { backendFile, CODEX_PROTOCOL, CODEX_TIMEOUT, codexRecordFile, initializeNative, liveBackend, nativeConnection, nativeDirectory, nativeEndpoint, processIdentity, readPrivate, stopNativeBackends, writePrivate, type NativeBackend, type ThreadLease } from './codex-native'
 import { runnerCwd } from './home'
 import { accountGeneration } from './settings-control'
+import { reconcileCodexLeases } from './codex-ownership'
 
 export { threadConfig } from './codex-config'
 export { CODEX_PROTOCOL, codexRecordFile } from './codex-native'
@@ -33,6 +34,7 @@ export async function codexServer() {
   const sockets = new Set<net.Socket>()
   const idle = new Map<string, number>()
   let closed = false
+  let sweeping: Promise<void> | undefined
 
   const ensure = async (argv: string[], environment: NodeJS.ProcessEnv) => {
     const config = threadConfig(argv, environment)
@@ -106,7 +108,9 @@ export async function codexServer() {
           const request = JSON.parse(line)
           if (closed || request.token !== token || request.protocol !== CODEX_PROTOCOL || request.generation !== generation || accountGeneration() !== generation) throw Error('Codex Runner ownership expired.')
           if (!Array.isArray(request.argv) || typeof request.argv[0] !== 'string') throw Error('Invalid Codex backend request.')
-          socket.end(JSON.stringify({ backend: await ensure(request.argv, obj(request.env) as NodeJS.ProcessEnv) }) + '\n')
+          const environment = obj(request.env) as NodeJS.ProcessEnv
+          const config = threadConfig(request.argv, environment)
+          socket.end(JSON.stringify({ backend: await ensure(request.argv, environment), config }) + '\n')
         } catch (error) { socket.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }) + '\n') }
         finally { clearTimeout(timer) }
       })()
@@ -121,6 +125,11 @@ export async function codexServer() {
     retireLegacy(generation)
     for (const name of fs.readdirSync(nativeDirectory()).filter(value => /^[a-f0-9]{64}\.json$/.test(value))) {
       const backend = readPrivate<NativeBackend>(path.join(nativeDirectory(), name))!
+      if (backend.generation === generation && liveBackend(backend)) {
+        try { await reconcileCodexLeases(backend) }
+        catch (error) { console.error(`runner: Codex ownership verification: ${String(error)}`) }
+      }
+      if (closed) return
       let used = false
       const leases = path.join(nativeDirectory(), 'threads', backend.instance)
       try { used = fs.readdirSync(leases).filter(file => file.endsWith('.json')).some(file => !!readPrivate<ThreadLease>(path.join(leases, file))) } catch {}
@@ -133,14 +142,15 @@ export async function codexServer() {
       }
     }
   }
-  const timer = setInterval(() => void sweep().catch(error => console.error(`runner: Codex cleanup: ${String(error)}`)), 1000)
+  const sweepOnce = () => sweeping ??= sweep().catch(error => console.error(`runner: Codex cleanup: ${String(error)}`)).finally(() => { sweeping = undefined })
+  const timer = setInterval(() => void sweepOnce(), 1000)
   timer.unref()
-  void sweep()
+  void sweepOnce()
   const close = async () => {
     if (closed) return
     closed = true; clearInterval(timer); server.close()
     for (const socket of sockets) socket.destroy()
-    await Promise.allSettled(pending.values())
+    await Promise.allSettled([...pending.values(), sweeping])
     if (readPrivate<CodexRecord>(codexRecordFile())?.instance === instance) fs.rmSync(codexRecordFile(), { force: true })
     if (process.platform !== 'win32') fs.rmSync(address, { force: true })
     if (generation !== accountGeneration()) stopNativeBackends()
@@ -162,13 +172,13 @@ function retireLegacy(generation: string) {
   socket.once('close', () => clearTimeout(timer))
 }
 
-export async function requestCodexBackend(argv: string[], env: NodeJS.ProcessEnv): Promise<NativeBackend> {
+export async function requestCodexBackend(argv: string[], env: NodeJS.ProcessEnv): Promise<{ backend: NativeBackend; config: Json }> {
   const until = Date.now() + CODEX_TIMEOUT
   for (;;) {
     const record = readPrivate<CodexRecord>(codexRecordFile())
     if (record && record.generation === accountGeneration()) {
       try {
-        return await bounded(new Promise<NativeBackend>((resolve, reject) => {
+        return await bounded(new Promise<{ backend: NativeBackend; config: Json }>((resolve, reject) => {
           const socket = net.connect(record.path)
           let text = ''
           socket.on('error', reject)
@@ -176,7 +186,7 @@ export async function requestCodexBackend(argv: string[], env: NodeJS.ProcessEnv
           socket.on('data', chunk => {
             text += chunk
             if (!text.includes('\n')) return
-            try { const answer = JSON.parse(text.split('\n')[0]!); socket.destroy(); answer.error ? reject(Error(answer.error)) : resolve(answer.backend) } catch (error) { reject(error) }
+            try { const answer = JSON.parse(text.split('\n')[0]!); socket.destroy(); answer.error ? reject(Error(answer.error)) : resolve({ backend: answer.backend, config: obj(answer.config) }) } catch (error) { reject(error) }
           })
           socket.once('end', () => { if (!text.includes('\n')) reject(Error('Codex Runner closed during backend preparation.')) })
           socket.setTimeout(Math.max(1, until - Date.now()), () => { socket.destroy(); reject(Error('Codex Runner preparation timed out.')) })

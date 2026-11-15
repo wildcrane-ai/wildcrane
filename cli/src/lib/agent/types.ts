@@ -137,7 +137,7 @@ export interface AgentRequest {
    *  down — the card's planning session resumed, or a discussion's forked. `new`
    *  asks for a new one: the rerun after that session turned out to be gone. */
   session?: 'resume' | 'fork' | 'new'
-  /** clarify, resolve, edit, implement: the session Cloud's task carries (#2146), over the board's
+  /** clarify, resolve, edit: the session Cloud's task carries (#2146), over the board's
    *  own — resumed, or copied with `fork` — and the discussion the task came from, read when none is.
    *  `costFrom` is the session's last recorded total (#627), taken off this run's. */
   carry?: { resumeId?: string; fork?: boolean; transcript?: string; costFrom?: number }

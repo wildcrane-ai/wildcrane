@@ -10,7 +10,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
-import { buildPrompt } from '../src/lib/agent/prompts.ts'
+import { buildAsk, buildPrompt, restartPrompt } from '../src/lib/agent/prompts.ts'
+import { HARNESSES } from '../src/lib/agent/harnesses/index.ts'
 import { openRun } from '../src/lib/agent/sessions.ts'
 import { replaceAgentRuntimes } from '../src/lib/agent/runtimes.ts'
 import { readRuns } from '../src/lib/agent/store.ts'
@@ -99,11 +100,41 @@ describe('the pick reaching the run', () => {
     )
   })
 
-  it('is what the prompt calls the skill by — the CLI spawned, not the agent’s own', () => {
-    // The builder runs Codex here, so its own prompt says `$kanban`; a build picked onto a
-    // Claude Code row must say `/kanban`, or the skill never loads.
-    assert.match(buildPrompt({ action: 'implement', id: 1, title: 'card 1', studio: 'coding' }), /\$kanban/)
-    assert.match(buildPrompt({ action: 'implement', id: 1, title: 'card 1', studio: 'coding', runtime: 'strong' }), /\/kanban/)
+  it('keeps task instructions and guides without a board skill on any runtime (#771)', () => {
+    config({
+      ...BOARD,
+      runtimes: [...BOARD.runtimes, ...HARNESSES.map((h) => runtime(h.name, h.name, {}))],
+    })
+    fs.mkdirSync(path.join(root, 'docs', 'kanban', 'todo'), { recursive: true })
+    const requests: [AgentRequest, RegExp][] = [
+      [{ action: 'implement', id: 1, studio: 'coding' }, /Implement task 1.*guide implement/],
+      [{ action: 'implement', description: 'Ship the change.' }, /Build this: "Ship the change\.".*guide implement/],
+      [{ action: 'implement', plan: 'plan.md' }, /Build the approved plan at `plan\.md`.*guide implement/],
+      [{ action: 'archive', id: 1 }, /Archive task 1.*guide archive/],
+      [{ action: 'edit', id: 1, notes: 'Use tabs.' }, /Revise task 1.*Use tabs\..*guide revise/],
+      [{ action: 'clarify', id: 1 }, /Plan task 1.*guide refine/],
+      [{ action: 'prune-memory' }, /Prune this board's memory.*guide prune-memory/],
+      [{ action: 'review-memory' }, /Review what this board's conversations settled.*guide review-memory/],
+      [{ action: 'review-dismissals' }, /Learn what the user does not want.*guide review-rejections/],
+      [{ action: 'describe-project' }, /Describe this project.*guide describe-project/],
+      [{ action: 'reflect', cards: [1] }, /These tasks have just been completed.*guide reflect/],
+      [{ action: 'spec', id: 1, specAgent: 'tech-stack-advisor' }, /preview agent on task 1.*guide preview-agent/],
+      [{ action: 'approve', id: 1 }, /Task 1.*has been approved: write the previews/],
+      [{ action: 'resolve', id: 1 }, /Apply my answers.*task 1.*guide resolve/],
+    ]
+    const picks = [undefined, ...BOARD.runtimes.map((r) => r.id), ...HARNESSES.map((h) => h.name)]
+    for (const picked of picks) {
+      for (const [req, expected] of requests) {
+        const ask = { ...req, runtime: picked }
+        for (const prompt of [buildAsk(ask), buildPrompt(ask), restartPrompt(ask)].filter((p) => p !== undefined)) {
+          assert.doesNotMatch(prompt, /(?:^|\s)(?:\$kanban|\/(?:skill:)?kanban)\b|Use the kanban skill/i, `${picked}: ${req.action}`)
+          assert.match(prompt, expected, `${picked}: ${req.action}`)
+        }
+      }
+    }
+    for (const folder of ['.agents', '.claude']) {
+      assert.equal(fs.existsSync(path.join(root, folder, 'skills', 'kanban')), false)
+    }
   })
 
   it('is what the pictures follow too — the CLI spawned decides where they go (#517)', () => {

@@ -123,6 +123,19 @@ describe("a run's cost", () => {
     near((await watch(opened.run, 3)).costUsd, 1)
   })
 
+  it('counts a new build from zero and a resumed build from its own total (#768)', async () => {
+    const req = { action: 'implement', id: 1, carry: { resumeId: 'disc-1', fork: true, costFrom: 2 } } as const
+    const opened = openRun(req, 'prompt', [], undefined, carriedSession(req)?.carried)
+    if ('error' in opened) throw new Error(opened.error)
+    assert.equal(opened.run.continues, undefined)
+    assert.equal(opened.run.sessionCostFrom, undefined)
+    const first = await watch(opened.run, 3)
+    near(first.costUsd, 3)
+    const next = await resumed(first, 3.5)
+    assert.equal(next.resumedFrom, first.sessionId)
+    near(next.costUsd, 0.5)
+  })
+
   it('leaves a resumed run on a connector that reports its own cost alone', async () => {
     board('opencode')
     const prev = await failed(undefined, 2)

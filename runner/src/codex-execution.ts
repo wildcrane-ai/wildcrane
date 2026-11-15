@@ -7,13 +7,13 @@ import { bounded } from '../../cli/src/lib/shared/conversation'
 import { tryLock } from '../../cli/src/lib/lock'
 import { RpcError, type Message } from '../../cli/src/lib/agent/wire/rpc'
 import { obj, str, type Json } from '../../cli/src/lib/agent/wire/json'
-import { mcpEnvironment, threadConfig } from './codex-config'
-import { backgroundTerminals, backendFile, CODEX_TIMEOUT, initializeNative, leaseFile, liveLease, nativeConnection, processIdentity, readPrivate, writePrivate, type NativeBackend, type ThreadLease } from './codex-native'
+import { mcpEnvironment } from './codex-config'
+import { executionOwner, inspectThread, ownershipConflict } from './codex-ownership'
+import { backgroundTerminals, backendFile, CODEX_TIMEOUT, initializeNative, leaseFile, liveLease, nativeConnection, processIdentity, readPrivate, releaseNativeThread, writeLease, type NativeBackend, type ThreadLease } from './codex-native'
 
-export async function codexExecution(backend: NativeBackend, argv: string[], environment: NodeJS.ProcessEnv, cwd: string, send: (message: unknown) => void) {
-  const identity = processIdentity()
+export async function codexExecution(backend: NativeBackend, config: Json, environment: NodeJS.ProcessEnv, cwd: string, send: (message: unknown) => void) {
+  const identity = { ...processIdentity(), ...executionOwner(environment) }
   const lease = crypto.randomUUID()
-  const config = threadConfig(argv, environment)
   const settings = crypto.createHash('sha256').update(JSON.stringify([cwd, config])).digest('hex')
   const threads = new Set<string>(), active = new Map<string, string>(), requests = new Set<string>()
   const preparing = new Map<string, number>()
@@ -29,15 +29,15 @@ export async function codexExecution(backend: NativeBackend, argv: string[], env
     if (!id) return
     const file = leaseFile(backend, id)
     const release = tryLock(file + '.lock')
-    if (!release) throw Error('Codex thread ownership is being transferred. Try again.')
+    if (!release) throw ownershipConflict(id, state(), readPrivate<ThreadLease>(file), 'ownership-transfer; try again')
     try {
       const current = readPrivate<ThreadLease>(file)
-      if (current && current.lease !== lease && current.lease !== previous?.lease) throw Error('Codex thread is already in use by another run.')
+      if (current && current.lease !== lease && current.lease !== previous?.lease) throw ownershipConflict(id, state(), current, liveLease(current) ? 'owner-alive' : 'unverified')
       if (loaded) threads.add(id)
-      writePrivate(file, { ...state(), ...(previous?.retained ? { retained: previous.retained, adopting: previous.lease } : {}) })
+      writeLease(backend, id, { ...state(), ...(previous?.retained ? { retained: previous.retained, adopting: previous.lease } : {}) })
       for (const thread of threads) {
         const owner = readPrivate<ThreadLease>(leaseFile(backend, thread))
-        if (owner?.lease === lease) writePrivate(leaseFile(backend, thread), { ...owner, threads: [...threads] })
+        if (owner?.lease === lease) writeLease(backend, thread, { ...owner, threads: [...threads] })
       }
     } finally { release() }
   }
@@ -52,13 +52,12 @@ export async function codexExecution(backend: NativeBackend, argv: string[], env
         const key = (value: Json) => JSON.stringify([value.threadId, value.itemId, value.processId])
         if (actual.length !== previous.retained.kept.length || actual.some(value => !previous!.retained!.kept.some(item => key(item) === key(value)))) throw Error('The retained Codex services changed; no new work was submitted.')
       } else {
-        if (liveLease(previous)) throw Error('Codex thread is already in use by another run.')
+        if (liveLease(previous)) throw ownershipConflict(id, state(), previous, 'owner-alive')
         for (const thread of new Set([id, ...previous.threads])) {
-          const snapshot = obj((await connection.rpc.call('thread/read', { threadId: thread })).thread)
-          if (obj(snapshot.status).type === 'active' || (await backgroundTerminals(connection.rpc, thread).catch(error => {
-            if (error instanceof RpcError && /thread not found/i.test(error.message)) return []
-            throw error
-          })).length) throw Error('The previous Codex connection exited with work still running. Existing results were preserved; automatic replay was refused.')
+          let status: string
+          try { status = await inspectThread(connection.rpc, thread) }
+          catch { throw ownershipConflict(thread, state(), previous, 'unverified') }
+          if (status !== 'idle' && status !== 'notLoaded') throw ownershipConflict(thread, state(), previous, status === 'active' || status === 'background-work' ? 'work still running; automatic replay refused' : 'unverified')
         }
       }
     }
@@ -116,27 +115,22 @@ export async function codexExecution(backend: NativeBackend, argv: string[], env
     } catch (error) { child.kill('SIGTERM'); throw error }
   }
   const cleanup = async () => {
-    await Promise.allSettled(pending)
+    await bounded(Promise.allSettled(pending), CODEX_TIMEOUT, 'Codex pending requests did not settle.')
     if (keeper) return
     for (const id of requests) connection.rpc.refuse(id, 'Execution disconnected.')
-    for (const id of threads) {
-      if (!owned(id)) continue
-      if (!settled) {
-        if (active.has(id)) await connection.rpc.call('turn/interrupt', { threadId: id, turnId: active.get(id) })
-        try { await connection.rpc.call('thread/backgroundTerminals/clean', { threadId: id }) }
-        catch (error) { if (!(error instanceof RpcError) || ![-32601].includes(error.code!) && !/thread not found/i.test(error.message)) throw error }
-      }
-      const unloaded = new Promise<void>(resolve => unloading.set(id, resolve))
-      const result = await connection.rpc.call('thread/unsubscribe', { threadId: id })
-      if (result.status === 'unsubscribed') await unloaded
-      unloading.delete(id)
+    const results = await Promise.allSettled([...threads].map(async id => {
+      if (!owned(id)) return
+      await releaseNativeThread(connection, id, active.get(id), !settled, unloading)
       remove(id)
-    }
+    }))
+    const failure = results.find(result => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
   }
+
   const close = () => closing ??= (async () => {
-    try { await bounded(cleanup(), CODEX_TIMEOUT, 'Codex thread cleanup timed out; ownership remains unconfirmed.') }
+    try { await cleanup() }
     catch (error) {
-      for (const id of threads) if (owned(id)) writePrivate(leaseFile(backend, id), { ...state(), uncertain: true })
+      for (const id of threads) if (owned(id)) writeLease(backend, id, { ...state(), uncertain: true })
       send({ method: 'wildcrane/cleanup', params: { status: 'unconfirmed', lease } })
       console.error(error instanceof Error ? error.message : String(error))
     } finally { connection.close() }
@@ -169,7 +163,7 @@ export async function codexExecution(backend: NativeBackend, argv: string[], env
         const key = (value: Json) => JSON.stringify([value.threadId, value.itemId, value.processId])
         if (new Set(kept.map(key)).size !== kept.length || actual.length !== kept.length || actual.some(value => !kept.some(item => key(item) === key(value)))) throw Error('Codex retained terminal state changed before handoff.')
         settled = { root: str(params.threadId), execution: str(params.execution), kept }
-        for (const thread of threads) writePrivate(leaseFile(backend, thread), state())
+        for (const thread of threads) writeLease(backend, thread, state())
         if (kept.length) await keep()
         send({ id, result: { confirmed: true, instance: backend.instance, lease } })
         return
@@ -200,15 +194,15 @@ export async function codexExecution(backend: NativeBackend, argv: string[], env
         for (const child of previous.threads) if (child !== thread) {
           claim(child, true, previous)
           await connection.rpc.call('thread/resume', { threadId: child })
-          writePrivate(leaseFile(backend, child), state())
+          writeLease(backend, child, state())
         }
         result.retainedThreads = [...threads].map(id => ({ id }))
-        writePrivate(leaseFile(backend, thread), state())
+        writeLease(backend, thread, state())
       }
       if (id !== undefined) send({ id, result })
     } catch (error) {
       if (source && previous?.retained) for (const thread of previous.threads) {
-        if (owned(thread)) writePrivate(leaseFile(backend, thread), previous)
+        if (owned(thread)) writeLease(backend, thread, previous)
         threads.delete(thread)
       }
       if (id !== undefined) send({ id, error: { code: error instanceof RpcError ? error.code : -32000, message: error instanceof Error ? error.message : String(error) } })

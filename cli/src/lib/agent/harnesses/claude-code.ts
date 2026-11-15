@@ -307,9 +307,6 @@ export const CLAUDE_CODE: Harness = {
   // Its own Read tool opens an image file, so a path in the message is the whole of it.
   images: { as: 'message' },
 
-  // Claude Code loads a skill from its slash name.
-  skillCall: '/kanban',
-
   // `claude auth status` prints one JSON object saying whether it is signed in and how. Its
   // `loggedIn` flag is read, not its exit code: this one does set the code, and two of the
   // other three leave it at 0 in both states, so the output is the rule everywhere.
