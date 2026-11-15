@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { parseSpecAgent } from '../src/lib/agents/parse.ts'
-import { beginPreviewRevision, choosePreviewRevision, resetPreviewSelection, confirmPreviewStage, invalidatePreviewStages, previewBaseline, previewReady, selectPreviewStages, submitPreviewStage, type PreviewProgress } from '../src/lib/preview-stages.ts'
+import { reportPreviewStage, syncPreviewContent, beginPreviewRevision, choosePreviewRevision, resetPreviewSelection, confirmPreviewStage, invalidatePreviewStages, previewBaseline, previewReady, selectPreviewStages, submitPreviewStage, type PreviewProgress } from '../src/lib/preview-stages.ts'
 
 const definitions = ['copy', 'images', 'layout'].map((id) => ({ id, title: { en: id, zh: id }, instructions: `${id}.md`, when: `Needs ${id}` }))
 const fresh = (): PreviewProgress => ({ agent: 'designer', definitionRevision: 'frozen', generation: 1, currentStageId: null, definitions: structuredClone(definitions), body: 'Design', files: {}, stages: [], displayedArtifact: null, execution: null })
@@ -44,8 +44,10 @@ describe('preview confirmation boundaries (#704)', () => {
     assert.throws(() => submitPreviewStage(p, first, 'racing', {}))
     submitPreviewStage(p, second, 'new images', {})
     const oldHistory = structuredClone(p.stages)
-    selectPreviewStages(p, ['layout'])
+    assert.throws(() => selectPreviewStages(p, ['layout']), /approval/)
+    resetPreviewSelection(p)
     assert.deepEqual(p.archivedSelections?.at(-1), oldHistory)
+    selectPreviewStages(p, ['layout'])
     assert.throws(() => confirmPreviewStage(p, 'images', 0, 'frozen', 'stale'))
   })
   it('handles conditional omission and single-stage delivery, rejecting empty, unknown, unordered and incomplete selections', () => {
@@ -95,4 +97,34 @@ describe('preview confirmation boundaries (#704)', () => {
     for (const instructions of ['../copy.md', '/copy.md', 'copy.txt', 'missing.md']) assert.ok('problem' in parseSpecAgent(source.replace('instructions: copy.md', `instructions: ${instructions}`), 'AGENT.md', () => null))
     assert.ok('problem' in parseSpecAgent(source.replace('title: {en: Copy, zh: 文案}', 'title: {zh: 文案}'), 'AGENT.md', () => 'x'))
   })
+})
+
+it('syncs changed content without completion or approval and never lets selection bypass a wait (#765)', () => {
+  const p = fresh()
+  const run = 'one'
+  reportPreviewStage(p, 'copy', 'running', run)
+  syncPreviewContent(p, 'Words', { page: { version: 1 } })
+  assert.equal(p.stages[0].status, 'running')
+  reportPreviewStage(p, 'copy', 'done', run)
+  const saved = structuredClone(p)
+  reportPreviewStage(p, 'copy', 'done', run)
+  assert.deepEqual(p, saved)
+  syncPreviewContent(p, 'Words', { page: { version: 2 } })
+  assert.equal(p.stages[0].status, 'running')
+  assert.equal(p.stages[0].version, 2)
+  assert.equal((p.stages[0].history?.[0].assets.page as {version: number}).version, 1)
+  const multi = fresh(); selectPreviewStages(multi, ['copy', 'layout'])
+  syncPreviewContent(multi, 'Copy', {})
+  reportPreviewStage(multi, 'copy', 'done', run)
+  assert.throws(() => reportPreviewStage(multi, 'layout', 'running', run), /approval/)
+  assert.throws(() => selectPreviewStages(multi, ['layout']), /approval/)
+  assert.throws(() => choosePreviewRevision(multi, 'layout', run), /approval/)
+  reportPreviewStage(multi, 'copy', 'running', run)
+  assert.throws(() => selectPreviewStages(multi, ['layout']), /approval/)
+  reportPreviewStage(multi, 'copy', 'done', run)
+  confirmPreviewStage(multi, 'copy', 1, 'frozen', 'next')
+  syncPreviewContent(multi, 'Edited before queued work started', {})
+  assert.equal(multi.currentStageId, 'copy')
+  assert.equal(multi.stages[1].status, 'stale')
+  assert.equal(multi.stages[0].confirmation, undefined)
 })

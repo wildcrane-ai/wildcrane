@@ -2340,7 +2340,7 @@ describe('a task’s folder (#2037)', () => {
     assert.match(page, /padding:/, 'Tailwind did not style the page')
 
     assert.equal((await runTask('j2', edit('Plus'))).outcome, 'done')
-    assert.deepEqual(assets()['.assets/1/page.tsx'], { artifact: ref.artifact, version: 2 })
+    assert.deepEqual(assets()['.assets/1/page.tsx'], { artifact: ref.artifact, version: 2, dependencies: [] })
     assert.match(cloud.task.artifacts.get(ref.artifact)![1]!.toString(), />Plus</)
     assert.match(fs.readFileSync(path.join(cached(), '.akb', 'boards', '.akb', 'kanban', 'assets', '1', 'page.tsx'), 'utf8'), /^import Plan/,
       'the drawn page was written over its source')

@@ -460,7 +460,7 @@ export const removeFolder = (machineId: string, project: string) =>
 
 /** A path the body names → the artifact version it shows; no `version` follows the latest. */
 /** `error` says why a preview could not be drawn; its artifact keeps the last drawn version, if any. */
-export type Assets = Record<string, { artifact: string; version?: number; error?: string }>
+export type Assets = Record<string, { artifact: string; dependencies?: string[]; version?: number; error?: string }>
 
 /** One file of a workspace's board (#2081, #2114), by its path there; `content` null for a deleted one. */
 export interface BoardFile {

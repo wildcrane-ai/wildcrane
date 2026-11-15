@@ -1,7 +1,7 @@
 import type { PreviewStageDefinition } from './agents/parse.ts'
 
 export type PreviewStageStatus = 'pending' | 'queued' | 'running' | 'awaiting_confirmation' | 'confirmed' | 'ready' | 'failed' | 'stale'
-export interface PreviewArtifact { stageId: string; version: number; body: string; assets: Record<string, unknown> }
+export interface PreviewArtifact { localAssets?: Record<string, string>; stageId: string; version: number; body: string; assets: Record<string, unknown> }
 export interface PreviewStage extends PreviewStageDefinition {
   status: PreviewStageStatus
   version: number | null
@@ -29,6 +29,7 @@ export interface PreviewBaseline { definitionRevision: string; generation: numbe
 export function selectPreviewStages(progress: PreviewProgress, ids: string[]): void {
   const wanted = new Set(ids)
   if (!ids.length || wanted.size !== ids.length || ids.some((id) => !progress.definitions.some((stage) => stage.id === id))) throw Error('Choose a nonempty list of unique known stage IDs.')
+  if (progress.stages.some(stage => stage.artifact || ['awaiting_confirmation', 'confirmed'].includes(stage.status)) && JSON.stringify(progress.stages.map(stage => stage.id)) !== JSON.stringify(ids)) throw Error('Wait for user approval before changing the selected stages.')
   const chosen = ids.map((id) => progress.definitions.find((stage) => stage.id === id)!)
   if (progress.stages.length) {
     if (JSON.stringify(progress.stages.map((stage) => stage.id)) === JSON.stringify(ids)) return
@@ -108,6 +109,7 @@ export function choosePreviewRevision(progress: PreviewProgress, from: string, e
   const saved = progress.revisionBase ?? progress.stages
   const at = saved.findIndex((stage) => stage.id === from)
   if (at < 0) throw Error('Unknown stage.')
+  if (saved.slice(0, at).some(stage => stage.status !== 'confirmed')) throw Error('Wait for user approval before starting the next stage.')
   progress.archivedSelections = [...progress.archivedSelections ?? [], structuredClone(saved)]
   progress.stages = structuredClone(saved)
   progress.generation++
@@ -126,4 +128,37 @@ export function resetPreviewSelection(progress: PreviewProgress): void {
   progress.execution = null
   progress.displayedArtifact = null
   delete progress.revisionBase
+}
+
+
+export function syncPreviewContent(progress: PreviewProgress, body: string, assets: Record<string, unknown>): void {
+  let stage = progress.stages.find(stage => stage.id === progress.currentStageId)
+  if (stage?.status === 'queued' && progress.displayedArtifact) stage = progress.stages.find(item => item.id === progress.displayedArtifact!.stageId)
+  if (!stage || !stage.artifact && !body.trim() && !Object.keys(assets).length) return
+  if (stage.artifact?.body === body && JSON.stringify(stage.artifact.assets) === JSON.stringify(assets)) return
+  const artifact = { stageId: stage.id, version: (stage.version ?? 0) + 1, body, assets: structuredClone(assets) }
+  stage.version = artifact.version
+  stage.artifact = artifact
+  stage.history = [...stage.history ?? [], artifact]
+  if (['confirmed', 'ready', 'awaiting_confirmation'].includes(stage.status)) stage.status = 'running'
+  delete stage.confirmation
+  const at = progress.stages.indexOf(stage)
+  if (progress.currentStageId !== stage.id) {
+    progress.currentStageId = stage.id
+    progress.execution = null
+    progress.generation++
+    for (const next of progress.stages.slice(at + 1)) { next.status = 'stale'; delete next.confirmation }
+  }
+  progress.displayedArtifact = artifact
+}
+
+export function reportPreviewStage(progress: PreviewProgress, stageId: string, status: 'running' | 'done', execution: string): PreviewBaseline {
+  if (!progress.stages.length) selectPreviewStages(progress, [stageId])
+  if (progress.currentStageId !== stageId) throw Error('Wait for user approval before starting the next stage.')
+  const baseline = previewBaseline(progress, stageId, execution)
+  const stage = progress.stages.find(stage => stage.id === stageId)!
+  if (status === 'done') {
+    if (stage.status !== 'confirmed') stage.status = progress.stages.at(-1)?.id === stageId ? 'ready' : 'awaiting_confirmation'
+  } else if (stage.status !== 'confirmed') stage.status = 'running'
+  return baseline
 }

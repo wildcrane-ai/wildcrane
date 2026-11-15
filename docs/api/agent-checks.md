@@ -25,11 +25,53 @@ sources are named in `findings` and `unavailable`. No overall pass/fail grade is
 
 ## Continue saved work
 
-- **Previews**: the authorized session on a task may print, select, revise and submit its
-  listed previews. Starting ready or waiting work retains artifacts, history and confirmations.
-  A repeated submission returns its existing version; `--revise-from <id>` prepares a new one.
-- **Stages**: agents choose known unique IDs in the order the task needs. Changing a saved
-  selection archives it and fences stale writers; no required-stage or definition-order gate remains.
+- **Previews**: synchronized body and asset edits update the current draft automatically.
+  Stage snapshots remain history and approval evidence; they never hide newer synchronized work.
+- **Current stage**: `akb raw previews <agent> <id> --stage <stage-id> [--status running|done]`
+  reports the authorized stage and its state, defaulting to `running`. It returns the stage
+  name, position and state, plus instructions while working. JSON includes `specAgent`,
+  `cardId`, `currentStageId` and `status`. Use known IDs from the frozen definition; retain
+  the saved selection. On first entry a known starting stage needs no separate selection call.
+  Selected stages need not cover every definition, but entering a later selected stage
+  requires valid upstream approval. Reselecting stages or resuming cannot bypass that wait.
+  Unknown IDs or states, unauthorized roles, stale writers and unapproved advancement are
+  refused without changing progress. Repeated identical reports make no version or job.
+
+  ```sh
+  akb raw previews ui-designer 765 --stage copywriting
+  akb raw previews ui-designer 765 --stage copywriting --status done
+  # Copy is complete; wait for the user to approve before starting UI draft.
+  ```
+
+- **Completion**: `done` completes only the current stage. It does not submit, pin content,
+  approve, advance or queue work. Rework uses `running`, then `done` when finished. The last
+  stage returns to ordinary preview review without an extra stage-advance action. Neither
+  process exit nor synchronization implies completion or approval.
+- **Approval**: `GET /v1/tasks/{id}` retains `canConfirm` and stage history. A completed stage
+  with a next stage can be approved only against its latest fully synchronized content and
+  dependencies. The page shows “Approve, start <next stage>”.
+  `POST /v1/tasks/{id}/decisions` retains `confirm_preview` with `preview_agent`,
+  `preview_stage`, `preview_version`, `definition_revision` and `review_revision`.
+  It atomically records the reviewed version, advances and queues one continuation; repeated
+  confirmation returns the same action. Stale versions or changed dependencies return the
+  existing conflict response and require the user to review the current draft.
+  Asset-only edits invalidate affected approvals too; stale queued work cannot use them.
+  Unrelated previews and progress-only updates retain their approvals.
+
+  ```sh
+  akb task approve W-765 --preview ui-designer --preview-stage copywriting \
+    --preview-version 3 --definition-revision <revision-from-task>
+  ```
+
+  The stage flags remain user-only and use the page's version and access checks. Task-level
+  `approve` and `request_changes` stay independent; existing direct-start rules remain.
+- **Readers**: `GET /v1/tasks/{id}/card` serves the synchronized body and fixed asset references.
+  `GET /v1/shared/{token}` shows the same current draft and stage progress with existing
+  access checks, without approval or other write capabilities.
+- **Submission**: `--submit` is removed. During rollout old submit requests remain idempotent
+  compatibility calls, not the only way to version or display work. Existing confirmation
+  requests remain valid only for the reviewed version. Waiting tasks retain their approval
+  action; queued continuations resume only while their recorded approval is still valid.
 - **Runs**: `raw run resume [id] [--require-session]` uses the original session where possible.
   The legacy flag remains accepted. Missing sessions receive the original task in the same
   directory and delivery, with a fresh session identifier. Existing logs remain on disk.
@@ -53,7 +95,7 @@ sources are named in `findings` and `unavailable`. No overall pass/fail grade is
 | Whole-studio later-role preflight | Removed. The selected command reports actual unavailable tools; later agents do not prevent current work. |
 | Post-run board scan and forced repair | Removed, including repair prompt injection and preview resubmission failure inference. |
 | Ended run, absent session or incomplete recovery metadata | Context for the agent; none alone refuses takeover. Actual command errors still reach the agent. |
-| Task/file access | Retained: a task-A session cannot submit task B; out-of-tree asset symlinks must never reach copying or uploading. See `cli/test/agent-checks.test.ts` and Runner asset tests. |
+| Task/file access | Retained: a task-A session cannot update task B’s stage; out-of-tree asset symlinks must never reach copying or uploading. See `cli/test/agent-checks.test.ts` and Runner asset tests. |
 | Live execution and lease ownership | Retained: stopping, logout and transfer revoke the old writer. `execution-resume.test.ts` keeps the new owner intact; Runner handoff tests stop the old process before another writes. |
 | Version comparisons | Retained: an old baseline cannot replace a new artifact; stale card writes cannot replace newer contents. `preview-stages.test.ts` and Cloud SQL preview tests compare the saved artifact after stale writes. |
 | User confirmation | Retained: repeated confirmation returns the same action and queues exactly one continuation. Old versions and explicitly reset scope cannot confirm new work. Cloud SQL preview tests inspect job counts and retained snapshots. |

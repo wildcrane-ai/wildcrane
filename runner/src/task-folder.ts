@@ -865,8 +865,8 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
         catch (error) { why = renderError(error) }
       }
       if (why) {
-        let pin: Assets[string] | null = old ? { artifact: old.artifact, ...(old.version ? { version: old.version } : {}) }
-          : previous?.version ? { artifact: previous.artifact, version: previous.version } : null
+        let pin: Assets[string] | null = old ? { ...old }
+          : previous?.version ? { artifact: previous.artifact, version: previous.version, ...(previous.dependencies ? { dependencies: previous.dependencies } : {}) } : null
         if (!pin) {
           if (!ws.cloudTask) continue
           let artifact = previous?.artifact
@@ -891,7 +891,7 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
             if (!art.ok) return art
             version = art.value.latest_version ?? 0
           }
-          for (const alias of node.aliases) refs[alias] = { artifact: old.artifact, version }
+          for (const alias of node.aliases) refs[alias] = { artifact: old.artifact, version, ...(old.dependencies ? { dependencies: old.dependencies } : {}) }
         }
         continue
       }
@@ -940,7 +940,7 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
           record.assets[alias] = entry
           changed = true
         }
-        refs[alias] = { artifact: entry.artifact, version: entry.version }
+        refs[alias] = { artifact: entry.artifact, version: entry.version, ...(entry.dependencies?.length || /\.(html?|css|json|tsx|tmx|tmj|tsj)$/i.test(alias) ? { dependencies: entry.dependencies ?? [] } : {}) }
       }
       if (changed) writeRecord(ws, record)
     }

@@ -70,11 +70,12 @@ test('a planning session selects and submits several roles with isolated baselin
   fs.writeFileSync(path.join(ASSETS, '1/ui-designer.diff'), 'changed after submission')
   await submit('ui-designer', 'ui-draft')
   await enter('ui-designer')
-  assert.deepEqual(readPreviewProgress(1), saved)
+  assert.deepEqual(readPreviewProgress(1)['prompt-writer'], saved['prompt-writer'])
+  assert.equal(readPreviewProgress(1)['ui-designer'].stages[0].version, saved['ui-designer'].stages[0].version! + 1)
   assert.match(fs.readFileSync(card(1), 'utf8'), /Saved requirements/)
   await assert.rejects(enter('ui-designer', 2), /active task session/)
   await assert.rejects(enter('api-designer'), /Choose this preview agent/)
-  await assert.rejects(submit('ui-designer', 'copywriting'), /Wrong stage/)
+  await assert.rejects(submit('ui-designer', 'copywriting'), /approval/)
 })
 
 test('external sessions and standalone preview runs resume saved work and preserve the confirmed prefix', async () => {
@@ -97,7 +98,7 @@ test('external sessions and standalone preview runs resume saved work and preser
   assert.deepEqual(revised.stages[0], original.stages[0])
   assert.equal(revised.stages[1].history!.length, 1)
   await submit('ui-designer', 'ui-draft')
-  assert.equal(readPreviewProgress(1)['ui-designer'].stages[1].version, 2)
+  assert.equal(readPreviewProgress(1)['ui-designer'].stages[1].version, original.stages[1].version)
   assert.equal(readPreviewProgress(1)['ui-designer'].stages[1].history![0].body, original.stages[1].artifact!.body)
 })
 

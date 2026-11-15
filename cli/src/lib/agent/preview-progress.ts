@@ -1,3 +1,7 @@
+import { bodyReferences, kindOf } from '../../../../artifact-sdk/src/internal/references'
+import { manifestOf, referencesOf } from '../../../../artifact-sdk/src/internal/manifest'
+import { runnerProject } from '../cloud/tasks'
+import { KANBAN } from '../paths'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -13,11 +17,21 @@ import { locate } from '../cards'
 import { parseFrontmatter } from '../frontmatter'
 import { executionOf } from '../cloud/execution'
 import { PREVIEW_BRIDGE_ENV } from '../cloud/preview'
-import { previewBaseline, previewReady, selectPreviewStages, submitPreviewStage, type PreviewBaseline, type PreviewProgress } from '../preview-stages'
+import { reportPreviewStage, syncPreviewContent, previewBaseline, selectPreviewStages, type PreviewBaseline, type PreviewProgress } from '../preview-stages'
 
 const file = (id: number) => path.join(BOARD_STATE, 'previews', `${id}.json`)
 export function readPreviewProgress(id: number): Record<string, PreviewProgress> {
-  try { return JSON.parse(fs.readFileSync(file(id), 'utf8')) } catch (error) {
+  try {
+    const all: Record<string, PreviewProgress> = JSON.parse(fs.readFileSync(file(id), 'utf8'))
+    if (!runnerProject(KANBAN) && !process.env[PREVIEW_BRIDGE_ENV]) {
+      const body = findCard(id)?.body ?? ''
+      for (const [name, progress] of Object.entries(all)) {
+        const section = previewSection(body, name)
+        try { syncPreviewContent(progress, section, localPreviewAssets(id, section)) } catch { /* Unsafe files are refused by the stage write. */ }
+      }
+    }
+    return all
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
     throw error
   }
@@ -27,6 +41,7 @@ export function updatePreviewProgress<T>(id: number, change: (all: Record<string
   return withLock(`${file(id)}.lock`, 'updating preview progress', () => {
     const all = readPreviewProgress(id)
     const result = change(all)
+    if (!runnerProject(KANBAN) && !process.env[PREVIEW_BRIDGE_ENV]) freezeLocalAssets(id, all)
     const temp = `${file(id)}.${process.pid}.tmp`
     fs.writeFileSync(temp, JSON.stringify(all) + '\n')
     fs.renameSync(temp, file(id))
@@ -57,12 +72,12 @@ export function previewStagePrompt(id: number, name: string, command: string): s
   if (!progress.stages.length) return `Stages:\n${JSON.stringify(progress.definitions)}\nSelect with: ${command} raw previews ${name} ${id} --stages <id,...>.`
   const current = progress.stages.find((stage) => stage.id === progress.currentStageId)
   if (!current) return `Saved stages: ${JSON.stringify(progress.stages)}\nSelect with: ${command} raw previews ${name} ${id} --stages <id,...>.`
-  if (current.status === 'awaiting_confirmation' || previewReady(progress)) return 'The submitted preview is awaiting review.'
+  if (['awaiting_confirmation', 'ready', 'confirmed'].includes(current.status)) return 'The current preview is awaiting user review. Stop and wait for approval before starting the next stage; do not poll.'
   return [
     `Selected stages: ${progress.stages.map((stage) => stage.id).join(', ')}. Current stage: ${current.id}.`,
     progress.files[current.instructions] === progress.body ? '' : progress.files[current.instructions],
     ...progress.stages.filter((stage) => stage.status === 'confirmed').map((stage) => `Confirmed ${stage.id} v${stage.version}:\n${stage.artifact?.body ?? ''}`),
-    `Submit with: ${command} raw previews ${name} ${id} --submit --stage ${current.id}.`,
+    `Report completion with: ${command} raw previews ${name} ${id} --stage ${current.id} --status done. Stop and wait for user approval before starting the next stage.`,
   ].join('\n\n')
 }
 function previewOwner(id: number, name: string, inside = insideRun()): string {
@@ -121,29 +136,6 @@ export function previewSection(body: string, name: string): string {
   const end = lines.findIndex((line, index) => index > start && (/^## /.test(line) || line.trim() === '<!-- agent -->'))
   return lines.slice(start + 1, end < 0 ? undefined : end).join('\n').trim()
 }
-export function submitLocalPreview(id: number, name: string, stage: string, baseline?: PreviewBaseline) {
-  const run = previewRun(id, name)
-  const card = findCard(id)
-  if (!card) throw Error('The task is no longer open.')
-  const body = previewSection(card.body, name)
-  // Freeze the complete asset folder so relative dependencies survive subsequent edits.
-  const snapshot = randomUUID()
-  const source = path.join(ASSETS, String(id))
-  const dest = path.join(BOARD_STATE, 'previews', 'assets', String(id), snapshot)
-  if (fs.existsSync(source) && fs.lstatSync(source).isSymbolicLink()) throw Error('Preview assets must stay inside this task’s asset folder.')
-  if (fs.existsSync(source)) fs.cpSync(source, dest, { recursive: true, dereference: true, filter: (file) => {
-    const real = fs.realpathSync(file)
-    if (real !== fs.realpathSync(source) && !real.startsWith(fs.realpathSync(source) + path.sep)) throw Error('Preview assets must stay inside this task’s asset folder.')
-    return true
-  } })
-  return updatePreviewProgress(id, (all) => {
-    const progress = all[name]
-    if (!progress) throw Error('Select the stages first.')
-    const base = baseline ?? readPreviewBaseline(id, name, run.sessionId)
-    if (base.stageId !== stage) throw Error('Wrong stage.')
-    return submitPreviewStage(progress, base, body, { folder: dest })
-  })
-}
 
 const baselineFile = (id: number, name: string, run: string) => path.join(BOARD_STATE, 'previews', 'runs', String(id), name, `${run}.json`)
 export function savePreviewBaseline(id: number, name: string, run: string, baseline: PreviewBaseline): void {
@@ -181,4 +173,72 @@ export function frozenPreviewFile(agent: string, relative: string): string | und
   const run = readRuns().find((run) => run.sessionId === insideRun())
   if (run?.action !== 'spec' || run.specAgent !== agent || run.cardId === null) return undefined
   return readPreviewProgress(run.cardId)[agent]?.files[relative]
+}
+
+
+export function reportLocalPreview(id: number, name: string, stage: string, status: 'running' | 'done') {
+  const run = previewRun(id, name)
+  return updatePreviewProgress(id, all => {
+    const progress = all[name]
+    if (!progress || progress.execution !== run.sessionId) throw Error('This execution is outdated. Reload the task.')
+    const baseline = reportPreviewStage(progress, stage, 'running', run.sessionId)
+    const body = previewSection(findCard(id)?.body ?? '', name)
+    const assets = localPreviewAssets(id, body)
+    syncPreviewContent(progress, body, assets)
+    reportPreviewStage(progress, stage, status, run.sessionId)
+    savePreviewBaseline(id, name, run.sessionId, baseline)
+    return progress
+  })
+}
+
+
+function localPreviewAssets(id: number, body: string): Record<string, unknown> {
+  const assets: Record<string, unknown> = {}
+  const taskRoot = path.join(ASSETS, String(id))
+  const visit = (src: string) => {
+    if (src in assets || /^[a-z][\w+.-]*:/i.test(src)) return
+    const file = path.resolve(ASSETS, src.replace(/^\.assets\//, ''))
+    if (!file.startsWith(taskRoot + path.sep)) throw Error('Preview assets must stay inside this task’s asset folder.')
+    if (!fs.existsSync(file)) { assets[src] = null; return }
+    if (fs.lstatSync(taskRoot).isSymbolicLink()) throw Error('Preview assets must stay inside this task’s asset folder.')
+    const real = fs.realpathSync(file)
+    if (!real.startsWith(fs.realpathSync(taskRoot) + path.sep)) throw Error('Preview assets must stay inside this task’s asset folder.')
+    const bytes = fs.readFileSync(real)
+    assets[src] = createHash('sha256').update(bytes).digest('hex')
+    const manifest = manifestOf(kindOf(path.extname(file)))
+    let content: unknown = bytes.toString()
+    if (manifest?.references?.some(ref => 'json' in ref)) {
+      try { content = JSON.parse(content as string) } catch { return }
+    }
+    for (const ref of referencesOf(manifest, content)) {
+      if (/^[a-z][\w+.-]*:/i.test(ref.src)) continue
+      visit(path.posix.normalize(path.posix.join(path.posix.dirname(src), ref.src)))
+    }
+  }
+  for (const ref of bodyReferences(body)) if (ref.src.startsWith('.assets/') || fs.existsSync(path.join(ASSETS, ref.src))) visit(ref.src)
+  return assets
+}
+
+
+function freezeLocalAssets(id: number, all: Record<string, PreviewProgress>): void {
+  for (const progress of Object.values(all)) for (const stage of progress.stages) {
+    const artifact = stage.artifact
+    if (!artifact || artifact.localAssets) continue
+    const pinned: Record<string, string> = {}
+    for (const [src, hash] of Object.entries(artifact.assets)) {
+      if (typeof hash !== 'string') continue
+      const file = path.join(ASSETS, src.replace(/^\.assets\//, ''))
+      if (!fs.existsSync(file)) continue
+      const root = path.join(ASSETS, String(id))
+      if (fs.lstatSync(root).isSymbolicLink() || !fs.realpathSync(file).startsWith(fs.realpathSync(root) + path.sep)) throw Error('Preview assets must stay inside this task’s asset folder.')
+      if (createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== hash) continue
+      const frozen = path.join(BOARD_STATE, 'previews', 'assets', String(id), stage.id, String(progress.generation), String(artifact.version), hash, src.replace(/^\.assets\//, ''))
+      fs.mkdirSync(path.dirname(frozen), { recursive: true })
+      if (!fs.existsSync(frozen)) fs.copyFileSync(file, frozen, fs.constants.COPYFILE_EXCL)
+      pinned[src] = frozen
+    }
+    artifact.localAssets = pinned
+    for (const saved of stage.history ?? []) if (saved.version === artifact.version) saved.localAssets = pinned
+    if (progress.displayedArtifact?.stageId === stage.id && progress.displayedArtifact.version === artifact.version) progress.displayedArtifact.localAssets = pinned
+  }
 }

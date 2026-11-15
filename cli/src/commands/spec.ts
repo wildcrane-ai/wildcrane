@@ -2,7 +2,7 @@ import { boardCommandFor } from '../lib/agent/command'
 import { resetPreviewScope } from './preview-confirm'
 import { choosePreviewRevision, previewBaseline } from '../lib/preview-stages'
 import { PREVIEW_BRIDGE_ENV, previewBridge } from '../lib/cloud/preview'
-import { PreviewContextMissing, activatePreviewRun, previewRun, selectLocalPreview, submitLocalPreview, previewStagePrompt, updatePreviewProgress, savePreviewBaseline, readPreviewBaseline } from '../lib/agent/preview-progress'
+import { PreviewContextMissing, activatePreviewRun, previewRun, selectLocalPreview, reportLocalPreview, readPreviewProgress, previewStagePrompt, updatePreviewProgress, savePreviewBaseline, readPreviewBaseline } from '../lib/agent/preview-progress'
 // Print specialist instructions here, or request a separate run.
 
 import { insideRun, printFlow } from '../lib/agent/flow'
@@ -39,6 +39,7 @@ export interface SpecOptions {
   resetStages?: boolean
   reviseFrom?: string
   submit?: boolean
+  status?: string
   stage?: string
   continue?: boolean
   events?: boolean
@@ -73,8 +74,8 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
     return { agents: specAgentNamesOnBoard(), problems: specAgentProblems() }
   }
 
-  if ([opts.submit, opts.stages !== undefined, opts.reviseFrom, opts.resetStages].filter(Boolean).length > 1) die('Choose one stage operation.', { kind: 'invalid-usage' })
-  if ((opts.submit && !opts.stage) || (opts.stage && !opts.submit) || (opts.stages !== undefined && opts.submit)) die('Use --stages <ids> or --submit --stage <id>.', { kind: 'invalid-usage' })
+  if ([opts.stage !== undefined, opts.stages !== undefined, opts.reviseFrom, opts.resetStages].filter(Boolean).length > 1) die('Choose one stage operation.', { kind: 'invalid-usage' })
+  if ((opts.submit && !opts.stage) || (opts.status && !opts.stage) || (opts.status && !['running', 'done'].includes(opts.status))) die('Use --stage <id> [--status running|done].', { kind: 'invalid-usage' })
 
   const askedName = opts.agent.trim()
   const agent = findSpecAgent(askedName)
@@ -87,7 +88,7 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
   }
   if (!locate(id)) die(`no task with id ${id} under ${rel(TODO)}`, { kind: 'card-not-found', id })
 
-  if (opts.stages !== undefined || opts.submit || opts.reviseFrom) {
+  if (opts.stages !== undefined || opts.stage || opts.reviseFrom) {
     try {
       let run
       try { run = previewRun(id, name) } catch (error) {
@@ -96,7 +97,7 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
         run = previewRun(id, name)
       }
       const ids = opts.stages?.split(',').map((id) => id.trim())
-      const result = await previewBridge(name, ids ? 'select' : opts.reviseFrom ? 'revise' : 'submit', { run: run.sessionId, cardId: id, ...(ids ? { stages: ids } : opts.reviseFrom ? { stageId: opts.reviseFrom } : { baseline: readPreviewBaseline(id, name, run.sessionId), stageId: opts.stage }) })
+      const result = await previewBridge(name, ids ? 'select' : opts.reviseFrom ? 'revise' : opts.submit ? 'submit' : 'status', { run: run.sessionId, cardId: id, ...(ids ? { stages: ids } : opts.reviseFrom ? { stageId: opts.reviseFrom } : { ...(opts.submit ? { baseline: readPreviewBaseline(id, name, run.sessionId) } : {}), stageId: opts.stage, status: opts.submit ? 'done' : opts.status ?? 'running' }) })
       if (result?.progress) {
         updatePreviewProgress(id, (all) => { all[name] = result.progress! })
         if (result.baseline) savePreviewBaseline(id, name, run.sessionId, result.baseline)
@@ -109,10 +110,11 @@ export async function cmdSpec(opts: SpecOptions, program = 'akb'): Promise<MoveR
       } else if (ids) {
         const selected = selectLocalPreview(id, name, ids)
         savePreviewBaseline(id, name, run.sessionId, selected.baseline)
-      } else submitLocalPreview(id, name, opts.stage!, readPreviewBaseline(id, name, run.sessionId))
-      if (ids || opts.reviseFrom) say(previewStagePrompt(id, name, boardCommandFor(id)))
-      else say('Preview stage submitted. Stop here; the program controls confirmation and continuation.')
-      return { specAgent: name, cardId: id, submitted: !!opts.submit }
+      } else reportLocalPreview(id, name, opts.stage!, opts.submit ? 'done' : opts.status as 'running' | 'done' ?? 'running')
+      say(previewStagePrompt(id, name, boardCommandFor(id)))
+      const progress = readPreviewProgress(id)[name]!
+      const at = progress.stages.findIndex(stage => stage.id === progress.currentStageId)
+      return { specAgent: name, cardId: id, currentStageId: progress.currentStageId, status: ['awaiting_confirmation', 'ready', 'confirmed'].includes(progress.stages[at]?.status) ? 'done' : 'running', position: at + 1, title: progress.stages[at]?.title, instructions: progress.stages[at]?.status === 'running' ? progress.files[progress.stages[at]!.instructions] : undefined, submitted: !!opts.submit }
     } catch (error) { die(error instanceof Error ? error.message : 'Preview submission failed.', { kind: 'preview-refused' }) }
   }
 
