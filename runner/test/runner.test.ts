@@ -966,7 +966,30 @@ process.stdin.on('data', () => { if (read) return; read = true;
     })
   }
 
-  for (const [attempt, elapsed] of [[3, 0], [1, 120_001]]) {
+  for (const discussion of [false, true]) {
+    it(`长时间正常执行的回复重启后仍可沿用原会话 ${discussion ? 'discussion' : 'task'}`, async () => {
+      saveCheckpoint('long-running-original', { mark: stopMark(), pending: ['interrupted-tool'], started: true,
+        submitted: true, effects: true, session: 'original-session', retry: { since: Date.now() - 7_200_000, attempt: 1 } })
+      const job = cloud.dispatch({ id: 'long-running-recovered', recoveryOf: 'long-running-original',
+        ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', ideas: [] } } : { chat: { message: 'm1', body: '继续' } }) })
+      start('', { plan: (...args) => {
+        const p = fakeRuntime('')(...args)
+        p.converse = async (_child, event, _stop, deadline) => {
+          assert.ok(deadline! > Date.now(), '会话启动期限不能沿用两小时前的时间')
+          event({ kind: 'message', data: { text: '恢复完成' } })
+          return { ok: true, result: '恢复完成' }
+        }
+        return p
+      } })
+      await until(() => job.state === 'finished')
+      assert.equal(job.outcome, 'done', job.reason)
+      assert.equal(planned.length, 1)
+      assert.equal(planned[0]?.resume, 'original-session')
+      assert.match(planned[0]!.prompt, /不要重复已经执行的操作/)
+    })
+  }
+
+  for (const [attempt, elapsed] of [[3, 0], [2, 120_001]]) {
     it(`重启不重置已用预算 ${attempt} ${elapsed}`, async () => {
       const job = cloud.dispatch({ id: 'restart-budget', state: 'claimed', machine: MACHINE, chat: { message: 'm1', body: '继续' } })
       saveCheckpoint(job.id, { updating: true, mark: stopMark(), pending: [], effects: false, started: true,

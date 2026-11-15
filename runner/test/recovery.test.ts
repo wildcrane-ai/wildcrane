@@ -3,13 +3,22 @@ import { test } from 'node:test'
 import { toWire } from '../src/jobs'
 import { checkpointEvent, replayable, replyRetry, type Checkpoint } from '../src/recovery'
 
-test('对话重试包含工具等待时间、服务端等待时间和三次预算', () => {
-  const checkpoint: Checkpoint = { pending: [], retry: { since: 0, attempt: 1 } }
+test('已开始的恢复保留等待时间、服务端等待时间和三次预算', () => {
+  const checkpoint: Checkpoint = { pending: [], retry: { since: 0, attempt: 2 } }
   assert.equal(replyRetry(checkpoint, 'unknown failure', 119_999, () => 2), null)
   assert.equal(replyRetry(checkpoint, 'retry-after: 121', 0), null)
   assert.equal(replyRetry(checkpoint, 'retry after 20', 0), 20_000)
   checkpoint.retry!.attempt = 3
   assert.equal(replyRetry(checkpoint, 'unknown failure', 0, () => 0), null)
+})
+
+test('首次恢复的时间预算从故障开始，正常执行时间不消耗恢复预算', () => {
+  const checkpoint: Checkpoint = { pending: [], retry: { since: 0, attempt: 1 } }
+  assert.equal(replyRetry(checkpoint, 'Temporary network failure', 7_200_000, () => 2000), 7_202_000)
+  assert.equal(checkpoint.retry!.since, 7_200_000)
+  checkpoint.retry!.at = 7_202_000
+  assert.equal(replyRetry(checkpoint, 'Temporary network failure', 7_320_001, () => 0), null)
+  assert.equal(checkpoint.retry!.since, 7_200_000)
 })
 
 test('完成的写入保留副作用标记，未知旧进度不能证明可重放', () => {

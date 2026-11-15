@@ -83,6 +83,7 @@ export async function stopReply(id: string, timeout: number): Promise<boolean> {
 export function replyRetry(checkpoint: Checkpoint, reason: string, now = Date.now(), backoff = backoffMs): number | null {
   const retry = checkpoint.retry
   if (!retry || retry.attempt >= 3) return null
+  if (retry.attempt === 1 && retry.at === undefined) retry.since = now
   const seconds = /retry[-_\s]?after["':=\s]+(\d+)/i.exec(reason)?.[1]
   const delay = seconds ? Number(seconds) * 1000 : backoff(retry.attempt + 1)
   const at = now + delay

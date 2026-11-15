@@ -501,6 +501,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   }
   if (reply && recovering && !replyStream && previous?.started && !checkpoint.completed
       && !checkpoint.retry?.at && !(manual && !local)) {
+    if (checkpoint.retry!.attempt === 1) checkpoint.retry!.since = Date.now()
     if (checkpoint.retry!.attempt >= 3 || Date.now() > checkpoint.retry!.since + 120_000) {
       return finishClaimed('failed', 'recovery_failed', {
         recovery: { safe: replayable(checkpoint), stopped: true, resumable: resumable(checkpoint) },
