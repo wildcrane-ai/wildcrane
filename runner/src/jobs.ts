@@ -1,3 +1,4 @@
+import { connectionIdentity, endConnection } from '../../cli/src/lib/agent/connection-process'
 import { conversationProgress } from './conversation-progress'
 import { readSession } from '../../cli/src/lib/cloud/session'
 import { accountGeneration } from './settings-control'
@@ -208,6 +209,7 @@ function streamOut(deps: Shared, id: string, lease: Lease) {
   const stored = new Promise<void>((resolve) => (ended = resolve))
   const children = new Set<ChildProcess>()
   const groups = new Set<number>()
+  const connections = new Set<ChildProcess>()
   let stopConfirmed = true
   const killed = new Set<Promise<void>>()
   const kill = (child: ChildProcess) => {
@@ -215,6 +217,7 @@ function streamOut(deps: Shared, id: string, lease: Lease) {
     const exited = new Promise<void>((resolve) => child.once('close', () => resolve()))
     killed.add(exited)
     void exited.then(() => killed.delete(exited))
+    if (connections.has(child)) { endConnection(child); return }
     signalTree(child, 'SIGTERM')
     const timer = setTimeout(() => signalTree(child, 'SIGKILL'), KILL_GRACE_MS)
     timer.unref()
@@ -368,8 +371,9 @@ function streamOut(deps: Shared, id: string, lease: Lease) {
     out: (text: string) => {
       if (text) event({ kind: 'log', data: { text } })
     },
-    adopt: (child: ChildProcess) => {
-      if (child.pid) groups.add(child.pid)
+    adopt: (child: ChildProcess, managed = false) => {
+      if (managed) connections.add(child)
+      else if (child.pid) groups.add(child.pid)
       if (!valid() || asked) return kill(child)
       children.add(child)
       child.on('close', () => children.delete(child))
@@ -388,7 +392,7 @@ function streamOut(deps: Shared, id: string, lease: Lease) {
         try { process.kill(-pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code !== 'ESRCH' }
       }
       if (process.platform === 'win32') return children.size === 0
-      while ([...groups].some(alive)) {
+      while ([...groups].some(alive) || [...connections].some(c => c.exitCode === null && c.signalCode === null)) {
         if (Date.now() >= until) return false
         await new Promise((resolve) => setTimeout(resolve, 50))
       }
@@ -814,6 +818,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     return sendBack(deps, id, lease, ws!, { ...ended.report, ...proof }, () => keepChat(job, ended.report.reply))
   }
 
+  checkpoint.managedProcess = run.managedProcess
   checkpoint.mark = stopMark()
   checkpoint.started = true
   checkpoint.opaque = !run.converse && !run.renderer?.events
@@ -824,18 +829,22 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     const plan = run
     const converse = run.converse
     const child = launch(plan.command, plan.args, { cwd, env: markEnv(plan.env, checkpoint.mark!), detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
-    if (child.pid) { checkpoint.process = { pid: child.pid, since: Date.now() }; persist() }
-    stream.adopt(child)
+    if (child.pid) { checkpoint.process = { pid: child.pid, since: Date.now(), ...(plan.managedProcess ? { identity: connectionIdentity(child.pid) } : {}) }; persist() }
+    stream.adopt(child, plan.managedProcess)
     child.stdin.on('error', () => {})
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => stream.out(quietLines(plan, chunk)))
     const spawned = new Promise<string>((resolve) => child.on('error', (e) => resolve(e.message)))
+    const cancellation = new AbortController()
+    void stream.whenAsked.then(() => cancellation.abort())
     const end = await Promise.race([
-      converse(child, remember, false, reply ? checkpoint.retry!.since + CONVERSATION_MS.prepare : undefined),
+      converse(child, remember, false, reply ? checkpoint.retry!.since + CONVERSATION_MS.prepare : undefined, cancellation.signal),
       spawned.then((error): TurnEnd => ({ ok: false, error })),
       // Killed, the turn ends with what it said so far; one that never does is not waited on.
       stream.whenAsked.then(() => wait(KILL_GRACE_MS * 2)).then((): TurnEnd => ({ ok: true })),
     ])
+    checkpoint.cleanup = end.cleanup
+    persist()
     let measured = measure(report(job, plan, end))
     if (reply && end.replyParts) {
       const parts = await saveReplyImages(end.replyParts, cwd, async (key, bytes, mime) => {
@@ -847,7 +856,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       if (parts) measured = { ...measured, parts, reply: parts.filter(p => p.type === 'text').map(p => p.text).join('') }
     }
     if (!end.ok && !recovering && job.resume && (job.chat || job.discussion) && sessionMissing(end.error ?? '') && !replyProgress && !checkpoint.pending.length && (checkpoint.retry?.attempt ?? 1) < 3 && Date.now() <= (checkpoint.retry?.since ?? Date.now()) + 120_000 && !stream.asked() && !stream.lost()) {
-      stop(child)
+      stop(child, plan.managedProcess)
       if (!await stopReply(id, deps.stopMs) || !await stream.confirmed()) {
         await stream.end()
         return finishClaimed('failed', 'recovery_failed')
@@ -869,7 +878,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     await evidence.drain(deps.endMs)
     const stopped = await stopReply(id, deps.stopMs)
 
-    stop(child)
+    stop(child, plan.managedProcess)
     if (stream.asked() && (!stopped || !await stream.confirmed())) { await stream.end(); return }
     const ok = end.ok || stream.asked()
     const unsafe = reply && !ok && (!stopped || !replayable(checkpoint) && !resumable(checkpoint))
@@ -885,8 +894,8 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   }
   const printed = async (plan: Plan) => {
     const child = launch(plan.command, plan.args, { cwd, env: markEnv(plan.env, checkpoint.mark!), detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
-    if (child.pid) { checkpoint.process = { pid: child.pid, since: Date.now() }; persist() }
-    stream.adopt(child)
+    if (child.pid) { checkpoint.process = { pid: child.pid, since: Date.now(), ...(plan.managedProcess ? { identity: connectionIdentity(child.pid) } : {}) }; persist() }
+    stream.adopt(child, plan.managedProcess)
     child.stdin.on('error', () => {})
     const renderer = plan.renderer!
     if (plan.stdin) child.stdin.write(plan.stdin)
@@ -1052,7 +1061,8 @@ function signalTree(child: ChildProcess, signal: NodeJS.Signals): void {
 }
 
 /** A child that never spawned has no pid: killing it would signal this whole process group. */
-const stop = (child: ChildProcess) => {
+const stop = (child: ChildProcess, managed = false) => {
+  if (managed) { endConnection(child); return }
   if (!child.pid) return
   signalTree(child, 'SIGTERM')
   const timer = setTimeout(() => signalTree(child, 'SIGKILL'), KILL_GRACE_MS)
@@ -1152,7 +1162,7 @@ async function runTest(job: Job, deps: Shared, lease: Lease): Promise<void> {
       new Promise<NodeJS.ErrnoException>((resolve) => child.on('error', resolve)),
     ])
     clearTimeout(timer)
-    stop(child)
+    stop(child, run.managedProcess)
     const ms = Date.now() - startedAt
     if (end === 'timeout') return finish('failed', 'timeout', ms)
     if (end instanceof Error) return end.code === 'ENOENT' ? finish('failed', 'not_installed') : finish('failed', end.message.slice(0, 300), ms)

@@ -363,6 +363,9 @@ export interface RunRecord {
    *  for what an unwatched run left behind (#1313). */
   agentPid?: number
   agentStartedAt?: number
+  managedProcess?: boolean
+  agentIdentity?: string
+  cleanup?: import('./wire/codex-background').Cleanup
   /** The text the user typed for this run — an action's notes, or
    *  a reject's reason. */
   input?: string

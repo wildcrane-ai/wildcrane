@@ -3,7 +3,6 @@ import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { killMarked, processesStopped } from '../../cli/src/lib/agent/stop'
 import { pidAlive, tryLock } from '../../cli/src/lib/lock'
 import { CODEX_PROTOCOL, codexRecordFile, type CodexRecord } from './codex-service'
 import { runnerCwd } from './home'
@@ -55,7 +54,7 @@ async function openService(): Promise<net.Socket> {
   const until = Date.now() + 10_000
   let socket: net.Socket | undefined
   for (;;) {
-    const release = tryLock(path.join(runnerCwd(), 'codex-service.start.lock'))
+    const release = tryLock(path.join(runnerCwd(), 'codex-service-v2.start.lock'))
     if (!release) {
       if (Date.now() >= until) throw Error('Codex service startup is busy.')
       await wait(50)
@@ -66,14 +65,7 @@ async function openService(): Promise<net.Socket> {
       if (record) {
         try { socket = await attach(record) } catch (error) {
           if (pidAlive(record.pid)) throw error
-          for (const backend of record.backends) {
-            if (!backend.mark?.name || !backend.mark.value || !Number.isSafeInteger(backend.pid) || !Number.isFinite(backend.since)) throw Error('Cannot identify the old Codex execution; existing work was preserved.')
-            killMarked(backend.mark, backend)
-            while (!processesStopped(backend.mark, backend)) {
-              if (Date.now() >= until) throw Error('Previous Codex execution could not be confirmed stopped.')
-              await wait(50)
-            }
-          }
+          // A dead backend invalidates native handles; never infer host-process ownership.
           fs.rmSync(codexRecordFile(), { force: true })
         }
       }

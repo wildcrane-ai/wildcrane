@@ -61,14 +61,14 @@ for (const [entry, outfile] of [
 await esbuild.build({
   entryPoints: [path.join(PLUGINS_DIR, 'opencode', 'index.mjs')],
   outfile: path.join(PLUGINS_DIR, 'opencode', 'dist', 'index.mjs'),
-  bundle: true, platform: 'node', format: 'esm', target: 'node22',
+  bundle: true, platform: 'node', format: 'esm', target: 'node22', loader: { '.md': 'text' },
   nodePaths: [path.join(PKG_DIR, 'node_modules')],
   banner: { js: REQUIRE_SHIM }, legalComments: 'none',
 })
 await esbuild.build({
   entryPoints: [path.join(PLUGINS_DIR, 'opencode', 'manage.mjs')],
   outfile: path.join(PLUGINS_DIR, 'opencode', 'dist', 'manage.mjs'),
-  bundle: true, platform: 'node', format: 'esm', target: 'node22',
+  bundle: true, platform: 'node', format: 'esm', target: 'node22', loader: { '.md': 'text' },
   nodePaths: [path.join(PKG_DIR, 'node_modules')], mainFields: ['module', 'main'], legalComments: 'none',
 })
 

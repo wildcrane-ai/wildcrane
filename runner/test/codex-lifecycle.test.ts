@@ -18,7 +18,7 @@ let root: string
 let cloud: FakeCloud
 let host: ChildProcess | undefined
 const peers = new Set<ChildProcess>()
-const record = () => JSON.parse(fs.readFileSync(path.join(root, 'codex-service.json'), 'utf8'))
+const record = () => JSON.parse(fs.readFileSync(path.join(root, 'codex-service-v2.json'), 'utf8'))
 const calls = () => fs.readFileSync(path.join(root, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line))
 
 before(async () => {
@@ -69,11 +69,11 @@ afterEach(async () => {
   peers.clear()
   if (host && host.exitCode === null && host.signalCode === null) { const ended = once(host, 'close'); host.kill('SIGTERM'); await ended }
   host = undefined
-  if (fs.existsSync(path.join(root, 'codex-service.json'))) {
+  if (fs.existsSync(path.join(root, 'codex-service-v2.json'))) {
     const owner = await codexServer().catch(() => null)
     await owner?.shutdown()
     await owner?.close()
-    await until(() => !fs.existsSync(path.join(root, 'codex-service.json')), 5000)
+    await until(() => !fs.existsSync(path.join(root, 'codex-service-v2.json')), 5000)
   }
   await cloud.stop()
   process.env.WILDCRANE_HOME = originalHome
@@ -86,7 +86,7 @@ async function launch() {
   host = spawn(process.execPath, [entry], { env: { ...process.env, WILDCRANE_CODEX_IDLE_MS: '10000' }, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
   let error = ''
   host.stderr!.on('data', chunk => { error += chunk })
-  await until(() => fs.existsSync(path.join(root, 'codex-service.json')) || host!.exitCode !== null, 10000)
+  await until(() => fs.existsSync(path.join(root, 'codex-service-v2.json')) || host!.exitCode !== null, 10000)
   assert.equal(host.exitCode, null, error)
   await until(() => cloud.registrations > registrations, 10000)
 }
@@ -94,7 +94,7 @@ async function task() {
   const executable = path.join(root, 'codex')
   fs.writeFileSync(executable, '#!/usr/bin/env node\n' + fs.readFileSync(path.join(root, 'codex.cjs'), 'utf8'), { mode: 0o700 })
   const child = spawn(process.execPath, [path.join(process.env.RUNNER_DIST!, 'codex-proxy.mjs'), executable, 'app-server'], {
-    env: { ...process.env, WILDCRANE_CODEX_SERVER: path.join(root, 'codex-service.json') }, stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, WILDCRANE_CODEX_SERVER: path.join(root, 'codex-service-v2.json') }, stdio: ['pipe', 'pipe', 'pipe'],
   })
   peers.add(child)
   const notifications: any[] = []
@@ -135,7 +135,7 @@ it('reuses one service under concurrent attachment and reclaims it when unused (
   const owners = await Promise.all([codexServer(), codexServer(), codexServer()])
   const identity = record()
   for (const owner of owners) await owner.close()
-  await until(() => !fs.existsSync(path.join(root, 'codex-service.json')), 5000)
+  await until(() => !fs.existsSync(path.join(root, 'codex-service-v2.json')), 5000)
   await until(() => { try { process.kill(identity.pid, 0); return false } catch { return true } }, 5000)
 })
 
@@ -146,7 +146,7 @@ it('stops the independent service on account exit without reusing its identity (
   fs.writeFileSync(path.join(root, 'account-generation'), 'signed-out')
   await closed
   await owner.close()
-  await until(() => !fs.existsSync(path.join(root, 'codex-service.json')), 5000)
+  await until(() => !fs.existsSync(path.join(root, 'codex-service-v2.json')), 5000)
   assert.equal(a.notifications.find(m => m.method === 'turn/completed')?.params.turn.status, 'interrupted')
 })
 
@@ -183,12 +183,12 @@ it('preserves a live service on incompatible metadata and refuses to overwrite i
   const owner = await codexServer()
   const original = record()
   try {
-    fs.writeFileSync(path.join(root, 'codex-service.json'), JSON.stringify({ ...original, protocol: 99 }))
+    fs.writeFileSync(path.join(root, 'codex-service-v2.json'), JSON.stringify({ ...original, protocol: 99 }))
     await assert.rejects(codexServer(), /protocol is incompatible/)
     process.kill(original.pid, 0)
     assert.equal(record().instance, original.instance)
   } finally {
-    fs.writeFileSync(path.join(root, 'codex-service.json'), JSON.stringify(original))
+    fs.writeFileSync(path.join(root, 'codex-service-v2.json'), JSON.stringify(original))
     await owner.close()
   }
 })

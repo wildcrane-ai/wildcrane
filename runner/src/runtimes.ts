@@ -32,6 +32,7 @@ const MODELS_MS = 30_000
 /** What one job spawns. */
 export interface Plan {
   command: string
+  managedProcess?: boolean
   startNote?: string
   args: string[]
   env: NodeJS.ProcessEnv
@@ -41,7 +42,7 @@ export interface Plan {
   renderer?: StreamRenderer
   /** The one turn, held over the child's pipes. The turn's end is the job's: the child is a
    *  server and is ended after it. */
-  converse?: (child: ChildProcess, event: (e: RunEvent) => void, restart?: boolean, prepareUntil?: number) => Promise<TurnEnd>
+  converse?: (child: ChildProcess, event: (e: RunEvent) => void, restart?: boolean, prepareUntil?: number, signal?: AbortSignal) => Promise<TurnEnd>
   /** True for stderr lines the runtime prints on every run and that say nothing. */
   quiet(line: string): boolean
   /** The id a later job resumes this session by, once known. */
@@ -113,12 +114,14 @@ export function plan(runtime: Job['runtime'], prompt: string, cwd: string, resum
     let session: string | undefined
     let named: string | undefined
     return {
+      managedProcess: client.managedProcess,
       startNote: note,
       command: started[0]!,
       args: started.slice(1),
       env,
-      converse: (child, event, restart = true, prepareUntil) =>
+      converse: (child, event, restart = true, prepareUntil, signal) =>
         client.turn({
+          signal,
           stdout: child.stdout!,
           stdin: child.stdin!,
           prompt,
@@ -141,7 +144,7 @@ export function plan(runtime: Job['runtime'], prompt: string, cwd: string, resum
   const renderer = harness.renderer!(cwd, argv[0], argv)
   const toStdin = harness.stdinPrompt?.(argv)
   return {
-    startNote: note,
+    startNote: [note, runtime === 'codex' ? 'Custom Codex command preserved; managed background cleanup is unavailable for this command shape.' : undefined].filter(Boolean).join('\n') || undefined,
     command: argv[0]!,
     args: [...argv.slice(1), ...(toStdin ? [] : [prompt])],
     env,

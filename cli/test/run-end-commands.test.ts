@@ -136,3 +136,16 @@ for (const background of [true, false]) it(`cleans a completed task with backgro
     for(const pid of [preview.pid,preview.child,...outsiders.map(c=>c.pid)]) if(pid) try{process.kill(pid,'SIGKILL')}catch{}
   }
 })
+
+it('keeps managed connection identity and cleanup through later record updates (#750)', async () => {
+  fs.writeFileSync(uiConfigOf(root, 'docs', 'kanban'), JSON.stringify({ runtimes: [{ id: 'global', name: 'Global', harness: 'codex' }] }))
+  const started = await startRun({ action: 'clarify', id: 1 })
+  if ('error' in started) throw Error(started.error)
+  const cleanup = { status: 'confirmed' as const, execution: 'execution', instance: 'backend', kept: ['terminal'] }
+  patch(started.run.sessionId, r => { r.managedProcess = true; r.agentIdentity = 'connection-start'; r.cleanup = cleanup })
+  patch(started.run.sessionId, r => { r.result = 'Saved result' })
+  const run = readRuns().find(r => r.sessionId === started.run.sessionId)!
+  assert.equal(run.managedProcess, true)
+  assert.equal(run.agentIdentity, 'connection-start')
+  assert.deepEqual(run.cleanup, cleanup)
+})

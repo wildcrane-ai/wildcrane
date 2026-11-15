@@ -1,3 +1,4 @@
+import { stopConnection } from '../../cli/src/lib/agent/connection-process'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -15,7 +16,9 @@ export interface Checkpoint {
   approvalRequested?: boolean
   approvalCancelled?: boolean
   mark?: Mark
-  process?: { pid: number; since: number }
+  managedProcess?: boolean
+  cleanup?: import('../../cli/src/lib/agent/wire/codex-background').Cleanup
+  process?: { pid: number; since: number; identity?: string }
   updating?: boolean
   session?: string
   submitted?: boolean
@@ -70,6 +73,7 @@ export function checkpointEvent(checkpoint: Checkpoint, event: RunEvent): void {
 /** 恢复前确认所有带本轮标记的进程已结束。 */
 export async function stopReply(id: string, timeout: number): Promise<boolean> {
   const checkpoint = readCheckpoint(id)
+  if (checkpoint?.managedProcess) return stopConnection(checkpoint.process, timeout)
   if (!checkpoint?.mark) return true
   killMarked(checkpoint.mark, checkpoint.process)
   const until = Date.now() + timeout

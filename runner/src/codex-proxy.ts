@@ -27,7 +27,10 @@ const close = () => {
   if (closing) return
   closing = true
   void owner.close()
-  // The Runner acknowledges only after this run's threads and commands have stopped.
+  const timer = setTimeout(() => socket.destroy(), 12_000)
+  timer.unref()
+  socket.once('close', () => clearTimeout(timer))
+  // The service owns retained threads and reserves uncertain cleanup independently.
   if (ready) send(JSON.stringify({ method: 'wildcrane/release' }))
   else socket.destroy()
   input.close()

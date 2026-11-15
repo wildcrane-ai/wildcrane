@@ -187,8 +187,10 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
  if (m.method === 'thread/start') return answer({ thread: { id: 'main' } });
  if (m.method === 'turn/start') {
   starts++; answer({ turn: { id: 't'+starts } });
-  if (starts === 1) note('item/completed', { item: { id: 'spawn', type: 'collabAgentToolCall', agentsStates: { child: { status: 'running' } } } });
-  note('item/completed', { item: { id: 'm'+starts, type: 'agentMessage', text: starts === 1 ? 'STARTED' : 'FINISHED' } });
+  if (starts === 1) note('item/completed', { item: { id: 'spawn', type: 'collabAgentToolCall', tool: 'spawnAgent', receiverThreadIds: ['child'], agentsStates: { child: { status: 'running' } } } });
+  const schema=m.params.outputSchema;
+  const text=schema ? JSON.stringify({execution:schema.properties.execution.enum[0],items:schema.properties.items.items.properties.id.enum.map(id=>({id,outcome:'await',service:false,detail:'necessary child result'}))}) : starts===1?'STARTED':'FINISHED';
+  note('item/completed', { item: { id: 'm'+starts, type: 'agentMessage', text } });
   note('turn/completed', { turn: { id: 't'+starts, status: 'completed', items: [] } }); return;
  }
  if (m.method === 'thread/read') {

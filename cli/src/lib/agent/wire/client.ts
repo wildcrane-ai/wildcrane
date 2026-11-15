@@ -23,6 +23,7 @@ import type { ContextWindow, TokenUsage } from '../types'
 
 /** One turn, from the pipes it is held over to the things it reports back. */
 export interface ClientTurn {
+  signal?: AbortSignal
   /** The command's own streams. The client owns the conversation on both: this stdout is a
    *  protocol, not a log, and nothing else reads it for meaning. The runner listens to it
    *  too, but only to count bytes against the silence window (#394). */
@@ -60,6 +61,7 @@ export interface ClientTurn {
 /** How one turn ended. `ok` is the run's verdict — the command's exit code says nothing
  *  here, because the runner is the one that ends the process. */
 export interface TurnEnd {
+  cleanup?: import('./codex-background').Cleanup
   ok: boolean
   replyParts?: LocalReplyPart[]
   /** The agent's closing message. */
@@ -79,6 +81,8 @@ export interface TurnEnd {
 
 /** A connector the board talks to rather than only reads. */
 export interface RunClient {
+  /** Codex owns managed work; close only its connection process. */
+  managedProcess?: boolean
   /** Drive one turn to its end. Never rejects: every way this can go wrong is an ending
    *  worth showing in the log. */
   turn(io: ClientTurn): Promise<TurnEnd>

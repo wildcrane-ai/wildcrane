@@ -7,7 +7,7 @@ import { runnerCwd, useRunnerHome } from './home'
 import { accountGeneration, executorRecord } from './settings-control'
 
 useRunnerHome()
-const release = tryLock(path.join(runnerCwd(), 'codex-service.owner.lock'))
+const release = tryLock(path.join(runnerCwd(), 'codex-service-v2.owner.lock'))
 if (!release) process.exit(1)
 const keep = hold(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'))
 const unregister = executorRecord()

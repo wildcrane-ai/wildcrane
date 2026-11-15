@@ -19,7 +19,7 @@ fs.writeFileSync(fake, `#!/usr/bin/env node
 import fs from 'node:fs'; import readline from 'node:readline';
 const file = ${JSON.stringify(calls)};
 fs.appendFileSync(file, JSON.stringify({pid:process.pid, method:'spawn', env:process.env.KANBAN_STOP_ID, argv:process.argv.slice(2)})+'\\n');
-let turn=0; const loaded=new Map();
+let turn=0; const loaded=new Map(), terminals=new Map(), hanging=new Set();
 const send = msg => process.stdout.write(JSON.stringify(msg)+'\\n');
 const notify = (method, params) => send({method,params});
 readline.createInterface({input:process.stdin}).on('line', async line => {
@@ -34,10 +34,16 @@ readline.createInterface({input:process.stdin}).on('line', async line => {
   if(p.input?.[0]?.text==='crash') { process.exit(1); return; }
   result={turn:{id:'turn-'+(++turn)}};
   notify('turn/started',{threadId:p.threadId,turn:result.turn});
+  const text=p.input?.[0]?.text;
+  if(text==='retain') terminals.set(p.threadId,[{itemId:'service',processId:'42',command:'service'}]);
+  if(text==='hang-release') hanging.add(p.threadId);
+  if(['retain','finish','hang-release'].includes(text)) notify('turn/completed',{threadId:p.threadId,turn:{id:result.turn.id,status:'completed'}});
  }
  if(m.method==='turn/interrupt') notify('turn/completed',{threadId:p.threadId,turn:{id:p.turnId,status:'interrupted'}});
+ if(m.method==='thread/unsubscribe' && hanging.has(p.threadId)) return;
+ if(m.method==='thread/backgroundTerminals/clean') terminals.delete(p.threadId);
  if(m.method==='thread/unsubscribe') { result={status:'unsubscribed'}; setTimeout(()=>{ loaded.delete(p.threadId); notify('thread/closed',{threadId:p.threadId}); },30); }
- if(m.method==='thread/backgroundTerminals/list') result={data:[]};
+ if(m.method==='thread/backgroundTerminals/list') result={data:terminals.get(p.threadId)||[]};
  if(m.id!==undefined) send({id:m.id,result});
 });
 process.stdin.on('end',()=>process.exit());
@@ -184,4 +190,55 @@ it('closes active connections and the server before the next owner starts (#707)
     assert.ok(!pids.includes(read().filter(m => m.method === 'spawn').at(-1).pid))
     await b.close()
   } finally { await next.close() }
+})
+
+it('retains services without a task connection and transfers them only on an explicit resume', { timeout: 15000 }, async () => {
+  const server = await codexServer()
+  const offset = read().length
+  try {
+    const a = peer(server.env)
+    const hello = await a.rpc.call('initialize', {})
+    const { thread } = await a.rpc.call('thread/start', {})
+    const threadId = (thread as any).id
+    await a.rpc.call('turn/start', { threadId, input: [{ text: 'retain' }] })
+    const proof = { threadId, ...(hello.wildcrane as object), execution: 'execution-a', confirmed: true, kept: [{ threadId, itemId: 'service', processId: '42' }] }
+    await assert.rejects(a.rpc.call('wildcrane/settled', { ...proof, lease: 'old' }), /unconfirmed/)
+    await a.rpc.call('wildcrane/settled', proof)
+    await a.close()
+    assert.equal(server.idle(), false)
+    assert.equal(read().slice(offset).some(m => ['thread/unsubscribe', 'thread/backgroundTerminals/clean'].includes(m.method)), false)
+    const incompatible = peer(server.env, ['-c', 'model=changed'])
+    await incompatible.rpc.call('initialize', {})
+    await assert.rejects(incompatible.rpc.call('thread/resume', { threadId }), /cannot change execution settings/)
+    await incompatible.close()
+    const b = peer(server.env)
+    await b.rpc.call('initialize', {})
+    const resumed = await b.rpc.call('thread/resume', { threadId })
+    assert.deepEqual(resumed.retainedThreads, [{ id: threadId }])
+    assert.equal(((await b.rpc.call('thread/backgroundTerminals/list', { threadId })).data as any[]).length, 1)
+    const c = peer(server.env)
+    await c.rpc.call('initialize', {})
+    await assert.rejects(c.rpc.call('thread/resume', { threadId }), /already in use/)
+    await c.close()
+    await b.close()
+    assert.equal(read().slice(offset).filter(m => m.method === 'spawn').length, 1)
+  } finally { await server.close() }
+})
+
+it('quarantines a timed-out release without stopping parallel work or reassigning its thread', { timeout: 25000 }, async () => {
+  const server = await codexServer()
+  try {
+    const a = peer(server.env), b = peer(server.env)
+    await Promise.all([a.rpc.call('initialize', {}), b.rpc.call('initialize', {})])
+    const { thread } = await a.rpc.call('thread/start', {})
+    const threadId = (thread as any).id
+    const other = (await b.rpc.call('thread/start', {})).thread as any
+    await a.rpc.call('turn/start', { threadId, input: [{ text: 'hang-release' }] })
+    await b.rpc.call('turn/start', { threadId: other.id })
+    await a.close()
+    assert.ok(await b.rpc.call('thread/read', { threadId: other.id }))
+    assert.equal(b.notifications.some(n => n.method === 'turn/completed'), false)
+    await assert.rejects(b.rpc.call('thread/resume', { threadId }), /already in use/)
+    await b.close()
+  } finally { await server.close() }
 })

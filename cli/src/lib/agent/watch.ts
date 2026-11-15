@@ -1,3 +1,4 @@
+import { connectionIdentity, connectionStopped, endConnection } from './connection-process'
 import { boardCommandFor } from './command'
 import { activatePreviewRun, previewStagePrompt, readPreviewProgress, updatePreviewProgress } from './preview-progress'
 import { nextDeliveryRun } from './progress'
@@ -221,6 +222,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
   // in the conversation rather than spelled on the command line, and its stdin stays open,
   // because that is the half of the conversation this end writes (agent/wire/client.ts).
   const client = active.client
+  if (active.harness === 'codex' && !client) log.write('[Codex] Custom command preserved; managed background cleanup is unavailable for this command shape.\n')
   const restartBase = !client ? undefined
     : record.resumedFrom ? restartPrompt(requestOf(record), record.deliveryId)
     : record.continues && !record.continues.fork ? spec.prompt : undefined
@@ -266,6 +268,8 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     patch(sessionId, (r) => {
       r.agentPid = child.pid
       r.agentStartedAt = agentStartedAt
+      r.managedProcess = client?.managedProcess
+      r.agentIdentity = client?.managedProcess ? connectionIdentity(child.pid!) : undefined
     })
   }
 
@@ -423,7 +427,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       // Its sub-runs end first, so what they leave is in the folder this close reads.
       await stopSubRuns(sessionId)
       const taskCompleted = completed()
-      if (taskCompleted) {
+      if (taskCompleted && !client?.managedProcess) {
         endChild()
         const mark = runMark(sessionId, agentStartedAt)
         const root = child.pid ? { pid: child.pid, since: agentStartedAt } : undefined
@@ -485,8 +489,8 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
         const mark = runMark(sessionId, agentStartedAt)
         const root = child.pid ? { pid: child.pid, since: agentStartedAt } : undefined
         const until = Date.now() + STOP_GRACE_MS + STOP_CLOSE_MS
-        while (!processesStopped(mark, root) && Date.now() < until) await sleep(100)
-        if (!processesStopped(mark, root)) {
+        while (!(client?.managedProcess ? connectionStopped({ pid: child.pid!, identity: peekRun(sessionId)?.agentIdentity }) : processesStopped(mark, root)) && Date.now() < until) await sleep(100)
+        if (!(client?.managedProcess ? connectionStopped({ pid: child.pid!, identity: peekRun(sessionId)?.agentIdentity }) : processesStopped(mark, root))) {
           blip = undefined
           failure = 'Previous execution could not be confirmed stopped; existing results were preserved.'
         }
@@ -653,7 +657,8 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       } catch {
         // already gone
       }
-      endAgent(child, runMark(sessionId), STOP_GRACE_MS)
+      if (client?.managedProcess) endConnection(child)
+      else endAgent(child, runMark(sessionId), STOP_GRACE_MS)
     }
 
     finishCompletedTurn = () => { endChild(); void finish(0, false) }
@@ -678,10 +683,12 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       })
     }
 
+    const cancellation = new AbortController()
     let stopped = false
     const askToStop = () => {
       if (stopped) return
       stopped = true
+      cancellation.abort()
       // Waiting between retry attempts (#525): there is no child to signal, so the wait is
       // cut short and the close it was holding open carries on as a stop.
       if (wakeUp) {
@@ -751,10 +758,12 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
             event,
             gotContext,
             completed,
+            signal: cancellation.signal,
           })
           .then((end) => {
             if (done) return
             spoken = end
+            if (end.cleanup) patch(sessionId, r => { r.cleanup = end.cleanup })
             endChild()
             void finish(end.ok ? 0 : 1, peekRun(sessionId)?.stopping === true || stopped)
           })
@@ -765,7 +774,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     // worktree about to go and often holding the pipe `close` waits on (#1499).
     child.once('exit', (_code, signal) => {
       crashed = !ending && !!signal && ['SIGKILL', 'SIGTERM', 'SIGSEGV', 'SIGABRT', 'SIGBUS', 'SIGILL'].includes(signal)
-      if (!ending) killMarked(runMark(sessionId), child.pid ? { pid: child.pid, since: agentStartedAt } : undefined)
+      if (!ending && !client?.managedProcess) killMarked(runMark(sessionId), child.pid ? { pid: child.pid, since: agentStartedAt } : undefined)
     })
     child.on('close', (code) => void finish(code, peekRun(sessionId)?.stopping === true || stopped))
   })

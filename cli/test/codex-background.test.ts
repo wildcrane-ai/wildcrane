@@ -5,11 +5,13 @@ import { createCodexStreamRenderer } from '../src/lib/agent/wire/codex-stream.ts
 import { createCodexClient, createCodexConnection } from '../src/lib/agent/wire/codex.ts'
 import { streamFinished } from '../src/lib/agent/wire/background.ts'
 import { createStreamRenderer } from '../src/lib/agent/wire/claude-stream.ts'
+import { CODEX_SETTLE_MS, batch } from '../src/lib/agent/wire/codex-background.ts'
 import { BACKGROUND_WAIT } from '../src/lib/agent/settings.ts'
 import type { RunEvent } from '../src/lib/agent/wire/index.ts'
 
 const originalWait = BACKGROUND_WAIT.minutes
-afterEach(() => { BACKGROUND_WAIT.minutes = originalWait })
+const originalSettle = { ...CODEX_SETTLE_MS }
+afterEach(() => { BACKGROUND_WAIT.minutes = originalWait; Object.assign(CODEX_SETTLE_MS, originalSettle) })
 const tick = () => new Promise(r => setImmediate(r))
 
 function server(handle: (method: string, params: any) => any, options?: Parameters<typeof createCodexClient>[0], completed?: () => boolean) {
@@ -34,47 +36,12 @@ function server(handle: (method: string, params: any) => any, options?: Paramete
   })
   const client = createCodexClient(options)
   const end = client.turn({ stdout, stdin, prompt: 'original task', cwd: '/tmp', completed, log: () => {}, gotResumeId: () => {}, gotModel: () => {}, event: e => events.push(e) })
-  const item = (item: any) => notify('item/completed', { threadId: 'main', turnId: 't1', item })
+  const item = (item: any) => notify('item/completed', { threadId: 'main', turnId: `t${calls.filter(c => c.method === 'turn/start').length}`, item })
   const complete = (id = 't1', status = 'completed') => notify('turn/completed', { threadId: 'main', turn: { id, status, items: [] } })
   const reply = (text: string, id: string) => item({ type: 'agentMessage', id, text })
   return { stdout, stdin, client, end, calls, events, notify, item, complete, reply }
 }
 
-it('keeps two subagents in the same run, presents results once, then accepts the final reply', async () => {
-  let release!: (v: any) => void
-  let starts = 0
-  const s = server((method, params) => {
-    if (method === 'initialize') return {}
-    if (method === 'thread/start') return { thread: { id: 'main', modelProvider: 'openai' }, model: 'test-model' }
-    if (method === 'turn/start') { starts++; return { turn: { id: `t${starts}` } } }
-    if (method === 'thread/read') return new Promise(r => { release = r })
-    if (method === 'thread/backgroundTerminals/list') return { data: [], nextCursor: null }
-    throw Error(method)
-  })
-  await tick()
-  s.item({ id: 'spawn', type: 'collabAgentToolCall', tool: 'spawnAgent', receiverThreadIds: ['a', 'b'], agentsStates: { a: { status: 'running' }, b: { status: 'running' } } })
-  s.reply('STARTED', 'reply1'); s.complete()
-  await tick()
-  assert.equal(s.client.background?.(), 2)
-  let settled = false; void s.end.then(() => { settled = true })
-  release({ thread: { status: { type: 'idle' }, turns: [{ status: 'completed', items: [{ type: 'agentMessage', text: 'A result' }] }] } })
-  await tick()
-  assert.equal(s.client.background?.(), 1)
-  assert.equal(settled, false)
-  release({ thread: { status: { type: 'idle' }, turns: [{ status: 'completed', items: [{ type: 'agentMessage', text: 'B result' }] }] } })
-  await tick()
-  assert.equal(starts, 2)
-  const continuation = s.calls.filter(c => c.method === 'turn/start')[1]!.params
-  assert.match(continuation.input[0].text, /A result.*B result/)
-  assert.equal(continuation.threadId, 'main')
-  assert.equal(settled, false)
-  s.reply('FINISHED', 'reply2'); s.complete('t2'); s.complete('t2')
-  const end = await s.end
-  assert.equal(end.ok, true, end.error)
-  assert.equal(end.result, 'FINISHED')
-  assert.equal(s.events.filter(e => e.kind === 'tool_call_update').length, 2)
-  assert.equal(starts, 2)
-})
 
 it('finishes ordinary turns on old servers without inventing background work', async () => {
   const s = server(method => {
@@ -87,14 +54,6 @@ it('finishes ordinary turns on old servers without inventing background work', a
   assert.equal(s.client.background?.(), 0)
 })
 
-it('bounds background waiting even when polling still receives responses', async () => {
-  BACKGROUND_WAIT.minutes = 0.002
-  const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : method === 'thread/backgroundTerminals/list' ? { data: [{ itemId: 'cmd', processId: '1' }] } : {})
-  await tick(); s.reply('STARTED', 'reply'); s.complete()
-  const end = await s.end
-  assert.equal(end.ok, false)
-  assert.match(end.error!, /background tasks did not finish/)
-})
 
 it('fails an unexpected connection close with a pending subagent', async () => {
   const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : {})
@@ -104,17 +63,6 @@ it('fails an unexpected connection close with a pending subagent', async () => {
   assert.equal((await s.end).ok, false)
 })
 
-it('retains a failed background outcome after the parent presents its result', async () => {
-  const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : method === 'thread/read' ? { thread: { status: { type: 'idle' }, turns: [{ status: 'failed', error: { message: 'child failed' } }] } } : method === 'thread/backgroundTerminals/list' ? { data: [] } : {})
-  await tick()
-  s.item({ id: 'spawn', type: 'collabAgentToolCall', agentsStates: { a: { status: 'running' } } })
-  s.reply('STARTED', 'first'); s.complete()
-  await tick(); s.reply('The task failed.', 'last'); s.complete('t2')
-  const end = await s.end
-  assert.equal(end.ok, false)
-  assert.match(end.error!, /child failed/)
-  assert.equal(end.result, 'The task failed.')
-})
 
 it('translates standard exec plans without changing provider, sandbox, language or resume intent', () => {
   const converted = createCodexConnection(['codex', 'exec', '--json', '--dangerously-bypass-approvals-and-sandbox', '-c', 'model_provider=private', '-c', 'developer_instructions="中文"', '--model', 'test', '--add-dir', '/project', 'fork', 'parent'])!
@@ -154,52 +102,7 @@ it('reads legacy exec subagent states without treating a spawn as completed work
   assert.equal(r.events?.().filter(e => e.kind === 'tool_call_update').length, 1)
 })
 
-it('reads the latest paginated child turn without mistaking an older completed turn for new work', async () => {
-  const s = server(method => {
-    if (method === 'thread/start') return { thread: { id: 'main' } }
-    if (method === 'thread/read') return { thread: { historyMode: 'paginated', status: { type: 'idle' }, turns: [] } }
-    if (method === 'thread/turns/list') return { data: [{ status: 'completed', items: [{ type: 'agentMessage', text: 'PAGED RESULT' }] }] }
-    if (method === 'thread/backgroundTerminals/list') return { data: [] }
-    return {}
-  })
-  await tick()
-  const spawn = { id: 'spawn', type: 'collabAgentToolCall', agentsStates: { a: { status: 'running' } } }
-  s.item(spawn); s.reply('STARTED', 'm1'); s.complete()
-  await tick()
-  assert.match(s.calls.filter(c => c.method === 'turn/start')[1]!.params.input[0].text, /PAGED RESULT/)
-  // A completed turn may backfill its old spawn snapshot.
-  s.item(spawn)
-  assert.equal(s.client.background?.(), 0)
-  s.item({ id: 'close', type: 'collabAgentToolCall', agentsStates: { a: { status: 'shutdown' } } })
-  s.reply('FINISHED', 'm2'); s.complete('t2')
-  assert.equal((await s.end).ok, true)
-})
 
-it('keeps background commands open through terminal-list pagination and reports a failed exit', async () => {
-  let listing = 0
-  let release!: (v: any) => void
-  const s = server(method => {
-    if (method === 'thread/start') return { thread: { id: 'main' } }
-    if (method === 'thread/backgroundTerminals/list') {
-      listing++
-      return listing === 1 ? new Promise(r => { release = r }) : { data: [], nextCursor: null }
-    }
-    return {}
-  })
-  await tick()
-  s.notify('item/started', { threadId: 'main', item: { id: 'cmd', type: 'commandExecution', command: 'test', processId: '1', status: 'inProgress' } })
-  s.reply('STARTED', 'm1'); s.complete()
-  await tick()
-  assert.equal(s.client.background?.(), 1)
-  s.item({ id: 'cmd', type: 'commandExecution', command: 'test', processId: '1', status: 'failed', exitCode: 1, aggregatedOutput: 'TEST FAILED' })
-  release({ data: [], nextCursor: 'page2' })
-  await tick()
-  s.reply('Reported failure', 'm2'); s.complete('t2')
-  const end = await s.end
-  assert.equal(end.ok, false)
-  assert.match(end.error!, /TEST FAILED/)
-  assert.equal(listing, 3)
-})
 
 it('lets the main agent recover from a foreground command failure', async () => {
   const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : { data: [] })
@@ -210,13 +113,6 @@ it('lets the main agent recover from a foreground command failure', async () => 
   assert.equal((await s.end).ok, true)
 })
 
-
-it('bounds an unresponsive background-state query even when no work was reported yet', async () => {
-  BACKGROUND_WAIT.minutes = 0.002
-  const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : method === 'thread/backgroundTerminals/list' ? new Promise(() => {}) : {})
-  await tick(); s.reply('DONE', 'reply'); s.complete()
-  assert.equal((await s.end).ok, false)
-})
 
 
 for (const mode of ['resume', 'fork'] as const) {
@@ -288,17 +184,119 @@ it('returns a startup failure when the agent closes its input pipe', async () =>
   stdout.destroy()
 })
 
-it('ends background waiting after the owning task records completion (#715)', async () => {
-  let completed = false
-  const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : method === 'thread/backgroundTerminals/list' ? { data: [{ itemId: 'preview' }] } : {}, undefined, () => completed)
-  await tick()
-  s.item({ id: 'preview', type: 'commandExecution', status: 'inProgress', command: 'npm run dev' })
-  s.reply('SHIPPED', 'reply'); s.complete()
-  await tick()
-  assert.equal(s.client.background?.(), 1)
-  completed = true
+const terminal = { itemId: 'cmd', processId: '42', command: 'temporary service' }
+const command = (exitCode?: number) => ({ id: 'cmd', processId: '42', type: 'commandExecution', command: 'temporary service', status: exitCode === undefined ? 'inProgress' : 'completed', exitCode, aggregatedOutput: exitCode === 2 ? 'TEST FAILED' : 'result' })
+function receipt(s: ReturnType<typeof server>, outcome: string, service = false, patch: any = {}) {
+  const schema = s.calls.filter(c => c.method === 'turn/start').at(-1)!.params.outputSchema
+  s.reply(JSON.stringify({ execution: schema.properties.execution.enum[0], items: schema.properties.items.items.properties.id.enum.map((id: string) => ({ id, outcome, service, detail: 'verified', ...patch })) }), 'receipt')
+  s.complete(`t${s.calls.filter(c => c.method === 'turn/start').length}`)
+}
+
+for (const service of [true, false]) it(`stops unnecessary background work, preserving reply and usage (service=${service})`, async () => {
+  let running = true
+  const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : method === 'thread/backgroundTerminals/list' ? { data: running ? [terminal] : [] } : {})
+  await tick(); s.item(command()); s.reply('REVIEW READY', 'answer'); s.complete(); await tick()
+  const start = s.calls.filter(c => c.method === 'turn/start')[1]!.params
+  assert.equal(start.threadId, 'main')
+  assert.ok(start.outputSchema)
+  assert.match(start.input[0].text, /Use your tools/)
+  s.notify('item/commandExecution/terminalInteraction', { threadId: 'main', processId: '42', stdin: '\u0003' })
+  running = false; s.item(command(1))
+  s.notify('thread/tokenUsage/updated', { threadId: 'main', tokenUsage: { total: { inputTokens: 20, outputTokens: 10 } } })
+  receipt(s, 'stopped', service)
   const end = await s.end
   assert.equal(end.ok, true, end.error)
-  assert.equal(end.result, 'SHIPPED')
-  assert.equal(s.calls.filter(c => c.method === 'turn/start').length, 1)
+  assert.equal(end.cleanup?.status, 'confirmed')
+  assert.equal(end.result, 'REVIEW READY')
+  assert.equal(end.usage?.input, 20)
+  assert.equal(s.events.filter(e => e.kind === 'message').length, 1)
+  assert.equal(s.calls.some(c => /clean|terminate/.test(c.method)), false)
+})
+
+it('waits only for selected work and summarizes its verified failed exit once', async () => {
+  let running = true
+  const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : method === 'thread/backgroundTerminals/list' ? { data: running ? [terminal] : [] } : {})
+  await tick(); s.item(command()); s.reply('STARTED', 'answer'); s.complete(); await tick()
+  receipt(s, 'await'); await tick()
+  assert.equal(s.calls.filter(c => c.method === 'turn/start').length, 2)
+  running = false; s.item(command(2))
+  await new Promise(r => setTimeout(r, 1100))
+  const summary = s.calls.filter(c => c.method === 'turn/start').at(-1)!.params
+  assert.equal(summary.outputSchema, undefined)
+  assert.match(summary.input[0].text, /TEST FAILED/)
+  s.reply('Failure reported', 'final'); s.complete('t3')
+  const end = await s.end
+  assert.equal(end.ok, false)
+  assert.match(end.error!, /TEST FAILED/)
+  assert.equal(end.result, 'Failure reported')
+  assert.equal(s.calls.filter(c => c.method === 'turn/start').length, 3)
+})
+
+it('keeps a service only after its host acknowledges the current execution', async () => {
+  const s = server(method => method === 'initialize' ? { wildcrane: { instance: 'backend', lease: 'lease' } } : method === 'thread/start' ? { thread: { id: 'main' } } : method === 'thread/backgroundTerminals/list' ? { data: [terminal] } : { confirmed: true, instance: 'backend', lease: 'lease' })
+  await tick(); s.item(command()); s.reply('Preview ready', 'answer'); s.complete(); await tick()
+  receipt(s, 'keep', true)
+  const end = await s.end
+  assert.equal(end.cleanup?.status, 'confirmed')
+  assert.deepEqual(end.cleanup?.kept, ['terminal:main:cmd'])
+  const handoff = s.calls.find(c => c.method === 'wildcrane/settled')!.params
+  assert.equal(handoff.execution, end.cleanup?.execution)
+  assert.equal(handoff.instance, 'backend')
+  assert.equal(handoff.lease, 'lease')
+  assert.equal(s.client.background?.(), 0)
+})
+
+for (const scenario of ['keep without host', 'stop without action', 'disappeared without exit', 'foreign receipt'] as const) {
+  it(`reports an explicit cleanup limitation: ${scenario}`, async () => {
+    let running = true
+    const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : method === 'thread/backgroundTerminals/list' ? { data: running ? [terminal] : [] } : {})
+    await tick(); s.item(command()); s.reply('Saved result', 'answer'); s.complete(); await tick()
+    if (scenario === 'disappeared without exit') running = false
+    receipt(s, scenario === 'keep without host' ? 'keep' : 'stopped', true, scenario === 'foreign receipt' ? { id: 'terminal:other:cmd' } : {})
+    const end = await s.end
+    assert.equal(end.result, 'Saved result')
+    assert.equal(end.cleanup?.status, 'unconfirmed')
+    assert.equal(s.calls.filter(c => c.method === 'turn/start').length, 2)
+  })
+}
+
+it('collects a paginated child result without adopting unknown threads', async () => {
+  const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : method === 'thread/read' ? { thread: { historyMode: 'paginated', status: { type: 'idle' } } } : method === 'thread/turns/list' ? { data: [{ status: 'completed', items: [{ type: 'agentMessage', text: 'CHILD RESULT' }] }] } : { data: [] })
+  await tick()
+  s.item({ id: 'spawn', type: 'subAgentActivity', kind: 'started', agentThreadId: 'child', agentPath: '/root/worker' })
+  s.item({ id: 'unowned', type: 'collabAgentToolCall', agentsStates: { stranger: { status: 'running' } } })
+  s.reply('Started', 'answer'); s.complete(); await tick()
+  const prompt = s.calls.filter(c => c.method === 'turn/start')[1]!.params.input[0].text
+  assert.match(prompt, /CHILD RESULT/)
+  assert.doesNotMatch(prompt, /stranger/)
+  receipt(s, 'collected')
+  assert.equal((await s.end).ok, true)
+  assert.ok(s.calls.some(c => c.method === 'thread/backgroundTerminals/list' && c.params.threadId === 'child'))
+  assert.equal(s.calls.filter(c => c.method === 'turn/start').length, 2)
+})
+
+it('bounds silent cleanup and state queries independently of the background wait', async () => {
+  CODEX_SETTLE_MS.turn = 30
+  CODEX_SETTLE_MS.verify = 30
+  for (const hang of ['turn', 'query']) {
+    const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : method === 'thread/backgroundTerminals/list' ? hang === 'query' ? new Promise(() => {}) : { data: [terminal] } : {})
+    await tick(); s.reply('Saved', 'answer'); s.complete()
+    assert.equal((await s.end).cleanup?.status, 'unconfirmed')
+    s.stdout.destroy()
+  }
+})
+
+it('never extends the necessary background deadline while polling', async () => {
+  BACKGROUND_WAIT.minutes = 0.002
+  const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : method === 'thread/backgroundTerminals/list' ? { data: [terminal] } : {})
+  await tick(); s.reply('Waiting', 'answer'); s.complete(); await tick(); receipt(s, 'await')
+  assert.match((await s.end).error!, /background tasks did not finish/)
+})
+
+it('batches complete identifiers at the snapshot limit', () => {
+  const work = Array.from({ length: 80 }, (_, n) => ({ id: `terminal:main:${n}`, threadId: 'main', kind: 'terminal' as const, status: 'running' as const, result: 'x'.repeat(1800) }))
+  const first = batch(work)
+  assert.ok(first.length > 0 && first.length < work.length)
+  assert.ok(Buffer.byteLength(JSON.stringify(first)) < 16 * 1024)
+  assert.equal(first[0], work[0])
 })

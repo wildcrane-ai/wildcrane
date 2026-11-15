@@ -8,7 +8,7 @@ import { createInterface } from 'node:readline'
 import { parse } from 'smol-toml'
 import { bounded } from '../../cli/src/lib/shared/conversation'
 import { spawnable } from '../../cli/src/lib/agent/spawnable'
-import { killMarked, markEnv, stopMark, type Mark } from '../../cli/src/lib/agent/stop'
+import { markEnv, stopMark, type Mark } from '../../cli/src/lib/agent/stop'
 import { connect, RpcError, type Message } from '../../cli/src/lib/agent/wire/rpc'
 import { obj, str, type Json } from '../../cli/src/lib/agent/wire/json'
 import { runnerCwd } from './home'
@@ -24,11 +24,13 @@ interface Peer {
   wire?: ReturnType<typeof connect>
   service: ReturnType<typeof providerServer>
   closing?: Promise<void>
+  lease: string
+  settled?: { root: string; execution: string; kept: Json[] }
 }
 
-export const CODEX_PROTOCOL = 1
+export const CODEX_PROTOCOL = 2
 export interface CodexRecord { path: string; token: string; pid: number; instance: string; protocol: number; generation: string; backends: { pid: number; since: number; mark: Mark }[] }
-export const codexRecordFile = () => path.join(runnerCwd(), 'codex-service.json')
+export const codexRecordFile = () => path.join(runnerCwd(), 'codex-service-v2.json')
 
 export async function serveCodex() {
   const token = crypto.randomBytes(32).toString('hex')
@@ -57,7 +59,7 @@ export async function serveCodex() {
       try {
         const msg = JSON.parse(line)
         if (controls.has(socket)) {
-          if (msg.method === 'shutdown' && sockets.size === controls.size) void close()
+          if (msg.method === 'shutdown' && sockets.size === controls.size && ![...services.values()].some(s => s.held())) void close()
         } else if (!peer) {
           if (closing || msg.token !== token) return socket.destroy()
           clearTimeout(authTimer)
@@ -75,7 +77,7 @@ export async function serveCodex() {
           const key = crypto.createHash('sha256').update(JSON.stringify([msg.argv[0], env.CODEX_HOME ?? '', Object.entries(provider).sort(), providerCredentials(provider, env)])).digest('hex')
           let service = services.get(key)
           if (!service) { service = providerServer(msg.argv[0], provider, env, home, (backend) => { identity.backends.push(backend); publish() }); services.set(key, service) }
-          peer = { socket, cwd: str(msg.cwd), config, service, threads: new Set(), pending: new Set() }
+          peer = { socket, cwd: str(msg.cwd), config, service, threads: new Set(), pending: new Set(), lease: crypto.randomUUID() }
           service.peers.add(peer)
         } else {
           const p = peer
@@ -109,7 +111,7 @@ export async function serveCodex() {
   })()
   return {
     env: { WILDCRANE_CODEX_SERVER: record, WILDCRANE_CODEX_GENERATION: identity.generation, WILDCRANE_CODEX_PROXY: fileURLToPath(new URL('./codex-proxy.mjs', import.meta.url)) },
-    close, closed, idle: () => sockets.size === 0,
+    close, closed, idle: () => sockets.size === 0 && ![...services.values()].some(s => s.held()),
   }
 }
 
@@ -119,6 +121,9 @@ function providerServer(command: string, provider: Json, environment: NodeJS.Pro
   const active = new Map<string, string>()
   const requests = new Map<string, Peer>()
   const unloading = new Map<string, () => void>()
+  const retained = new Map<string, { threads: Set<string>; kept: Json[]; execution: string; peer: Peer; settings: string }>()
+  const quarantined = new Set<Peer>()
+  let backend = ''
   let child: ChildProcessWithoutNullStreams | undefined
   let rpc: ReturnType<typeof connect> | undefined
   let initializing: Promise<Json> | undefined
@@ -138,12 +143,12 @@ function providerServer(command: string, provider: Json, environment: NodeJS.Pro
     const env: NodeJS.ProcessEnv = { ...process.env, OPENAI_API_KEY: undefined, CODEX_HOME: environment.CODEX_HOME ?? process.env.CODEX_HOME, WILDCRANE_JOB: '1' }
     for (const key of Object.keys(env)) if (/^(KANBAN_|AI4KANBAN_EXECUTION|WILDCRANE_FLOW_WORKER|WILDCRANE_CODEX_)/.test(key)) delete env[key]
     Object.assign(env, providerCredentials(provider, environment))
+    backend = crypto.randomUUID()
     const mark = stopMark()
     const start = spawnable(command, ['app-server', '-c', 'thread_unload_delay_secs=0', ...Object.entries(provider).flatMap(([key, value]) => ['-c', `${key}=${tomlValue(value)}`])], { cwd: home, env: markEnv(env, mark), detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
     const current = child = spawn(start.command, start.args, start.options) as ChildProcessWithoutNullStreams
     const processAt = Date.now()
     const stop = () => {
-      if (current.pid) killMarked(mark, { pid: current.pid, since: processAt })
       current.kill('SIGKILL')
     }
     stopChild = stop
@@ -156,6 +161,8 @@ function providerServer(command: string, provider: Json, environment: NodeJS.Pro
       stop()
       child = undefined; rpc = undefined; initializing = undefined
       for (const p of peers) p.socket.destroy()
+      retained.clear()
+      quarantined.clear()
       owners.clear()
       active.clear()
       requests.clear()
@@ -174,6 +181,18 @@ function providerServer(command: string, provider: Json, environment: NodeJS.Pro
       if (msg.method === 'thread/closed') { unloading.get(id)?.(); unloading.delete(id) }
       if (msg.method === 'turn/started') active.set(id, str(obj(params.turn).id))
       if (msg.method === 'turn/completed') active.delete(id)
+      if (msg.method === 'item/completed' && obj(params.item).type === 'commandExecution') {
+        for (const [root, group] of retained) {
+          group.kept = group.kept.filter(t => t.threadId !== id || t.itemId !== obj(params.item).id)
+          if (group.kept.length) continue
+          retained.delete(root)
+          const p = group.peer
+          p.settled = { root, execution: group.execution, kept: [] }
+          p.closing = undefined
+          for (const thread of group.threads) claim(p, thread)
+          void release(p)
+        }
+      }
       let owner = owners.get(id)
       if (!owner) {
         const parent = str(thread.parentThreadId) || str(thread.forkedFromId)
@@ -182,8 +201,9 @@ function providerServer(command: string, provider: Json, environment: NodeJS.Pro
       }
       if (owner) {
         const item = obj(params.item)
-        if (item.type === 'collabAgentToolCall') {
-          for (const id of [...(Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : []), ...Object.keys(obj(item.agentsStates))]) {
+        if (item.type === 'subAgentActivity' && item.kind === 'started' && str(item.agentThreadId) && !owners.has(str(item.agentThreadId))) claim(owner, str(item.agentThreadId))
+        if (item.type === 'collabAgentToolCall' && item.tool === 'spawnAgent') {
+          for (const id of (Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [])) {
             if (typeof id === 'string' && !owners.has(id)) claim(owner, id)
           }
         }
@@ -197,29 +217,56 @@ function providerServer(command: string, provider: Json, environment: NodeJS.Pro
     void initializing.catch(() => { if (child === current) stop() })
     return initializing
   }
+  const terminals = async (wire: ReturnType<typeof connect>, threadId: string) => {
+    const result: Json[] = []
+    const seen = new Set<unknown>()
+    let cursor: unknown = null
+    do {
+      if (seen.has(cursor)) throw Error('Codex repeated a terminal cursor.')
+      seen.add(cursor)
+      const page = await wire.call('thread/backgroundTerminals/list', { threadId, ...(cursor ? { cursor } : {}) })
+      for (const value of Array.isArray(page.data) ? page.data : []) result.push({ ...obj(value), threadId })
+      cursor = page.nextCursor
+    } while (cursor)
+    return result
+  }
   const release = (p: Peer): Promise<void> => {
     if (p.closing) return p.closing
-    p.closing = (async () => {
-      // A disconnected caller may still have a thread/start in flight.
-      await bounded(Promise.allSettled(p.pending), TIMEOUT, 'Codex requests timed out.').catch(() => {})
+    const cleanup = async () => {
+      await Promise.allSettled(p.pending)
       const wire = p.wire
       if (wire) {
         for (const [id, owner] of requests) if (owner === p) { wire.refuse(id, 'Run disconnected.'); requests.delete(id) }
-        await bounded(Promise.all([...p.threads].map(async threadId => {
-          const turnId = active.get(threadId)
-          if (turnId) await wire.call('turn/interrupt', { threadId, turnId }).catch(() => {})
-          await wire.call('thread/backgroundTerminals/clean', { threadId }).catch(() => {})
-          // Unload before reusing a saved thread: a loaded resume retains its old environment.
-          const unloaded = new Promise<void>(resolve => unloading.set(threadId, resolve))
-          const result = obj(await wire.call('thread/unsubscribe', { threadId }).catch(() => ({})))
-          if (result.status === 'unsubscribed') await unloaded
-          unloading.delete(threadId)
-        })), TIMEOUT, 'Codex thread cleanup timed out.').catch(() => {
-          send(p, { method: 'error', params: { error: { message: 'Codex cleanup failed; this provider is stopping.' } } })
-          stopChild?.()
-        })
+        if (p.settled?.kept.length && !closing) {
+          retained.set(p.settled.root, { threads: new Set(p.threads), kept: p.settled.kept, execution: p.settled.execution, peer: p, settings: JSON.stringify([p.cwd, p.config]) })
+        } else {
+          for (const threadId of p.threads) {
+            if (owners.get(threadId) !== p || wire !== rpc) continue
+            if (!p.settled) {
+              const turnId = active.get(threadId)
+              if (turnId) await wire.call('turn/interrupt', { threadId, turnId })
+              try { await wire.call('thread/backgroundTerminals/clean', { threadId }) }
+              catch (e) { if (!(e instanceof RpcError) || e.code !== -32601) throw e }
+            }
+            const unloaded = new Promise<void>(resolve => unloading.set(threadId, resolve))
+            const result = obj(await wire.call('thread/unsubscribe', { threadId }))
+            if (result.status === 'unsubscribed') await unloaded
+            unloading.delete(threadId)
+          }
+        }
       }
       for (const id of p.threads) if (owners.get(id) === p) owners.delete(id)
+      quarantined.delete(p)
+    }
+    // Ownership remains reserved until every old RPC finishes, even after caller timeout.
+    const work = cleanup()
+    p.closing = (async () => {
+      try { await bounded(work, TIMEOUT, 'Codex thread cleanup timed out; the thread remains reserved.') }
+      catch (e) {
+        quarantined.add(p)
+        console.error(e instanceof Error ? e.message : String(e))
+        send(p, { method: 'wildcrane/cleanup', params: { status: 'unconfirmed', lease: p.lease } })
+      }
       peers.delete(p)
       p.socket.end()
     })()
@@ -240,12 +287,38 @@ function providerServer(command: string, provider: Json, environment: NodeJS.Pro
     try {
       const initialized = await ensure()
       p.wire = rpc
-      if (msg.method === 'initialize') { send(p, { id, result: initialized }); return }
+      if (msg.method === 'initialize') { send(p, { id, result: { ...initialized, wildcrane: { instance: backend, lease: p.lease } } }); return }
       if (msg.method === 'initialized') return
       const wire = rpc!
       let params = obj(msg.params)
+      if (msg.method === 'wildcrane/settled') {
+        if (params.instance !== backend || params.lease !== p.lease || !str(params.execution) || owners.get(str(params.threadId)) !== p || params.confirmed !== true) throw Error('Codex cleanup is unconfirmed; the host will perform bounded session recovery.')
+        const kept = Array.isArray(params.kept) ? params.kept.map(obj) : []
+        await bounded((async () => {
+          const actual: Json[] = []
+          for (const thread of p.threads) {
+            if (active.has(thread)) throw Error('A Codex turn is still active.')
+            actual.push(...await terminals(wire, thread))
+          }
+          const key = (v: Json) => JSON.stringify([v.threadId, v.itemId, v.processId])
+          if (new Set(kept.map(key)).size !== kept.length || actual.length !== kept.length || actual.some(t => !kept.some(k => key(k) === key(t)))) throw Error('Codex retained terminal state changed before handoff.')
+        })(), TIMEOUT, 'Codex retention verification timed out.')
+        if (p.closing || wire !== rpc) throw Error('Codex execution ownership expired.')
+        p.settled = { root: str(params.threadId), execution: str(params.execution), kept }
+        send(p, { id, result: { confirmed: true, instance: backend, lease: p.lease } })
+        return
+      }
+      let held: { threads: Set<string>; kept: Json[]; execution: string } | undefined
       if (['thread/start', 'thread/resume', 'thread/fork'].includes(msg.method)) {
-        if (msg.method !== 'thread/start') claim(p, str(params.threadId))
+        if (msg.method !== 'thread/start') {
+          const source = str(params.threadId)
+          const previous = retained.get(source)
+          if (previous && msg.method === 'thread/resume' && previous.settings !== JSON.stringify([p.cwd, p.config])) throw Error('This Codex version cannot change execution settings while retaining a loaded session. Its services and saved results were preserved; no new work was submitted.')
+          held = msg.method === 'thread/resume' ? previous : undefined
+          if ([...retained.values()].some(group => group.threads.has(source)) && !previous) throw Error('Resume the owning Codex thread to adopt its retained work.')
+          if (msg.method === 'thread/resume' || !previous) claim(p, source)
+          if (held) { for (const thread of held.threads) claim(p, thread); retained.delete(source) }
+        }
         const cwd = params.cwd ?? p.cwd
         const settings = await wire.call('config/read', { cwd, includeLayers: false })
         const config = { ...p.config, ...obj(params.config), thread_unload_delay_secs: 0 }
@@ -255,7 +328,9 @@ function providerServer(command: string, provider: Json, environment: NodeJS.Pro
         const threadId = str(params.threadId)
         if (!threadId || owners.get(threadId) !== p) throw Error('This run does not own that Codex thread.')
       }
+      if (msg.method === 'turn/start') p.settled = undefined
       const result = await wire.call(msg.method, params)
+      if (held) result.retainedThreads = [...held.threads].map(id => ({ id }))
       const threadId = str(obj(result.thread).id)
       if (threadId) claim(p, threadId)
       if (id !== undefined) send(p, { id, result })
@@ -264,7 +339,7 @@ function providerServer(command: string, provider: Json, environment: NodeJS.Pro
     }
   }
   return {
-    peers, request, release,
+    peers, request, release, held: () => retained.size > 0 || quarantined.size > 0,
     async close() {
       closing = true
       await bounded(Promise.allSettled([...peers].map(release)), TIMEOUT, 'Codex cleanup timed out.').catch(() => {})
@@ -308,7 +383,7 @@ export function threadConfig(argv: string[], env: NodeJS.ProcessEnv): Json {
     catch { config[key] = value }
   }
   const local = Object.fromEntries(Object.entries(env).filter(([key, value]) => value !== undefined &&
-    key !== 'OPENAI_API_KEY' && (process.env[key] !== value || /^(KANBAN_|AI4KANBAN_|WILDCRANE_|PATH$)/.test(key))))
+    key !== 'OPENAI_API_KEY' && key !== 'WILDCRANE_FLOW_WORKER' && (process.env[key] !== value || /^(KANBAN_|AI4KANBAN_|WILDCRANE_|PATH$)/.test(key))))
   config['shell_environment_policy.set'] = { ...obj(config['shell_environment_policy.set']), ...local }
   return config
 }

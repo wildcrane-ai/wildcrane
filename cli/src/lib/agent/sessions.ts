@@ -1,3 +1,4 @@
+import { stopConnection } from './connection-process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -166,7 +167,8 @@ function reap(runs: RunRecord[], reaped: RunRecord[] = [], restore: RunRecord[] 
     r.status = r.stopping ? 'stopped' : 'interrupted'
     r.code = null // we saw no exit
     // Its watcher is gone, so nothing else will end what its agent started (#1302).
-    if (r.pid) killMarked(runMark(r.sessionId), r.agentPid && r.agentStartedAt ? { pid: r.agentPid, since: r.agentStartedAt } : undefined)
+    if (r.managedProcess) void stopConnection(r.agentPid ? { pid: r.agentPid, identity: r.agentIdentity } : undefined, 12_000)
+    else if (r.pid) killMarked(runMark(r.sessionId), r.agentPid && r.agentStartedAt ? { pid: r.agentPid, since: r.agentStartedAt } : undefined)
     // We only know it ended by the time we noticed, so this duration is an upper bound.
     r.endedAt = now
     stampDuration(r, r.endedAt)

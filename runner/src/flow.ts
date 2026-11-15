@@ -1,3 +1,4 @@
+import { connectionStopped } from '../../cli/src/lib/agent/connection-process'
 import { previewBridge } from './preview-bridge'
 import { previewOperation } from './api'
 import { push, replyAssetsSynced } from './task-folder'
@@ -155,11 +156,11 @@ async function stopRuns(akb: Akb, ws: TaskFolder, id: number, since: number, ms:
   const until = Date.now() + ms
   const call = (args: string[]) => runAkb(akb, [...args, '--board', ws.board], { cwd: ws.cwd, board: ws.board })
   while (Date.now() < until) {
-    const runs = answerOf<{ runs?: (Run & { status?: string; agentPid?: number; agentStartedAt?: number })[] }>(await call(['raw', 'run', 'list', '--card', String(id), '--all', '--json']))?.runs
+    const runs = answerOf<{ runs?: (Run & { status?: string; agentPid?: number; agentStartedAt?: number; managedProcess?: boolean; agentIdentity?: string })[] }>(await call(['raw', 'run', 'list', '--card', String(id), '--all', '--json']))?.runs
     const live = (runs ?? []).filter((r) => r.status === 'running' && (r.startedAt ?? 0) >= since)
     if (!runs) return false
     if (!live.length && (runs ?? []).filter((r) => (r.startedAt ?? 0) >= since).every((r) =>
-      processesStopped(runMark(r.sessionId, r.startedAt), r.agentPid && r.agentStartedAt ? { pid: r.agentPid, since: r.agentStartedAt } : undefined))) return true
+      (r.managedProcess ? connectionStopped(r.agentPid ? { pid: r.agentPid, identity: r.agentIdentity } : undefined) : processesStopped(runMark(r.sessionId, r.startedAt), r.agentPid && r.agentStartedAt ? { pid: r.agentPid, since: r.agentStartedAt } : undefined)))) return true
     for (const r of live) await call(['raw', 'run', 'stop', r.sessionId])
     await wait(250)
   }
@@ -698,7 +699,7 @@ export async function confirmFlowStopped(ws: TaskFolder, job: Job, deps: FlowDep
   const id = akbCardOf(ws) ?? job.number
   if (!id) return false
   const ran = await runAkb(deps.akb, ['raw', 'run', 'list', '--card', String(id), '--all', '--json', '--board', ws.board], { cwd: ws.cwd, board: ws.board })
-  const runs = answerOf<{ runs?: { sessionId: string; status?: string; startedAt?: number; agentPid?: number; agentStartedAt?: number }[] }>(ran)?.runs
-  return !!runs && runs.every((r) => r.status !== 'running' && processesStopped(runMark(r.sessionId, r.startedAt),
-    r.agentPid && r.agentStartedAt ? { pid: r.agentPid, since: r.agentStartedAt } : undefined))
+  const runs = answerOf<{ runs?: { sessionId: string; status?: string; startedAt?: number; agentPid?: number; agentStartedAt?: number; managedProcess?: boolean; agentIdentity?: string }[] }>(ran)?.runs
+  return !!runs && runs.every((r) => r.status !== 'running' && (r.managedProcess ? connectionStopped(r.agentPid ? { pid: r.agentPid, identity: r.agentIdentity } : undefined) : processesStopped(runMark(r.sessionId, r.startedAt),
+    r.agentPid && r.agentStartedAt ? { pid: r.agentPid, since: r.agentStartedAt } : undefined)))
 }

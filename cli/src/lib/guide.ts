@@ -27,6 +27,7 @@ import describeProject from '../guide/describe-project.md'
 import discussGoal from '../guide/discuss-goal.md'
 import followUp from '../guide/follow-up.md'
 import implement from '../guide/implement.md'
+import settleBackground from '../guide/settle-background.md'
 import moduleMap from '../guide/module-map.md'
 import pruneMemory from '../guide/prune-memory.md'
 import reviewMemory from '../guide/review-memory.md'
@@ -62,6 +63,7 @@ export const GUIDES: Guide[] = [
   { name: 'card-chat', when: "answer a card's conversation, and act on what each turn settles", text: cardChat },
   { name: 'update-studio', when: "change one of this workspace's studios so new tasks run the new version", text: updateStudio },
   { name: 'implement', when: 'build a settled card and stop cleanly on an execution blocker', text: implement },
+  { name: 'settle-background', when: 'finish this task’s remaining background work', text: settleBackground },
   { name: 'archive', when: 'finish a task — write its shipped line, then take it off the board', text: archive },
   { name: 'update-questions', when: 'decide what to ask the user, and write the question', text: updateQuestions },
   { name: 'refine', when: 'plan one card until it can be built', text: refine },
