@@ -30,6 +30,9 @@ readline.createInterface({input:process.stdin}).on('line', async line => {
  if(m.method==='initialize') await new Promise(r=>setTimeout(r,150));
  if(m.method==='thread/start') { result={thread:{id:'thread-'+m.id,modelProvider:'openai'},model:p.config.model}; loaded.set(result.thread.id,result.model); }
  if(m.method==='thread/resume') { result={thread:{id:p.threadId,modelProvider:'openai'},model:loaded.has(p.threadId)?loaded.get(p.threadId):p.config.model}; loaded.set(p.threadId,result.model); }
+ if(m.method==='thread/resume' && p.threadId==='missing') { loaded.delete(p.threadId); send({id:m.id,error:{code:-32600,message:'no rollout found for thread id missing'}}); return; }
+ if(m.method==='thread/fork') { result={thread:{id:'fork-'+m.id,modelProvider:'openai',forkedFromId:p.threadId}}; loaded.set(result.thread.id,p.config.model); notify('thread/started',result); }
+ if(m.method.startsWith('thread/backgroundTerminals/') && !loaded.has(p.threadId)) { send({id:m.id,error:{code:-32600,message:'thread not found: '+p.threadId}}); return; }
  if(m.method==='turn/start') {
   if(p.input?.[0]?.text==='crash') { process.exit(1); return; }
   result={turn:{id:'turn-'+(++turn)}};
@@ -86,6 +89,7 @@ it('shares one server across concurrent runs, isolates settings and stops only t
     const duplicate = peer(server.env)
     await duplicate.rpc.call('initialize', {})
     await assert.rejects(duplicate.rpc.call('thread/resume', { threadId: aid }), /already in use/)
+    await assert.rejects(duplicate.rpc.call('thread/fork', { threadId: aid }), /already in use/)
     await duplicate.close()
     await a.close()
     assert.equal(b.notifications.some(m => m.method === 'turn/completed'), false)
@@ -113,6 +117,54 @@ it('shares one server across concurrent runs, isolates settings and stops only t
       assert.equal(s.params.config['mcp_servers.defaultProbe.env'].STATIC, 'kept')
     }
     assert.equal(rows.filter(m => m.method === 'turn/interrupt' && m.params.threadId === aid).length, 2)
+  } finally { await server.close() }
+})
+
+it('releases an unloaded fork source and lets the completed fork resume (#762)', { timeout: 15000 }, async () => {
+  const server = await codexServer()
+  try {
+    const source = peer(server.env), parallel = peer(server.env)
+    await Promise.all([source.rpc.call('initialize', {}), parallel.rpc.call('initialize', {})])
+    const rootId = ((await source.rpc.call('thread/start', { cwd: '/project-a' })).thread as any).id
+    await source.close()
+    const otherId = ((await parallel.rpc.call('thread/start', { cwd: '/project-b' })).thread as any).id
+    await parallel.rpc.call('turn/start', { threadId: otherId })
+    const offset = read().length
+    const fork = peer(server.env)
+    const hello = await fork.rpc.call('initialize', {})
+    const forkId = ((await fork.rpc.call('thread/fork', { threadId: rootId, cwd: '/project-a' })).thread as any).id
+    await fork.rpc.call('turn/start', { threadId: forkId, input: [{ text: 'finish' }] })
+    await fork.rpc.call('wildcrane/settled', { threadId: forkId, ...(hello.wildcrane as object), execution: 'fork', confirmed: true, kept: [] })
+    await fork.close()
+    const next = peer(server.env)
+    await next.rpc.call('initialize', {})
+    await next.rpc.call('thread/resume', { threadId: forkId })
+    await next.rpc.call('turn/start', { threadId: forkId, input: [{ text: 'finish' }] })
+    await next.close()
+    assert.equal(read().slice(offset).some(m => m.params?.threadId === rootId &&
+      ['thread/backgroundTerminals/list', 'thread/backgroundTerminals/clean', 'thread/unsubscribe'].includes(m.method)), false)
+    assert.ok(await parallel.rpc.call('thread/read', { threadId: otherId }))
+    assert.equal(parallel.notifications.some(m => m.method === 'turn/completed'), false)
+    await parallel.close()
+  } finally { await server.close() }
+})
+
+it('rolls back failed resume reservations without waiting for the caller to disconnect (#762)', { timeout: 15000 }, async () => {
+  const server = await codexServer()
+  const offset = read().length
+  try {
+    const a = peer(server.env), b = peer(server.env)
+    await Promise.all([a.rpc.call('initialize', {}), b.rpc.call('initialize', {})])
+    await assert.rejects(a.rpc.call('thread/resume', { threadId: 'missing' }), /no rollout found/)
+    await assert.rejects(b.rpc.call('thread/resume', { threadId: 'missing' }), /no rollout found/)
+    await Promise.all([a.close(), b.close()])
+    const next = peer(server.env)
+    await next.rpc.call('initialize', {})
+    await assert.rejects(next.rpc.call('thread/resume', { threadId: 'missing' }), /no rollout found/)
+    assert.ok(await next.rpc.call('thread/start', {}))
+    await next.close()
+    assert.equal(read().slice(offset).some(m => m.params?.threadId === 'missing' &&
+      ['thread/backgroundTerminals/clean', 'thread/unsubscribe'].includes(m.method)), false)
   } finally { await server.close() }
 })
 

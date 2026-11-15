@@ -20,6 +20,7 @@ interface Peer {
   cwd: string
   config: Json
   threads: Set<string>
+  preparing: Map<string, number>
   pending: Set<Promise<void>>
   wire?: ReturnType<typeof connect>
   service: ReturnType<typeof providerServer>
@@ -77,7 +78,7 @@ export async function serveCodex() {
           const key = crypto.createHash('sha256').update(JSON.stringify([msg.argv[0], env.CODEX_HOME ?? '', Object.entries(provider).sort(), providerCredentials(provider, env)])).digest('hex')
           let service = services.get(key)
           if (!service) { service = providerServer(msg.argv[0], provider, env, home, (backend) => { identity.backends.push(backend); publish() }); services.set(key, service) }
-          peer = { socket, cwd: str(msg.cwd), config, service, threads: new Set(), pending: new Set(), lease: crypto.randomUUID() }
+          peer = { socket, cwd: str(msg.cwd), config, service, threads: new Set(), preparing: new Map(), pending: new Set(), lease: crypto.randomUUID() }
           service.peers.add(peer)
         } else {
           const p = peer
@@ -131,11 +132,24 @@ function providerServer(command: string, provider: Json, environment: NodeJS.Pro
   let exited = Promise.resolve()
   let stopChild: (() => void) | undefined
   const send = (p: Peer, value: unknown) => { if (!p.socket.destroyed) p.socket.write(JSON.stringify(value) + '\n') }
-  const claim = (p: Peer, id: string) => {
+  const claim = (p: Peer, id: string, loaded = true) => {
     if (!id) return
     if (owners.has(id) && owners.get(id) !== p) throw Error('Codex thread is already in use by another run.')
     owners.set(id, p)
-    p.threads.add(id)
+    if (loaded) p.threads.add(id)
+  }
+  // A fork source may be saved but unloaded; reserve it only during preparation.
+  const reserve = (p: Peer, id: string) => {
+    claim(p, id, false)
+    p.preparing.set(id, (p.preparing.get(id) ?? 0) + 1)
+    return () => {
+      const pending = p.preparing.get(id)! - 1
+      if (pending) p.preparing.set(id, pending)
+      else {
+        p.preparing.delete(id)
+        if (!p.threads.has(id) && owners.get(id) === p) owners.delete(id)
+      }
+    }
   }
   const ensure = (): Promise<Json> => {
     if (closing) return Promise.reject(Error('Runner is stopping.'))
@@ -200,6 +214,7 @@ function providerServer(command: string, provider: Json, environment: NodeJS.Pro
         if (owner) claim(owner, id)
       }
       if (owner) {
+        if (msg.method === 'thread/started') claim(owner, id)
         const item = obj(params.item)
         if (item.type === 'subAgentActivity' && item.kind === 'started' && str(item.agentThreadId) && !owners.has(str(item.agentThreadId))) claim(owner, str(item.agentThreadId))
         if (item.type === 'collabAgentToolCall' && item.tool === 'spawnAgent') {
@@ -284,6 +299,7 @@ function providerServer(command: string, provider: Json, environment: NodeJS.Pro
       return
     }
     const id = msg.id
+    let releaseSource: (() => void) | undefined
     try {
       const initialized = await ensure()
       p.wire = rpc
@@ -316,7 +332,7 @@ function providerServer(command: string, provider: Json, environment: NodeJS.Pro
           if (previous && msg.method === 'thread/resume' && previous.settings !== JSON.stringify([p.cwd, p.config])) throw Error('This Codex version cannot change execution settings while retaining a loaded session. Its services and saved results were preserved; no new work was submitted.')
           held = msg.method === 'thread/resume' ? previous : undefined
           if ([...retained.values()].some(group => group.threads.has(source)) && !previous) throw Error('Resume the owning Codex thread to adopt its retained work.')
-          if (msg.method === 'thread/resume' || !previous) claim(p, source)
+          if (msg.method === 'thread/resume' || !previous) releaseSource = reserve(p, source)
           if (held) { for (const thread of held.threads) claim(p, thread); retained.delete(source) }
         }
         const cwd = params.cwd ?? p.cwd
@@ -336,6 +352,8 @@ function providerServer(command: string, provider: Json, environment: NodeJS.Pro
       if (id !== undefined) send(p, { id, result })
     } catch (e) {
       if (id !== undefined) send(p, { id, error: { code: e instanceof RpcError ? e.code : -32000, message: e instanceof Error ? e.message : String(e) } })
+    } finally {
+      releaseSource?.()
     }
   }
   return {
