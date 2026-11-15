@@ -359,6 +359,19 @@ describe('the launcher', () => {
     assert.deepEqual(ran(), ['1.1.0', '1.0.0', '1.0.0'])
   })
 
+  it('keeps a new version while temporary registration failures are actively retried', async () => {
+    target = '1.1.0'
+    published[target] = { script: `
+      process.send({type:'started'});
+      const progress=setInterval(()=>process.send({type:'reconnecting'}),50);
+      setTimeout(()=>{clearInterval(progress);${CONNECTS}},650);
+    ` }
+    assert.equal(await launch(own), 0)
+    assert.deepEqual(ran(), ['1.1.0'])
+    assert.ok(readState().good.includes('1.1.0'))
+    assert.ok(!readState().bad.includes('1.1.0'))
+  })
+
   it('falls back when the new one never connects', async () => {
     published['1.1.0'] = { script: HANGS }
     target = '1.1.0'

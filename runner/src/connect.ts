@@ -53,6 +53,7 @@ export interface Options {
   pollMs?: number
   /** Called each time Cloud accepts the registration after it did not. */
   onConnected?: () => void
+  onReconnecting?: () => void
   /** When the periodic agents are next looked at. */
   nextLook?: (now: number) => number
   /** What runs this Runner, told to any other one on this computer that waits behind it. */
@@ -207,6 +208,7 @@ export function startRunner(options: Options): Runner {
       if (answer.code === 'runner_outdated') return finish({ reason: 'outdated' })
       if (answer.code && answer.code !== 'service_unavailable') return finish({ reason: 'refused', message: answer.error })
       connected = false
+      options.onReconnecting?.()
       status(t.reconnecting())
       return schedule(BACKOFF_MS[Math.min(attempts++, BACKOFF_MS.length - 1)]!)
     }

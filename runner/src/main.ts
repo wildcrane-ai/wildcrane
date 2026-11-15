@@ -33,6 +33,7 @@ async function main(): Promise<void> {
     registration: async () => ({ machineId: id, machineName: machineName(), version: VERSION, runtimes: await detectRuntimes(true) }),
     kind: (['claude-code', 'codex', 'cursor', 'dsh', 'zcode', 'kimi'] as const).find((k) => k === process.env.WILDCRANE_RUNNER_KIND) ?? 'terminal',
     onConnected: () => tell({ type: 'connected' }),
+    onReconnecting: () => tell({ type: 'reconnecting' }),
     onWaiting: () => tell({ type: 'waiting' }),
     // Tests shorten the job poll, which stands in when Realtime is out of reach.
     pollMs: Number(process.env.WILDCRANE_POLL_MS) || undefined,

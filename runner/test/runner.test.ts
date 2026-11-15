@@ -20,6 +20,7 @@ import { createAcpClient, createStreamRenderer, createCodexStreamRenderer } from
 import { createCodexClient } from '../../cli/src/lib/agent/wire/codex'
 import { CLAUDE_REPLY } from '../../cli/test/claude-reply'
 import { stopMark } from '../../cli/src/lib/agent/stop'
+import { readSession, writeSession } from '../../cli/src/lib/cloud/session'
 import { HARNESSES } from '../../cli/src/lib/agent/harnesses'
 import { SYSTEM_LANGUAGE_EN, SYSTEM_LANGUAGE_ZH } from '../../cli/src/lib/agent/language'
 import { plan as runtimePlan } from '../src/runtimes'
@@ -253,6 +254,47 @@ process.stdin.on('data', () => { if (read) return; read = true;
     await until(() => job.state === 'finished')
     assert.equal(stopped, false)
     assert.equal(job.outcome, 'done')
+  })
+
+  it('stays alive during auth rate limiting and automatically resumes queued replies', async () => {
+    writeSession({ ...readSession()!, expiresAt: Date.now() - 1 })
+    const fetch = globalThis.fetch
+    let refreshes = 0
+    let allow = false
+    let stopped = false
+    globalThis.fetch = async (input, init) => {
+      if (String(input).includes('/auth/v1/token')) {
+        refreshes++
+        return allow
+          ? Response.json({ access_token: 'new-token', refresh_token: 'new-refresh', expires_in: 3600 })
+          : Response.json({ msg: 'Request rate limit reached' }, { status: 429 })
+      }
+      return fetch(input, init)
+    }
+    try {
+      const job = cloud.dispatch({ id: 'auth-recovery', chat: { message: 'm1', body: '继续' } })
+      const current = start()
+      void current.stopped.then(() => { stopped = true })
+      await until(() => fs.existsSync(path.join(runnerHome(), 'session-refresh.json')))
+      current.renew()
+      await new Promise(resolve => setTimeout(resolve, 150))
+      assert.equal(refreshes, 1)
+      assert.equal(stopped, false)
+      assert.equal(job.state, 'waiting')
+      allow = true
+      const file = path.join(runnerHome(), 'session-refresh.json')
+      const retry = JSON.parse(fs.readFileSync(file, 'utf8'))
+      fs.writeFileSync(file, JSON.stringify({ ...retry, until: Date.now() - 1 }))
+      current.renew()
+      await until(() => job.state === 'finished')
+      assert.equal(job.outcome, 'done', job.reason)
+      assert.equal(refreshes, 2)
+      assert.equal(stopped, false)
+    } finally {
+      await runner?.close()
+      runner = null
+      globalThis.fetch = fetch
+    }
   })
   for (const failed of [false, true]) {
     it(`Codex 重连后${failed ? '最终失败' : '成功'}同步云端并关闭执行`, async () => {

@@ -190,13 +190,15 @@ function runOnce(candidate: Candidate, options: LaunchOptions): Promise<Outcome>
     let timedOut = false
     let stopping = false
     let forceKill: ReturnType<typeof setTimeout> | undefined
-    if (candidate.fresh) {
+    const watchConnection = () => {
+      if (timer) clearTimeout(timer)
       timer = setTimeout(() => {
         timedOut = true
         child.kill('SIGTERM')
         forceKill = setTimeout(() => child.kill('SIGKILL'), 5_000)
       }, Number(process.env.WILDCRANE_CONNECT_MS) || CONNECT_MS)
     }
+    if (candidate.fresh) watchConnection()
     const forward = (signal: NodeJS.Signals) => () => {
       stopping = true
       child.kill(signal)
@@ -211,6 +213,7 @@ function runOnce(candidate: Candidate, options: LaunchOptions): Promise<Outcome>
     child.on('message', (message: { type?: string }) => {
       options.onMessage?.(message)
       if (message.type === 'update-deferred') update = null
+      if (message.type === 'reconnecting' && candidate.fresh && !connected && !timedOut) watchConnection()
       // Another Runner on this computer runs the jobs: this one is up, only not connected yet.
       if (message.type === 'waiting' && timer) {
         clearTimeout(timer)

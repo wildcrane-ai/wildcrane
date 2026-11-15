@@ -1,4 +1,4 @@
-// wildcrane-runner 0.6.73 — built by runner/scripts/build.mjs. Do not edit.
+// wildcrane-runner 0.6.74 — built by runner/scripts/build.mjs. Do not edit.
 import { createRequire as __ai4kanbanRequire } from 'node:module'
 const require = __ai4kanbanRequire(import.meta.url)
 var __create = Object.create;
@@ -28402,13 +28402,15 @@ function runOnce(candidate, options) {
     let timedOut = false;
     let stopping = false;
     let forceKill;
-    if (candidate.fresh) {
+    const watchConnection = () => {
+      if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timedOut = true;
         child.kill("SIGTERM");
         forceKill = setTimeout(() => child.kill("SIGKILL"), 5e3);
       }, Number(process.env.WILDCRANE_CONNECT_MS) || CONNECT_MS);
-    }
+    };
+    if (candidate.fresh) watchConnection();
     const forward = (signal) => () => {
       stopping = true;
       child.kill(signal);
@@ -28422,6 +28424,7 @@ function runOnce(candidate, options) {
     child.on("message", (message) => {
       options.onMessage?.(message);
       if (message.type === "update-deferred") update = null;
+      if (message.type === "reconnecting" && candidate.fresh && !connected && !timedOut) watchConnection();
       if (message.type === "waiting" && timer) {
         clearTimeout(timer);
         timer = null;

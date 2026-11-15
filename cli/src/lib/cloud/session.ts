@@ -13,6 +13,7 @@
 // rather than refreshing again.
 
 import fs from 'node:fs'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 
 import { machineHome } from '../machine/home'
@@ -43,14 +44,43 @@ export interface CloudSession {
 /** Refresh this long before the token actually runs out, so a request never carries one
  *  that expires in flight. */
 const REFRESH_MARGIN_MS = 60_000
-/** How long a refresh may hold the lock before another process calls the holder dead. */
+/** Fallback age for a lock without a readable owner. */
 const LOCK_STALE_MS = 30_000
 const LOCK_WAIT_MS = 20_000
 const LOCK_RETRY_MS = 50
+const REFRESH_TIMEOUT_MS = 15_000
+const REFRESH_BACKOFF_MS = 60_000
 
 export const sessionFile = (): string => path.join(machineHome(), 'session.json')
 const lockDir = (): string => path.join(machineHome(), 'session.lock')
 const lockOwner = (): string => path.join(lockDir(), 'owner')
+const retryFile = (): string => path.join(machineHome(), 'session-refresh.json')
+interface RefreshRetry { key: string; until: number; attempt: number; error: string }
+const refreshKey = (session: CloudSession) => createHash('sha256')
+  .update(JSON.stringify([cloudEndpoints().api, session.subject, session.refreshToken])).digest('hex')
+
+function readRetry(session: CloudSession): RefreshRetry | undefined {
+  try {
+    const retry = JSON.parse(fs.readFileSync(retryFile(), 'utf8')) as RefreshRetry
+    if (retry.key === refreshKey(session) && Number.isFinite(retry.until)
+        && Number.isInteger(retry.attempt) && retry.attempt > 0 && typeof retry.error === 'string') return retry
+  } catch {}
+}
+
+function deferRefresh(session: CloudSession, error: string, after?: string | null): TokenResult {
+  const current = readSession()
+  if (current?.subject === session.subject && current.refreshToken === session.refreshToken) {
+    const attempt = Math.min((readRetry(session)?.attempt ?? 0) + 1, 4)
+    const seconds = after?.trim() ? Number(after) : NaN
+    const serverDelay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(after ?? '') - Date.now()
+    const delay = Math.max(Math.min(REFRESH_BACKOFF_MS * 2 ** (attempt - 1), 300_000), Number.isFinite(serverDelay) ? serverDelay : 0)
+    const retry: RefreshRetry = { key: refreshKey(session), until: Date.now() + delay, attempt, error }
+    const temporary = `${retryFile()}.${process.pid}.tmp`
+    fs.writeFileSync(temporary, JSON.stringify(retry), { mode: 0o600 })
+    fs.renameSync(temporary, retryFile())
+  }
+  return { ok: false, reason: 'unreachable', error }
+}
 
 /** The session on this machine, or null when nobody is signed in. Unreadable or damaged
  *  reads as signed out: a half-written file is not a session, and refusing to draw the
@@ -79,12 +109,14 @@ export function writeSession(session: CloudSession): void {
   const tmp = `${sessionFile()}.${process.pid}.tmp`
   fs.writeFileSync(tmp, `${JSON.stringify(session, null, 2)}\n`, { mode: 0o600 })
   fs.renameSync(tmp, sessionFile())
+  if (!expiringSoon(session) || !readRetry(session)) fs.rmSync(retryFile(), { force: true })
 }
 
 /** Forget the sign-in. This machine stops reaching Cloud; nothing on any board is touched. */
 export function clearSession(): void {
   try {
     fs.rmSync(sessionFile())
+    fs.rmSync(retryFile(), { force: true })
   } catch {
     // Already gone — signing out twice is not a failure.
   }
@@ -102,9 +134,7 @@ export type TokenResult =
 /**
  * A token good to send right now, refreshing it first when it is about to run out.
  *
- * It never throws and never ends anything: a delivery already running asks for a token like
- * everybody else, and a refresh that fails comes back as `expired` — the sign-in is over,
- * the run is not.
+ * Temporary refresh failures preserve the session and share a cooldown across processes.
  */
 export async function accessToken(): Promise<TokenResult> {
   const held = readSession()
@@ -126,10 +156,13 @@ const expiringSoon = (session: CloudSession): boolean =>
  */
 async function refresh(): Promise<TokenResult> {
   const lock = await takeLock()
+  if (!lock) return { ok: false, reason: 'unreachable', error: 'Cloud sign-in refresh is busy. Try again shortly.' }
   try {
     const now = readSession()
     if (!now) return { ok: false, reason: 'signed-out' }
     if (!expiringSoon(now)) return { ok: true, token: now.accessToken, session: now }
+    const retry = readRetry(now)
+    if (retry && retry.until > Date.now()) return { ok: false, reason: 'unreachable', error: retry.error }
     const { api, anonKey } = cloudEndpoints()
     let response: Response
     try {
@@ -138,23 +171,21 @@ async function refresh(): Promise<TokenResult> {
         method: 'POST',
         headers: { apikey: anonKey, 'content-type': 'application/json' },
         body: JSON.stringify({ refresh_token: now.refreshToken }),
+        signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
       })
     } catch (e) {
       // Unreachable is not expired. The file is left exactly as it is, so the sign-in is
       // still there when the network comes back.
-      return { ok: false, reason: 'unreachable', error: e instanceof Error ? e.message : String(e) }
+      return deferRefresh(now, e instanceof Error ? e.message : String(e))
     }
-    // Auth answering at all and refusing the refresh token is the sign-in being over; a
-    // 5xx is the service having a bad minute, which is not the same thing.
     if (!response.ok) {
-      const body = (await response.json().catch(() => ({}))) as { error_description?: string }
-      if (response.status >= 500) {
-        return { ok: false, reason: 'unreachable', error: body.error_description ?? `Cloud answered ${response.status}` }
-      }
-      return { ok: false, reason: 'expired', error: body.error_description }
+      const body = (await response.json().catch(() => null)) as { error_description?: string; msg?: string; message?: string } | null
+      const error = body?.error_description ?? body?.msg ?? body?.message
+      if (![400, 401, 403].includes(response.status)) return deferRefresh(now, error ?? `Cloud answered ${response.status}`, response.headers.get('retry-after'))
+      return { ok: false, reason: 'expired', error }
     }
-    const fresh = sessionFrom(await response.json(), now)
-    if (!fresh) return { ok: false, reason: 'expired' }
+    const fresh = sessionFrom(await response.json().catch(() => null), now)
+    if (!fresh) return deferRefresh(now, 'Cloud returned an invalid sign-in refresh response.')
     // 退出或换账号期间返回的刷新结果不能复活旧会话。
     const current = readSession()
     if (!current || current.subject !== now.subject) return { ok: false, reason: 'expired' }
@@ -169,6 +200,7 @@ async function refresh(): Promise<TokenResult> {
 /** A Supabase token response, turned into the session we hold. Keeps the profile the
  *  previous one carried, since a refresh answers with tokens and not with a profile. */
 export function sessionFrom(body: unknown, previous?: CloudSession | null): CloudSession | null {
+  if (!body || typeof body !== 'object') return null
   const token = body as {
     access_token?: string
     refresh_token?: string
@@ -202,10 +234,8 @@ export function sessionFrom(body: unknown, previous?: CloudSession | null): Clou
 // The board's own lock (lib/lock.ts) cannot serve: it is per board and it blocks the event
 // loop while it waits, and a refresh is a network call the whole board server waits on.
 
-/** Take it, and return the release. A wait that runs out goes ahead anyway rather than
- *  reporting a failure: the refresh re-reads the file first, so the common ending is still
- *  the loser taking what the winner wrote. */
-async function takeLock(): Promise<() => void> {
+/** Never refresh without the lock: a concurrent request can revoke a rotated token. */
+async function takeLock(): Promise<(() => void) | null> {
   const until = Date.now() + LOCK_WAIT_MS
   for (;;) {
     try {
@@ -229,7 +259,7 @@ async function takeLock(): Promise<() => void> {
         fs.rmSync(lockDir(), { recursive: true, force: true })
         continue
       }
-      if (Date.now() > until) return () => {}
+      if (Date.now() > until) return null
       await sleep(LOCK_RETRY_MS)
     }
   }
@@ -243,7 +273,7 @@ function stale(): boolean {
   } catch {
     held = undefined
   }
-  if (held !== undefined && !alive(held)) return true
+  if (held !== undefined) return !alive(held)
   try {
     return Date.now() - fs.statSync(lockDir()).mtimeMs > LOCK_STALE_MS
   } catch {
