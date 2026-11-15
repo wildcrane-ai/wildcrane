@@ -4628,6 +4628,22 @@ describe('the presence connection (#2163)', () => {
     }
   })
 
+  it('keeps backing off when sockets open and close without a reply (#760)', async () => {
+    cloud.presence = true
+    const presence = keepPresence(MACHINE, 60_000)
+    try {
+      await until(() => !!cloud.presences[0]?.socket)
+      cloud.presences[0]!.socket!.destroy()
+      await until(() => !!cloud.presences[1]?.socket, 4_000)
+      const began = performance.now()
+      cloud.presences[1]!.socket!.destroy()
+      await until(() => !!cloud.presences[2]?.socket, 4_000)
+      assert.ok(performance.now() - began >= 1_500, 'an unanswered open reset reconnect backoff')
+    } finally {
+      presence.close()
+    }
+  })
+
   it('gives up quietly on a Cloud without it, and the Runner registers and runs jobs all the same', async () => {
     const job = cloud.dispatch({ id: 'j1' })
     start()

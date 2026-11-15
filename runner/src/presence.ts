@@ -53,7 +53,6 @@ export function keepPresence(machineId: string, pingMs = PING_MS, onJob?: (job: 
     }
     socket.addEventListener('open', () => {
       opened = true
-      attempts = 0
       ping = setInterval(() => {
         // Two pings unanswered: the connection died without saying so, as after a sleep.
         if (Date.now() - heard > pingMs * 2) return void drop()
@@ -67,6 +66,7 @@ export function keepPresence(machineId: string, pingMs = PING_MS, onJob?: (job: 
     })
     socket.addEventListener('message', (event) => {
       heard = Date.now()
+      attempts = 0
       if (!onJob) return
       try {
         const value = JSON.parse(String(event.data)) as { type?: string; job?: string }
