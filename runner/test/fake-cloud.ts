@@ -130,7 +130,6 @@ export class FakeCloud {
   alerts: FakeAlert[] = []
   folders: { project: string; name: string; path: string; notify: boolean; machine: string }[] = []
   /** The account's projects with no folder anywhere yet (#2022). */
-  projectContract = 17
   others: { project: string; name: string; workspace: string; workspace_name: string; personal: boolean }[] = []
   /** Claude Code and Codex sessions' discussions, by the session they were opened for. */
   goalProtocol = false
@@ -537,7 +536,7 @@ export class FakeCloud {
       const files = this.studios[route.split('/')[3]!]
       return files ? send(200, { id: route.split('/')[3], version: 1, files }) : refuse(404, 'not_found', 'No studio has this id.')
     }
-    if (/^\/v1\/projects\/[^/]+$/.test(route)) return send(200, { id: route.split('/')[3], unfiled: false, workspace: 'ws_1', akbContract: this.projectContract })
+    if (/^\/v1\/projects\/[^/]+$/.test(route)) return send(200, { id: route.split('/')[3], unfiled: false, workspace: 'ws_1' })
     let m = /^\/v1\/artifacts\/([^/]+)$/.exec(route)
     if (m && this.failArtifactRead === m[1]) return refuse(503, 'offline', '类型读取失败')
     if (m) return send(200, { id: m[1], type: this.types.get(m[1]!) ?? 'asset', latest_version: task.artifacts.get(m[1]!)?.length ?? null })

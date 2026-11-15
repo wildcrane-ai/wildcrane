@@ -22,7 +22,6 @@ import { referenceText } from '../../cli/src/lib/dress-page'
 import * as api from './api'
 import type { Assets, Job } from './api'
 import { busy, kept as cacheKept, markUsed, markUnsent } from './cache'
-import { AKB_CONTRACT } from './protocol'
 import { keepOutOfGit } from './kanban-skill'
 import { sharedMemory, type Shared } from './memory-files'
 import { countSync, logSync, syncDebug } from './sync-debug'
@@ -76,7 +75,6 @@ interface Base {
   /** A base from before the workspace's board (#2114) is read again whole. */
   layout?: 'workspace'
   head_seq: number | null
-  akbContract?: number
   workspace?: string | null
   project?: string
   /** Cards with deferred assets stay excluded from later job writebacks. */
@@ -512,30 +510,11 @@ function assetsOf(text: string | null | undefined): Assets {
 
 const assetsText = (assets: Assets) => `${JSON.stringify(Object.fromEntries(Object.entries(assets).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)), null, 2)}\n`
 
-export async function formatReady(ws: TaskFolder, required = AKB_CONTRACT): Promise<api.Call<void>> {
-  const base = readBase(ws)
-  if ((base.akbContract ?? 1) >= required) return { ok: true, value: undefined }
-  const project = await api.readProject(ws.project)
-  if (!project.ok) return project
-  if ((project.value.akbContract ?? 1) < required) return { ok: false, error: 'This project needs its one-time CLI format conversion.', code: 'format_conversion_required' }
-  const state = stateDir(ws)
-  const marker = state && readText(path.join(state, 'akb-contract.json'))
-  let local = 0
-  try { local = Number(JSON.parse(marker ?? '{}').contract) || 0 } catch {}
-  if ((base.head_seq !== null || filesUnder(ws.board).some(kept)) && local < required) return { ok: false, error: 'Convert this computer’s project files before switching CLI versions.', code: 'format_conversion_required' }
-  base.akbContract = project.value.akbContract
-  base.workspace = project.value.workspace ?? null
-  writeBase(ws, base)
-  return { ok: true, value: undefined }
-}
-
 /** Bring the folder up to Cloud: what changed here goes first, then what changed since the base,
  *  in one call, and the board's files reset to it. Nothing here is overwritten while it cannot
  *  be sent. */
 export function pull(ws: TaskFolder, machineId: string): Promise<api.Call<void>> {
   return inFolder(ws.cwd, async () => {
-    const format = await formatReady(ws)
-    if (!format.ok) return format
     const sent = await sendBoard(boardFolder(ws), machineId)
     if (!sent.ok) {
       const refused = sent.tasks ? sent.tasks[ws.cloudTask ?? ''] : { ...sent, blocking: true }

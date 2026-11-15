@@ -31,7 +31,7 @@ import { AKB_CONTRACT } from '../src/protocol'
 import { agentDue, nextHour } from '../src/agents'
 import { sharedMemory } from '../src/memory-files'
 import { projectStateDir } from '../../cli/src/lib/machine/project'
-import { NO_FOLDER, formatReady, keptBoard, mergeFile, openTaskFolder, pull, pullChanges, pushBoard, readHead } from '../src/task-folder'
+import { NO_FOLDER, keptBoard, mergeFile, openTaskFolder, pull, pullChanges, pushBoard, readHead, workspaceOf } from '../src/task-folder'
 import { watchBoards } from '../src/board-watch'
 import { hold, unsent } from '../src/cache'
 import { FILE_BYTES, diffOf } from '../src/diff'
@@ -1419,28 +1419,24 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(result.ok, true)
   }
 
-  it('holds an unconverted project before any board upload', async () => {
-    const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1'))
-    cloud.projectContract = 16
-    const before = commits().length
-    const held = await formatReady(ws, 17)
-    assert.equal(held.ok, false)
-    assert.equal(!held.ok && held.code, 'format_conversion_required')
-    assert.equal(commits().length, before)
-    cloud.projectContract = 17
-    assert.equal((await formatReady(ws, 17)).ok, true)
-  })
+  for (const copy of ['empty', 'existing']) {
+    it(`syncs an ${copy} current copy without conversion state (#749)`, async () => {
+      if (copy === 'existing') await prepareBoard()
+      const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1'))
+      const marker = path.join(projectStateDir(ws.board, ws.cwd), 'akb-contract.json')
+      assert.equal(fs.existsSync(marker), false)
+      assert.equal((await runTask('j1', `require('fs').appendFileSync('${CARD}', 'Local result.')`)).outcome, 'done')
+      assert.match(cloud.file(CARD)!, /Local result/)
+      assert.equal(workspaceOf(ws), 'ws_1')
 
-  it('holds an offline old copy until its local conversion verifies', async () => {
-    await prepareBoard()
-    const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1'))
-    assert.equal((await formatReady(ws, 17)).ok, false)
-    const marker = path.join(projectStateDir(ws.board, ws.cwd), 'akb-contract.json')
-    fs.mkdirSync(path.dirname(marker), { recursive: true })
-    fs.writeFileSync(marker, '{"contract":17}')
-    assert.equal((await formatReady(ws, 17)).ok, true)
-    assert.equal(read(CARD), BODY)
-  })
+      fs.writeFileSync(path.join(board(), 'memory/readme.md'), 'Unsent edit')
+      cloud.put({ 'memory/readme.md': 'Remote edit' })
+      assert.equal((await runTask('j2')).outcome, 'done')
+      assert.equal(read('memory/readme.md'), 'Unsent edit\nRemote edit')
+      assert.equal(cloud.file('memory/readme.md'), read('memory/readme.md'))
+      assert.equal(fs.existsSync(marker), false)
+    })
+  }
 
   for (const asset of ['unchanged', 'unreferenced', 'referenced']) {
     it(`reply approval synchronizes ${asset} assets before deciding (#684)`, async () => {

@@ -31,6 +31,7 @@ const BANNER = `#!/usr/bin/env node
 // Do not edit: every change belongs in cli/src/, and a build overwrites this file.
 ${REQUIRE_SHIM}`
 
+fs.rmSync(path.dirname(OUT), { recursive: true, force: true })
 await esbuild.build({
   entryPoints: [ENTRY],
   outfile: OUT,
@@ -50,6 +51,3 @@ await esbuild.build({
 fs.chmodSync(OUT, 0o755)
 const kb = (fs.statSync(OUT).size / 1024).toFixed(1)
 process.stdout.write(`build: wrote ${path.relative(PKG_DIR, OUT)} — ${kb} kB, ai4kanban ${VERSION}\n`)
-
-// Standalone conversion; never loaded by daily commands.
-await esbuild.build({ entryPoints: [path.join(PKG_DIR, 'scripts/retire-legacy/main.ts')], outfile: path.join(PKG_DIR, 'dist/retire-legacy.mjs'), bundle: true, platform: 'node', format: 'esm', target: 'node18', legalComments: 'none' })

@@ -530,7 +530,7 @@ export const readTask = (task: string) =>
 
 export const readStudio = (id: string) => request<{ version: number; name?: string; files: Record<string, string> }>('GET', `/v1/studios/${q(id)}`)
 
-export const readProject = (project: string) => request<{ workspace?: string; akbContract?: number }>('GET', `/v1/projects/${q(project)}`)
+export const readProject = (project: string) => request<{ workspace?: string }>('GET', `/v1/projects/${q(project)}`)
 
 
 export const readArtifact = (artifact: string) => request<{ latest_version: number | null; type: import('../../artifact-sdk/src/internal/references').Kind }>('GET', `/v1/artifacts/${q(artifact)}`)
