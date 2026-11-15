@@ -216,7 +216,6 @@ describe('the flow', () => {
     complete(1)
     const ask = buildAsk({ action: 'reflect', cards: [1] })
     assert.match(ask, /docs\/kanban\/\.archive\/1-card\.md/)
-    assert.match(ask, /triage add/)
   })
 
   it('hands one run every card in its batch, each in its own block, sourced to itself', async () => {
@@ -250,7 +249,6 @@ describe('the flow', () => {
     assert.doesNotMatch(await printed(), /Your settings on this board|settings below/)
     writeConfig((cfg) => void (cfg.specAgents = { proposer: { 'small-fixes': 'auto' } }))
     const auto = await printed()
-    assert.match(auto, /unless your settings below say otherwise/)
     assert.match(auto, /Your settings on this board:\n- A small fix .*--status ready/)
     assert.doesNotMatch(auto, /--related/)
   })

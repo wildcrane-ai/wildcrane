@@ -1091,8 +1091,8 @@ var require_util = __commonJS({
         return body;
       }
     }
-    function isStream(obj) {
-      return obj && typeof obj === "object" && typeof obj.pipe === "function" && typeof obj.on === "function";
+    function isStream(obj2) {
+      return obj2 && typeof obj2 === "object" && typeof obj2.pipe === "function" && typeof obj2.on === "function";
     }
     function isBlobLike(object) {
       if (object === null) {
@@ -1200,19 +1200,19 @@ var require_util = __commonJS({
       }
       return servername;
     }
-    function deepClone(obj) {
-      return JSON.parse(JSON.stringify(obj));
+    function deepClone(obj2) {
+      return JSON.parse(JSON.stringify(obj2));
     }
-    function isAsyncIterable(obj) {
-      return !!(obj != null && typeof obj[Symbol.asyncIterator] === "function");
+    function isAsyncIterable(obj2) {
+      return !!(obj2 != null && typeof obj2[Symbol.asyncIterator] === "function");
     }
-    function isIterable(obj) {
-      return !!(obj != null && (typeof obj[Symbol.iterator] === "function" || typeof obj[Symbol.asyncIterator] === "function"));
+    function isIterable(obj2) {
+      return !!(obj2 != null && (typeof obj2[Symbol.iterator] === "function" || typeof obj2[Symbol.asyncIterator] === "function"));
     }
-    function hasSafeIterator(obj) {
-      const prototype = Object.getPrototypeOf(obj);
-      const ownIterator = Object.prototype.hasOwnProperty.call(obj, Symbol.iterator);
-      return ownIterator || prototype != null && prototype !== Object.prototype && typeof obj[Symbol.iterator] === "function";
+    function hasSafeIterator(obj2) {
+      const prototype = Object.getPrototypeOf(obj2);
+      const ownIterator = Object.prototype.hasOwnProperty.call(obj2, Symbol.iterator);
+      return ownIterator || prototype != null && prototype !== Object.prototype && typeof obj2[Symbol.iterator] === "function";
     }
     function bodyLength(body) {
       if (body == null) {
@@ -1259,37 +1259,37 @@ var require_util = __commonJS({
     function bufferToLowerCasedHeaderName(value) {
       return tree.lookup(value) ?? value.toString("latin1").toLowerCase();
     }
-    function parseHeaders(headers, obj) {
-      if (obj === void 0) obj = {};
+    function parseHeaders(headers, obj2) {
+      if (obj2 === void 0) obj2 = {};
       for (let i = 0; i < headers.length; i += 2) {
         const key = headerNameToString(headers[i]);
-        let val = obj[key];
+        let val = obj2[key];
         if (val !== void 0) {
-          if (!Object.hasOwn(obj, key)) {
+          if (!Object.hasOwn(obj2, key)) {
             const headersValue = typeof headers[i + 1] === "string" ? headers[i + 1] : Array.isArray(headers[i + 1]) ? headers[i + 1].map((x) => x.toString("latin1")) : headers[i + 1].toString("latin1");
             if (key === "__proto__") {
-              Object.defineProperty(obj, key, {
+              Object.defineProperty(obj2, key, {
                 value: headersValue,
                 enumerable: true,
                 configurable: true,
                 writable: true
               });
             } else {
-              obj[key] = headersValue;
+              obj2[key] = headersValue;
             }
           } else {
             if (typeof val === "string") {
               val = [val];
-              obj[key] = val;
+              obj2[key] = val;
             }
             val.push(headers[i + 1].toString("latin1"));
           }
         } else {
           const headersValue = typeof headers[i + 1] === "string" ? headers[i + 1] : Array.isArray(headers[i + 1]) ? headers[i + 1].map((x) => x.toString("latin1")) : headers[i + 1].toString("latin1");
-          obj[key] = headersValue;
+          obj2[key] = headersValue;
         }
       }
-      return obj;
+      return obj2;
     }
     function parseRawHeaders(headers) {
       const headersLength = headers.length;
@@ -1719,20 +1719,20 @@ var require_util = __commonJS({
         size: m[3] ? parseInt(m[3]) : null
       } : null;
     }
-    function addListener(obj, name, listener) {
-      const listeners = obj[kListeners] ??= [];
+    function addListener(obj2, name, listener) {
+      const listeners = obj2[kListeners] ??= [];
       listeners.push([name, listener]);
-      obj.on(name, listener);
-      return obj;
+      obj2.on(name, listener);
+      return obj2;
     }
-    function removeAllListeners(obj) {
-      if (obj[kListeners] != null) {
-        for (const [name, listener] of obj[kListeners]) {
-          obj.removeListener(name, listener);
+    function removeAllListeners(obj2) {
+      if (obj2[kListeners] != null) {
+        for (const [name, listener] of obj2[kListeners]) {
+          obj2.removeListener(name, listener);
         }
-        obj[kListeners] = null;
+        obj2[kListeners] = null;
       }
-      return obj;
+      return obj2;
     }
     function errorRequest(client, request, err) {
       try {
@@ -2455,11 +2455,11 @@ var require_request = __commonJS({
           } else if (typeof val[i] === "object") {
             throw new InvalidArgumentError(`invalid ${key} header`);
           } else {
-            const str2 = `${val[i]}`;
-            if (!isValidHeaderValue(str2)) {
+            const str3 = `${val[i]}`;
+            if (!isValidHeaderValue(str3)) {
               throw new InvalidArgumentError(`invalid ${key} header`);
             }
-            arr.push(str2);
+            arr.push(str3);
           }
         }
         val = arr;
@@ -2957,7 +2957,7 @@ var require_connect = __commonJS({
       const sessionCache = new SessionCache(maxCachedSessions == null ? 100 : maxCachedSessions);
       timeout = timeout == null ? 1e4 : timeout;
       allowH2 = allowH2 != null ? allowH2 : false;
-      return function connect({ hostname, host, protocol, port, servername, localAddress, httpSocket }, callback) {
+      return function connect2({ hostname, host, protocol, port, servername, localAddress, httpSocket }, callback) {
         let socket;
         if (protocol === "https:") {
           if (!tls) {
@@ -3032,10 +3032,10 @@ var require_utils = __commonJS({
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.enumToMap = enumToMap;
-    function enumToMap(obj, filter = [], exceptions = []) {
+    function enumToMap(obj2, filter = [], exceptions = []) {
       const emptyFilter = (filter?.length ?? 0) === 0;
       const emptyExceptions = (exceptions?.length ?? 0) === 0;
-      return Object.fromEntries(Object.entries(obj).filter(([, value]) => {
+      return Object.fromEntries(Object.entries(obj2).filter(([, value]) => {
         return typeof value === "number" && (emptyFilter || filter.includes(value)) && (emptyExceptions || !exceptions.includes(value));
       }));
     }
@@ -4002,8 +4002,8 @@ var require_infra = __commonJS({
     }
     var ASCII_WHITESPACE_REPLACE_REGEX = /[\u0009\u000A\u000C\u000D\u0020]/g;
     var nonASCIIRegex = /[^\x00-\x7F]/;
-    function asciiLowercase(str2) {
-      return nonASCIIRegex.test(str2) ? str2.replace(/[A-Z]+/g, (upper) => upper.toLowerCase()) : str2.toLowerCase();
+    function asciiLowercase(str3) {
+      return nonASCIIRegex.test(str3) ? str3.replace(/[A-Z]+/g, (upper) => upper.toLowerCase()) : str3.toLowerCase();
     }
     function forgivingBase64(data) {
       data = data.replace(ASCII_WHITESPACE_REPLACE_REGEX, "");
@@ -4056,19 +4056,19 @@ var require_infra = __commonJS({
     function parseJSONFromBytes(bytes2) {
       return JSON.parse(utf8DecodeBytes(bytes2));
     }
-    function removeASCIIWhitespace(str2, leading = true, trailing = true) {
-      return removeChars(str2, leading, trailing, isASCIIWhitespace);
+    function removeASCIIWhitespace(str3, leading = true, trailing = true) {
+      return removeChars(str3, leading, trailing, isASCIIWhitespace);
     }
-    function removeChars(str2, leading, trailing, predicate) {
+    function removeChars(str3, leading, trailing, predicate) {
       let lead = 0;
-      let trail = str2.length - 1;
+      let trail = str3.length - 1;
       if (leading) {
-        while (lead < str2.length && predicate(str2.charCodeAt(lead))) lead++;
+        while (lead < str3.length && predicate(str3.charCodeAt(lead))) lead++;
       }
       if (trailing) {
-        while (trail > 0 && predicate(str2.charCodeAt(trail))) trail--;
+        while (trail > 0 && predicate(str3.charCodeAt(trail))) trail--;
       }
-      return lead === 0 && trail === str2.length - 1 ? str2 : str2.slice(lead, trail + 1);
+      return lead === 0 && trail === str3.length - 1 ? str3 : str3.slice(lead, trail + 1);
     }
     function serializeJavascriptValueToJSONString(value) {
       const result = JSON.stringify(value);
@@ -4320,8 +4320,8 @@ var require_data_url = __commonJS({
     function isHTTPWhiteSpace(char) {
       return char === 13 || char === 10 || char === 9 || char === 32;
     }
-    function removeHTTPWhitespace(str2, leading = true, trailing = true) {
-      return removeChars(str2, leading, trailing, isHTTPWhiteSpace);
+    function removeHTTPWhitespace(str3, leading = true, trailing = true) {
+      return removeChars(str3, leading, trailing, isHTTPWhiteSpace);
     }
     function minimizeSupportedMimeType(mimeType) {
       switch (mimeType.essence) {
@@ -6442,7 +6442,7 @@ var require_body = __commonJS({
         const boundary = `----formdata-undici-0${`${random(1e11)}`.padStart(11, "0")}`;
         const prefix = `--${boundary}\r
 Content-Disposition: form-data`;
-        const formdataEscape = (str2) => str2.replace(/\n/g, "%0A").replace(/\r/g, "%0D").replace(/"/g, "%22");
+        const formdataEscape = (str3) => str3.replace(/\n/g, "%0A").replace(/\r/g, "%0D").replace(/"/g, "%22");
         const normalizeLinefeeds = (value) => value.replace(/\r?\n|\r/g, "\r\n");
         const blobParts = [];
         const rn = new Uint8Array([13, 10]);
@@ -8791,7 +8791,7 @@ var require_client = __commonJS({
         tls,
         strictContentLength,
         maxCachedSessions,
-        connect: connect2,
+        connect: connect3,
         maxRequestsPerClient,
         localAddress,
         maxResponseSize,
@@ -8850,7 +8850,7 @@ var require_client = __commonJS({
         if (bodyTimeout != null && (!Number.isInteger(bodyTimeout) || bodyTimeout < 0)) {
           throw new InvalidArgumentError("bodyTimeout must be a positive integer or zero");
         }
-        if (connect2 != null && typeof connect2 !== "function" && typeof connect2 !== "object") {
+        if (connect3 != null && typeof connect3 !== "function" && typeof connect3 !== "object") {
           throw new InvalidArgumentError("connect must be a function or an object");
         }
         if (maxRequestsPerClient != null && (!Number.isInteger(maxRequestsPerClient) || maxRequestsPerClient < 0)) {
@@ -8884,8 +8884,8 @@ var require_client = __commonJS({
           throw new InvalidArgumentError("pingInterval must be a positive integer, greater or equal to 0");
         }
         super({ webSocket, eventSource });
-        if (typeof connect2 !== "function") {
-          connect2 = buildConnector({
+        if (typeof connect3 !== "function") {
+          connect3 = buildConnector({
             ...tls,
             maxCachedSessions,
             allowH2,
@@ -8893,18 +8893,18 @@ var require_client = __commonJS({
             socketPath,
             timeout: connectTimeout,
             ...typeof autoSelectFamily === "boolean" ? { autoSelectFamily, autoSelectFamilyAttemptTimeout } : void 0,
-            ...connect2
+            ...connect3
           });
         } else {
-          const customConnect = connect2;
-          connect2 = (opts, callback) => customConnect({
+          const customConnect = connect3;
+          connect3 = (opts, callback) => customConnect({
             ...opts,
             ...socketPath != null ? { socketPath } : null,
             ...allowH2 != null ? { allowH2 } : null
           }, callback);
         }
         this[kUrl] = util.parseOrigin(url);
-        this[kConnector] = connect2;
+        this[kConnector] = connect3;
         this[kPipelining] = pipelining != null ? pipelining : 1;
         this[kMaxHeadersSize] = maxHeaderSize;
         this[kKeepAliveDefaultTimeout] = keepAliveTimeout == null ? 4e3 : keepAliveTimeout;
@@ -8962,7 +8962,7 @@ var require_client = __commonJS({
         );
       }
       [kConnect](cb) {
-        connect(this);
+        connect2(this);
         this.once("connect", cb);
       }
       [kDispatch](opts, handler) {
@@ -9028,7 +9028,7 @@ var require_client = __commonJS({
         assert(client[kSize] === 0);
       }
     }
-    function connect(client) {
+    function connect2(client) {
       assert(!client[kConnecting]);
       assert(!client[kHTTPContext]);
       let { host, hostname, protocol, port } = client[kUrl];
@@ -9207,7 +9207,7 @@ var require_client = __commonJS({
           return;
         }
         if (!client[kHTTPContext]) {
-          connect(client);
+          connect2(client);
           return;
         }
         if (client[kHTTPContext].destroyed) {
@@ -9503,7 +9503,7 @@ var require_pool = __commonJS({
       constructor(origin, {
         connections,
         factory = defaultFactory,
-        connect,
+        connect: connect2,
         connectTimeout,
         tls,
         maxCachedSessions,
@@ -9520,24 +9520,24 @@ var require_pool = __commonJS({
         if (typeof factory !== "function") {
           throw new InvalidArgumentError("factory must be a function.");
         }
-        if (connect != null && typeof connect !== "function" && typeof connect !== "object") {
+        if (connect2 != null && typeof connect2 !== "function" && typeof connect2 !== "object") {
           throw new InvalidArgumentError("connect must be a function or an object");
         }
-        if (typeof connect !== "function") {
-          connect = buildConnector({
+        if (typeof connect2 !== "function") {
+          connect2 = buildConnector({
             ...tls,
             maxCachedSessions,
             allowH2,
             socketPath,
             timeout: connectTimeout,
             ...typeof autoSelectFamily === "boolean" ? { autoSelectFamily, autoSelectFamilyAttemptTimeout } : void 0,
-            ...connect
+            ...connect2
           });
         }
         super(options);
         this[kConnections] = connections || null;
         this[kUrl] = util.parseOrigin(origin);
-        this[kOptions] = { ...util.deepClone(options), connect, allowH2, clientTtl, socketPath };
+        this[kOptions] = { ...util.deepClone(options), connect: connect2, allowH2, clientTtl, socketPath };
         this[kOptions].interceptors = options.interceptors ? { ...options.interceptors } : void 0;
         this[kFactory] = factory;
         this.on("connect", (origin2, targets) => {
@@ -9616,14 +9616,14 @@ var require_balanced_pool = __commonJS({
       return new Pool(origin, opts);
     }
     var BalancedPool = class extends PoolBase {
-      constructor(upstreams = [], { factory = defaultFactory, connect, tls, ...opts } = {}) {
+      constructor(upstreams = [], { factory = defaultFactory, connect: connect2, tls, ...opts } = {}) {
         if (typeof factory !== "function") {
           throw new InvalidArgumentError("factory must be a function.");
         }
         super(opts);
-        if (connect && typeof connect !== "function") connect = { ...connect };
+        if (connect2 && typeof connect2 !== "function") connect2 = { ...connect2 };
         if (tls && typeof tls !== "function") tls = { ...tls };
-        this[kOptions] = { ...util.deepClone(opts), connect, tls };
+        this[kOptions] = { ...util.deepClone(opts), connect: connect2, tls };
         this[kOptions].interceptors = opts.interceptors ? { ...opts.interceptors } : void 0;
         this[kIndex] = -1;
         this[kCurrentWeight] = 0;
@@ -9756,7 +9756,7 @@ var require_round_robin_pool = __commonJS({
       constructor(origin, {
         connections,
         factory = defaultFactory,
-        connect,
+        connect: connect2,
         connectTimeout,
         tls,
         maxCachedSessions,
@@ -9773,24 +9773,24 @@ var require_round_robin_pool = __commonJS({
         if (typeof factory !== "function") {
           throw new InvalidArgumentError("factory must be a function.");
         }
-        if (connect != null && typeof connect !== "function" && typeof connect !== "object") {
+        if (connect2 != null && typeof connect2 !== "function" && typeof connect2 !== "object") {
           throw new InvalidArgumentError("connect must be a function or an object");
         }
-        if (typeof connect !== "function") {
-          connect = buildConnector({
+        if (typeof connect2 !== "function") {
+          connect2 = buildConnector({
             ...tls,
             maxCachedSessions,
             allowH2,
             socketPath,
             timeout: connectTimeout,
             ...typeof autoSelectFamily === "boolean" ? { autoSelectFamily, autoSelectFamilyAttemptTimeout } : void 0,
-            ...connect
+            ...connect2
           });
         }
         super();
         this[kConnections] = connections || null;
         this[kUrl] = util.parseOrigin(origin);
-        this[kOptions] = { ...util.deepClone(options), connect, allowH2, clientTtl, socketPath };
+        this[kOptions] = { ...util.deepClone(options), connect: connect2, allowH2, clientTtl, socketPath };
         this[kOptions].interceptors = options.interceptors ? { ...options.interceptors } : void 0;
         this[kFactory] = factory;
         this[kIndex] = -1;
@@ -9863,25 +9863,25 @@ var require_agent = __commonJS({
     function defaultFactory(origin, opts) {
       return opts && opts.connections === 1 ? new Client(origin, opts) : new Pool(origin, opts);
     }
-    var Agent = class extends DispatcherBase {
-      constructor({ factory = defaultFactory, maxOrigins = Infinity, connect, tls, ...options } = {}) {
+    var Agent2 = class extends DispatcherBase {
+      constructor({ factory = defaultFactory, maxOrigins = Infinity, connect: connect2, tls, ...options } = {}) {
         if (typeof factory !== "function") {
           throw new InvalidArgumentError("factory must be a function.");
         }
-        if (connect != null && typeof connect !== "function" && typeof connect !== "object") {
+        if (connect2 != null && typeof connect2 !== "function" && typeof connect2 !== "object") {
           throw new InvalidArgumentError("connect must be a function or an object");
         }
         if (typeof maxOrigins !== "number" || Number.isNaN(maxOrigins) || maxOrigins <= 0) {
           throw new InvalidArgumentError("maxOrigins must be a number greater than 0");
         }
         super(options);
-        if (connect && typeof connect !== "function") {
-          connect = { ...connect };
+        if (connect2 && typeof connect2 !== "function") {
+          connect2 = { ...connect2 };
         }
         if (tls && typeof tls !== "function") {
           tls = { ...tls };
         }
-        this[kOptions] = { ...util.deepClone(options), maxOrigins, connect, tls };
+        this[kOptions] = { ...util.deepClone(options), maxOrigins, connect: connect2, tls };
         this[kFactory] = factory;
         this[kClients] = /* @__PURE__ */ new Map();
         this[kOrigins] = /* @__PURE__ */ new Set();
@@ -9975,7 +9975,7 @@ var require_agent = __commonJS({
         return allClientStats;
       }
     };
-    module.exports = Agent;
+    module.exports = Agent2;
   }
 });
 
@@ -10681,7 +10681,7 @@ var require_proxy_agent = __commonJS({
   "node_modules/undici/lib/dispatcher/proxy-agent.js"(exports, module) {
     "use strict";
     var { kProxy, kClose, kDestroy, kDispatch } = require_symbols();
-    var Agent = require_agent();
+    var Agent2 = require_agent();
     var Pool = require_pool();
     var DispatcherBase = require_dispatcher_base();
     var { InvalidArgumentError, RequestAbortedError, SecureProxyConnectionError } = require_errors();
@@ -10712,16 +10712,16 @@ var require_proxy_agent = __commonJS({
     }
     var Http1ProxyWrapper = class extends DispatcherBase {
       #client;
-      constructor(proxyUrl, { headers = {}, connect, factory }) {
+      constructor(proxyUrl, { headers = {}, connect: connect2, factory }) {
         if (!proxyUrl) {
           throw new InvalidArgumentError("Proxy URL is mandatory");
         }
         super();
         this[kProxyHeaders] = headers;
         if (factory) {
-          this.#client = factory(proxyUrl, { connect });
+          this.#client = factory(proxyUrl, { connect: connect2 });
         } else {
-          this.#client = new Client(proxyUrl, { connect });
+          this.#client = new Client(proxyUrl, { connect: connect2 });
         }
       }
       [kDispatch](opts, handler) {
@@ -10782,7 +10782,7 @@ var require_proxy_agent = __commonJS({
         } else if (username && password) {
           this[kProxyHeaders]["proxy-authorization"] = `Basic ${Buffer.from(`${decodeURIComponent(username)}:${decodeURIComponent(password)}`).toString("base64")}`;
         }
-        const connect = buildConnector({ ...opts.proxyTls });
+        const connect2 = buildConnector({ ...opts.proxyTls });
         this[kConnectEndpoint] = buildConnector({ ...opts.requestTls });
         const agentFactory = opts.factory || defaultAgentFactory;
         const factory = (origin2, options) => {
@@ -10790,7 +10790,7 @@ var require_proxy_agent = __commonJS({
           if (this[kProxy].protocol === "socks5:" || this[kProxy].protocol === "socks:") {
             return new Socks5ProxyAgent(this[kProxy].uri, {
               headers: this[kProxyHeaders],
-              connect,
+              connect: connect2,
               factory: agentFactory,
               username: opts.username || username,
               password: opts.password || password,
@@ -10801,7 +10801,7 @@ var require_proxy_agent = __commonJS({
           if (!this[kTunnelProxy] && protocol2 === "http:" && this[kProxy].protocol === "http:") {
             return new Http1ProxyWrapper(this[kProxy].uri, {
               headers: this[kProxyHeaders],
-              connect,
+              connect: connect2,
               factory: agentFactory
             });
           }
@@ -10810,9 +10810,9 @@ var require_proxy_agent = __commonJS({
         if (protocol === "socks5:" || protocol === "socks:") {
           this[kClient] = null;
         } else {
-          this[kClient] = clientFactory(url, { connect });
+          this[kClient] = clientFactory(url, { connect: connect2 });
         }
-        this[kAgent] = new Agent({
+        this[kAgent] = new Agent2({
           ...opts,
           factory,
           connect: async (opts2, callback) => {
@@ -10940,7 +10940,7 @@ var require_env_http_proxy_agent = __commonJS({
     var DispatcherBase = require_dispatcher_base();
     var { kClose, kDestroy, kClosed, kDestroyed, kDispatch, kNoProxyAgent, kHttpProxyAgent, kHttpsProxyAgent } = require_symbols();
     var ProxyAgent = require_proxy_agent();
-    var Agent = require_agent();
+    var Agent2 = require_agent();
     var DEFAULT_PORTS = {
       "http:": 80,
       "https:": 443
@@ -10953,7 +10953,7 @@ var require_env_http_proxy_agent = __commonJS({
         super();
         this.#opts = opts;
         const { httpProxy, httpsProxy, noProxy, ...agentOpts } = opts;
-        this[kNoProxyAgent] = new Agent(agentOpts);
+        this[kNoProxyAgent] = new Agent2(agentOpts);
         const HTTP_PROXY = httpProxy ?? process.env.http_proxy ?? process.env.HTTP_PROXY;
         if (HTTP_PROXY) {
           this[kHttpProxyAgent] = new ProxyAgent({ ...agentOpts, uri: HTTP_PROXY });
@@ -12694,10 +12694,10 @@ var require_api_connect = __commonJS({
         }
       }
     };
-    function connect(opts, callback) {
+    function connect2(opts, callback) {
       if (callback === void 0) {
         return new Promise((resolve, reject) => {
-          connect.call(this, opts, (err, data) => {
+          connect2.call(this, opts, (err, data) => {
             return err ? reject(err) : resolve(data);
           });
         });
@@ -12714,7 +12714,7 @@ var require_api_connect = __commonJS({
         queueMicrotask(() => callback(err, { opaque }));
       }
     }
-    module.exports = connect;
+    module.exports = connect2;
   }
 });
 
@@ -13702,7 +13702,7 @@ var require_mock_agent = __commonJS({
   "node_modules/undici/lib/mock/mock-agent.js"(exports, module) {
     "use strict";
     var { kClients } = require_symbols();
-    var Agent = require_agent();
+    var Agent2 = require_agent();
     var {
       kAgent,
       kMockAgentSet,
@@ -13740,7 +13740,7 @@ var require_mock_agent = __commonJS({
         if (opts?.agent && typeof opts.agent.dispatch !== "function") {
           throw new InvalidArgumentError("Argument opts.agent must implement Agent");
         }
-        const agent = opts?.agent ? opts.agent : new Agent(opts);
+        const agent = opts?.agent ? opts.agent : new Agent2(opts);
         this[kAgent] = agent;
         this[kClients] = agent[kClients];
         this[kOptions] = mockOptions;
@@ -14347,7 +14347,7 @@ var require_snapshot_recorder = __commonJS({
 var require_snapshot_agent = __commonJS({
   "node_modules/undici/lib/mock/snapshot-agent.js"(exports, module) {
     "use strict";
-    var Agent = require_agent();
+    var Agent2 = require_agent();
     var MockAgent = require_mock_agent();
     var { SnapshotRecorder } = require_snapshot_recorder();
     var WrapHandler = require_wrap_handler();
@@ -14398,7 +14398,7 @@ var require_snapshot_agent = __commonJS({
         });
         this[kSnapshotLoaded] = false;
         if (this[kSnapshotMode] === "record" || this[kSnapshotMode] === "update" || this[kSnapshotMode] === "playback" && opts.excludeUrls && opts.excludeUrls.length > 0) {
-          this[kRealAgent] = new Agent(opts);
+          this[kRealAgent] = new Agent2(opts);
         }
         if ((this[kSnapshotMode] === "playback" || this[kSnapshotMode] === "update") && this[kSnapshotPath]) {
           this.loadSnapshots().catch(() => {
@@ -14637,9 +14637,9 @@ var require_global2 = __commonJS({
     var globalDispatcher = /* @__PURE__ */ Symbol.for("undici.globalDispatcher.2");
     var legacyGlobalDispatcher = /* @__PURE__ */ Symbol.for("undici.globalDispatcher.1");
     var { InvalidArgumentError } = require_errors();
-    var Agent = require_agent();
+    var Agent2 = require_agent();
     if (getGlobalDispatcher() === void 0) {
-      setGlobalDispatcher2(new Agent());
+      setGlobalDispatcher2(new Agent2());
     }
     function setGlobalDispatcher2(agent) {
       if (!agent || typeof agent.dispatch !== "function") {
@@ -23472,9 +23472,9 @@ var require_cookies = __commonJS({
       webidl.argumentLengthCheck(arguments, 2, "setCookie");
       brandChecks(headers);
       cookie = webidl.converters.Cookie(cookie);
-      const str2 = stringify(cookie);
-      if (str2) {
-        headers.append("set-cookie", str2, true);
+      const str3 = stringify(cookie);
+      if (str3) {
+        headers.append("set-cookie", str3, true);
       }
     }
     webidl.converters.DeleteCookieAttributes = webidl.dictionaryConverter([
@@ -24896,7 +24896,7 @@ var require_websocket = __commonJS({
       }
       return null;
     }
-    var WebSocket2 = class _WebSocket extends EventTarget {
+    var WebSocket3 = class _WebSocket extends EventTarget {
       #events = {
         open: null,
         error: null,
@@ -25264,13 +25264,13 @@ var require_websocket = __commonJS({
         }
       }
     };
-    var { ping } = WebSocket2;
-    Reflect.deleteProperty(WebSocket2, "ping");
-    WebSocket2.CONNECTING = WebSocket2.prototype.CONNECTING = states.CONNECTING;
-    WebSocket2.OPEN = WebSocket2.prototype.OPEN = states.OPEN;
-    WebSocket2.CLOSING = WebSocket2.prototype.CLOSING = states.CLOSING;
-    WebSocket2.CLOSED = WebSocket2.prototype.CLOSED = states.CLOSED;
-    Object.defineProperties(WebSocket2.prototype, {
+    var { ping } = WebSocket3;
+    Reflect.deleteProperty(WebSocket3, "ping");
+    WebSocket3.CONNECTING = WebSocket3.prototype.CONNECTING = states.CONNECTING;
+    WebSocket3.OPEN = WebSocket3.prototype.OPEN = states.OPEN;
+    WebSocket3.CLOSING = WebSocket3.prototype.CLOSING = states.CLOSING;
+    WebSocket3.CLOSED = WebSocket3.prototype.CLOSED = states.CLOSED;
+    Object.defineProperties(WebSocket3.prototype, {
       CONNECTING: staticPropertyDescriptors,
       OPEN: staticPropertyDescriptors,
       CLOSING: staticPropertyDescriptors,
@@ -25294,7 +25294,7 @@ var require_websocket = __commonJS({
         configurable: true
       }
     });
-    Object.defineProperties(WebSocket2, {
+    Object.defineProperties(WebSocket3, {
       CONNECTING: staticPropertyDescriptors,
       OPEN: staticPropertyDescriptors,
       CLOSING: staticPropertyDescriptors,
@@ -25343,7 +25343,7 @@ var require_websocket = __commonJS({
       return webidl.converters.USVString(V);
     };
     module.exports = {
-      WebSocket: WebSocket2,
+      WebSocket: WebSocket3,
       ping
     };
   }
@@ -26496,7 +26496,7 @@ var require_undici = __commonJS({
     var Pool = require_pool();
     var BalancedPool = require_balanced_pool();
     var RoundRobinPool = require_round_robin_pool();
-    var Agent = require_agent();
+    var Agent2 = require_agent();
     var ProxyAgent = require_proxy_agent();
     var Socks5ProxyAgent = require_socks5_proxy_agent();
     var EnvHttpProxyAgent2 = require_env_http_proxy_agent();
@@ -26523,7 +26523,7 @@ var require_undici = __commonJS({
     module.exports.Pool = Pool;
     module.exports.BalancedPool = BalancedPool;
     module.exports.RoundRobinPool = RoundRobinPool;
-    module.exports.Agent = Agent;
+    module.exports.Agent = Agent2;
     module.exports.ProxyAgent = ProxyAgent;
     module.exports.Socks5ProxyAgent = Socks5ProxyAgent;
     module.exports.EnvHttpProxyAgent = EnvHttpProxyAgent2;
@@ -26644,8 +26644,8 @@ ${captureLines}` : capture.stack;
     module.exports.parseMIMEType = parseMIMEType;
     module.exports.serializeAMimeType = serializeAMimeType;
     var { CloseEvent, ErrorEvent, MessageEvent } = require_events();
-    var { WebSocket: WebSocket2, ping } = require_websocket();
-    module.exports.WebSocket = WebSocket2;
+    var { WebSocket: WebSocket3, ping } = require_websocket();
+    module.exports.WebSocket = WebSocket3;
     module.exports.CloseEvent = CloseEvent;
     module.exports.ErrorEvent = ErrorEvent;
     module.exports.MessageEvent = MessageEvent;
@@ -28156,11 +28156,64 @@ var init_cloud_studios = __esm({
   }
 });
 
+// ../cli/src/lib/shared/conversation.ts
+var init_conversation = __esm({
+  "../cli/src/lib/shared/conversation.ts"() {
+    "use strict";
+  }
+});
+
+// ../cli/src/lib/lock.ts
+var init_lock = __esm({
+  "../cli/src/lib/lock.ts"() {
+    "use strict";
+    init_paths();
+  }
+});
+
+// ../cli/src/lib/agent/connection-process.ts
+var init_connection_process = __esm({
+  "../cli/src/lib/agent/connection-process.ts"() {
+    "use strict";
+    init_lock();
+  }
+});
+
+// ../cli/src/lib/agent/wire/json.ts
+var init_json = __esm({
+  "../cli/src/lib/agent/wire/json.ts"() {
+    "use strict";
+  }
+});
+
+// ../cli/src/lib/agent/wire/rpc.ts
+var init_rpc = __esm({
+  "../cli/src/lib/agent/wire/rpc.ts"() {
+    "use strict";
+    init_json();
+  }
+});
+
+// src/codex-native.ts
+var import_undici2;
+var init_codex_native = __esm({
+  "src/codex-native.ts"() {
+    "use strict";
+    import_undici2 = __toESM(require_undici(), 1);
+    init_conversation();
+    init_connection_process();
+    init_rpc();
+    init_json();
+    init_home();
+  }
+});
+
 // src/settings-control.ts
 var init_settings_control = __esm({
   "src/settings-control.ts"() {
     "use strict";
     init_home();
+    init_codex_native();
   }
 });
 

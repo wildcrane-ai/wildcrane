@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { runnerHome } from './home'
+import { liveBackend, stopNativeBackends } from './codex-native'
 
 const directory = () => path.join(runnerHome(), 'executors')
 const epochFile = () => path.join(runnerHome(), 'account-generation')
@@ -17,11 +18,12 @@ export function executorRecord(): () => void {
 export async function stopExecutors(): Promise<boolean> {
   fs.mkdirSync(runnerHome(), { recursive: true, mode: 0o700 })
   fs.writeFileSync(epochFile(), `${Date.now()}-${process.pid}`, { mode: 0o600 })
+  const backends = stopNativeBackends()
   for (let n = 0; n < 160; n++) {
     const active = fs.existsSync(directory()) ? fs.readdirSync(directory()).filter((name) => {
       try { process.kill(Number(name.split('.')[0]), 0); return true } catch { fs.rmSync(path.join(directory(), name), { force: true }); return false }
     }) : []
-    if (!active.length) return true
+    if (!active.length && backends.every(backend => !liveBackend(backend))) return true
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   return false

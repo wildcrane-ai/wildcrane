@@ -39,8 +39,7 @@ the card as `.assets/<card id>/...`.
   image slots. The first page earns the swipe; one message per page, readable at a glance.
 - **Facts**: state only what the card, the project or the user supplies; ask for a missing
   fact instead of inventing it.
-- **Validation**: run `akb raw validate <card id> --json` after every change; fix every
-  diagnostic.
+- **Validation**: validate the finished card with `akb raw validate <card id> --json`.
 
 ## Steps
 

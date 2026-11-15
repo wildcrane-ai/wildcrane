@@ -20,8 +20,9 @@ when the checked captions, images and any pages are on the card.
 ## Captions
 
 Under `### Captions`, write each platform's caption — title where the platform has one, body
-and hashtags — in the post's language, from the approved copy. Run
-`akb raw validate <card id> --json` after every change; fix every diagnostic.
+and hashtags — in the post's language, from the approved copy.
+
+- **Validation**: validate the finished card with `akb raw validate <card id> --json`.
 
 ## Rendering
 

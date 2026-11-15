@@ -1,41 +1,44 @@
-// Each run connects directly to the independent shared service.
-import net from 'node:net'
-import fs from 'node:fs'
 import { createInterface } from 'node:readline'
-import { codexServer } from './codex-server'
-import { accountGeneration } from './settings-control'
+import { codexExecution } from './codex-execution'
+import { requestCodexBackend } from './codex-server'
+import { accountGeneration, executorRecord } from './settings-control'
 
-if (process.env.WILDCRANE_CODEX_GENERATION !== undefined && process.env.WILDCRANE_CODEX_GENERATION !== accountGeneration()) throw Error('Codex task belongs to an expired account session.')
-const owner = await codexServer()
-const endpoint = JSON.parse(fs.readFileSync(owner.env.WILDCRANE_CODEX_SERVER, 'utf8')) as { path: string; token: string }
-const socket = net.connect(endpoint.path)
-const input = createInterface({ input: process.stdin })
-const queued: string[] = []
-let ready = false
-let closing = false
-const send = (line: string) => socket.write(line + '\n')
-input.on('line', line => ready ? send(line) : queued.push(line))
-socket.once('connect', () => {
-  send(JSON.stringify({ token: endpoint.token, argv: process.argv.slice(2), cwd: process.cwd(), env: process.env }))
-  ready = true
-  for (const line of queued) send(line)
-})
-socket.pipe(process.stdout)
-socket.on('error', () => { console.error('Runner Codex connection failed.'); process.exitCode = 1; input.close(); process.stdin.destroy() })
-socket.on('close', () => { input.close(); process.stdin.destroy(); void owner.close() })
-const close = () => {
-  if (closing) return
-  closing = true
-  void owner.close()
-  const timer = setTimeout(() => socket.destroy(), 12_000)
+async function proxy() {
+  const generation = accountGeneration()
+  if (process.env.WILDCRANE_CODEX_GENERATION !== undefined && process.env.WILDCRANE_CODEX_GENERATION !== generation) throw Error('Codex task belongs to an expired account session.')
+  const release = executorRecord()
+  const input = createInterface({ input: process.stdin })
+  const queued: string[] = []
+  let execution: Awaited<ReturnType<typeof codexExecution>> | undefined
+  let ending = false
+  const send = (message: unknown) => { if (!process.stdout.destroyed) process.stdout.write(JSON.stringify(message) + '\n') }
+  const receive = (line: string) => {
+    try { execution!.request(JSON.parse(line)) }
+    catch { send({ method: 'error', params: { error: { message: 'Invalid Codex request.' } } }) }
+  }
+  const close = async () => {
+    if (ending) return
+    ending = true
+    await execution?.close()
+    input.close(); process.stdin.destroy()
+  }
+  process.stdout.on('error', () => { void close() })
+  input.on('line', line => execution ? receive(line) : queued.push(line))
+  input.on('close', () => { void close() })
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, () => { void close() })
+  const timer = setInterval(() => { if (generation !== accountGeneration()) void close() }, 200)
   timer.unref()
-  socket.once('close', () => clearTimeout(timer))
-  // The service owns retained threads and reserves uncertain cleanup independently.
-  if (ready) send(JSON.stringify({ method: 'wildcrane/release' }))
-  else socket.destroy()
-  input.close()
-  process.stdin.destroy()
+  try {
+    const argv = process.argv.slice(2)
+    const backend = await requestCodexBackend(argv, process.env)
+    execution = await codexExecution(backend, argv, process.env, process.cwd(), send)
+    execution.closed.once('close', () => { void close() })
+    if (ending) await execution.close()
+    else for (const line of queued) receive(line)
+    if (!execution.closed.destroyed) await new Promise<void>(resolve => execution!.closed.once('close', resolve))
+  } finally { clearInterval(timer); await execution?.close(); release(); input.close(); process.stdin.destroy() }
 }
-input.on('close', close)
-process.on('SIGTERM', close)
-process.on('SIGINT', close)
+void proxy().catch(error => {
+  process.stdout.write(JSON.stringify({ method: 'error', params: { error: { message: error instanceof Error ? error.message : String(error) } } }) + '\n')
+  process.exitCode = 1
+})

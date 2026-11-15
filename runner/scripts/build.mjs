@@ -16,6 +16,7 @@ import { copySkills } from './plugin-skills.mjs'
 import { settingsClientPlugin } from './settings-client.mjs'
 
 const PKG_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+fs.rmSync(path.join(PKG_DIR, 'dist', 'codex-service-main.mjs'), { force: true })
 const VERSION = JSON.parse(fs.readFileSync(path.join(PKG_DIR, 'package.json'), 'utf8')).version
 const CLI_DIR = path.join(PKG_DIR, '..', 'cli')
 const { version: CLI_VERSION, akbContract: AKB_CONTRACT } = JSON.parse(fs.readFileSync(path.join(CLI_DIR, 'package.json'), 'utf8'))
@@ -38,7 +39,7 @@ for (const [entry, outfile] of [
   ['settings-main.ts', path.join(PKG_DIR, 'dist', 'settings.mjs')],
   ['plugin-main.ts', path.join(PKG_DIR, 'dist', 'plugin.mjs')],
   ['akb-proxy.ts', path.join(PKG_DIR, 'dist', 'akb-proxy.mjs')],
-  ['codex-service-main.ts', path.join(PKG_DIR, 'dist', 'codex-service-main.mjs')],
+  ['codex-retained.ts', path.join(PKG_DIR, 'dist', 'codex-retained.mjs')],
   ['codex-proxy.ts', path.join(PKG_DIR, 'dist', 'codex-proxy.mjs')],
   ...PLUGIN_DISTS.map((dir) => ['plugin-start.ts', path.join(dir, 'start.mjs')]),
 ]) {

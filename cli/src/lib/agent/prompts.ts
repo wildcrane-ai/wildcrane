@@ -490,7 +490,6 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
         `${kb}. Revise task ${req.id} ${named}: "${req.notes || ''}" ${NO_IMPLEMENT}`,
         carriedNote(req),
         `Apply the requested change following \`akb guide revise\`.`,
-        `You can create new subtasks if it's a group task and the intent is to do so.`,
         `Don't ask me questions with human-in-the-loop. Leave any questions as open questions.`,
       ]
         .filter(Boolean)
@@ -525,9 +524,6 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
       return [
         `${kb}. Review what this board's conversations settled and write it into memory, following \`akb guide review-memory\`.`,
         req.tasks?.length ? `The conversations are the ones \`${command} raw memory review --task ${req.tasks.join(' ')} --print\` prints.` : '',
-        `Read each conversation the flow lists right through, and hold to "What earns a note" in \`akb guide board\`.`,
-        `Rewrite or delete a note an earlier review wrote that the conversation has since overturned, rather than adding a second one.`,
-        `Change nothing but the memory files: no card, no question for anyone.`,
       ].filter(Boolean).join(' ')
     // The dismissal review (#929). The flow lists the dismissals and restored ids; the guide
     // holds every rule.
@@ -546,8 +542,6 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
         [
           `${kb}. These tasks have just been completed: ${titles.join(', ')}. Propose the work that should follow them, following \`akb guide reflect\`.`,
           `They have left the board — read each in its own <card> block below, with the discussion it came from when the block lists one.`,
-          `Skip anything already on the board, already in the inbox, or turned down before.`,
-          `Write each survivor with \`${command} raw triage add\`, and revise an open card whose plan what shipped made untrue with \`${command} raw card revise\`: that is all you may do${settingsBlock(req) ? ' unless your settings below say otherwise' : ''} — you edit and archive no card yourself, and finding nothing worth proposing is a complete result.`,
           `Don't ask me questions with human-in-the-loop.`,
         ].join(' '),
         ...reflectBlocks(ids),

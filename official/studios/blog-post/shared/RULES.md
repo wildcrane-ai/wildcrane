@@ -29,5 +29,4 @@ Files live in `<board-state>/assets/<card id>/`, linked from the card as `.asset
   reading, preferring the primary source; never generalise from one case, and narrow, qualify
   or drop a point the evidence does not support. Not every finding belongs in the article.
 - **Links**: internal links go to existing posts or pages. Check that every link resolves.
-- **Validation**: run `akb raw validate <card id> --json` after every change; fix every
-  diagnostic.
+- **Validation**: validate the finished card with `akb raw validate <card id> --json`.

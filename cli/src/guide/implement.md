@@ -2,6 +2,8 @@
 
 Build the approved requirements without reopening settled decisions or unrelated questions; without a card, create none.
 
+Do not push, publish or deploy.
+
 - **Verification**: run required and minimal representative checks, reuse valid results, distinguish defects from environment or tool limits, stop retries that add no evidence, and finish when acceptance is proven.
 - **Authorization**: carry approval for necessary in-scope operations across tools and stages without asking again.
 - **Blockers**: resolve routine problems and use `akb guide update-questions` only for user-action blockers or out-of-scope decisions, stating attempts, impact and recommendation while continuing independent work.

@@ -19,16 +19,12 @@ Use `akb raw delivery complete <id>` to finish your current studio step. The las
 the card and prints its handoff. Earlier steps leave it for the remaining studio agents.
 Outside an active delivery, use `akb raw archive <id>` or `akb raw reject <id>`.
 
-**Never finish a task by hand.** Deleting the card file yourself leaves other cards'
-`blocked_by:` and `related:` pointing at a card that no longer exists — the command is what
-finds those, and nothing else will. A run that does this is reported as having broken the
-board.
+Finish cards through these commands, never by deleting their files.
 
-Before completing a step, verify its approved requirements and required outputs; before the
-last step, verify every delivery condition, including any required publication and live checks.
-Record the verification results on the card, leave unmet work unchecked, and handle user-action
-blockers through `akb guide implement`. Preparation, a merged commit or a handoff in the final
-reply does not establish delivery.
+Before completing a step, verify its approved requirements and outputs; before the last step,
+verify the complete approved outcome.
+Record results on the card, leave unmet work unchecked, and handle user-action blockers through
+`akb guide implement`.
 
 Once those checks pass, run `akb raw delivery complete <id>` and follow its handoff. Software
 steps in a git project supply `--commit <full-sha> --branch <target>`.
