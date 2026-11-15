@@ -224,7 +224,7 @@ export class Previews {
             load: guard(async () => {
               const text = await resource.text("html");
               if (text === null) return failed();
-              const doc = await this.withFiles(text, art);
+              const doc = await this.withFiles(text, art, v);
               return hyperframe ? { src, doc: hyperframeDocument(doc), hyperframe } : { src, doc, scripts: true };
             }),
           },
@@ -252,7 +252,7 @@ export class Previews {
             load: guard(async () => {
               const text = await resource.text("markdown");
               if (text === null) return failed();
-              return { src, article: { text: await this.withImages(text, art), href: urlOf(new Blob([text], { type: "text/markdown" })) } };
+              return { src, article: { text: await this.withImages(text, art, v), href: urlOf(new Blob([text], { type: "text/markdown" })) } };
             }),
           },
         };
@@ -336,7 +336,7 @@ export class Previews {
         if (!pin || !component) throw new Error("no component");
         const [meta, context] = await Promise.all([component(art, v), this.resource(art, v).context()]);
         schema = meta.schema;
-        const files = this.filesOf({ name: art.name, types: [art.type], references: meta.references }, context.artifact.content, art.name);
+        const files = this.filesOf({ name: art.name, types: [art.type], references: meta.references }, context.artifact.content, art, v);
         return { url: meta.url, schema, context: files.size ? { ...context, files: await this.contents(files) } : context };
       },
       save: canSave
@@ -459,11 +459,15 @@ export class Previews {
     return { sheet, image: null, name, problem: /^(?:[a-z][\w+.-]*:|\/|#)/i.test(sheet.image) ? "remote" : "missing" };
   }
 
+  protected fileReferences(manifest: Manifest | undefined, content: unknown, _art: Artifact, _version: ArtifactVersion) {
+    return referencesOf(manifest, content);
+  }
+
   /** The files `content` names, as its manifest declares, each by the reference written there. */
-  private filesOf(manifest: Manifest | undefined, content: unknown, owner: string): Map<string, Ref> {
+  private filesOf(manifest: Manifest | undefined, content: unknown, art: Artifact, version: ArtifactVersion): Map<string, Ref> {
     const files = new Map<string, Ref>();
-    for (const { src } of referencesOf(manifest, content)) {
-      const ref = this.ref(this.relative(src, owner));
+    for (const { src } of this.fileReferences(manifest, content, art, version)) {
+      const ref = this.ref(this.relative(src, art.name));
       if (ref?.version.file && !files.has(src)) files.set(src, ref);
     }
     return files;
@@ -476,8 +480,8 @@ export class Previews {
   }
 
   /** A page whose own files reach it once it asks: a sandboxed page cannot read the review's blob URLs. */
-  private async withFiles(doc: string, art: Artifact): Promise<string> {
-    const files = this.filesOf(manifestOf(art.type), doc, art.name);
+  private async withFiles(doc: string, art: Artifact, version: ArtifactVersion): Promise<string> {
+    const files = this.filesOf(manifestOf(art.type), doc, art, version);
     if (!files.size) return doc;
     const blobs: Record<string, Blob> = {};
     await Promise.all([...files].map(async ([src, ref]) => { blobs[src] = await this.blobOf(ref.version.file!); }));
@@ -485,9 +489,9 @@ export class Previews {
   }
 
   /** A document with the pictures it names swapped for blob URLs; one it cannot reach keeps its path. */
-  private async withImages(text: string, art: Artifact): Promise<string> {
+  private async withImages(text: string, art: Artifact, version: ArtifactVersion): Promise<string> {
     const manifest = manifestOf(art.type);
-    const files = this.filesOf(manifest, text, art.name);
+    const files = this.filesOf(manifest, text, art, version);
     if (!files.size) return text;
     const urls = new Map<string, string>();
     await Promise.all([...files].map(async ([src, ref]) => { urls.set(src, urlOf(await this.blobOf(ref.version.file!))); }));
@@ -507,7 +511,7 @@ export class Previews {
       try {
         if (slide && ref.art.type === "html") {
           const text = await this.textOf(ref.version, "html");
-          return text === null ? none : { src: f.src, alt: f.alt, href: ref.art.id, ratio: parsed!.size.width / parsed!.size.height, page: true, doc: await this.withFiles(text, ref.art), file };
+          return text === null ? none : { src: f.src, alt: f.alt, href: ref.art.id, ratio: parsed!.size.width / parsed!.size.height, page: true, doc: await this.withFiles(text, ref.art, ref.version), file };
         }
         if (!ref.version.file) return none;
         const blob = await this.resource(ref.art, ref.version).blob();
