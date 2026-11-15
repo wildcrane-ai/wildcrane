@@ -431,10 +431,10 @@ function streamOut(deps: Shared, id: string, lease: Lease) {
 
 /** Claim and run one job. Resolves once it has ended, or at once when it was not ours to run.
  *  `track` receives what stops it; a stopped job is left for Cloud to hand out again. */
-export async function runJob(id: string, deps: Deps, track: (stop: () => Promise<void>) => void = () => {}, stopped = () => false): Promise<void> {
+export async function runJob(id: string, deps: Deps, track: (stop: () => Promise<void>) => void = () => {}, stopped = () => false, reply = false): Promise<void> {
   followProxy()
   const lease = leaseNow()
-  const claim = await deps.api.claimJob(deps.machineId, id)
+  const claim = await deps.api.claimJob(deps.machineId, id, reply)
   if (!claim.ok || !claim.value.claimed || stopped() || !held(deps, lease)) return
   const job = claim.value.job
   if (job.chat || job.discussion) console.info('reply-dispatch', { event: 'claimed', job: id, at: new Date().toISOString() })

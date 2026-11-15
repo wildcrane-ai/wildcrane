@@ -267,7 +267,7 @@ export function startRunner(options: Options): Runner {
   const replyHint = (job: string, source: string) => {
     if (closed || preparing || !registration || running.has(job) || !validAccount()) return
     console.info('reply-dispatch', { event: 'hint', source, job, at: new Date().toISOString() })
-    start(job)
+    start(job, true)
   }
 
   /** The catch-up read. One at a time; a hint during a read reads once more after it. */
@@ -323,7 +323,7 @@ export function startRunner(options: Options): Runner {
         // Cloud lists only the jobs the plan's running limit lets start (#2209).
         if (job.state !== 'waiting' || running.has(job.id)) continue
         console.info('reply-dispatch', { event: 'discovered', job: job.id, source, at: new Date().toISOString() })
-        start(job.id)
+        start(job.id, !job.flow && !!(job.chat || job.discussion))
       }
     } finally {
       reading = false
@@ -362,7 +362,7 @@ export function startRunner(options: Options): Runner {
     }
   }
 
-  const start = (id: string) => {
+  const start = (id: string, reply = false) => {
     // 失去租约后的作业先停止进程，再申请一次带新身份的恢复。
     attempted.add(id)
     running.set(id, null)
@@ -370,7 +370,7 @@ export function startRunner(options: Options): Runner {
     const job = runJob(id, deps(), (halt) => {
       running.set(id, halt)
       if (closed) void halt()
-    }, () => closed)
+    }, () => closed, reply)
       .catch(() => {})
       .finally(() => {
         jobs.delete(job)
