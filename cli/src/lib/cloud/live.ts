@@ -19,7 +19,8 @@ import { accessToken, readSession } from './session'
 /** The Realtime protocol version this speaks. */
 const VSN = '1.0.0'
 /** Phoenix drops a socket that stops sending these. Well inside its own 60s window. */
-const HEARTBEAT_MS = 25_000
+const HEARTBEAT_MS = 5_000
+const HEARTBEAT_TIMEOUT_MS = 5_000
 /** How long a `phx_join` has to be answered before the socket is thrown away and opened
  *  again. An open socket that never joined receives nothing, and nothing else here would
  *  ever notice: the server holds it open, the heartbeat keeps answering on `phoenix`, and
@@ -46,6 +47,7 @@ export interface LiveHandlers {
    *  the second notification exists for, because the window may have been sitting unwatched
    *  the whole time the connection was down. */
   onReady(firstTime: boolean): void
+  onState?(state: 'joined' | 'retrying', reason?: string): void
 }
 
 export interface LiveConnection {
@@ -75,6 +77,8 @@ export function connectCloudLive(handlers: LiveHandlers): LiveConnection | null 
   let socket: WebSocket | null = null
   let heartbeat: ReturnType<typeof setInterval> | null = null
   let joinTimer: ReturnType<typeof setTimeout> | null = null
+  let heartbeatTimer: ReturnType<typeof setTimeout> | null = null
+  let heartbeatRef: string | null = null
   let retry: ReturnType<typeof setTimeout> | null = null
   let stopAuth: (() => void) | null = null
   let attempts = 0
@@ -88,14 +92,15 @@ export function connectCloudLive(handlers: LiveHandlers): LiveConnection | null 
   const push = (frame: Frame) => {
     try {
       socket?.send(JSON.stringify({ ...frame, ref: frame.ref ?? nextRef() }))
-    } catch {
-      // A socket that has gone under us is one the close handler is about to reconnect.
-    }
+    } catch { reconnect('send_failed') }
   }
 
   const teardown = () => {
     if (heartbeat) clearInterval(heartbeat)
     heartbeat = null
+    if (heartbeatTimer) clearTimeout(heartbeatTimer)
+    heartbeatTimer = null
+    heartbeatRef = null
     if (joinTimer) clearTimeout(joinTimer)
     joinTimer = null
     stopAuth?.()
@@ -110,16 +115,18 @@ export function connectCloudLive(handlers: LiveHandlers): LiveConnection | null 
     }
   }
 
-  const reconnect = () => {
-    if (closed) return
+  const reconnect = (reason = 'connection_closed') => {
+    if (closed || retry) return
     teardown()
-    const wait = BACKOFF_MS[Math.min(attempts, BACKOFF_MS.length - 1)]!
+    handlers.onState?.('retrying', reason)
+    const wait = Math.min(30_000, BACKOFF_MS[Math.min(attempts, BACKOFF_MS.length - 1)]! * (0.8 + Math.random() * 0.4))
     attempts += 1
     retry = setTimeout(open, wait)
     retry.unref?.()
   }
 
   const open = async () => {
+    retry = null
     if (closed) return
     const token = await accessToken()
     if (closed) return
@@ -132,9 +139,12 @@ export function connectCloudLive(handlers: LiveHandlers): LiveConnection | null 
       return reconnect()
     }
     socket = live
+    joinTimer = setTimeout(() => reconnect('open_timeout'), JOIN_TIMEOUT_MS)
+    joinTimer.unref?.()
 
     live.onopen = () => {
       if (closed || socket !== live) return
+      if (joinTimer) clearTimeout(joinTimer)
       push({
         topic,
         event: 'phx_join',
@@ -145,11 +155,18 @@ export function connectCloudLive(handlers: LiveHandlers): LiveConnection | null 
           access_token: token.token,
         },
       })
+      if (socket !== live) return
       // A join nobody answers is the one failure the socket itself never reports: it stays
       // open and the heartbeat keeps being answered on `phoenix`, so only a clock notices.
-      joinTimer = setTimeout(reconnect, JOIN_TIMEOUT_MS)
+      joinTimer = setTimeout(() => reconnect('join_timeout'), JOIN_TIMEOUT_MS)
       joinTimer.unref?.()
-      heartbeat = setInterval(() => push({ topic: 'phoenix', event: 'heartbeat', payload: {} }), HEARTBEAT_MS)
+      heartbeat = setInterval(() => {
+        if (heartbeatRef) return
+        heartbeatRef = nextRef()
+        heartbeatTimer = setTimeout(() => reconnect('heartbeat_timeout'), HEARTBEAT_TIMEOUT_MS)
+        heartbeatTimer.unref?.()
+        push({ topic: 'phoenix', event: 'heartbeat', payload: {}, ref: heartbeatRef })
+      }, HEARTBEAT_MS)
       heartbeat.unref?.()
       // Realtime holds the token it was given for the life of the connection, so a
       // refreshed session has to be handed to the socket as well (#326).
@@ -166,7 +183,17 @@ export function connectCloudLive(handlers: LiveHandlers): LiveConnection | null 
       } catch {
         return
       }
+      if (frame.topic === 'phoenix' && frame.event === 'phx_reply' && frame.ref === heartbeatRef) {
+        if (frame.payload.status !== 'ok') return reconnect('heartbeat_error')
+        if (heartbeatTimer) clearTimeout(heartbeatTimer)
+        heartbeatTimer = null
+        heartbeatRef = null
+        attempts = 0
+        return
+      }
       if (frame.topic !== topic) return
+      if (frame.event === 'phx_close' || frame.event === 'phx_error'
+          || frame.event === 'system' && frame.payload.status === 'error') return reconnect(frame.event)
       if (frame.event === 'phx_reply') {
         const status = (frame.payload as { status?: string }).status
         // Once joined the only replies left are the token pushes', and a socket already
@@ -178,9 +205,8 @@ export function connectCloudLive(handlers: LiveHandlers): LiveConnection | null 
         if (joinTimer) clearTimeout(joinTimer)
         joinTimer = null
         joined = true
-        // The backoff resets on a join, not on an open: a socket that opens every second
-        // and is refused every time is exactly what the backoff is for.
-        attempts = 0
+        handlers.onState?.('joined')
+        // A heartbeat acknowledgement, rather than a briefly successful join, resets backoff.
         const firstTime = !everJoined
         everJoined = true
         handlers.onReady(firstTime)

@@ -437,6 +437,7 @@ export async function runJob(id: string, deps: Deps, track: (stop: () => Promise
   const claim = await deps.api.claimJob(deps.machineId, id)
   if (!claim.ok || !claim.value.claimed || stopped() || !held(deps, lease)) return
   const job = claim.value.job
+  if (job.chat || job.discussion) console.info('reply-dispatch', { event: 'claimed', job: id, at: new Date().toISOString() })
   if (deps.authorize && !await deps.authorize(job)) {
     await deps.api.finishJob(deps.machineId, id, 'failed', '项目目录授权已撤销或暂时无法验证，请重新确认后重试。')
     return

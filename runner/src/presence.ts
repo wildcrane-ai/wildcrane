@@ -11,7 +11,7 @@ export interface Presence {
   close(): void
 }
 
-export function keepPresence(machineId: string, pingMs = PING_MS): Presence {
+export function keepPresence(machineId: string, pingMs = PING_MS, onJob?: (job: string) => void): Presence {
   let closed = false
   let ws: WebSocket | null = null
   let timer: ReturnType<typeof setTimeout> | null = null
@@ -19,7 +19,7 @@ export function keepPresence(machineId: string, pingMs = PING_MS): Presence {
 
   const retry = () => {
     if (closed) return
-    timer = setTimeout(open, BACKOFF_MS[Math.min(attempts++, BACKOFF_MS.length - 1)]!)
+    timer = setTimeout(open, Math.min(30_000, BACKOFF_MS[Math.min(attempts++, BACKOFF_MS.length - 1)]! * (0.8 + Math.random() * 0.4)))
     timer.unref?.()
   }
 
@@ -65,7 +65,15 @@ export function keepPresence(machineId: string, pingMs = PING_MS): Presence {
       }, pingMs)
       ping.unref?.()
     })
-    socket.addEventListener('message', () => (heard = Date.now()))
+    socket.addEventListener('message', (event) => {
+      heard = Date.now()
+      if (!onJob) return
+      try {
+        const value = JSON.parse(String(event.data)) as { type?: string; job?: string }
+        if (value.type === 'job' && typeof value.job === 'string' && /^[0-9a-f-]{36}$/i.test(value.job)) onJob(value.job)
+      } catch { /* The ordinary pong is plain text. */ }
+    })
+    socket.addEventListener('error', () => void drop())
     socket.addEventListener('close', () => void drop())
   }
 

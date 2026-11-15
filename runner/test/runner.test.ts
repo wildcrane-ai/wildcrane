@@ -118,7 +118,7 @@ function acpRuntime(env: NodeJS.ProcessEnv = {}, log = (_text: string) => {}) {
   }
 }
 
-function start(script = 'console.log("hello from the runtime")', over: Partial<Deps> = {}, machineId = MACHINE, nextLook = (now: number) => now + 100) {
+function start(script = 'console.log("hello from the runtime")', over: Partial<Deps> = {}, machineId = MACHINE, nextLook = (now: number) => now + 100, interval = 100) {
   const deps: Deps = {
     machineId,
     api,
@@ -141,8 +141,8 @@ function start(script = 'console.log("hello from the runtime")', over: Partial<D
     registration: async () => ({ machineId, machineName: 'studio', version: '0.0.0-test', runtimes: [] }),
     kind: 'terminal',
     deps,
-    heartbeatMs: 100,
-    pollMs: 100,
+    heartbeatMs: interval,
+    pollMs: interval,
     nextLook,
   })
   return runner
@@ -4579,6 +4579,32 @@ describe('a landed commit\'s diff (#2109)', () => {
 })
 
 describe('the presence connection (#2163)', () => {
+  it('claims task chats and discussions from pushed reminders without idle polling (#760)', async (t) => {
+    cloud.presence = true
+    start('console.log("Reply")', {}, MACHINE, now => now + 3600_000, 60_000)
+    await until(() => cloud.presences.some(p => p.socket) && cloud.jobReads > 0)
+    const idle = cloud.jobReads
+    await new Promise(resolve => setTimeout(resolve, 200))
+    assert.equal(cloud.jobReads, idle, 'idle connections polled for jobs')
+    const timings: number[] = []
+    for (let i = 0; i < 20; i++) {
+      const job = cloud.dispatch({ id: crypto.randomUUID(), ...(i % 2
+        ? { discussion: { id: `d760_${i}`, workspace: 'ws_1', ideas: [] } }
+        : { chat: { message: `m760_${i}`, body: 'Reply' } }) })
+      const began = performance.now()
+      cloud.notifyJob(job.id)
+      cloud.notifyJob(job.id)
+      await until(() => job.state !== 'waiting')
+      timings.push(performance.now() - began)
+      await until(() => job.state === 'finished')
+      assert.equal(job.claims, 1, 'duplicate notification executed a reply twice')
+    }
+    timings.sort((a, b) => a - b)
+    const p95 = timings[Math.ceil(timings.length * 0.95) - 1]!
+    assert.ok(p95 < 2000, `p95 ${p95} exceeded 2 seconds`)
+    t.diagnostic(JSON.stringify({ samples: timings.length, p95Ms: Math.round(p95), maxMs: Math.round(timings.at(-1)!), jobListRequests: cloud.jobReads - idle, idleRequests: 0 }))
+  })
+
   it('opens once registered, with the token as a subprotocol, and closes with the Runner', async () => {
     cloud.presence = true
     const r = start()

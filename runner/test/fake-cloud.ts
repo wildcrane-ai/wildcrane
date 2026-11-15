@@ -158,6 +158,7 @@ export class FakeCloud {
   periodic: Record<string, unknown>[] = []
   asked: { project: string; agent: string; studio: string | null; seen: string | null }[] = []
   registrations = 0
+  jobReads = 0
   /** Which keys the Runner said it holds, on its last register. */
   secrets: unknown
   runtimes: unknown = null
@@ -219,6 +220,10 @@ export class FakeCloud {
   watch(on: boolean): void {
     this.watched = on
     for (const log of this.logs) if (!log.socket.destroyed) frame(log.socket, { type: 'watched', on })
+  }
+
+  notifyJob(job: string): void {
+    for (const p of this.presences) if (p.socket && !p.socket.destroyed) frame(p.socket, { type: 'job', job })
   }
 
   private upgrade(req: http.IncomingMessage, socket: Socket): void {
@@ -429,6 +434,7 @@ export class FakeCloud {
       return send(200, { job })
     }
     if (route === '/v1/runner/jobs') {
+      if (req.method === 'GET') this.jobReads++
       const machine = url.searchParams.get('machine')!
       if (!mine(machine)) return send(200, { jobs: [] })
       const jobs = [...this.jobs.values()].filter((j) => j.state === 'waiting' || (j.state === 'claimed' && j.machine === machine && !j.leaseLost))

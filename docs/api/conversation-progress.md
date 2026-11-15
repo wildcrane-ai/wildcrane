@@ -22,3 +22,10 @@ claim and attempt may advance progress. Runner keeps one request in flight and o
 cumulative pending snapshot; normal lease and authorization checks remain independent.
 Critical phases and first content flush immediately on an established log connection.
 Ordinary output stays batched. Reconnect preserves event times and sequence deduplication.
+
+Runner presence connections also receive `{ "type": "job", "job": "<uuid>" }` reminders.
+Realtime job hints mark conversations with `reply: true`, allowing direct authenticated
+claim without listing the queue first; ordinary flows retain their existing dispatch path.
+Only the existing authenticated claim confirms delivery. Pending conversation reminders
+survive eviction, retry with jitter and capped backoff, and stop on claim or cancellation.
+Queued work is checked without being re-notified. Idle connections add no database polling.

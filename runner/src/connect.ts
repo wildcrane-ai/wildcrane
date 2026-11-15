@@ -218,7 +218,9 @@ export function startRunner(options: Options): Runner {
       status(idle())
       options.onConnected?.()
       openLive()
-      presence ??= keepPresence(registration.machineId)
+      presence ??= keepPresence(registration.machineId, undefined, (job) => {
+        replyHint(job, 'presence')
+      })
       const { watchMs } = deps()
       if (watchMs !== null) boards ??= watchBoards(registration.machineId, watchMs)
       // The registration skipped the slow model lists; the full look follows.
@@ -245,17 +247,31 @@ export function startRunner(options: Options): Runner {
           if (typeof payload.head_seq === 'number') boards?.hint(payload.board, payload.head_seq, payload.machine as string | undefined)
           return
         }
-        if (payload.jobId || !(payload.alertId || payload.taskId)) void readJobs()
+        if (payload.reply === true && typeof payload.jobId === 'string' && /^[0-9a-f-]{36}$/i.test(payload.jobId)) {
+          replyHint(payload.jobId, 'realtime')
+          return
+        }
+        if (payload.jobId || !(payload.alertId || payload.taskId)) {
+          console.info('reply-dispatch', { event: 'hint', source: 'realtime', job: payload.jobId, at: new Date().toISOString() })
+          void readJobs('realtime')
+        }
       },
       onReady: () => {
-        void readJobs()
+        void readJobs('reconnected')
         boards?.pullAll()
       },
+      onState: (state, reason) => console.info('reply-dispatch', { event: state, reason, at: new Date().toISOString() }),
     })
   }
 
+  const replyHint = (job: string, source: string) => {
+    if (closed || preparing || !registration || running.has(job) || !validAccount()) return
+    console.info('reply-dispatch', { event: 'hint', source, job, at: new Date().toISOString() })
+    start(job)
+  }
+
   /** The catch-up read. One at a time; a hint during a read reads once more after it. */
-  const readJobs = async (): Promise<void> => {
+  const readJobs = async (source = 'catchup'): Promise<void> => {
     if (closed || preparing || !registration) return
     if (reading) {
       readAgain = true
@@ -306,6 +322,7 @@ export function startRunner(options: Options): Runner {
         }
         // Cloud lists only the jobs the plan's running limit lets start (#2209).
         if (job.state !== 'waiting' || running.has(job.id)) continue
+        console.info('reply-dispatch', { event: 'discovered', job: job.id, source, at: new Date().toISOString() })
         start(job.id)
       }
     } finally {
