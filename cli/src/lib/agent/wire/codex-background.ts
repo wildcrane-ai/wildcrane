@@ -2,30 +2,8 @@ import settleBackground from '../../../guide/settle-background.md'
 import { obj, str, type Json } from './json'
 
 export const CODEX_SETTLE_MS = { turn: 60_000, verify: 10_000 }
-export type Disposition = 'collected' | 'stopped' | 'await' | 'keep' | 'unconfirmed'
-export interface ManagedWork {
-  id: string
-  threadId: string
-  kind: 'terminal' | 'agent'
-  agentPath?: string
-  itemId?: string
-  processId?: string
-  osPid?: number
-  command?: string
-  status: 'running' | 'completed' | 'failed' | 'interrupted' | 'unknown'
-  result: string
-  exitCode?: number
-  intentionalStop?: boolean
-  disposition?: Disposition
-}
-export interface Cleanup {
-  status: 'confirmed' | 'unconfirmed'
-  execution: string
-  instance?: string
-  kept: string[]
-  detail?: string
-  items?: Pick<ManagedWork, 'id' | 'threadId' | 'processId' | 'status' | 'disposition'>[]
-}
+export type { Disposition, ManagedWork, Cleanup } from './codex-background-types'
+import type { Disposition, ManagedWork } from './codex-background-types'
 export interface Receipt { id: string; outcome: Disposition; service: boolean; detail: string }
 
 export function summary(text: string, bytes = 1800): string {

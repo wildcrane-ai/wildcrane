@@ -365,7 +365,7 @@ export interface RunRecord {
   agentStartedAt?: number
   managedProcess?: boolean
   agentIdentity?: string
-  cleanup?: import('./wire/codex-background').Cleanup
+  cleanup?: import('./wire/codex-background-types').Cleanup
   /** The text the user typed for this run — an action's notes, or
    *  a reject's reason. */
   input?: string

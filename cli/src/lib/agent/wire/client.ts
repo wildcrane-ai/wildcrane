@@ -61,7 +61,7 @@ export interface ClientTurn {
 /** How one turn ended. `ok` is the run's verdict — the command's exit code says nothing
  *  here, because the runner is the one that ends the process. */
 export interface TurnEnd {
-  cleanup?: import('./codex-background').Cleanup
+  cleanup?: import('./codex-background-types').Cleanup
   ok: boolean
   replyParts?: LocalReplyPart[]
   /** The agent's closing message. */
