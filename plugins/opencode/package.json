@@ -1,6 +1,6 @@
 {
   "name": "wildcrane-opencode",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "description": "Discuss goals and manage WildCrane tasks in OpenCode.",
   "type": "module",
   "main": "./dist/index.mjs",

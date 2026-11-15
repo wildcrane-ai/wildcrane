@@ -16,7 +16,7 @@
 
 import { Command, CommanderError, InvalidArgumentError } from 'commander'
 
-import { BoardError, say, startCollecting, stopCollecting, type Sink } from '../io'
+import { BoardError, CommandExit, say, startCollecting, stopCollecting, type Sink } from '../io'
 import { answer, prose, report } from '../board-cli'
 import { movedTo, unknownWord } from './moved'
 
@@ -113,6 +113,7 @@ export async function runProgram(program: Command, argv: string[], name: string)
     await program.parseAsync(argv, { from: 'user' })
     return 0
   } catch (err) {
+    if (err instanceof CommandExit) return err.exitCode
     if (err instanceof CommanderError) return commanderExit(err, name, json)
     // A move that refused after `runAction` closed its box: report it plainly. One that
     // refused inside the box reported through the same function with the prose attached.

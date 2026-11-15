@@ -25,30 +25,40 @@ import { SAID } from './cloud'
 const refuse = (message: string, code: string): never => die(message, { kind: code, code })
 
 /** One Cloud call as the signed-in account; every refusal ends the command with Cloud's words. */
-export async function cloud<T>(method: string, route: string, body?: unknown): Promise<T> {
+export async function cloud<T>(method: string, route: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   process.env.AI4KANBAN_HOME ??= process.env.WILDCRANE_HOME || path.join(os.homedir(), '.wildcrane')
   const token = await accessToken()
   if (!token.ok) return refuse(SAID[token.reason].en, token.reason.replace('-', '_'))
   let response: Response
+  const request = new AbortController()
+  const abort = () => request.abort()
+  if (signal?.aborted) request.abort()
+  signal?.addEventListener('abort', abort, { once: true })
+  const timeout = setTimeout(abort, 30_000)
   try {
-    response = await fetch(`${cloudEndpoints().api}${route}`, {
-      method,
-      headers: { authorization: `Bearer ${token.token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(30_000),
-    })
-  } catch {
-    refuse(SAID.unreachable.en, 'unreachable')
+    try {
+      response = await fetch(`${cloudEndpoints().api}${route}`, {
+        method,
+        headers: { authorization: `Bearer ${token.token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: request.signal,
+      })
+    } catch {
+      refuse(SAID.unreachable.en, 'unreachable')
+    }
+    const value = (await response!.json().catch(() => ({}))) as T & { error?: { code?: string; message?: string } }
+    if (response!.status === 401) refuse(SAID.expired.en, 'expired')
+    if (!response!.ok) refuse(value.error?.message ?? `Cloud answered ${response!.status}.`, value.error?.code ?? 'refused')
+    return value
+  } finally {
+    clearTimeout(timeout)
+    signal?.removeEventListener('abort', abort)
   }
-  const value = (await response!.json().catch(() => ({}))) as T & { error?: { code?: string; message?: string } }
-  if (response!.status === 401) refuse(SAID.expired.en, 'expired')
-  if (!response!.ok) refuse(value.error?.message ?? `Cloud answered ${response!.status}.`, value.error?.code ?? 'refused')
-  return value
 }
 
 const enc = encodeURIComponent
 const WEB = () => process.env.WILDCRANE_WEB_URL || 'https://app.wildcrane.ai'
-const taskUrl = (key: string) => `${WEB()}/tasks/${enc(key)}`
+export const taskUrl = (key: string) => `${WEB()}/tasks/${enc(key)}`
 
 interface Page<T> { data: T[]; next: string | null }
 interface Project { id: string; workspace: string; name: string; prefix: string }
@@ -103,7 +113,7 @@ async function workspace(asked?: string): Promise<string> {
 }
 
 /** `WC-12` and `task_…` as given; a bare `12` in the linked project's numbering. */
-async function taskRef(asked: string): Promise<string> {
+export async function taskRef(asked: string): Promise<string> {
   if (!/^\d+$/.test(asked.trim())) return asked.trim()
   const prj = linked()
   if (!prj) refuse('Write the full task key, like WC-12, or run this in a linked folder.', 'no_project')

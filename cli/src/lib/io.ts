@@ -99,3 +99,8 @@ export function warn(message: unknown): void {
   if (sink) sink.warnings.push(String(message))
   else console.error(`kanban: warning — ${message}`)
 }
+
+/** A streaming command has already printed its result. */
+export class CommandExit extends Error {
+  constructor(public readonly exitCode: number) { super() }
+}

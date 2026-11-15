@@ -46,6 +46,7 @@ import {
   taskStop,
   workspaceList,
 } from '../../commands/task'
+import { taskChatRead, taskChatFollow, validateChatOptions } from '../../commands/task-chat'
 import { cmdGuide } from '../../commands/guide'
 import { cmdStudioDiagram, cmdStudioInstructions, cmdStudioList, cmdStudioRule, cmdStudioPull, cmdStudioPush, cmdStudioCreate, cmdStudioValidate } from '../../commands/studio'
 import {
@@ -354,10 +355,19 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     })
   withShared(task.command('chat'))
     .argument('<task>')
-    .argument('<message...>')
-    .summary('send a message in the task chat, e.g. to change its requirement or draft')
+    .argument('[message...]')
+    .summary('read task chat history, follow or stop its reply, or send a message')
+    .description('Without a message, read the last 20 messages and the chat reply state separately from task execution. --follow tracks only the reply present at the start; Ctrl+C disconnects locally. --stop stops only that reply. --follow --json emits JSON Lines; other modes return one JSON object.')
+    .option('--limit <n>', 'show the last n messages, oldest first (default: 20)', intInRange(1, Number.MAX_SAFE_INTEGER))
+    .option('--all', 'show all retained messages')
+    .option('--follow', 'follow this reply to its result, then exit')
+    .option('--stop', 'request stopping only the current chat reply')
+    .addHelpText('after', '\nExamples:\n  akb task chat WC-12\n  akb task chat 12 --all --json\n  akb task chat 12 --follow --json\n  akb task chat 12 --stop\n  akb task chat 12 "Revise the draft"')
     .action(async function (this: Command, id: string, message: string[]) {
-      await boardless(this, cli, () => taskChat(id, message.join(' ')))
+      const opts = this.opts()
+      validateChatOptions(message, opts)
+      if (opts.follow) return taskChatFollow(id, { ...opts, json: ctxOf(this, cli.program).json })
+      await boardless(this, cli, () => message.length ? taskChat(id, message.join(' ')) : taskChatRead(id, opts))
     })
   withShared(task.command('remove'))
     .argument('<task>')
