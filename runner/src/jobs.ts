@@ -517,6 +517,9 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     delete checkpoint.partialReply
   }
   checkpoint.session ??= job.resume ?? undefined
+  const updateContinuation = updating && !checkpoint.failure && !checkpoint.retry?.pending
+  const updateReplay = reply && updateContinuation && !checkpoint.session && job.runtime !== 'antigravity'
+    && checkpoint.cleanup?.status !== 'unconfirmed' && replayable(checkpoint)
   const pauseRecovery = (pause: RetryPause, stopped: boolean) => {
     checkpoint.retryPause = pause
     if (checkpoint.retry) delete checkpoint.retry.pending
@@ -540,11 +543,15 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       }
       if (!replyStream && !retry.pending && previous?.started && (updating || job.recoveryOf)) {
         if (!hadRetryCount) return pauseRecovery('unsafe', true)
-        const failure = checkpoint.failure ?? { code: 'runner_interrupted', level: 2 as const, reason: 'The Runner was interrupted.' }
-        checkpoint.failure = failure
-        const decision = planRetry(failure, retry.attempt, Date.now(), deps.replyBackoff)
-        if ('pause' in decision) return pauseRecovery(decision.pause, true)
-        retry.pending = decision.plan
+        if (updateContinuation) {
+          if (!resumable(checkpoint) && !updateReplay) return pauseRecovery('unsafe', true)
+        } else {
+          const failure = checkpoint.failure ?? { code: 'runner_interrupted', level: 2 as const, reason: 'The Runner was interrupted.' }
+          checkpoint.failure = failure
+          const decision = planRetry(failure, retry.attempt, Date.now(), deps.replyBackoff)
+          if ('pause' in decision) return pauseRecovery(decision.pause, true)
+          retry.pending = decision.plan
+        }
       } else if (!replyStream && !recovering && previous?.started && !checkpoint.boardContinuation) {
         return pauseRecovery('unsafe', true)
       }
@@ -556,7 +563,8 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   }
   const pendingRetry = reply && checkpoint.retry?.pending || undefined
   const replay = !(job.runtime === 'antigravity' && checkpoint.session) && (
-    (manual && !!previous && replayable(previous))
+    updateReplay
+    || (manual && !!previous && replayable(previous))
     || (job.retryReplay === true && !local)
     || (!!pendingRetry && pendingRetry.failure.level === 2 && replayable(checkpoint)
       && (pendingRetry.failure.code !== 'runner_interrupted' || !checkpoint.session)))

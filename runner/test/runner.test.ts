@@ -1222,13 +1222,15 @@ process.stdin.on('data', () => { if (read) return; read = true;
     })
   }
 
-  it('restores a pending deadline without consuming it twice and pauses on a further retry at the limit', async () => {
+  for (const updating of [false, true]) it(`restores a pending deadline after ${updating ? 'an update' : 'a restart'} without consuming it twice`, async () => {
     const job = cloud.dispatch({ id: 'pending-deadline', state: 'claimed', machine: MACHINE, chat: { message: 'm1', body: 'Continue' } })
     const at = Date.now() + 250
-    saveCheckpoint(job.id, { pending: [], started: true, effects: true, session: 'kept',
+    saveCheckpoint(job.id, { updating, pending: [], started: true, effects: true, session: 'kept',
       retry: { since: 0, attempt: 3, pending: { at, of: 4, failure: disconnect } } })
     let startedAt = 0
     start('', { plan: (...args) => {
+      assert.equal(readCheckpoint(job.id)?.retry?.pending?.at, at)
+      assert.equal(readCheckpoint(job.id)?.retry?.attempt, 3)
       const p = fakeRuntime('process.exit(1)')(...args)
       startedAt = Date.now()
       p.renderer!.events = () => []
@@ -1526,7 +1528,8 @@ process.stdin.on('data', () => { if (read) return; read = true;
         p.renderer!.events = () => []
         return p
       } })
-      await until(() => job.claims === i + 1 && readCheckpoint(job.id)?.retry?.attempt === i + 1 && !!readCheckpoint(job.id)?.process)
+      await until(() => job.claims === i + 1 && readCheckpoint(job.id)?.attempts?.length === i + 1 && !!readCheckpoint(job.id)?.process)
+      assert.equal(readCheckpoint(job.id)?.retry?.attempt, 1)
       await current.update()
       assert.equal(job.state, 'claimed')
       assert.equal(readCheckpoint(job.id)?.session, 'fresh-session')
