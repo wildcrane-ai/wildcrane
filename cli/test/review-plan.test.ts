@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
-import { parseReviewPlan, readReviewPlan, reviewLayers, reviewBoundary } from '../src/lib/shared/review-plan'
+import { parseReviewPlan, readReviewPlan, reviewLayers, reviewBoundary, reviewAuthorization, reviewAllows, type TaskReview } from '../src/lib/shared/review-plan'
 
 it('validates forward references and parallel joins without using array order', () => {
   const plan = parseReviewPlan([{id:'c',after:['a','b']},{id:'b'},{id:'a'}])!
@@ -17,12 +17,43 @@ it('validates forward references and parallel joins without using array order', 
   assert.throws(() => parseReviewPlan([legacy]), /title/)
   assert.throws(() => parseReviewPlan([{ id: 'a', description: 'Override' }]), /description/)
   assert.deepEqual(readReviewPlan([legacy]), [{ id: 'a', after: [], previews: ['ui-design'] }])
-  const boundary = reviewBoundary({revision:1,plan,pending_plan:null,stages:[{id:'a',status:'available',revision:1,snapshot:null},{id:'c',status:'blocked',revision:1,snapshot:null}]})
-  assert.match(boundary, /Work only on these unlocked stages: a\n/)
 })
 
-it('keeps newly unlocked work outside the current execution assignment (#818)', () => {
-  const plan = parseReviewPlan([{id:'a'},{id:'b'}])!
-  const boundary = reviewBoundary({revision:2,plan,pending_plan:null,stages:plan.map(n=>({id:n.id,status:'available',revision:2,snapshot:null}))}, ['a'])
-  assert.match(boundary, /Work only on these unlocked stages: a\n/)
+it('distinguishes planning, pending approval and delivery', () => {
+  const base: TaskReview = { revision: 0, plan: null, stages: [], pending_plan: null }
+  const pending: TaskReview['pending_plan'] = { revision: 1, snapshot: { kind: 'plan', plan: [] } }
+  const plan = parseReviewPlan([{ id: 'draft' }])!
+  const approved: TaskReview = {
+    ...base, plan, stages: [{ id: 'draft', status: 'approved', revision: 1, snapshot: {} }],
+  }
+  const cases: [TaskReview, RegExp, boolean, boolean][] = [
+    [base, /Planning only/, true, false],
+    [{ ...base, pending_plan: pending }, /Wait for the proposed plan decision/, false, false],
+    [{ ...base, plan: [] }, /No extra review/, false, true],
+    [approved, /Stages complete/, false, true],
+    [{ ...approved, stages: [] }, /Wait for review/, false, false],
+  ]
+  for (const [review, message, refine, implement] of cases) {
+    const authorization = reviewAuthorization(review, [])
+    assert.equal(reviewAllows(authorization, 'refine'), refine)
+    assert.equal(reviewAllows(authorization, 'implement'), implement)
+    assert.match(reviewBoundary(review, []), message)
+  }
+})
+
+it('limits the work and Preview instructions to the dispatched runnable stages', () => {
+  const plan = parseReviewPlan([
+    { id: 'approved' }, { id: 'assigned', previews: ['ui-design'] }, { id: 'unassigned', previews: ['api-docs'] },
+  ])!
+  const review: TaskReview = {
+    revision: 2, plan, pending_plan: null,
+    stages: plan.map(({ id }) => ({ id, status: id === 'approved' ? 'approved' : 'available', revision: 2, snapshot: null })),
+  }
+  const authorization = reviewAuthorization(review, ['assigned'])
+  assert.deepEqual(authorization, { kind: 'stages', nodes: [plan[1]] })
+  assert.equal(reviewAllows(authorization, 'refine'), true)
+  assert.equal(reviewAllows(authorization, 'implement'), false)
+  assert.match(reviewBoundary(review, ['assigned']), /Work only on these unlocked stages: assigned\n- assigned: ui-design\nRead/)
+  assert.match(reviewBoundary(review, ['assigned', 'approved']), /Review authorization changed/)
+  assert.match(reviewBoundary(review, []), /Wait for review/)
 })

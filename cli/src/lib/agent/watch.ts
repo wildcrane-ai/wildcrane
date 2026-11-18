@@ -1,4 +1,5 @@
-import { reviewBoundary, type TaskReview } from '../shared/review-plan'
+import { reviewBoundary } from '../shared/review-plan'
+import { taskReviewContext } from './env'
 import { connectionIdentity, connectionStopped, endConnection } from './connection-process'
 import { boardCommandFor } from './command'
 import { findDelivery } from './deliveries'
@@ -183,7 +184,8 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   const basePrompt = record.resumedFrom ? spec.prompt || resumePrompt(record.deliveryId, record.action) : spec.prompt
   const recoveryPrompt = record.harness === 'antigravity' && record.resumedFrom
     ? 'First verify existing progress and operation results. Preserve user decisions and completed work; do not repeat completed operations. Check actual state before continuing any operation whose result is uncertain.' : ''
-  const boundary = process.env.AI4KANBAN_TASK_REVIEW ? reviewBoundary(JSON.parse(process.env.AI4KANBAN_TASK_REVIEW) as TaskReview, process.env.AI4KANBAN_REVIEW_STAGES ? JSON.parse(process.env.AI4KANBAN_REVIEW_STAGES) : undefined) : ''
+  const reviewContext = taskReviewContext()
+  const boundary = reviewContext ? reviewBoundary(reviewContext.review, reviewContext.assigned) : ''
   const prompt = [process.env.AI4KANBAN_SYNC_DIAGNOSTIC ? syncRepairPrompt(process.env.AI4KANBAN_SYNC_DIAGNOSTIC) : '', record.retry ? `Previous execution failed: ${record.retry.reason}. Check existing results before continuing; do not repeat completed operations.` : '', conflictPrompt(KANBAN), boundary, basePrompt, recoveryPrompt, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n')
 
   // The board as it was the moment before the agent touched it. The difference between this

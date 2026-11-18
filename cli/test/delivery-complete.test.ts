@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { afterEach, beforeEach, it } from 'node:test'
 import { buildAkbProgram } from '../src/lib/cli/akb.ts'
 import { buildBoardProgram } from '../src/lib/cli/board.ts'
-import { cmdResume } from '../src/commands/run.ts'
+import { cmdLog, cmdResume } from '../src/commands/run.ts'
 import { completeDelivery } from '../src/lib/agent/complete.ts'
 import { activeDelivery, findDelivery, joinDelivery, settleOrphanedDeliveries } from '../src/lib/agent/deliveries.ts'
 import { RUN_ENV } from '../src/lib/agent/env.ts'
@@ -17,6 +17,7 @@ import { buildPrompt } from '../src/lib/agent/prompts.ts'
 import { closeRun, cancelDelivery, openRun } from '../src/lib/agent/sessions.ts'
 import { logPathOf, readAction, withStore } from '../src/lib/agent/store.ts'
 import type { RunRecord } from '../src/lib/agent/types.ts'
+import { BoardError } from '../src/lib/io.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
 import { move, refuses, run } from './helpers/board.ts'
 
@@ -58,6 +59,31 @@ it('does not finish on a successful process exit', async () => {
   await closeRun('first', { status: 'done' })
   assert.equal(activeDelivery(1)?.status, 'active')
   assert.ok(fs.existsSync(card))
+})
+it('distinguishes a cancelled delivery from a recorded discard when following a stopped run', async () => {
+  await closeRun('first', { status: 'stopped' })
+  assert.equal((await cancelDelivery(deliveryId)).ok, true)
+  const followed = () => cmdLog('first', { follow: true })
+
+  for (const kind of ['stopped', 'discarded']) {
+    await assert.rejects(followed, (error: unknown) => {
+      assert.ok(error instanceof BoardError)
+      assert.equal(error.kind, 'run-failed')
+      assert.deepEqual(error.details.delivery, { id: deliveryId, status: 'cancelled', line: 'cancelled', ending: { kind } })
+      return true
+    })
+    if (kind === 'stopped') patch(d => { d.steps.push({ step: 'discarded', at: Date.now() }) })
+  }
+})
+it('returns the original delivery blocker even when the followed run exited successfully', async () => {
+  await closeRun('first', { status: 'done' })
+  const reason = 'could not land on main\nThe API moved.'
+  patch(d => { d.review = { rounds: [], stopped: { reason: 'landing', why: reason, at: 1 } } })
+  const followed = await cmdLog('first', { follow: true })
+  assert.equal(followed.status, 'done')
+  const delivery = followed.delivery as { status: string; ending: unknown }
+  assert.equal(delivery.status, 'active')
+  assert.deepEqual(delivery.ending, { kind: 'blocked', reason })
 })
 it('requires ownership and paired full software results', async () => {
   patch((d) => { d.base = sha })

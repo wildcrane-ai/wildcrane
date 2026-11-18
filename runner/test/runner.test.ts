@@ -3956,14 +3956,70 @@ describe('flow jobs (#2020)', () => {
     assert.deepEqual(cardCalls(), [`card implement 2 --follow --events --json --board ${board()}`])
   })
 
-  it('refuses execution when its assigned review stage became locked (#818)', async () => {
-    const taskReview = { plan: [{ id: 'a', title: 'A', after: [], previews: [] }], stages: [{ id: 'a', status: 'available' as const, revision: 0, snapshot: null }], pending_plan: null, revision: 0 }
-    cloud.task.review = { ...taskReview, stages: [{ ...taskReview.stages[0]!, status: 'blocked' }] }
-    const job = await flowJob('j818', { verb: 'create', review_stages: ['a'] }, { taskReview })
+  const stagePlan = [
+    { id: 'a', after: [], previews: [] },
+    { id: 'b', after: ['a'], previews: ['ui-design'] },
+    { id: 'c', after: [], previews: ['api-docs'] },
+  ]
+  const makeReview = (plan: NonNullable<FakeJob['taskReview']>['plan'], stages: NonNullable<FakeJob['taskReview']>['stages'] = []) =>
+    ({ plan, stages, pending_plan: null, revision: 3 })
+  const readyCard = '---\ntitle: Pricing\nstudio: coding\nstatus: ready\nquestions: []\n---\n'
+  const available = { id: 'b', status: 'available' as const, revision: 3, snapshot: null }
+
+  it('starts planning for an undecided review', async () => {
+    const taskReview = makeReview(null)
+    cloud.task.review = taskReview
+    const planning = await flowJob('undecided', { verb: 'create', review_stages: [] }, { taskReview })
+    assert.equal(planning.outcome, 'done', planning.reason)
+    assert.deepEqual(cardCalls(), [`card refine 2 --follow --events --json --board ${board()}`])
+  })
+
+  it('holds planning and its preparatory agent while the plan awaits confirmation', async () => {
+    const taskReview = makeReview(null)
+    cloud.rejections = { tasks: [{ id: 'task_9', number: 9, title: 'Mobile app', request: '', reason: 'never', cancelled_at: '2026-10-20T09:00:00.000Z' }], triage: [] }
+    cloud.task.review = { ...taskReview, revision: 4, pending_plan: { revision: 4, snapshot: { kind: 'plan', plan: [] } } }
+    const pending = await flowJob('pending', { verb: 'create', review_stages: [] }, { taskReview })
+    assert.equal(pending.outcome, 'failed')
+    assert.match(pending.reason ?? '', /no longer has review authorization/)
+    assert.ok(!calls().some(c => c[0] === 'review-dismissals'))
+    assert.deepEqual(cardCalls(), [])
+  })
+
+  it('continues the assigned stage on a ready card using the latest review and original assignment', async () => {
+    cloud.put({ 'todo/2-pricing.md': readyCard })
+    const approved = { id: 'a', status: 'approved' as const, revision: 3, snapshot: {} }
+    const taskReview = makeReview(stagePlan, [approved, available, { ...available, id: 'c' }])
+    cloud.task.review = { ...taskReview, revision: 4, stages: [approved, available, { ...available, id: 'c', status: 'approved', revision: 4, snapshot: {} }] }
+    const job = await flowJob('assigned', { verb: 'refine', resume: true, review_stages: ['b'], review_revision: 3 }, { taskReview })
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.deepEqual(cardCalls(), [`card refine 2 --follow --events --json --board ${board()}`])
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(board(), '.fake/review-context.json'), 'utf8')), {
+      review: cloud.task.review, assigned: ['b'],
+    })
+  })
+
+  for (const status of ['blocked', 'available'] as const) {
+    it(`refuses execution when an assigned stage was revised to ${status} before launch`, async () => {
+      cloud.put({ 'todo/2-pricing.md': readyCard })
+      const taskReview = makeReview(stagePlan, [available])
+      cloud.task.review = { ...taskReview, revision: 4, stages: [{ ...available, status, revision: 4 }] }
+      const job = await flowJob('revoked', { verb: 'refine', review_stages: ['b'], review_revision: 3 }, { taskReview })
+      assert.equal(job.outcome, 'failed')
+      assert.match(job.reason ?? '', /authorization changed/)
+      assert.equal(job.report?.processesStopped, true)
+      assert.equal(job.finishedLogEnded, true)
+      assert.deepEqual(cardCalls(), [])
+    })
+  }
+
+  it('checks the delivery grant before resuming the CLI delivery', async () => {
+    cloud.put({ 'todo/2-pricing.md': readyCard })
+    const taskReview = makeReview(stagePlan, stagePlan.map(n => ({ ...available, id: n.id, status: 'approved', snapshot: {} })))
+    cloud.task.review = { ...taskReview, revision: 4, stages: [taskReview.stages[0]!, { ...available, revision: 4 }, taskReview.stages[2]!] }
+    const job = await flowJob('revoked-delivery', { verb: 'implement', resume: true, review_stages: [] }, { taskReview })
     assert.equal(job.outcome, 'failed')
-    assert.match(job.reason ?? '', /authorization changed/)
-    assert.equal(job.report?.processesStopped, true)
-    assert.equal(job.finishedLogEnded, true)
+    assert.match(job.reason ?? '', /Finish the agreed review stages/)
+    assert.ok(!calls().some(c => c[0] === 'delivery' && c[1] === 'resume'))
     assert.deepEqual(cardCalls(), [])
   })
 
@@ -4213,7 +4269,6 @@ describe('flow jobs (#2020)', () => {
       process.env.FAKE_AKB = JSON.stringify({ resolve: {
         reject: true, failed, result: 'Discarded it.', spent,
         delivery: { id: 'd1', commit: 'must-not-land', branch: 'main' },
-        ended: { deliveryId: 'd1', status: 'cancelled' },
       } })
       const job = await flowJob('j2', { verb: 'implement', card: 2, text: 'Discard this card.' })
       assert.equal(job.outcome, 'done', job.reason)
@@ -4234,24 +4289,26 @@ describe('flow jobs (#2020)', () => {
 
   it('stops a build whose delivery was cancelled, and fails one discarded or blocked with its reason (#59)', async () => {
     await flowJob('j1', { verb: 'create' })
-    const ended = (record: Record<string, unknown>) =>
-      JSON.stringify({ implement: { failed: 'delivery d1 did not land', ended: { deliveryId: 'd1', steps: [{ step: 'implement' }], ...record } } })
-    process.env.FAKE_AKB = ended({ status: 'cancelled' })
+    const ended = (status: string, ending: Record<string, unknown>, failed?: string) =>
+      JSON.stringify({ implement: { failed, delivery: { id: 'd1', status, ending } } })
+    process.env.FAKE_AKB = ended('cancelled', { kind: 'stopped' }, 'delivery d1 did not land')
     const cancelled = await flowJob('j2', { verb: 'implement', card: 2 })
     assert.equal(cancelled.outcome, 'stopped', cancelled.reason)
-    process.env.FAKE_AKB = ended({ status: 'cancelled', steps: [{ step: 'implement' }, { step: 'discarded' }] })
+    process.env.FAKE_AKB = ended('cancelled', { kind: 'discarded' }, 'delivery d1 did not land')
     const discarded = await flowJob('j3', { verb: 'implement', card: 2 })
     assert.equal(discarded.outcome, 'failed')
     assert.equal(discarded.reason, 'The build was discarded.')
-    process.env.FAKE_AKB = ended({ status: 'active', review: { rounds: [], stopped: { reason: 'landing', why: 'this could not be fitted onto the latest `main`: the API moved', at: 1 } } })
+    const reason = 'this could not be fitted onto the latest `main`:\nthe API moved'
+    process.env.FAKE_AKB = ended('active', { kind: 'blocked', reason })
     const blocked = await flowJob('j4', { verb: 'implement', card: 2 })
     assert.equal(blocked.outcome, 'failed')
-    assert.equal(blocked.reason, 'this could not be fitted onto the latest `main`: the API moved')
+    assert.equal(blocked.reason, reason)
+    assert.ok(!fs.existsSync(path.join(board(), 'deliveries', 'd1.json')))
   })
 
   it('reports a build left active on a card question as waiting, not unfinished (#504)', async () => {
     await flowJob('j1', { verb: 'create' })
-    process.env.FAKE_AKB = JSON.stringify({ implement: { failed: 'delivery d1 did not land', question: 'Replace the public main?', ended: { deliveryId: 'd1', status: 'active', steps: [{ step: 'implement' }] } } })
+    process.env.FAKE_AKB = JSON.stringify({ implement: { failed: 'delivery d1 did not land', question: 'Replace the public main?', delivery: { id: 'd1', status: 'active', stage: 'held' } } })
     const job = await flowJob('j2', { verb: 'implement', card: 2 })
     assert.equal(job.outcome, 'done', job.reason)
     assert.deepEqual(flowReport(job).review, { question: 'Replace the public main?', options: ['Monthly', 'Yearly'], position: 2 })

@@ -55,15 +55,53 @@ export function readReviewPlan(plan: ReviewPlan | undefined): ReviewPlan {
   return plan?.map(({ id, after, previews }) => ({ id, after, previews })) ?? null
 }
 
+type ReviewAuthorization =
+  | { kind: 'plan' | 'pending' | 'unreviewed' | 'delivery' | 'changed' | 'waiting' }
+  | { kind: 'stages'; nodes: ReviewNode[] }
+
+export function reviewAuthorization(review: TaskReview, assigned?: readonly string[], dispatchRevision?: number): ReviewAuthorization {
+  if (review.pending_plan) return { kind: 'pending' }
+  const states = new Map(review.stages.map(stage => [stage.id, stage]))
+  const nodes = (review.plan ?? []).filter(node => {
+    const stage = states.get(node.id)
+    if (!stage || (assigned && !assigned.includes(node.id))) return false
+    // An available stage revised after dispatch needs a new grant. Starting it advances its running revision.
+    return stage.status === 'running' ||
+      (stage.status === 'available' && (dispatchRevision === undefined || stage.revision <= dispatchRevision))
+  })
+  if (assigned?.some(id => !nodes.some(node => node.id === id))) return { kind: 'changed' }
+  if (review.plan === null) return { kind: 'plan' }
+  if (review.plan.length === 0) return { kind: 'unreviewed' }
+  if (nodes.length) return { kind: 'stages', nodes }
+  if (review.plan.every(node => states.get(node.id)?.status === 'approved')) return { kind: 'delivery' }
+  return { kind: 'waiting' }
+}
+
+export function reviewAllows(authorization: ReviewAuthorization, action: 'refine' | 'implement'): boolean {
+  return action === 'refine'
+    ? authorization.kind === 'plan' || authorization.kind === 'stages'
+    : authorization.kind === 'unreviewed' || authorization.kind === 'delivery'
+}
+
+function reviewInstruction(authorization: ReviewAuthorization): string {
+  switch (authorization.kind) {
+    case 'plan': return 'Planning only. Propose a review plan; wait for explicit plan approval.'
+    case 'pending': return 'Wait for the proposed plan decision. Do not start new stages.'
+    case 'unreviewed': return 'No extra review. Complete the authorized work and Studio delivery checks.'
+    case 'stages': return [
+      'Work only on these unlocked stages: ' + authorization.nodes.map(node => node.id).join(', '),
+      ...authorization.nodes.map(node => `- ${node.id}: ${node.previews.length ? node.previews.join(', ') : 'card body'}`),
+    ].join('\n')
+    case 'delivery': return 'Stages complete. Follow Studio delivery checks.'
+    case 'changed': return 'Review authorization changed. Read the task again.'
+    case 'waiting': return 'Wait for review. Do not execute locked stages.'
+  }
+}
+
 export function reviewBoundary(review: TaskReview, assigned?: readonly string[]): string {
-  const allowed = review.pending_plan ? [] : review.stages.filter(s => (s.status === 'available' || s.status === 'running') && (!assigned || assigned.includes(s.id)))
   return [
     'Task review: ' + JSON.stringify(review),
-    review.plan === null ? 'Planning only. Propose a review plan; wait for explicit plan approval.' :
-      review.pending_plan ? 'Wait for the proposed plan decision. Do not start new stages.' :
-      !review.plan.length ? 'No extra review. Complete the authorized work and Studio delivery checks.' :
-      allowed.length ? 'Work only on these unlocked stages: ' + allowed.map(s => s.id).join(', ') :
-      review.stages.every(s => s.status === 'approved') ? 'Stages complete. Follow Studio delivery checks.' : 'Wait for review. Do not execute locked stages.',
+    reviewInstruction(reviewAuthorization(review, assigned)),
     'Read akb task review before reporting running/done with its revision. Sync content and assets before done. Revise a stage before changing its approved output. Questions and plan approval never approve outputs.',
   ].join('\n')
 }

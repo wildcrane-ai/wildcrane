@@ -1,3 +1,5 @@
+import type { TaskReview } from '../shared/review-plan'
+
 // The one variable a run the board started puts on the agent it spawns.
 //
 // It is here, on its own, because two very different parts of the board ask the same
@@ -29,6 +31,12 @@ export function insideRun(): string | null {
 /** Put the run's id into the environment its agent receives. */
 export function runEnv(env: NodeJS.ProcessEnv, value: string): NodeJS.ProcessEnv {
   return { ...env, [RUN_ENV]: value }
+}
+
+export function taskReviewContext() {
+  const { AI4KANBAN_TASK_REVIEW: review, AI4KANBAN_REVIEW_STAGES: assigned } = process.env
+  if (!review) return undefined
+  return { review: JSON.parse(review) as TaskReview, assigned: assigned ? JSON.parse(assigned) as string[] : undefined }
 }
 
 /** The variable a chat turn or an agent test puts on its agent, holding a one-off id: they

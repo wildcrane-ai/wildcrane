@@ -42,6 +42,8 @@ import type {
   AnswerOutcome,
   CommandAction,
   CommandRequest,
+  DeliveryEnding,
+  DeliveryStatus,
   RunView,
 } from '../lib/agent/types'
 import fs from 'node:fs'
@@ -699,10 +701,10 @@ async function moveDelivery(deliveryId: string, idle: Idle): Promise<RunView | n
   return 'error' in started ? undefined : { ...started.run }
 }
 
-/** A landed delivery also names its commit and the branch it landed on. */
+/** The delivery's outcome accompanies both successful and failed followed runs. */
 function deliveryOutcome(
   deliveryId: string,
-): { id: string; status: string; stage?: string; line: string; commit?: string; branch?: string } | undefined {
+): { id: string; status: DeliveryStatus; stage?: string; line: string; commit?: string; branch?: string; ending?: DeliveryEnding } | undefined {
   const delivery = findDelivery(deliveryId)
   if (!delivery) return undefined
   if (delivery.status !== 'active') {
@@ -712,11 +714,21 @@ function deliveryOutcome(
       id: deliveryId,
       status: delivery.status,
       line,
+      ...(delivery.status === 'cancelled' ? {
+        ending: { kind: delivery.steps.some((s) => s.step === 'discarded') ? 'discarded' : 'stopped' },
+      } : {}),
       ...(commit ? { commit, ...(delivery.targetBranch ? { branch: delivery.targetBranch } : {}) } : {}),
     }
   }
   const state = deliveryState(delivery, delivery.cardId === null ? 0 : openQuestions(delivery.cardId))
-  return { id: deliveryId, status: delivery.status, stage: state.stage, line: state.line }
+  const reason = delivery.review?.stopped?.why
+  return {
+    id: deliveryId,
+    status: delivery.status,
+    stage: state.stage,
+    line: state.line,
+    ...(reason ? { ending: { kind: 'blocked', reason } } : {}),
+  }
 }
 
 // ---- how a run reads -------------------------------------------------------

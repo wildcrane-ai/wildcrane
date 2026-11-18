@@ -34,7 +34,7 @@ export interface FakeJob {
   resumeCostUsd?: number | null
   fork?: boolean
   transcript?: string | null
-  flow?: { review_stages?: string[]; verb: string; studio: string; card?: number; text?: string; title?: string; resume?: boolean; replan?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null
+  flow?: { review_stages?: string[]; review_revision?: number; verb: string; studio: string; card?: number; text?: string; title?: string; resume?: boolean; replan?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null
   discussion?: { id: string; workspace: string; goals?: Record<string, unknown>[]; ideas: Record<string, unknown>[] } | null
   chat?: { message: string; body: string } | null
   review?: { tasks: string[] } | null

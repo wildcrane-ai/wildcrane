@@ -13,7 +13,8 @@ import { createHash } from 'node:crypto'
 import { allCards, findCard } from '../view/read'
 import { awaitingApproval, byDispatchOrder, canRefine, planDeliveryGap } from '../view/rules'
 import type { Card } from '../view/types'
-import type { TaskReview } from '../shared/review-plan'
+import { reviewAllows, reviewAuthorization } from '../shared/review-plan'
+import { taskReviewContext } from './env'
 import { startRun } from './start'
 import { endOfStage, shortLine, stageOfAction, type StageShort } from './stage-end'
 import { stageContract } from './stages'
@@ -147,13 +148,11 @@ export function refinementStep(card: Card): RefinementStep {
 export function refinementRequest(req: CommandRequest): AgentRequest | { error: string } {
   const card = req.id === undefined ? null : currentCard(req.id)
   if (!card) return { error: `task #${req.id} does not exist` }
-  const context = process.env.AI4KANBAN_TASK_REVIEW
-  const review = context ? JSON.parse(context) as TaskReview : undefined
-  const assigned: string[] | undefined = process.env.AI4KANBAN_REVIEW_STAGES ? JSON.parse(process.env.AI4KANBAN_REVIEW_STAGES) : undefined
-  const authorized = review && !review.pending_plan && (review.plan === null || review.stages.some(s =>
-    ['available', 'running'].includes(s.status) && (!assigned || assigned.includes(s.id))))
-  const step = review ? authorized && !card.questions.some(q => q.options?.length) ? 'clarify' : 'done' : refinementStep(card)
-  if (step === 'done') {
+  const context = taskReviewContext()
+  const canStart = context
+    ? reviewAllows(reviewAuthorization(context.review, context.assigned), 'refine') && !card.questions.some(q => q.options?.length)
+    : refinementStep(card) === 'clarify'
+  if (!canStart) {
     // Only the user's answers are in the way (#1366).
     const waiting = card.questions.length > 0 && canRefine({ ...card, questions: [] })
     return {
@@ -162,7 +161,7 @@ export function refinementRequest(req: CommandRequest): AgentRequest | { error: 
         : `a refine would not move #${card.id}`,
     }
   }
-  return { action: step, id: card.id, title: card.title, notes: req.notes, refineRound: 1, ...(req.carry ? { carry: req.carry } : {}) }
+  return { action: 'clarify', id: card.id, title: card.title, notes: req.notes, refineRound: 1, ...(req.carry ? { carry: req.carry } : {}) }
 }
 
 export async function startRefinement(

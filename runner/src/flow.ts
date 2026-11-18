@@ -10,6 +10,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { SCHEDULED_AGENTS_ENV, SESSION_COST_ENV } from '../../cli/src/lib/agent/env'
+import type { DeliveryEnding, DeliveryStatus } from '../../cli/src/lib/agent/types'
 import { parseFrontmatter } from '../../cli/src/lib/frontmatter'
 import { asEvent, type RunEvent } from '../../cli/src/lib/agent/wire'
 import { reviewOf as cardReviewOf } from '../../cli/src/lib/card-review'
@@ -23,6 +24,7 @@ import { secretsOf } from './secrets'
 import { akbCardOf, cardAssetsDir, cardFile, findCard, mcpServersOf, pull, push, withBoard, workspaceOf, type McpServers, type TaskFolder } from './task-folder'
 import { studioName } from '../../cli/src/lib/shared/board-files.ts'
 import { pendingConflicts } from '../../cli/src/lib/shared/board-conflicts'
+import { reviewAllows, reviewAuthorization } from '../../cli/src/lib/shared/review-plan'
 import { layOut, type Laid } from './triage'
 import { removeLegacyKanbanSkill } from './kanban-skill'
 import { installCommitHook } from '../../cli/src/lib/skill/hook'
@@ -106,10 +108,10 @@ function runtimeCosts(runs: Run[], job: Pick<Job, 'runtime' | 'runtimeId' | 'age
 }
 
 /** 卡片当前是否待审，以及首个带选项的问题。 */
-function reviewOf(file: string): ReturnType<typeof cardReviewOf> {
+function reviewOf(file: string, questionsOnly = false): ReturnType<typeof cardReviewOf> {
   try {
     const meta = parseFrontmatter(fs.readFileSync(file, 'utf8')).meta
-    return meta ? cardReviewOf(meta) : null
+    return meta && (!questionsOnly || meta.questions?.length) ? cardReviewOf(meta) : null
   } catch {
     return null
   }
@@ -179,25 +181,6 @@ export async function stopLeftBehind(akb: Akb, ws: TaskFolder, id: number, ms: n
   if (!working.has(workKey(ws, id)) && !await stopRuns(akb, ws, id, 0, ms)) {
     throw new Error('未能停止上次运行，请等待其停止后续跑。')
   }
-}
-
-/** A build's delivery ended by a command, not by landing (#59): cancelled is a stop the task
- *  carries on from; discarded, or blocked from landing, fails it with the delivery's reason.
- *  One still active waits on the card's question when `asked` (#504). */
-export function deliveryEnding(ws: TaskFolder, id: string | undefined, asked = false): FlowEnd | null {
-  if (!id) return null
-  let held: { status?: string; steps?: { step?: string }[]; review?: { stopped?: { reason?: string; why?: string } } }
-  try {
-    held = JSON.parse(fs.readFileSync(path.join(ws.board, 'deliveries', `${path.basename(id)}.json`), 'utf8'))
-  } catch {
-    return null
-  }
-  const stopped = held.review?.stopped
-  if (held.status === 'cancelled') {
-    return held.steps?.some((s) => s.step === 'discarded') ? { ok: false, reason: 'The build was discarded.' } : { ok: false, reason: '', stopped: true }
-  }
-  if (held.status === 'active' && stopped?.why) return { ok: false, reason: reasonOf(stopped.why) ?? stopped.why }
-  return null
 }
 
 /** The deliveries on card `id` whose worktree is still here. */
@@ -285,15 +268,6 @@ function boardAkb(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo, task?: s
   return async (args: string[], show = false, env?: NodeJS.ProcessEnv) => {
     const refused = (last: string): Ran => ({ code: 1, out: '', last })
     if (stopping(io)) return refused('Task preparation stopped.')
-    if (show && job.taskReview && job.task && job.flow) {
-      const current = await deps.api.readTask(job.task)
-      if (!current.ok) return refused(current.error)
-      const review = current.value.review
-      if (!review || review.pending_plan || ['stopped', 'done', 'cancelled'].includes(current.value.status ?? '')) return refused('This execution no longer has review authorization.')
-      if (job.flow.review_stages?.some(id => !review.stages.some(s => s.id === id && ['available', 'running'].includes(s.status)))) return refused('Review authorization changed. Read the task again.')
-      if (args.includes('implement') && (review.plan === null || review.stages.some(s => s.status !== 'approved'))) return refused('Finish the agreed review stages before delivery.')
-      job.taskReview = review
-    }
     const at = args.includes('--') ? args.indexOf('--') : args.length
     const full = [...args.slice(0, at), '--board', ws.board, ...args.slice(at)]
     const log = show ? logLines(io.show, io.event) : undefined
@@ -403,7 +377,7 @@ export async function runReview(job: Job, ws: TaskFolder, tasks: string[], deps:
 
 /** What the workspace's rejection review has not learned (#2067), laid out on the board,
  *  reviewed, sent back and marked learned. Its runs are answered, to count in what the job spent. */
-async function reviewRejections(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Promise<{ runs: Run[]; failure?: string; laid?: Laid; session?: string }> {
+async function reviewRejections(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo, refreshReview?: () => Promise<string | undefined>): Promise<{ runs: Run[]; failure?: string; laid?: Laid; session?: string }> {
   const workspace = workspaceOf(ws)
   if (!workspace) return { runs: [] }
   const read = await deps.api.readRejections(workspace)
@@ -416,6 +390,8 @@ async function reviewRejections(job: Job, ws: TaskFolder, deps: FlowDeps, io: Fl
   const scratch = fs.mkdtempSync(path.join(directory, 'rejection-review-'))
   try {
     const laid = layOut(scratch, read.value)
+    const denied = await refreshReview?.()
+    if (denied) return { runs: [], failure: denied }
     const ran = await akb(['raw', 'review-dismissals', '--follow', '--events', '--json'], true, { AI4KANBAN_REJECTION_INPUT: scratch })
     const runs = (answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--all', '--json']))?.runs ?? []).filter((r) => (r.startedAt ?? 0) >= since)
     if (stopping(io)) return { runs }
@@ -425,8 +401,8 @@ async function reviewRejections(job: Job, ws: TaskFolder, deps: FlowDeps, io: Fl
 }
 
 /** Before a task is planned: leave unconfirmed reviews available for their scheduled pass. */
-async function learnRejections(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Promise<Run[]> {
-  const { runs, failure, laid } = await reviewRejections(job, ws, deps, io)
+async function learnRejections(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo, refreshReview: () => Promise<string | undefined>): Promise<Run[]> {
+  const { runs, failure, laid } = await reviewRejections(job, ws, deps, io, refreshReview)
   if (failure) console.error(`runner: rejections not learned: ${failure}`)
   if (laid && !stopping(io)) {
     const sent = await push(ws, { id: job.id, machineId: deps.machineId })
@@ -520,12 +496,39 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
 
   if (flow.verb === 'discard') return discardBuilds()
 
+  const hasReview = !!job.taskReview || flow.review_stages !== undefined
+  const initial = job.taskReview && reviewAuthorization(job.taskReview, flow.review_stages)
+  const skipPlan = initial ? initial.kind === 'unreviewed' : flow.skip_plan
+  const verb = flow.verb === 'create' ? (skipPlan ? 'implement' : 'refine') : flow.verb
+
+  async function refreshReview(): Promise<string | undefined> {
+    if (!hasReview) return
+    const current = await deps.api.readTask(ws.task)
+    if (!current.ok) return current.error
+    const review = current.value.review
+    if (!review || ['stopped', 'done', 'cancelled'].includes(current.value.status ?? '')) {
+      return 'This execution no longer has review authorization.'
+    }
+    const authorization = reviewAuthorization(review, flow.review_stages, flow.review_revision)
+    if (authorization.kind === 'pending') return 'This execution no longer has review authorization.'
+    if (authorization.kind === 'changed' || verb === 'refine' && !reviewAllows(authorization, verb)) {
+      return 'Review authorization changed. Read the task again.'
+    }
+    if (verb === 'implement' && !reviewAllows(authorization, verb)) return 'Finish the agreed review stages before delivery.'
+    job.taskReview = review
+  }
+
+  async function launch(...args: Parameters<typeof akb>): Promise<Ran & { reviewRefused?: string }> {
+    const denied = await refreshReview()
+    return denied ? { code: 1, out: '', last: denied, reviewRefused: denied } : akb(...args)
+  }
+
   const failed = await setUp(job, ws, deps, io)
   if (failed) return fail(failed)
 
   let id = akbCardOf(ws)
   // An unplanned build (#2139) has no plan for the review to inform.
-  const learned = flow.verb === 'create' && !id && !flow.skip_plan ? await learnRejections(job, ws, deps, io) : []
+  const learned = flow.verb === 'create' && !id && !skipPlan ? await learnRejections(job, ws, deps, io, refreshReview) : []
   if (io.lost()) return fail('')
   if (flow.verb === 'create' && !id) {
     // Cloud sends the title and the request with the job; the task is read only when it did not.
@@ -577,7 +580,8 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       }
       if (io.lost()) return fail('')
       const ended = await workOn(card)
-      if (ended.ok && job.taskReview?.plan?.length === 0 && flow.verb === 'create' && !ended.report.review) ended.report.deliveryCompleted = true
+      if (ended.ok && flow.verb === 'create' && verb === 'implement' && job.taskReview &&
+        reviewAuthorization(job.taskReview).kind === 'unreviewed' && !ended.report.review) ended.report.deliveryCompleted = true
       return ended
     } finally {
       fs.rmSync(path.join(ws.board, '.sync', `${ws.task}.discussion`), { recursive: true, force: true })
@@ -592,11 +596,10 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       if (!await stopRuns(deps.akb, ws, id, since, deps.stopMs)) throw new Error('未能确认原执行已停止。')
     })
 
-    const verb = flow.verb === 'create' ? (job.taskReview ? job.taskReview.plan !== null && !job.taskReview.plan.length ? 'implement' : 'refine' : flow.skip_plan ? 'implement' : 'refine') : flow.verb
     const text = flow.verb === 'create' ? '' : (flow.text ?? '').trim()
     // A resume follows where the card actually is, not the step the last job was on.
     if (flow.resume && isArchived(ws, id)) return { ok: true, report: { card: id } }
-    if (flow.resume && verb === 'refine' && !job.taskReview) {
+    if (flow.resume && verb === 'refine' && !hasReview) {
       const review = reviewOf(cardFile(ws))
       if (review) return { ok: true, report: { card: id, ...(review === true ? {} : { review }) } }
     }
@@ -606,11 +609,12 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     // back to work first.
     let note = verb === 'resolve' || verb === 'revise' ? text : ''
     let rejected = false
-    let ran: Ran | undefined
+    let ran: Awaited<ReturnType<typeof launch>> | undefined
     let continuation: string[] | undefined
     let expectedDelivery: string | undefined
     if (verb === 'implement' && flow.resume) {
-      const restored = await akb(['raw', 'delivery', 'resume', String(id), '--json'])
+      const restored = await launch(['raw', 'delivery', 'resume', String(id), '--json'])
+      if (restored.reviewRefused) return fail(restored.reviewRefused)
       const resumed = answerOf<{ landed?: boolean; deliveryId?: string; sessionId?: string; error?: { message?: string; reason?: string; args?: { id?: string } } }>(restored)
       if (io.lost()) return fail('')
       if (resumed?.landed) return { ok: true, report: { card: id } }
@@ -633,7 +637,8 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
         }
       }
     } else if (verb === 'implement' && text) {
-      const resolved = await akb(['raw', 'card', 'resolve', String(id), '--follow', '--events', '--json', '--', text], true)
+      const resolved = await launch(['raw', 'card', 'resolve', String(id), '--follow', '--events', '--json', '--', text], true)
+      if (resolved.reviewRefused) return fail(resolved.reviewRefused)
       if (io.lost()) return fail('')
       const file = findCard(ws.board, id)
       rejected = !!file && path.relative(ws.board, file).split(path.sep)[0] === '.archive'
@@ -645,28 +650,32 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     const fresh = () => {
       const carry = carryArgs(verb)
       const costFrom = carry.includes('--session') && typeof job.resumeCostUsd === 'number' ? { [SESSION_COST_ENV]: String(job.resumeCostUsd) } : undefined
-      return akb(['raw', 'card', verb, String(id), '--follow', '--events', '--json', ...carry, ...(note ? ['--', note] : [])], true, costFrom)
+      return launch(['raw', 'card', verb, String(id), '--follow', '--events', '--json', ...carry, ...(note ? ['--', note] : [])], true, costFrom)
     }
-    ran ??= await (continuation ? akb([...continuation, '--follow', '--events', '--json'], true) : fresh())
+    ran ??= await (continuation ? launch([...continuation, '--follow', '--events', '--json'], true) : fresh())
+    if (ran.reviewRefused) return fail(ran.reviewRefused)
     if (io.lost()) return fail('')
+    type Delivery = { id?: string; status?: DeliveryStatus; commit?: string; branch?: string; ending?: DeliveryEnding }
     type Ended = {
       ok?: boolean
       result?: string
       lastSessionId?: string
       agentSession?: string
-      delivery?: { id?: string; status?: string; commit?: string; branch?: string }
-      error?: { message?: string; result?: string; lastSessionId?: string; agentSession?: string; delivery?: { id?: string } }
+      delivery?: Delivery
+      error?: { message?: string; result?: string; lastSessionId?: string; agentSession?: string; delivery?: Delivery }
     }
     const answer = answerOf<Ended>(ran)
     if (expectedDelivery && answer?.delivery?.id && answer.delivery.id !== expectedDelivery) {
       return fail('续跑返回了其他交付的结果，原交付保持未完成。')
     }
-    const asked = verb === 'implement' && !rejected && asks(cardFile(ws))
     if (verb === 'implement' && !rejected) {
-      const ending = deliveryEnding(ws, answer?.delivery?.id ?? answer?.error?.delivery?.id, asked)
-      if (ending) return ending
+      const ending = (answer?.delivery ?? answer?.error?.delivery)?.ending
+      if (ending?.kind === 'stopped') return { ok: false, reason: '', stopped: true }
+      if (ending?.kind === 'discarded') return fail('The build was discarded.')
+      if (ending?.kind === 'blocked') return fail(ending.reason)
     }
-    const waiting = rejected ? null : reviewOf(cardFile(ws))
+    const asked = verb === 'implement' && !rejected && asks(cardFile(ws))
+    const waiting = rejected ? null : reviewOf(cardFile(ws), hasReview)
     const review = waiting && waiting !== true ? waiting : undefined
     // A build held on the user's question is reported as one, like a plan's.
     if (!rejected && ran.code !== 0 && !(verb === 'refine' && waiting) && !(answer?.error && asked)) {

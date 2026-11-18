@@ -85,6 +85,12 @@ if (a === 'raw' && b === 'init') {
   // The board every `akb` the agent types reaches.
   fs.writeFileSync(path.join(state, 'agent-board'), process.env.AI4KANBAN_BOARD ?? '')
   fs.writeFileSync(path.join(state, 'session-cost'), process.env.AI4KANBAN_SESSION_COST ?? '')
+  if (process.env.AI4KANBAN_TASK_REVIEW) {
+    write('review-context.json', {
+      review: JSON.parse(process.env.AI4KANBAN_TASK_REVIEW),
+      assigned: JSON.parse(process.env.AI4KANBAN_REVIEW_STAGES ?? 'null'),
+    })
+  }
   // The discussion a Cloud task carries (#2146), gone once the job ends.
   if (flag('--transcript')) fs.writeFileSync(path.join(state, 'transcript'), fs.readFileSync(flag('--transcript'), 'utf8'))
   const sessionId = `run-${b}-${runs.length + 1}`
@@ -127,21 +133,16 @@ if (a === 'raw' && b === 'init') {
   if (how.gates?.length) runs.pop()
   runs.push({ sessionId, cardId: id, result: how.result, ...spent }, ...(last !== sessionId ? [{ sessionId: last, cardId: id, result: how.landed ?? 'Landed it.', ...spent }] : []))
   write('runs.json', runs)
-  // `ended`: the delivery record a `delivery cancel|discard|blocked` left meanwhile (#59).
-  if (how.ended) {
-    fs.mkdirSync(path.join(board, 'deliveries'), { recursive: true })
-    fs.writeFileSync(path.join(board, 'deliveries', `${how.ended.deliveryId}.json`), JSON.stringify(how.ended))
-  }
   if (how.reject) {
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('questions:', 'rejected: true\nquestions:'))
     fs.renameSync(file, path.join(board, '.archive', path.basename(file)))
   }
   if (how.failed) {
-    const delivery = how.ended ? { delivery: { id: how.ended.deliveryId, status: how.ended.status } } : {}
+    const delivery = how.delivery ? { delivery: how.delivery } : {}
     console.log(JSON.stringify({ ok: false, error: { kind: 'run-failed', message: `run ${last.slice(0, 8)} ended error: ${how.failed}`, lastSessionId: last, ...delivery } }))
     process.exit(1)
   }
-  if (b === 'implement') fs.renameSync(file, path.join(board, '.archive', path.basename(file)))
+  if (b === 'implement' && !how.delivery?.ending) fs.renameSync(file, path.join(board, '.archive', path.basename(file)))
   console.log(JSON.stringify({ ok: true, status: 'done', result: how.result, lastSessionId: last, ...(how.agentSession ? { agentSession: how.agentSession } : {}),
     ...(how.delivery ? { delivery: how.delivery } : {}) }))
 } else if (a === 'delivery' && b === 'resume') {

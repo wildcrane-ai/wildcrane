@@ -462,6 +462,11 @@ export interface RunRecord {
 
 export type DeliveryStatus = 'active' | 'finished' | 'failed' | 'cancelled'
 
+export type DeliveryEnding =
+  | { kind: 'stopped' }
+  | { kind: 'discarded' }
+  | { kind: 'blocked'; reason: string }
+
 /** Why a build ended with its delivery still active. The task page shows the first sentence. */
 export const NOT_COMPLETED = 'The delivery has not recorded completion.'
 export const notCompletedWhy = (deliveryId: string): string =>
