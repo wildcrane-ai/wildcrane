@@ -19,6 +19,13 @@ export interface Cleanup {
   execution: string
   instance?: string
   kept: string[]
+  idleStop?: { threadId: string; turnId: string }
   detail?: string
   items?: Pick<ManagedWork, 'id' | 'threadId' | 'processId' | 'status' | 'disposition'>[]
+}
+
+export function idleStopConfirmed(cleanup: Cleanup | undefined, session: string | undefined): boolean {
+  return !!session && cleanup?.status === 'confirmed' && !!cleanup.instance
+    && Array.isArray(cleanup.kept) && cleanup.kept.length === 0
+    && cleanup.idleStop?.threadId === session && typeof cleanup.idleStop.turnId === 'string' && !!cleanup.idleStop.turnId
 }

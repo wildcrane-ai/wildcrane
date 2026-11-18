@@ -1,4 +1,4 @@
-import { reviewPlanSchema } from '../../cli/src/lib/shared/review-plan'
+import { readReviewPlan, reviewPlanSchema } from '../../cli/src/lib/shared/review-plan'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -99,7 +99,7 @@ const goalOf = (i: api.DraftGoal) => ({
   outcome: i.outcome,
   acceptance: i.acceptance,
   studio: i.studio,
-  review_plan: i.review_plan ?? null,
+  review_plan: readReviewPlan(i.review_plan),
   task: i.task ? { ...i.task, url: taskUrl(i.task.key || i.task.id) } : null,
 })
 

@@ -33,6 +33,7 @@ const LOGIN_PROBE_MS = 5_000
 export interface Plan {
   command: string
   managedProcess?: boolean
+  idleRecovery?: boolean
   startNote?: string
   args: string[]
   env: NodeJS.ProcessEnv
@@ -43,7 +44,7 @@ export interface Plan {
   /** The one turn, held over the child's pipes. The turn's end is the job's: the child is a
    *  server and is ended after it. */
   background?: () => number | undefined
-  converse?: (child: ChildProcess, event: (e: RunEvent) => void, restart?: boolean, prepareUntil?: number, signal?: AbortSignal, activity?: () => void) => Promise<TurnEnd>
+  converse?: (child: ChildProcess, event: (e: RunEvent) => void, restart?: boolean, prepareUntil?: number, signal?: AbortSignal, activity?: () => void, idleSignal?: AbortSignal) => Promise<TurnEnd>
   /** True for stderr lines the runtime prints on every run and that say nothing. */
   quiet(line: string): boolean
   /** The id a later job resumes this session by, once known. */
@@ -116,14 +117,16 @@ export function plan(runtime: Job['runtime'], prompt: string, cwd: string, resum
     let named: string | undefined
     return {
       managedProcess: client.managedProcess,
+      idleRecovery: client.idleRecovery,
       background: client.background,
       startNote: note,
       command: started[0]!,
       args: started.slice(1),
       env,
-      converse: (child, event, restart = true, prepareUntil, signal, activity) =>
+      converse: (child, event, restart = true, prepareUntil, signal, activity, idleSignal) =>
         client.turn({
           signal,
+          idleSignal,
           activity,
           stdout: child.stdout!,
           stdin: child.stdin!,

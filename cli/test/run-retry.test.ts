@@ -7,6 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
+import { IDLE_FAILURE } from '../src/lib/agent/idle.ts'
 import { cmdRuns } from '../src/commands/run.ts'
 import { startCollecting, stopCollecting } from '../src/lib/io.ts'
 import { listRuns, openResume, readSpec } from '../src/lib/agent/sessions.ts'
@@ -108,6 +109,24 @@ describe('requiring the original conversation', () => {
     assert.equal(res.spec.prompt, 'Continue delivery build111.')
     assert.equal(res.spec.plan.resumeId, 'old-thread')
   })
+})
+
+it('requires a native idle stop receipt and an exited managed connection before resuming', async () => {
+  const pending = { at: 0, of: 4, failure: IDLE_FAILURE }
+  const cleanup = { status: 'confirmed', execution: 'execution', kept: [], instance: 'native' } as const
+  const idleStop = { threadId: 'thread', turnId: 'turn' }
+  run({ sessionId: 'no-native-receipt', managedProcess: true, resumeId: 'thread',
+    cleanup: { ...cleanup, kept: [] }, retry: { ...pending, pending, attempt: 1, since: 0, reason: pending.failure.reason } })
+  run({ sessionId: 'live-connection', managedProcess: true, resumeId: 'thread', agentPid: process.pid,
+    cleanup: { ...cleanup, kept: [], idleStop }, retry: { ...pending, pending, attempt: 1, since: 0, reason: pending.failure.reason } })
+
+  for (const id of ['no-native-receipt', 'live-connection']) {
+    assert.ok('error' in await openResume(id, { automatic: true }))
+    const previous = readStore().runs.find(record => record.sessionId === id)!
+    assert.equal(previous.retryPause, 'unsafe')
+    assert.equal(previous.retry?.pending, undefined)
+  }
+  assert.equal(readStore().runs.length, 2)
 })
 
 describe('Retry is offered', () => {

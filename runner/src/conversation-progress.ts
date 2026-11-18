@@ -45,7 +45,7 @@ export function conversationProgress(attempt: number, send: (progress: Conversat
           immediate = true
         }
       }
-      const content = ['message', 'tool_call', 'tool_call_update', 'plan'].includes(event.kind) || event.kind === 'phase' && !!event.data.contentAt
+      const content = ['message', 'tool_call', 'tool_call_update', 'plan'].includes(event.kind) || event.kind === 'phase' && !!event.data.contentAt || event.kind === 'status' && event.data.state === 'thinking'
       if (content) {
         immediate ||= !state.firstContentAt
         state.firstContentAt ??= at

@@ -101,8 +101,8 @@ function mcpProblem(text: string): string | null {
 export type FilesProblem = Partial<SourceProblem> & { file: string; reason: string; tooLarge?: boolean }
 
 /** `official` lets the files carry skills and MCP servers. */
-export function checkStudioFiles(value: unknown, official = false): Checked {
-  const read = inspect(value, official)
+export function checkStudioFiles(value: unknown, official = false, allowLegacyPreviewCopy = false): Checked {
+  const read = inspect(value, official, allowLegacyPreviewCopy)
   const first = read.problems[0]
   return first ? { ok: false, ...first, problems: read.problems } : { ok: true, def: read.def!, files: read.files! }
 }
@@ -110,7 +110,7 @@ export function checkStudioFiles(value: unknown, official = false): Checked {
 /** Every problem `checkStudioFiles` would refuse the files for. */
 export const studioFilesProblems = (value: unknown, official = false): FilesProblem[] => inspect(value, official).problems
 
-function inspect(value: unknown, official: boolean): { problems: FilesProblem[]; def?: StudioDef; files?: StudioFiles } {
+function inspect(value: unknown, official: boolean, allowLegacyPreviewCopy = false): { problems: FilesProblem[]; def?: StudioDef; files?: StudioFiles } {
   const problems: FilesProblem[] = []
   const fail = (file: string, reason: string, tooLarge = false) => {
     problems.push({ file, reason, ...(tooLarge ? { tooLarge } : {}) })
@@ -158,7 +158,7 @@ function inspect(value: unknown, official: boolean): { problems: FilesProblem[];
   }
 
   const source = files[STUDIO_FILE]
-  const read = typeof source === 'string' ? parseStudioFile('studio', source, STUDIO_FILE) : null
+  const read = typeof source === 'string' ? parseStudioFile('studio', source, STUDIO_FILE, !official && !allowLegacyPreviewCopy) : null
   if (!read) fail(STUDIO_FILE, 'is missing')
   else if ('problem' in read) for (const problem of read.problems) problems.push({ ...problem, reason: problem.message })
   if (!read || 'problem' in read) return { problems }

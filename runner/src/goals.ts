@@ -4,6 +4,7 @@ import path from 'node:path'
 import type * as api from './api'
 import type { Goal, Job } from './api'
 import { runnerHome } from './home'
+import { readReviewPlan } from '../../cli/src/lib/shared/review-plan'
 import { readSession } from '../../cli/src/lib/cloud/session'
 import { accountGeneration } from './settings-control'
 
@@ -22,6 +23,7 @@ export async function writeGoals(job: Job & { discussion: NonNullable<Job['discu
   let studios: api.Studio[]
   try { studios = await studioSnapshot(job.discussion.workspace, job.discussion.catalog, list) }
   catch (e) { return { error: e instanceof Error ? e.message : String(e) } }
+  for (const goal of goals) if (goal.review_plan !== undefined) goal.review_plan = readReviewPlan(goal.review_plan)
   const file = goalsFileOf(job)
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, `${JSON.stringify({ workspace: job.discussion.workspace, studios: studios.map(w => ({ ...w, previews: w.previews?.map(({ id, instructions }) => ({ id, instructions })) })), ideas: goals }, null, 2)}\n`)

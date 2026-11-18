@@ -337,7 +337,8 @@ export function startRunner(options: Options): Runner {
             && (checkpoint.launching || checkpoint.pending.length > 0 || checkpoint.opaque
               || checkpoint.cleanup?.status === 'unconfirmed'
               || (!job.flow && checkpoint.started && !checkpoint.session && !(reply && replayable(checkpoint))))
-          if (reply && checkpoint?.retry?.pending && !checkpoint.updating && processesStopped && !uncertain && !failure) {
+          const safeFork = checkpoint?.forkSource && replayable(checkpoint)
+          if (reply && checkpoint && (checkpoint.retry?.pending || safeFork) && !checkpoint.updating && processesStopped && !uncertain && !failure) {
             const prepared = await api.finishJob(registration.machineId, job.id, 'update_prepare')
             if (prepared.ok && prepared.value.prepared) {
               checkpoint.updating = true

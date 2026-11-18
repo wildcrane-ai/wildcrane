@@ -7,6 +7,7 @@ const calls = process.env.FAKE_CODEX_CALLS;
 const record = value => fs.appendFileSync(calls, JSON.stringify({ pid: process.pid, ...value }) + '\n');
 record({ method: 'spawn', argv: process.argv.slice(2), marker: process.env.KANBAN_RUN });
 const loaded = new Map(), saved = new Set(), materialized = new Set(), active = new Map(), terminals = new Map(), peers = new Set(), hanging = new Set();
+const history = new Map(), idleModes = new Map();
 let threads = 0, turns = 0;
 function frame(socket, value) {
  if (socket.destroyed) return;
@@ -31,7 +32,7 @@ server.on('upgrade',(req,socket)=>{
   if(m.method==='thread/fork' && p.pausePreparation) while(!fs.existsSync(p.pausePreparation)) await new Promise(resolve=>setTimeout(resolve,10));
   if(m.method==='initialize') {await new Promise(r=>setTimeout(r,20));result={userAgent:'fake-native'};}
   if(m.method==='config/read') result={config:{mcp_servers:{defaultProbe:{command:'node',env:{STATIC:'kept'}}}}};
-  if(m.method==='thread/start'){const id='thread-'+(++threads);loaded.set(id,{model:p.config?.model,config:p.config,cleanup:p.testCleanup,readDelay:p.testReadDelay});saved.add(id);peer.threads.add(id);result={thread:{id,modelProvider:'openai'},model:loaded.get(id).model};}
+  if(m.method==='thread/start'){const id='thread-'+(++threads);loaded.set(id,{cwd:p.cwd,model:p.config?.model,config:p.config,cleanup:p.testCleanup,readDelay:p.testReadDelay});saved.add(id);peer.threads.add(id);result={thread:{id,modelProvider:'openai'},model:loaded.get(id).model};}
   if(m.method==='thread/resume'){
    if(p.threadId==='missing'){send({id:m.id,error:{code:-32600,message:'no rollout found for thread id missing'}});return;}
    if(!loaded.has(p.threadId))loaded.set(p.threadId,{model:p.config?.model,config:p.config});saved.add(p.threadId);peer.threads.add(p.threadId);result={thread:{id:p.threadId,status:{type:active.has(p.threadId)?'active':'idle'},modelProvider:'openai'},model:loaded.get(p.threadId).model};
@@ -41,8 +42,14 @@ server.on('upgrade',(req,socket)=>{
   if(m.method==='thread/read'){
    if(!loaded.has(p.threadId)&&!materialized.has(p.threadId)){send({id:m.id,error:{code:-32600,message:'thread not loaded: '+p.threadId}});return;}
    if(loaded.get(p.threadId)?.readDelay)await new Promise(r=>setTimeout(r,loaded.get(p.threadId).readDelay));
-   result={thread:{id:p.threadId,status:{type:active.has(p.threadId)?'active':loaded.has(p.threadId)?'idle':'notLoaded'}}};
+   result={thread:{id:p.threadId,status:{type:active.has(p.threadId)?'active':loaded.has(p.threadId)?'idle':'notLoaded'},
+     ...(p.includeTurns ? { turns: history.get(p.threadId) ?? [] } : {})}};
+   if (idleModes.get(p.threadId) === 'restart') {
+    if (p.includeTurns) { send({id:m.id,error:{code:-32602,message:'Use paginated history'}}); return; }
+    result.thread.historyMode = 'paginated';
+   }
   }
+  if(m.method==='thread/turns/list') result={data:(history.get(p.threadId) ?? []).slice().reverse()};
   if(m.method==='thread/backgroundTerminals/clean'){
    const state=loaded.get(p.threadId);
    if(state?.cleanup==='missing'){loaded.delete(p.threadId);peer.threads.delete(p.threadId);}
@@ -58,13 +65,43 @@ server.on('upgrade',(req,socket)=>{
    const text=p.input?.[0]?.text;
    if(text==='crash'){process.exit(1);return;}
    result={turn:{id:'turn-'+(++turns)}};active.set(p.threadId,result.turn.id);notify('turn/started',{threadId:p.threadId,turn:result.turn});
+   const idle = /^Idle regression (recover|restart|budget|unknown|live|stop)$/.exec(text)?.[1] ?? idleModes.get(p.threadId);
+   if (idle) {
+    const list = history.get(p.threadId) ?? [];
+    const first = !list.length;
+    idleModes.set(p.threadId,idle);
+    const turn = { id: result.turn.id, status: 'inProgress', items: [] };
+    list.push(turn); history.set(p.threadId,list);
+    if (first) {
+     fs.appendFileSync(`${loaded.get(p.threadId).cwd}/${p.threadId}.worktree-result`, 'worktree created\n');
+     const item = {type:'commandExecution',id:'worktree',status:'inProgress',command:'git worktree add'};
+     notify('item/started',{threadId:p.threadId,turnId:turn.id,item});
+     const done = {...item,status:'completed',exitCode:0,aggregatedOutput:'Preparing worktree (new branch)'};
+     turn.items.push(done);
+     notify('item/completed',{threadId:p.threadId,turnId:turn.id,item:done});
+     if (idle === 'unknown') {
+      const pending = {type:'mcpToolCall',id:'pending',status:'inProgress',server:'local',tool:'save'};
+      turn.items.push(pending);
+      notify('item/started',{threadId:p.threadId,turnId:turn.id,item:pending});
+     }
+    } else if (idle === 'recover' || idle === 'restart') {
+     turn.status='completed'; active.delete(p.threadId);
+     notify('turn/completed',{threadId:p.threadId,turn},peer);
+    }
+   }
    if(text==='approval')send({id:'permission',method:'item/commandExecution/requestApproval',params:{threadId:p.threadId,turnId:result.turn.id,itemId:'command'}});
    if(text==='retain')terminals.set(p.threadId,[{itemId:'service',processId:'42',command:'service'}]);
    if(text==='hang-release')hanging.add(p.threadId);
    if(text==='finish-service'){terminals.delete(p.threadId);notify('item/completed',{threadId:p.threadId,item:{type:'commandExecution',id:'service',status:'completed'}});}
    if(['retain','finish','finish-service','hang-release'].includes(text)){active.delete(p.threadId);notify('turn/completed',{threadId:p.threadId,turn:{id:result.turn.id,status:'completed',items:[]}});}
   }
-  if(m.method==='turn/interrupt'){active.delete(p.threadId);notify('turn/completed',{threadId:p.threadId,turn:{id:p.turnId,status:'interrupted',items:[]}});}
+  if(m.method==='turn/interrupt'){
+   const turn = history.get(p.threadId)?.at(-1);
+   if (idleModes.get(p.threadId) === 'live') { send({id:m.id,result:{}}); return; }
+   active.delete(p.threadId);
+   if (turn) turn.status = 'interrupted';
+   notify('turn/completed',{threadId:p.threadId,turn:turn ?? {id:p.turnId,status:'interrupted',items:[]}});
+  }
   if(m.method==='thread/unsubscribe'){
    if(!loaded.has(p.threadId)){send({id:m.id,error:{code:-32600,message:'thread not found: '+p.threadId}});return;}
    if(hanging.delete(p.threadId))return;

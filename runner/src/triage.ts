@@ -1,8 +1,3 @@
-// The rejection review's files (#2067). Triage items are board files, synced with the board
-// (#2107); before a task is planned, the synced `dismissed/` and `archived/` are moved aside and
-// only the rejections and dismissals Cloud has not learned are laid out, as akb keeps them, for
-// `akb raw review-dismissals`.
-
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -15,9 +10,7 @@ import { studioName } from '../../cli/src/lib/shared/board-files.ts'
 import * as api from './api'
 
 const triageDir = (board: string) => path.join(board, 'triage')
-/** Where the review's rejected tasks go: under `.archive/`, where akb reads them, in a folder no sync keeps. */
 const rejectedDir = (board: string) => path.join(board, '.archive', REJECTIONS_TO_REVIEW)
-const SCRATCH = ['dismissed', 'archived']
 
 const stamp = (at: string | null) => formatStamp(at ? new Date(at) : new Date())
 
@@ -62,7 +55,6 @@ export interface Laid {
 /** The rejections and dismissals laid out as akb keeps them: a rejected task as an archived card,
  *  a dismissal in `triage/dismissed/`, a restored item in `triage/archived/`. */
 export function layOut(board: string, rejections: { tasks: api.Rejection[]; triage: api.Triage[] }): Laid {
-  clearLaid(board)
   const dir = rejectedDir(board)
   fs.mkdirSync(dir, { recursive: true })
   for (const t of rejections.tasks) {
@@ -79,10 +71,4 @@ export function layOut(board: string, rejections: { tasks: api.Rejection[]; tria
     writeItem(sub, item, fields)
   }
   return { tasks: rejections.tasks.map((t) => t.id), triage: rejections.triage.map((i) => i.id) }
-}
-
-/** Never sent back: none of it is the project's. The synced folders come back from the base. */
-export function clearLaid(board: string): void {
-  fs.rmSync(rejectedDir(board), { recursive: true, force: true })
-  for (const sub of SCRATCH) fs.rmSync(path.join(triageDir(board), sub), { recursive: true, force: true })
 }

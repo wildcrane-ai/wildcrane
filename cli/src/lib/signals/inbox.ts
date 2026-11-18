@@ -213,10 +213,10 @@ export function readInbox(): Signal[] {
 }
 
 /** Every item a card was made of. */
-export const readArchived = (): Signal[] => readFolder(SIGNALS_ARCHIVED)
+export const readArchived = (dir = SIGNALS_ARCHIVED): Signal[] => readFolder(dir)
 
 /** Every item ever ignored, however long ago. What holds the fetch off. */
-export const readAllDismissed = (): Signal[] => readFolder(SIGNALS_DISMISSED, true)
+export const readAllDismissed = (dir = SIGNALS_DISMISSED): Signal[] => readFolder(dir, true)
 
 /** The newest import stamp the list holds, or empty when it holds nothing. */
 export const latestImport = (signals: Signal[]): string =>

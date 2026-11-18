@@ -1,3 +1,4 @@
+import { idleStopConfirmed } from './wire/codex-background-types'
 import { connectionStopped, stopConnection } from './connection-process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
@@ -904,7 +905,10 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   if (pending) {
     const root = prev.agentPid ? { pid: prev.agentPid, since: prev.agentStartedAt ?? prev.startedAt, identity: prev.agentIdentity } : undefined
     const stopped = prev.managedProcess ? connectionStopped(root) : processesStopped(runMark(prev.sessionId, prev.agentStartedAt), root)
-    if (!stopped || !resumeSessionId(prev)) return retryRefusal(prev, 'unsafe')
+    const session = resumeSessionId(prev)
+    if (!stopped || !session || prev.managedProcess && pending.failure.code === 'idle_timeout' && !idleStopConfirmed(prev.cleanup, session)) {
+      return retryRefusal(prev, 'unsafe')
+    }
     await new Promise(resolve => setTimeout(resolve, Math.max(0, pending.at - Date.now())))
     if (!await executionHeld(executionOf())) return retryRefusal(prev, 'authorization')
   }

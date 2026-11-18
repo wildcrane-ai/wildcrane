@@ -20,10 +20,10 @@ import { quoteArg } from '../../cli/src/lib/agent/argv'
 import { RAW_ARGS_KEY } from '../../cli/src/lib/agent/harnesses/types'
 import { LABELS, providerKey, providerOf, secretKeys, settingKeys } from './runtimes'
 import { secretsOf } from './secrets'
-import { akbCardOf, cardAssetsDir, cardFile, findCard, mcpServersOf, pull, resetSorted, withBoard, workspaceOf, type McpServers, type TaskFolder } from './task-folder'
+import { akbCardOf, cardAssetsDir, cardFile, findCard, mcpServersOf, pull, push, withBoard, workspaceOf, type McpServers, type TaskFolder } from './task-folder'
 import { studioName } from '../../cli/src/lib/shared/board-files.ts'
 import { pendingConflicts } from '../../cli/src/lib/shared/board-conflicts'
-import { clearLaid, layOut } from './triage'
+import { layOut, type Laid } from './triage'
 import { removeLegacyKanbanSkill } from './kanban-skill'
 import { installCommitHook } from '../../cli/src/lib/skill/hook'
 
@@ -51,9 +51,13 @@ export interface FlowIo {
   /** What stopping the job does beyond its own processes: the board runs it started. */
   onStop: (stop: () => Promise<void>) => void
   lost: () => boolean
+  asked?: () => boolean
+  diagnostic?: string
 }
 
-export type FlowEnd = { ok: true; report: JobReport } | { ok: false; reason: string; stopped?: boolean }
+const stopping = (io: FlowIo) => io.lost() || !!io.asked?.()
+
+export type FlowEnd = { ok: true; report: JobReport; reviewed?: Laid } | { ok: false; reason: string; stopped?: boolean }
 
 interface Run {
   sessionId: string
@@ -280,6 +284,7 @@ function logLines(show: (text: string) => void, event: (event: RunEvent) => void
 function boardAkb(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo, task?: string) {
   return async (args: string[], show = false, env?: NodeJS.ProcessEnv) => {
     const refused = (last: string): Ran => ({ code: 1, out: '', last })
+    if (stopping(io)) return refused('Task preparation stopped.')
     if (show && job.taskReview && job.task && job.flow) {
       const current = await deps.api.readTask(job.task)
       if (!current.ok) return refused(current.error)
@@ -292,7 +297,7 @@ function boardAkb(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo, task?: s
     const at = args.includes('--') ? args.indexOf('--') : args.length
     const full = [...args.slice(0, at), '--board', ws.board, ...args.slice(at)]
     const log = show ? logLines(io.show, io.event) : undefined
-    const ran = await runAkb(deps.akb, full, { cwd: ws.cwd, board: ws.board, task, language: cloudLanguage(job), env: { ...env, AI4KANBAN_REVIEW_STAGES: job.flow?.review_stages ? JSON.stringify(job.flow.review_stages) : undefined, AI4KANBAN_TASK_REVIEW: job.taskReview ? JSON.stringify(job.taskReview) : undefined, AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId }) }, show: log?.push, track: io.track })
+    const ran = await runAkb(deps.akb, full, { cwd: ws.cwd, board: ws.board, task, language: cloudLanguage(job), env: { ...env, AI4KANBAN_SYNC_DIAGNOSTIC: io.diagnostic, AI4KANBAN_REVIEW_STAGES: job.flow?.review_stages ? JSON.stringify(job.flow.review_stages) : undefined, AI4KANBAN_TASK_REVIEW: job.taskReview ? JSON.stringify(job.taskReview) : undefined, AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId }) }, show: log?.push, track: io.track })
     log?.end()
     return ran
   }
@@ -312,8 +317,11 @@ async function setUp(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Prom
   removeLegacyKanbanSkill(ws.cwd)
   const hook = installCommitHook(ws.cwd, ws.board)
   if (hook.note) io.show(`${hook.note}\n`)
-  const pulled = await pull(ws, deps.machineId)
-  if (!pulled.ok && pulled.code !== 'board_content_conflict') return pulled.error
+  const pulled = await pull(ws, deps.machineId, () => stopping(io))
+  if (!pulled.ok) {
+    if (pulled.failure?.level === 1) io.diagnostic = pulled.failure.reason
+    else if (pulled.code !== 'board_content_conflict') return pulled.error
+  }
   const used = await akb(['raw', 'agent', 'use', runtime])
   if (used.code !== 0) return refusal(used)
   // The runtime's settings on the board's Global default, each one set or cleared (#2135); the
@@ -395,38 +403,39 @@ export async function runReview(job: Job, ws: TaskFolder, tasks: string[], deps:
 
 /** What the workspace's rejection review has not learned (#2067), laid out on the board,
  *  reviewed, sent back and marked learned. Its runs are answered, to count in what the job spent. */
-async function reviewRejections(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Promise<{ runs: Run[]; failure?: string }> {
+async function reviewRejections(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Promise<{ runs: Run[]; failure?: string; laid?: Laid; session?: string }> {
   const workspace = workspaceOf(ws)
   if (!workspace) return { runs: [] }
   const read = await deps.api.readRejections(workspace)
   if (!read.ok) return { runs: [], failure: read.error }
-  if (!read.value.tasks.length && !read.value.triage.length) return { runs: [] }
+  if ((!read.value.tasks.length && !read.value.triage.length) || stopping(io)) return { runs: [] }
   const since = Date.now()
   const akb = boardAkb(job, ws, deps, io)
-  return withBoard(ws, async (push) => {
-    const laid = layOut(ws.board, read.value)
-    const ran = await akb(['raw', 'review-dismissals', '--follow', '--events', '--json'], true)
-    clearLaid(ws.board)
-    resetSorted(ws)
+  const directory = path.join(ws.board, '.sync')
+  fs.mkdirSync(directory, { recursive: true })
+  const scratch = fs.mkdtempSync(path.join(directory, 'rejection-review-'))
+  try {
+    const laid = layOut(scratch, read.value)
+    const ran = await akb(['raw', 'review-dismissals', '--follow', '--events', '--json'], true, { AI4KANBAN_REJECTION_INPUT: scratch })
     const runs = (answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--all', '--json']))?.runs ?? []).filter((r) => (r.startedAt ?? 0) >= since)
-    if (io.lost()) return { runs }
+    if (stopping(io)) return { runs }
     if (ran.code !== 0) return { runs, failure: refusal(ran) }
-    const sent = await push({ id: job.id, machineId: deps.machineId })
-    if (!sent.ok) return { runs, failure: sent.error }
-    const marked = await deps.api.markReviewed(laid.tasks, laid.triage)
-    return marked.ok ? { runs } : { runs, failure: marked.error }
-  })
+    return { runs, laid, session: answerOf<{ agentSession?: string }>(ran)?.agentSession }
+  } finally { fs.rmSync(scratch, { recursive: true, force: true }) }
 }
 
-/** Before a task is planned: the rejection review, a failure only logged. */
+/** Before a task is planned: leave unconfirmed reviews available for their scheduled pass. */
 async function learnRejections(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Promise<Run[]> {
-  const { runs, failure } = await reviewRejections(job, ws, deps, io)
+  const { runs, failure, laid } = await reviewRejections(job, ws, deps, io)
   if (failure) console.error(`runner: rejections not learned: ${failure}`)
+  if (laid && !stopping(io)) {
+    const sent = await push(ws, { id: job.id, machineId: deps.machineId })
+    const marked = sent.ok ? await deps.api.markReviewed(laid.tasks, laid.triage) : sent
+    if (!marked.ok) console.error(`runner: rejections not learned: ${marked.error}`)
+  }
   return runs
 }
 
-/** What tells a reflection the studio agents Cloud has switched on (#277); Cloud unreached,
- *  nothing, and it goes by what the studios list. */
 async function scheduledEnv(ws: TaskFolder, deps: FlowDeps): Promise<NodeJS.ProcessEnv> {
   const read = await deps.api.readAgents(deps.machineId, ws.project)
   if (!read.ok) {
@@ -444,9 +453,9 @@ export async function runAgent(job: Job & { agent: AgentJob }, ws: TaskFolder, d
   if (failed) return { ok: false, reason: failed }
   const { name, studio, tasks } = job.agent
   if (name === 'review-dismissals') {
-    const { runs, failure } = await reviewRejections(job, ws, deps, io)
+    const { runs, failure, laid, session } = await reviewRejections(job, ws, deps, io)
     if (io.lost()) return { ok: false, reason: '' }
-    return failure ? { ok: false, reason: failure } : { ok: true, report: spentBy(runs, job) }
+    return failure ? { ok: false, reason: failure } : { ok: true, report: { session, ...spentBy(runs, job) }, reviewed: laid }
   }
   if (name === 'reflect' && !tasks?.length) return { ok: true, report: {} }
   const args = studio ? ['raw', 'agent', 'run', studioName(studio), name]
@@ -458,10 +467,10 @@ export async function runAgent(job: Job & { agent: AgentJob }, ws: TaskFolder, d
   const env = name === 'reflect' && !studio ? await scheduledEnv(ws, deps) : undefined
   const ran = await akb([...args, '--follow', '--events', '--json'], true, env)
   if (io.lost()) return { ok: false, reason: '' }
-  const answer = answerOf<{ result?: string; error?: { message?: string } }>(ran)
+  const answer = answerOf<{ result?: string; agentSession?: string; error?: { message?: string } }>(ran)
   if (ran.code !== 0) return { ok: false, reason: reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran) }
   const runs = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--all', '--json']))?.runs ?? []
-  return { ok: true, report: { ...(answer?.result?.trim() ? { reply: answer.result.trim() } : {}), ...spentBy(runs.filter((r) => (r.startedAt ?? 0) >= since), job) } }
+  return { ok: true, report: { ...(answer?.agentSession ? { session: answer.agentSession } : {}), ...(answer?.result?.trim() ? { reply: answer.result.trim() } : {}), ...spentBy(runs.filter((r) => (r.startedAt ?? 0) >= since), job) } }
 }
 
 /** The discussion a task came from (#2146), written in `dir` for the agent to read; its path. */
@@ -531,25 +540,29 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     fs.mkdirSync(path.dirname(body), { recursive: true })
     // The card takes the task's number (#2063), and no other.
     if (!ws.number) return fail('This task has no number yet.')
-    fs.writeFileSync(body, `${said.request || title}\n${pictures(job, ws, ws.number)}`)
     // Publish the new card before another task can pull the board (#575).
     const created = await withBoard(ws, async (push): Promise<api.Call<number> & { ended?: FlowEnd }> => {
-      const card = made(await akb(['raw', 'create', '--title', title, '--studio', studioName(flow.studio), '--body-file', body,
-        '--id', String(ws.number), ...cardFlags(ws, flow.metadata), '--json']))
-      fs.rmSync(body, { force: true })
-      if (!card.ok) return card
+      const existing = akbCardOf(ws)
+      if (existing) return { ok: true, value: existing }
+      fs.writeFileSync(body, `${said.request || title}\n${pictures(job, ws, ws.number!)}`)
+      const card = await akb(['raw', 'create', '--title', title, '--studio', studioName(flow.studio), '--body-file', body,
+        '--id', String(ws.number), ...cardFlags(ws, flow.metadata), '--json']).then(made).finally(() => fs.rmSync(body, { force: true }))
+      if (!card.ok || stopping(io)) return card
       const sent = await push({ id: job.id, machineId: deps.machineId })
-      if (!sent.ok) {
-        if (sent.conflict && pendingConflicts(ws.board).length) return { ...card, ended: await onCard(card.value) }
-        return { ok: false, error: sent.error }
+      if (sent.ok) return card
+      if (sent.conflict && pendingConflicts(ws.board).length) {
+        const ended = await onCard(card.value)
+        if (ended.ok && !stopping(io) && !pendingConflicts(ws.board).length) await push({ id: job.id, machineId: deps.machineId })
+        return { ...card, ended }
       }
-      return card
-    })
+      return { ok: false, error: sent.error }
+    }, () => stopping(io))
+    if (!created || stopping(io)) return fail('')
     if (!created.ok) return fail(created.error)
     if (created.ended) return created.ended
     id = created.value
-
   }
+  if (stopping(io)) return fail('')
   if (!id) return fail('This task has no card on this computer.')
   return onCard(id)
 
@@ -672,7 +685,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
 
   /** A discarded build (#61): every delivery on the card still holding a checkout gives it up. */
   async function discardBuilds(): Promise<FlowEnd> {
-    const pulled = await pull(ws, deps.machineId)
+    const pulled = await pull(ws, deps.machineId, () => stopping(io))
     if (!pulled.ok) return fail(pulled.error)
     const card = akbCardOf(ws) ?? flow.card
     if (!card) return { ok: true, report: {} }

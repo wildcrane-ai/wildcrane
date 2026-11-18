@@ -40,7 +40,8 @@ export interface DismissalToReview {
 /** The user's rejections with a reason, from what a Runner laid out: Cloud decides what is new.
  *  A discard and an agent's rejection are never learned from. */
 export function rejectionsToReview(): RejectionToReview[] {
-  const dir = path.join(ARCHIVE, REJECTIONS_TO_REVIEW)
+  const scratch = process.env.AI4KANBAN_REJECTION_INPUT
+  const dir = path.join(scratch ? path.join(scratch, '.archive') : ARCHIVE, REJECTIONS_TO_REVIEW)
   if (!fs.existsSync(dir)) return []
   const found: RejectionToReview[] = []
   for (const file of walkMd(dir)) {
@@ -57,9 +58,14 @@ export function rejectionsToReview(): RejectionToReview[] {
   return found.sort((a, b) => a.rejectedAt.localeCompare(b.rejectedAt) || a.id - b.id)
 }
 
+const reviewDismissed = () => {
+  const scratch = process.env.AI4KANBAN_REJECTION_INPUT
+  return readAllDismissed(scratch ? path.join(scratch, 'triage', 'dismissed') : undefined)
+}
+
 /** The user's dismissals with a reason. */
 export function dismissalsToReview(): DismissalToReview[] {
-  return readAllDismissed()
+  return reviewDismissed()
     .filter((s) => s.dismissedBy === 'user' && s.dismissedReason.trim())
     .sort((a, b) => a.dismissedAt.localeCompare(b.dismissedAt))
     .map((s) => ({
@@ -95,7 +101,8 @@ export function withdrawnSources(): string[] {
     }
   }))]
   if (cited.length === 0) return []
-  const dismissed = new Set(readAllDismissed().map((s) => s.sourceId))
-  const restored = new Set([...readInbox(), ...readArchived()].map((s) => s.sourceId))
+  const scratch = process.env.AI4KANBAN_REJECTION_INPUT
+  const dismissed = new Set(reviewDismissed().map((s) => s.sourceId))
+  const restored = new Set([...readInbox(), ...readArchived(scratch ? path.join(scratch, 'triage', 'archived') : undefined)].map((s) => s.sourceId))
   return cited.filter((id) => restored.has(id) && !dismissed.has(id))
 }

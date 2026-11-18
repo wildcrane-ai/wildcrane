@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 const id = z.string().trim().min(1).max(100)
 export const reviewNodeSchema = z.object({
-  id, title: z.string().trim().min(1).max(200),
+  id,
   after: z.array(id).max(50).default([]),
   previews: z.array(id).max(50).default([]),
 }).strict()
@@ -48,6 +48,11 @@ export function parseReviewPlan(value: unknown, previews?: readonly string[]): R
     if (!previews.includes(p)) throw new Error(`Preview ${p} is not defined in this Studio.`)
   }
   return plan
+}
+
+/** Projects stored plans onto the current contract, including plans saved with legacy titles. */
+export function readReviewPlan(plan: ReviewPlan | undefined): ReviewPlan {
+  return plan?.map(({ id, after, previews }) => ({ id, after, previews })) ?? null
 }
 
 export function reviewBoundary(review: TaskReview, assigned?: readonly string[]): string {

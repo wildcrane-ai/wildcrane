@@ -36,7 +36,8 @@ import { createStderrFilter, streamFinished, type RunEvent } from './wire'
 import { restartPrompt, resumePrompt } from './prompts'
 import { openPlan } from './resolve'
 import { createIdleWatchdog, IDLE_FAILURE, IDLE_MS } from './idle'
-import { pauseLine, planRetry, retryLine, type ExecutionFailure, type RetryPause } from './retry'
+import { idleStopConfirmed } from './wire/codex-background-types'
+import { backoffMs, pauseLine, planRetry, retryLine, syncRepairPrompt, type ExecutionFailure, type RetryPause } from './retry'
 import { executionFailure } from './wire/failures'
 import { executionHeld, executionOf } from '../cloud/execution'
 import {
@@ -84,7 +85,7 @@ const silenceSaid = (minutes: number): string =>
   `the agent said nothing for ${minutes} minute${minutes === 1 ? '' : 's'}, so the run was ended.`
 
 
-export async function watchRun(sessionId: string, resume = startResume): Promise<number> {
+export async function watchRun(sessionId: string, resume = startResume, retryBackoff = backoffMs): Promise<number> {
   const spec = readSpec(sessionId)
   const run = peekRun(sessionId)
   if (!run || !spec) {
@@ -183,7 +184,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
   const recoveryPrompt = record.harness === 'antigravity' && record.resumedFrom
     ? 'First verify existing progress and operation results. Preserve user decisions and completed work; do not repeat completed operations. Check actual state before continuing any operation whose result is uncertain.' : ''
   const boundary = process.env.AI4KANBAN_TASK_REVIEW ? reviewBoundary(JSON.parse(process.env.AI4KANBAN_TASK_REVIEW) as TaskReview, process.env.AI4KANBAN_REVIEW_STAGES ? JSON.parse(process.env.AI4KANBAN_REVIEW_STAGES) : undefined) : ''
-  const prompt = [record.retry ? `Previous execution failed: ${record.retry.reason}. Check existing results before continuing; do not repeat completed operations.` : '', conflictPrompt(KANBAN), boundary, basePrompt, recoveryPrompt, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n')
+  const prompt = [process.env.AI4KANBAN_SYNC_DIAGNOSTIC ? syncRepairPrompt(process.env.AI4KANBAN_SYNC_DIAGNOSTIC) : '', record.retry ? `Previous execution failed: ${record.retry.reason}. Check existing results before continuing; do not repeat completed operations.` : '', conflictPrompt(KANBAN), boundary, basePrompt, recoveryPrompt, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n')
 
   // The board as it was the moment before the agent touched it. The difference between this
   // and the same read at the close is what this run could be answerable for; which of it
@@ -408,6 +409,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     let spoken: TurnEnd | undefined
     // The idle clock belongs to this execution.
     let silent = false
+    let uncertainAtIdle = false
     let watchdog: ReturnType<typeof createIdleWatchdog> | undefined
     // How a wait between retry attempts is cut short (#525). Set only while one is going,
     // and it is what a stop reaches then: there is no child left to signal.
@@ -480,10 +482,11 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       let retrying = false
       if (failure && !sub && !taskCompleted) {
         const attempt = held.retry?.attempt ?? 1
-        const decision = planRetry(failure, attempt)
+        const decision = planRetry(failure, attempt, Date.now(), retryBackoff)
         if ('pause' in decision) retryPause = decision.pause
         else if (blocker || pendingOperations.size || !structured || !resumeSessionId(held)
-          || spoken?.cleanup?.status === 'unconfirmed' || client?.managedProcess && silent) retryPause = 'unsafe'
+          || spoken?.cleanup?.status === 'unconfirmed'
+          || client?.managedProcess && silent && (uncertainAtIdle || !idleStopConfirmed(spoken?.cleanup, resumeSessionId(held)))) retryPause = 'unsafe'
         else {
           const mark = runMark(sessionId, agentStartedAt)
           const root = child.pid ? { pid: child.pid, since: agentStartedAt, identity: held.agentIdentity } : undefined
@@ -506,7 +509,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       }
       asked ||= stoppedByUser()
       retrying &&= !asked
-      const error = asked ? undefined : joinNotes(said ?? failure?.reason, retryPause ? pauseLine(retryPause) : undefined)
+      const error = asked ? undefined : joinNotes(said ?? failure?.reason, retryPause && failure?.source !== 'invariant' ? pauseLine(retryPause) : undefined)
       const status: RunStatus = asked ? 'stopped' : failed || code !== 0 ? 'error' : 'done'
       const reported = spoken ? spoken.costUsd : renderer?.costUsd?.()
       // A session total carries what the session it continues spent (#1480, #1483).
@@ -578,7 +581,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
           errorWhy,
           endedAt,
         })
-        resolve(status === 'done' ? 0 : 1)
+        finishWatch(status === 'done' ? 0 : 1)
         return
       }
       await closeRun(sessionId, {
@@ -613,7 +616,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       // what was still open then. The board's timer starts the reflection (#1475).
       if (status === 'done') queueCompleted(before.keys())
       if (status === 'done') await followUp(sessionId, record.flowId, settled?.runs ?? [])
-      resolve(status === 'done' ? 0 : 1)
+      finishWatch(status === 'done' ? 0 : 1)
     }
 
     // Ending the command ourselves — a stop asked, the silence window ran out, or the
@@ -644,6 +647,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     const giveUp = (asked: boolean) => {
       endChild()
       after(STOP_GRACE_MS + STOP_CLOSE_MS, () => {
+        if (done) return
         // Nothing else is waiting on this process, and something is still holding a pipe
         // open — so leave rather than sit here for as long as it does. The ending path
         // writes the board, so it is awaited first: exiting on the same tick would drop
@@ -657,6 +661,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     endTerminal = () => { watchdog?.close(); giveUp(false) }
 
     const cancellation = new AbortController()
+    const idle = new AbortController()
     let stopped = false
     const stoppedByUser = () => stopped || peekRun(sessionId)?.stopping === true
     const askToStop = () => {
@@ -672,6 +677,11 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       if (done) return
       giveUp(true)
     }
+    const finishWatch = (code: number) => {
+      process.off('SIGTERM', askToStop)
+      process.off('SIGINT', askToStop)
+      resolve(code)
+    }
     process.on('SIGTERM', askToStop)
     process.on('SIGINT', askToStop)
 
@@ -679,7 +689,10 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       if (done || stopped || silent) return
       silent = true
       log.write(`\n[board] ${silenceSaid(silenceFor)}\n`)
-      giveUp(false)
+      if (!client?.idleRecovery) { giveUp(false); return }
+      uncertainAtIdle = pendingOperations.size > 0
+      patch(sessionId, run => { run.cleanup = { status: 'unconfirmed', execution: sessionId, kept: [] } })
+      idle.abort()
     }, () => !!(client?.background?.() ?? renderer?.background?.()) || liveSubRuns(sessionId).length > 0)
     touch = watchdog.touch
     observeActivity = watchdog.event
@@ -712,11 +725,16 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
             completed,
             activity: touch,
             signal: cancellation.signal,
+            idleSignal: idle.signal,
           })
           .then((end) => {
             if (done) return
             spoken = end
-            if (end.cleanup) patch(sessionId, r => { r.cleanup = end.cleanup })
+            if (end.cleanup) patch(sessionId, r => {
+              r.cleanup = uncertainAtIdle || silent && pendingOperations.size
+                ? { ...end.cleanup!, status: 'unconfirmed' }
+                : end.cleanup
+            })
             endChild()
             void finish(end.ok ? 0 : 1, peekRun(sessionId)?.stopping === true || stopped)
           })

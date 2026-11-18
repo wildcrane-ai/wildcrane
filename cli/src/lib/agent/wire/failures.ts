@@ -1,4 +1,4 @@
-import type { ExecutionFailure } from '../retry'
+import { readFailure, type ExecutionFailure } from '../retry'
 import { obj, str } from './json'
 
 export class ExecutionError extends Error {
@@ -15,6 +15,7 @@ export function executionFailure(error: unknown): ExecutionFailure {
   return {
     code: NETWORK.has(code) ? 'connection_lost' : code === 'ENOENT' ? 'executable_missing' : 'execution_failed',
     level: NETWORK.has(code) ? 2 : 3,
+    source: 'harness',
     reason,
   }
 }
@@ -34,18 +35,20 @@ export function providerFailure(error: unknown, reason: string): ExecutionFailur
   const headers = obj(info.headers)
   const wait = retryAfterMs(headers['retry-after'] ?? headers['Retry-After'])
   const code = info.code ?? info.type
-  if (code === 'session_not_found') return { code, level: 3, reason }
+  if (code === 'session_not_found') return { code, source: 'provider', level: 3, reason }
   if (status === 401 || status === 403 || ['authentication_error', 'permission_error', 'invalid_request_error'].includes(str(code))) {
-    return { code: 'provider_refused', level: 3, reason }
+    return { code: 'provider_refused', source: 'provider', level: 3, reason }
   }
-  if (code === 'rate_limit_error') return { code: 'rate_limited', level: 2, reason, retryAfterMs: wait }
-  if (TEMPORARY_HTTP.has(status ?? 0) || code === 'overloaded_error') return { code: 'service_overloaded', level: 2, reason, retryAfterMs: wait }
-  if (NETWORK.has(str(code))) return { code: 'connection_lost', level: 2, reason, retryAfterMs: wait }
-  return { code: 'provider_failed', level: 3, reason }
+  if (code === 'rate_limit_error') return { code: 'rate_limited', source: 'provider', level: 2, reason, retryAfterMs: wait }
+  if (TEMPORARY_HTTP.has(status ?? 0) || code === 'overloaded_error') return { code: 'service_overloaded', source: 'provider', level: 2, reason, retryAfterMs: wait }
+  if (NETWORK.has(str(code))) return { code: 'connection_lost', source: 'provider', level: 2, reason, retryAfterMs: wait }
+  return { code: 'provider_failed', source: 'provider', level: 3, reason }
 }
 
 export function codexFailure(raw: unknown, fallback: string): ExecutionFailure {
   const error = obj(raw)
+  const failure = readFailure(error.wildcraneFailure)
+  if (failure?.source === 'harness' || failure?.source === 'invariant') return failure
   const reason = str(error.message) || fallback
   const info = error.codexErrorInfo
   if (info === 'serverOverloaded') return providerFailure({ ...error, type: 'overloaded_error' }, reason)

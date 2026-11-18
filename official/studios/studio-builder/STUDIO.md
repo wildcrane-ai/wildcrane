@@ -22,7 +22,7 @@ Plan the requested Studio change and deliver the approved files.
 
 - **Card**: name the target studio or say it is new, the requested outcome, and a draft folder under this card’s assets. Give a new studio a sample request for its trial.
 - **Writing**: before writing or revising studio instructions, read and follow `akb guide write-prompt`.
-- **Definition**: use one STUDIO.md with work instructions and short `<Preview id="stable-id">` blocks describing outputs and recommended components; keep optional titles and icons in the YAML previews map, using `{}` for defaults.
+- **Definition**: use one STUDIO.md with work instructions and short `<Preview id="stable-id">` blocks describing outputs and recommended components; give each Preview an English and Chinese title and description in the YAML previews map, with an optional icon.
 - **New studio**: start with STUDIO.md; split complex output rules into references/ only when needed.
 - **Existing studio**: start with `akb studio pull <id> <empty-folder>`, keep an unchanged baseline, and edit a copy in the draft folder, preserving supporting files unless the requested change affects them.
 - **Stale base**: pull a fresh version into an empty folder, merge both sets of changes, and update the draft and review together; ask only about semantic conflicts you cannot resolve.

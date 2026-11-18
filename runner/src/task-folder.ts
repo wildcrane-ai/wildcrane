@@ -3,9 +3,10 @@ import { allComponents, componentDocsText } from '../../cli/src/lib/components'
 // 按 seq 同步；仅自动合并无冲突修改，内容冲突留给当前任务 Agent。
 
 import { collect } from '../../artifact-sdk/src/internal/collect'
-import { kindOf, TYPES, type Kind } from '../../artifact-sdk/src/internal/references'
+import { bodyReferences, kindOf, TYPES, type Kind } from '../../artifact-sdk/src/internal/references'
 import { manifestOf, mapReferences } from '../../artifact-sdk/src/internal/manifest'
 
+import { setTimeout as delay } from 'node:timers/promises'
 import { ASSET_FILE_LIMIT } from '../../cli/src/lib/shared/file-limits.ts'
 
 import crypto from 'node:crypto'
@@ -19,7 +20,9 @@ import { diff3Merge } from 'node-diff3'
 
 import { BOARD_FILE_LIMIT, assetsFile, cardFront, isBoardPath, isSettingsPath, numberOfCard, studioFolder, studioName, studioRuleFile, taskOfAssets } from '../../cli/src/lib/shared/board-files.ts'
 import { describeTaskPreviewProblems } from '../../cli/src/lib/shared/task-preview-validation'
-import type { SourceProblem } from '../../cli/src/lib/shared/preview-blocks'
+import { parsePreviewBlocks, sourcePosition, withoutCode, type SourceProblem } from '../../cli/src/lib/shared/preview-blocks'
+import { CODING_PREVIEWS, migrateTask } from '../../cli/src/lib/shared/studio-migration'
+import type { ExecutionFailure } from '../../cli/src/lib/agent/retry'
 import { itemAt, stampItem } from '../../cli/src/lib/shared/triage-files.ts'
 import { projectStateDir } from '../../cli/src/lib/machine/project'
 import { readPin, readVersion, savePin, saveVersion } from '../../cli/src/lib/agent/cloud-studios'
@@ -95,7 +98,10 @@ interface Base {
 
 export type Pushed =
   | { ok: true; changed: boolean }
-  | { ok: false; conflict: boolean; error: string; offline?: boolean; previews?: SourceProblem[]; tasks?: Record<string, { error: string; offline?: boolean; blocking?: boolean }> }
+  | { ok: false; conflict: boolean; error: string; offline?: boolean; failure?: ExecutionFailure; previews?: SourceProblem[]; tasks?: Record<string, SyncProblem> }
+
+type SyncProblem = { error: string; offline?: boolean; blocking?: boolean; failure?: ExecutionFailure }
+const validationFailure = (reason: string, code = 'validation_failed'): ExecutionFailure => ({ code, level: 1, source: 'validation', reason })
 
 const TASK_ID = /^[\w-]{1,100}$/
 export const NO_FOLDER = 'This project has no folder on this computer. Link one, then try again.'
@@ -526,15 +532,16 @@ const assetsText = (assets: Assets) => `${JSON.stringify(Object.fromEntries(Obje
 /** Bring the folder up to Cloud: what changed here goes first, then what changed since the base,
  *  in one call, and the board's files reset to it. Nothing here is overwritten while it cannot
  *  be sent. */
-export function pull(ws: TaskFolder, machineId: string): Promise<api.Call<void>> {
-  return inFolder(ws.cwd, async () => {
-    if (busy(preparationKey(ws))) return { ok: false, error: 'This board is preparing task content. Try again after it finishes.' }
+export function pull(ws: TaskFolder, machineId: string, stopped?: () => boolean): Promise<api.Call<void>> {
+  return whenPrepared(ws, { ok: false, code: 'stopped', error: 'Task preparation stopped.' }, async () => {
     const sent = await sendBoard(boardFolder(ws), machineId)
+    let validation: ExecutionFailure | undefined
     if (!sent.ok) {
       const previews = sent.previews?.filter(p => numberOfCard(p.file) === ws.number)
-      if (previews?.length) return { ok: false, code: 'bad_request', error: describeTaskPreviewProblems(previews) }
       const refused = sent.tasks?.[ws.cloudTask ?? ''] ?? (sent.tasks || sent.previews ? undefined : { ...sent, blocking: true })
-      if (refused && refused.blocking !== false) {
+      if (previews?.length) validation = validationFailure(describeTaskPreviewProblems(previews))
+      else if (refused?.failure?.level === 1) validation = refused.failure
+      else if (refused && refused.blocking !== false) {
         if (sent.conflict) {
           const prepared = await prepareConflictTask(ws)
           if (!prepared.ok) return prepared
@@ -542,13 +549,13 @@ export function pull(ws: TaskFolder, machineId: string): Promise<api.Call<void>>
         return { ok: false, error: `This computer's board changes could not be sent: ${refused.error}`, ...(refused.offline ? {} : { code: sent.conflict ? 'board_content_conflict' : 'version_conflict' }) }
       }
     }
-    const read = await readCloud(ws)
+    const read = await readCloud(ws, !!validation)
     if (!read.ok && read.code === 'board_content_conflict') {
       const prepared = await prepareConflictTask(ws)
       if (!prepared.ok) return prepared
     }
-    return read
-  })
+    return read.ok && validation ? { ok: false, code: 'bad_request', error: validation.reason, failure: validation } : read
+  }, stopped)
 }
 
 async function prepareConflictTask(ws: TaskFolder): Promise<api.Call<void>> {
@@ -706,7 +713,7 @@ export const pullChanges = (ws: TaskFolder): Promise<api.Call<void>> => inFolder
   return { ok: true, value: undefined }
 })
 
-async function readCloud(ws: TaskFolder): Promise<api.Call<void>> {
+async function readCloud(ws: TaskFolder, preserveAssets = false): Promise<api.Call<void>> {
   if (pendingConflicts(ws.board).length) return { ok: false, code: 'board_content_conflict', error: 'Resolve the saved board content conflicts before refreshing.' }
   const base = readBase(ws)
   const previous = { ...base.files }
@@ -764,7 +771,7 @@ async function readCloud(ws: TaskFolder): Promise<api.Call<void>> {
   if (!studio.ok) return studio
   // The studio's agents may share more than the board's did.
   reset(viewOf(ws, base, sharedMemory(ws.board)))
-  const assets = await pullAssets(ws, record, assetsOf(assetsListOf(ws, base)))
+  const assets = await pullAssets(ws, record, assetsOf(assetsListOf(ws, base)), preserveAssets)
   if (!assets.ok) return assets
   writeRecord(ws, record)
   writeIndex(ws.board)
@@ -817,7 +824,8 @@ async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets, prese
     let kind = held?.artifact === ref.artifact ? held.kind : undefined
     let version = ref.version
     const localHash = hashFile(target)
-    if (preserve && localHash !== null && (!held || localHash !== (held.localHash ?? held.hash))) {
+    const unpublished = held?.artifact === ref.artifact && held.version > (version ?? 0)
+    if (preserve && localHash !== null && (unpublished || !held || localHash !== (held.localHash ?? held.hash))) {
       if (held) out[name] = held
       continue
     }
@@ -967,6 +975,9 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
     }
     return path.relative(real(path.dirname(file)), target).split(path.sep).join('/')
   }
+  const required = new Map(parsePreviewBlocks(body).blocks.flatMap(block => bodyReferences(block.instructions)
+    .filter(ref => ref.types.length)
+    .map(ref => [ref.src, sourcePosition(body, block.start).line] as const)))
   try {
     let recoveredReferences = false
     const graph = collect(body, file, {
@@ -1010,7 +1021,13 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
         }
         catch (error) { why = renderError(error) }
       }
+      if (!why && !node.file && old?.error && !old.version) why = old.error
       if (why) {
+        const key = [...node.aliases].find(alias => required.has(alias))
+        if (key) {
+          const error = `${path.relative(ws.board, file)}:${required.get(key)} — ${key}: ${undrawn(ws, why)}`
+          return { ok: false, code: 'bad_request', error, failure: validationFailure(error, 'preview_attachment') }
+        }
         let pin: Assets[string] | null = old ? { ...old }
           : previous?.version ? { artifact: previous.artifact, version: previous.version, ...(previous.dependencies ? { dependencies: previous.dependencies } : {}) } : null
         if (!pin) {
@@ -1097,16 +1114,6 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
   return { ok: true, value: refs }
 }
 
-/** `triage/dismissed/` and `triage/archived/` as Cloud holds them, after the rejection review laid
- *  its own there: what it moved aside is never sent back as deleted. */
-export function resetSorted(ws: TaskFolder): void {
-  if (pendingConflicts(ws.board).length) return
-  for (const sub of ['dismissed', 'archived']) fs.rmSync(path.join(ws.board, 'triage', sub), { recursive: true, force: true })
-  for (const [p, content] of viewOf(ws, readBase(ws), sharedMemory(ws.board))) {
-    if (/^triage\/(?:dismissed|archived)\//.test(p)) write(path.join(ws.board, p), content)
-  }
-}
-
 /** Each item the job added to `triage/`, proposed from its task on its studio — the job's when
  *  the file names none — as `akb raw triage add` cannot know either. */
 function proposeItems(ws: TaskFolder, base: Base, paths?: string[]): void {
@@ -1148,13 +1155,43 @@ export const push = (ws: TaskFolder, job: { id: string; machineId: string }): Pr
 
 const preparationKey = (ws: TaskFolder) => path.join(projectStateDir(ws.board), 'preparing')
 
-/** Preparation stays private to its task without holding a lock across its agent. */
-export const withBoard = async <T>(ws: TaskFolder, work: (send: (job: { id: string; machineId: string }) => Promise<Pushed>) => Promise<T>): Promise<T> => {
-  const release = await inFolder(ws.cwd, async () => {
-    if (busy(preparationKey(ws))) throw new Error('This board is preparing task content. Try again after it finishes.')
-    return hold(preparationKey(ws))
-  })
-  try { return await work(job => inFolder(ws.cwd, () => sendMarked(ws, job))) } finally { release() }
+/** Wait outside the synchronization lock so the owner can publish and release it. */
+async function whenPrepared<T>(ws: TaskFolder, cancelled: T, work: () => Promise<T>, stopped = () => false): Promise<T> {
+  while (!stopped()) {
+    const result = await inFolder(ws.cwd, async () => {
+      if (stopped()) return { value: cancelled }
+      if (!busy(preparationKey(ws))) return { value: await work() }
+    })
+    if (result) return result.value
+    await delay(100)
+  }
+  return cancelled
+}
+
+/** Preparation stays private to its task until its files can be sent. */
+export async function withBoard<T>(ws: TaskFolder, work: (send: (job: { id: string; machineId: string }) => Promise<Pushed>) => Promise<T>, stopped?: () => boolean): Promise<T | undefined> {
+  const release = await whenPrepared(ws, undefined, async () => hold(preparationKey(ws)), stopped)
+  if (!release) return
+  try {
+    if (!stopped?.()) return await work(job => inFolder(ws.cwd, () => sendMarked(ws, job)))
+  } finally { release() }
+}
+
+function migratedArchive(pathname: string, content: string, base?: string): string {
+  if (!pathname.startsWith('.archive/') || numberOfCard(pathname) === null || !base || !/<Preview id=/.test(base)) return content
+  const masked = withoutCode(content)
+  const headings = [...masked.matchAll(/^##[ \t]+By[ \t]+[^\n]*agent[ \t]*$/gm)]
+  if (!headings.length) return content
+  const ids = new Set(parsePreviewBlocks(base).blocks.map(block => block.id))
+  if (headings.some(({ index, 0: line }) => {
+    const name = /^##[ \t]+By[ \t]+`([^`]+)`[ \t]+agent[ \t]*$/.exec(content.slice(index!, index! + line.length))?.[1]
+    return !name || !Object.hasOwn(CODING_PREVIEWS, name) || !ids.has(CODING_PREVIEWS[name]!)
+  })) return content
+  try {
+    const migrated = migrateTask(content, [], CODING_PREVIEWS).body
+    if (!/^##[ \t]+By[ \t]+[^\n]*agent[ \t]*$/m.test(withoutCode(migrated))) return migrated
+  } catch { /* Keep ambiguous archives available for conflict resolution. */ }
+  return content
 }
 
 /** What changed on the board, for no job (#59). */
@@ -1302,7 +1339,7 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
   const boardSync = !job.id && !ws.cloudTask
   const deferredCards = new Set<number>()
   const deferredLists = new Set<string>()
-  const assetErrors: Record<string, { error: string; offline?: boolean; blocking?: boolean }> = {}
+  const assetErrors: Record<string, SyncProblem> = {}
   const processed = new Set<string>()
   const assetLists = new Map<string, { local: string | null; content: string }>()
   const generatedAssets = new Set<string>()
@@ -1347,9 +1384,10 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
         selected?.add(list)
         continue
       }
-      if (!boardSync) return fail(assets.error, false, assets.code)
+      if (!boardSync && !assets.failure) return fail(assets.error, false, assets.code)
+      if (job.id && ws.cloudTask && assets.failure) return { ok: false, conflict: false, error: assets.error, failure: assets.failure }
       if (assets.code !== 'conflict' || !assets.error.endsWith(': This task has finished.')) {
-        assetErrors[item.folder.task] = { error: assets.error, ...(assets.code ? {} : { offline: true }) }
+        assetErrors[item.folder.task] = { error: assets.error, failure: assets.failure, ...(assets.code ? {} : { offline: true }) }
       }
     }
     deferredCards.add(item.folder.number!)
@@ -1379,6 +1417,7 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
   }
   const previews: SourceProblem[] = []
   const heldPreviews = new Set<string>()
+  const oversize = new Set<number>()
   const success = (changed: boolean): Pushed => {
     const refreshDeferred = deferred.size !== (base.deferred?.length ?? 0) || base.deferred?.some(p => !deferred.has(p))
     const pendingAssets = [...new Set([...(base.pendingAssets ?? []).filter(task => !processed.has(task)), ...Object.keys(assetErrors)])]
@@ -1389,10 +1428,13 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
     const refreshPreviews = !isDeepStrictEqual(pendingPreviews, base.pendingPreviews ?? [])
     if (refreshPreviews) base.pendingPreviews = pendingPreviews
     if (changed || refreshDeferred || refreshPending || refreshPreviews) writeBase(ws, base)
-    const reported = boardSync ? previews : previews.filter(p => numberOfCard(p.file) === ws.number)
+    const reported = !ws.number ? previews : previews.filter(p => numberOfCard(p.file) === ws.number)
     const firstError = Object.values(assetErrors)[0]
-    if (reported.length) return { ok: false, conflict: false, error: describeTaskPreviewProblems(reported), previews: reported, tasks: assetErrors }
-    if (firstError && boardSync) return { ok: false, conflict: false, ...firstError, tasks: assetErrors }
+    if (reported.length) {
+      const error = describeTaskPreviewProblems(reported)
+      return { ok: false, conflict: false, error, failure: validationFailure(error), previews: reported, tasks: assetErrors }
+    }
+    if (firstError && (boardSync || firstError.failure)) return { ok: false, conflict: false, ...firstError, tasks: assetErrors }
     return { ok: true, changed }
   }
   const local = new Set([...(scoped ?? localFiles(ws, base)), ...assetLists.keys()])
@@ -1405,13 +1447,27 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
     if (defer(p) || owed(p) || generatedAssets.has(p)) continue
     if (selected && tasks.some(item => assetFiles(item.folder, assetsListOf(item.folder, base)).has(p))) continue
     const list = assetLists.get(p)
-    const content = list?.content ?? fs.readFileSync(path.join(ws.board, p), 'utf8')
+    const original = list?.content ?? fs.readFileSync(path.join(ws.board, p), 'utf8')
     const remote = remoteOf(ws, shared, p)
+    const held = base.files[remote]
+    const content = migratedArchive(p, original, held?.content)
+    if (content !== original && readText(path.join(ws.board, p)) === original) {
+      const backup = path.join(ws.board, '.sync', 'legacy-previews', hashOf(Buffer.from(original)), p)
+      write(backup, original)
+      write(path.join(ws.board, p), content)
+    }
     localOf.set(remote, p)
     localBefore.set(remote, list ? list.local : content)
-    const held = base.files[remote]
     if (held?.content === content && (!list || list.local === content)) continue
-    if (Buffer.byteLength(content) > BOARD_FILE_LIMIT) return fail(`${p} is over ${BOARD_FILE_LIMIT / 1024} KB; keep large files as assets.`, false, 'too_large')
+    if (Buffer.byteLength(content) > BOARD_FILE_LIMIT) {
+      const error = `${p}:1 — File exceeds ${BOARD_FILE_LIMIT / 1024} KB. Move large results to assets and link them from the card.`
+      const number = numberOfCard(p)
+      if (number === null || number === ws.number) return { ok: false, conflict: false, error, failure: validationFailure(error, 'card_too_large') }
+      previews.push({ file: p, line: 1, column: 1, code: 'card_too_large', path: '', message: error, hint: 'Shorten the card.' })
+      oversize.add(number)
+      heldPreviews.add(p)
+      continue
+    }
     changes.push({ path: remote, content, base_seq: held?.seq ?? base.deleted?.[remote] ?? 0 })
   }
   const previous = selected ? new Set([...selected].flatMap(p => {
@@ -1431,6 +1487,25 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
   const memory = rootOf(ws) + MEMORY
   const stale = new Set(Object.keys(base.files).filter((p) => p.startsWith(memory) && shared(p.slice(memory.length))))
   for (const p of stale) changes.push({ path: p, content: null, base_seq: base.files[p]!.seq })
+  const holdCards = (numbers: Set<number | null>) => {
+    const index = syncIndex(ws)!
+    for (const task of index.tasks.values()) if (numbers.has(task.number)) heldPreviews.add(assetsFile(task.task))
+    for (let i = changes.length - 1; i >= 0; i--) {
+      const file = localOf.get(changes[i]!.path)
+      if (!file) continue
+      const task = taskOfAssets(file)
+      const number = task ? index.tasks.get(task)?.number ?? readRecord({ ...ws, task }).number : numberOfCard(file)
+      if (number == null || !numbers.has(number)) continue
+      heldPreviews.add(file)
+      changes.splice(i, 1)
+    }
+    const pendingPreviews = [...new Set([...(base.pendingPreviews ?? []), ...heldPreviews])]
+    if (!isDeepStrictEqual(pendingPreviews, base.pendingPreviews ?? [])) {
+      base.pendingPreviews = pendingPreviews
+      writeBase(ws, base)
+    }
+  }
+  if (oversize.size) holdCards(oversize)
   if (!changes.length) return success(false)
 
   const commit = async () => {
@@ -1442,24 +1517,8 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
       if (problems.some(p => typeof p?.file !== 'string' || numberOfCard(p.file) === null || !submitted.has(p.file))) return sent
       const numbers = new Set(problems.map(p => numberOfCard(p.file)))
       for (const problem of problems) previews.push(problem)
-      const index = syncIndex(ws)!
       // Keep both sides of a move and the attachment pins with the refused card.
-      for (const task of index.tasks.values()) if (numbers.has(task.number)) heldPreviews.add(assetsFile(task.task))
-      for (let i = changes.length - 1; i >= 0; i--) {
-        const remote = changes[i]!.path
-        const file = localOf.get(remote)
-        if (!file) continue
-        const task = taskOfAssets(file)
-        const number = task ? index.tasks.get(task)?.number ?? readRecord({ ...ws, task }).number : numberOfCard(file)
-        if (number == null || !numbers.has(number)) continue
-        heldPreviews.add(file)
-        changes.splice(i, 1)
-      }
-      const pendingPreviews = [...new Set([...(base.pendingPreviews ?? []), ...heldPreviews])]
-      if (!isDeepStrictEqual(pendingPreviews, base.pendingPreviews ?? [])) {
-        base.pendingPreviews = pendingPreviews
-        writeBase(ws, base)
-      }
+      holdCards(numbers)
       const own = previews.filter(p => numberOfCard(p.file) === ws.number)
       if (job.id && own.length) return { ...sent, error: describeTaskPreviewProblems(own) }
     }
@@ -1504,6 +1563,7 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
       return conflictFailure(ws)
     }
   }
+  if (!sent.ok && sent.previewProblems?.length) return { ok: false, conflict: false, error: sent.error, failure: validationFailure(sent.error), previews: sent.previewProblems }
   if (!sent.ok) return fail(sent.error, sent.code === 'version_conflict', sent.code)
 
   // The base keeps its `head_seq`: what others wrote meanwhile is read at the next pull.

@@ -187,6 +187,8 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
   const phase = (phase: import('../../shared/conversation').ConversationPhase) => io.event?.({ kind: 'phase', data: { phase, at: new Date().toISOString() } })
   let started = false
   let contentAt = 0
+  let thinkingAt = 0
+  let thinking = false
   let currentSession = ''
   const events = createEventCollector()
   const emit = () => {
@@ -213,7 +215,20 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
         }
         if (live && (!obj(msg.params).sessionId || obj(msg.params).sessionId === currentSession)) {
           const kind = str(obj(obj(msg.params).update).sessionUpdate)
-          if (['agent_message_chunk', 'agent_thought_chunk'].includes(kind)) io.activity?.()
+          if (['agent_message_chunk', 'agent_thought_chunk'].includes(kind) && str(obj(obj(obj(msg.params).update).content).text)) {
+            io.activity?.()
+            if (kind === 'agent_thought_chunk') {
+              if (!thinking || Date.now() - thinkingAt >= 1000) {
+                io.event?.({ kind: 'status', data: { state: 'thinking', source: 'acp' } })
+                thinkingAt = Date.now()
+              }
+              thinking = true
+            }
+          }
+          if (thinking && ['agent_message_chunk', 'tool_call', 'plan'].includes(kind)) {
+            thinking = false
+            io.event?.({ kind: 'status', data: { state: 'running', source: 'acp' } })
+          }
           if (!started && ['agent_message_chunk', 'tool_call', 'plan'].includes(kind)) { started = true; phase('started') }
           if (kind === 'agent_message_chunk' && Date.now() - contentAt >= 1000) {
             contentAt = Date.now(); io.event?.({ kind: 'phase', data: { phase: 'started', at: new Date().toISOString(), contentAt: new Date(contentAt).toISOString() } })

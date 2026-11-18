@@ -1,8 +1,10 @@
+import { IDLE_FAILURE } from '../idle'
 import type { ExecutionFailure } from '../retry'
 import { codexFailure, executionFailure } from './failures'
 import { bounded, CONVERSATION_MS } from '../../shared/conversation'
 import type { RunClient, ClientTurn, TurnEnd } from './client'
 import { randomUUID } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 import { batch, CODEX_SETTLE_MS, settlementPrompt, type Cleanup, type ManagedWork } from './codex-background'
 import { codexWork } from './codex-work'
 import { createCodexStreamRenderer } from './codex-stream'
@@ -78,6 +80,7 @@ export function createCodexClient(options: Options = { images: [] }): RunClient 
   return {
     structured: true,
     managedProcess: true,
+    idleRecovery: true,
     background: () => background,
     turn: (io) => run(io, options, count => { background = count }),
   }
@@ -86,11 +89,26 @@ export function createCodexClient(options: Options = { images: [] }): RunClient 
 async function run(io: ClientTurn, options: Options, count: (value: number) => void): Promise<TurnEnd> {
   const since = Date.now()
   const renderer = createCodexStreamRenderer()
-  const preparingUntil = Math.min(io.prepareUntil ?? Infinity, Date.now() + CONVERSATION_MS.prepare)
+  let idling = false
+  let preparingUntil = Math.min(io.prepareUntil ?? Infinity, Date.now() + CONVERSATION_MS.prepare)
   const phase = (phase: import('../../shared/conversation').ConversationPhase) => io.event?.({ kind: 'phase', data: { phase, at: new Date().toISOString() } })
   let submitted = false
   let started = false
   let contentAt = 0
+  let status: 'thinking' | 'retrying' | undefined
+  let statusAt = 0
+  const thinking = () => {
+    if (status !== 'thinking' || Date.now() - statusAt >= 1000) {
+      io.event?.({ kind: 'status', data: { state: 'thinking', source: 'codex' } })
+      statusAt = Date.now()
+    }
+    status = 'thinking'
+  }
+  const recovered = () => {
+    if (!status) return
+    io.event?.({ kind: 'status', data: { state: 'running', source: 'codex' } })
+    status = undefined
+  }
   let startupTimer: ReturnType<typeof setTimeout> | undefined
   const began = () => { if (!submitted || started || ended) return; started = true; clearTimeout(startupTimer); phase('started') }
   const work = codexWork()
@@ -134,6 +152,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     clearTimeout(startupTimer)
     clearTimeout(settleTimer)
     io.signal?.removeEventListener('abort', cancelled)
+    io.idleSignal?.removeEventListener('abort', idle)
     count(0)
     io.stdout.off('close', closed)
     io.stdin.off('error', inputFailed)
@@ -165,8 +184,31 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     io.log(`[Codex cleanup] ${detail}\n`)
     io.event?.({ kind: 'log', data: { text: `[Codex cleanup] ${detail}` } })
   }
-  const cancelled = () => { work.freeze(); note('Execution stopped; no further cleanup turn was submitted.'); end('Codex execution stopped.') }
+  const cancelled = () => {
+    work.freeze()
+    if (submitted || threadId) note('Execution stopped; no further cleanup turn was submitted.')
+    end('Codex execution stopped.')
+  }
   io.signal?.addEventListener('abort', cancelled, { once: true })
+  const idle = async () => {
+    if (ended || idling) return
+    idling = true
+    const unknownWork = () => [...work.entries.values()].some(item => ['running', 'unknown', 'interrupted'].includes(item.status))
+    const uncertain = unknownWork()
+    const ownedTurn = currentTurn
+    try {
+      if (host.idleRecovery !== true || !threadId || !ownedTurn || !active || settlement) throw Error('Codex did not confirm that this turn can be interrupted for recovery.')
+      const receipt = await bounded(rpc.call('wildcrane/stopForRetry', { threadId, turnId: ownedTurn, instance: host.instance, lease: host.lease }),
+        CONVERSATION_MS.prepare, 'Codex did not confirm stopping the idle turn.')
+      if (receipt.instance !== host.instance || receipt.lease !== host.lease || receipt.threadId !== threadId || receipt.turnId !== ownedTurn) throw Error('Codex returned a different turn or owner.')
+      if (uncertain || unknownWork()) throw Error('Codex has operations with unconfirmed results.')
+      cleanup.idleStop = { threadId, turnId: ownedTurn }
+    } catch (error) {
+      if (!ended) note(error instanceof Error ? error.message : String(error))
+    }
+    if (!ended) end(IDLE_FAILURE.reason, IDLE_FAILURE)
+  }
+  io.idleSignal?.addEventListener('abort', idle, { once: true })
   const childUpdates = () => {
     for (const w of work.entries.values()) {
       if (w.kind !== 'agent' || childEvents.get(w.id) === w.status) continue
@@ -335,14 +377,18 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       if (msg.method === 'turn/completed') { work.observeTurn(source, obj(p.turn)); armCleanup() }
       childUpdates(); return
     }
-    if (submitted && /\/delta$/.test(msg.method ?? '') && str(p.delta)) io.activity?.()
     const turnId = str(p.turnId) || str(obj(p.turn).id)
     if (historicalTurns.has(turnId) || currentTurn && turnId && currentTurn !== turnId) return
+    if (submitted && ['item/agentMessage/delta', 'item/plan/delta', 'item/reasoning/summaryTextDelta', 'item/reasoning/textDelta'].includes(msg.method ?? '') && str(p.delta)) {
+      if (msg.method?.startsWith('item/reasoning/')) thinking()
+      else recovered()
+      io.activity?.()
+    }
     if (msg.method === 'turn/started') { if (!submitted || completedTurns.has(turnId)) return; currentTurn = turnId; active = true; began(); return }
     if (submitted && msg.method === 'item/agentMessage/delta' && Date.now() - contentAt >= 1000) {
       began(); contentAt = Date.now(); io.event?.({ kind: 'phase', data: { phase: 'started', at: new Date().toISOString(), contentAt: new Date(contentAt).toISOString() } })
     }
-    if (msg.method === 'item/started' || msg.method === 'item/completed') item(obj(p.item), msg.method === 'item/completed', !completedTurns.has(turnId))
+    if (msg.method === 'item/started' || msg.method === 'item/completed') { recovered(); item(obj(p.item), msg.method === 'item/completed', !completedTurns.has(turnId)) }
     if (msg.method === 'thread/tokenUsage/updated') {
       if (!submitted) return
       const token = obj(p.tokenUsage)
@@ -360,9 +406,13 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       context = { used: (Number(last.inputTokens) || 0) + (Number(last.outputTokens) || 0), ...(Number(token.modelContextWindow) > 0 ? { limit: Number(token.modelContextWindow) } : {}) }
       io.gotContext?.(context)
     }
-    if (msg.method === 'error' && p.willRetry !== true) {
+    if (msg.method === 'error') {
       const failure = codexFailure(p.error, 'Codex failed.')
-      end(failure.reason, failure)
+      if (p.willRetry === true && submitted && active && !idling) {
+        status = 'retrying'
+        io.log(`[Codex recovery] ${failure.code}: ${failure.reason}\n`)
+        io.event?.({ kind: 'status', data: { state: 'retrying', source: 'codex', code: failure.code } })
+      } else if (p.willRetry !== true) end(failure.reason, failure)
     }
     if (msg.method === 'turn/completed') {
       const turn = obj(p.turn)
@@ -370,6 +420,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       if (completedTurns.has(id)) return
       completedTurns.add(id)
       for (const raw of list(turn.items)) { work.observe(threadId, raw); item(raw, true) }
+      if (idling) return
       if (turn.status !== 'completed') {
         const reason = str(obj(turn.error).message) || `Codex turn ${str(turn.status)}.`
         const failure = turn.status === 'failed' ? codexFailure(turn.error, reason) : { code: 'turn_stopped', level: 3 as const, reason }
@@ -387,6 +438,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
   })
   try {
     if (io.signal?.aborted) { cancelled(); return done }
+    if (io.idleSignal?.aborted) { void idle(); return done }
     phase('preparing')
     const initialized = await bounded(rpc.call('initialize', { clientInfo: { name: 'wildcrane', version: '1' }, capabilities: { experimentalApi: true } }), preparingUntil - Date.now(), 'Codex initialize timed out.')
     host = obj(initialized.wildcrane)
@@ -394,11 +446,31 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     phase('initialized')
     rpc.notify('initialized')
     const mode = options.mode ?? (io.resumeId ? 'resume' : undefined)
-    const response = await bounded(rpc.call(`thread/${mode ?? 'start'}`, { cwd: options.cwd ?? io.cwd, ...(mode ? { threadId: options.threadId ?? io.resumeId } : {}) }), preparingUntil - Date.now(), `Codex thread/${mode ?? 'start'} timed out.`)
+    const method = `thread/${mode ?? 'start'}`
+    const params = { cwd: options.cwd ?? io.cwd, ...(mode ? { threadId: options.threadId ?? io.resumeId } : {}) }
+    let response: Json | undefined
+    let waiting = false
+    while (!ended && !response) {
+      try {
+        response = await bounded(rpc.call(method, params), preparingUntil - Date.now(), `Codex ${method} timed out.`)
+      } catch (error) {
+        const failure = error instanceof RpcError ? codexFailure(error.data, error.message) : undefined
+        if (mode !== 'fork' || failure?.source !== 'harness' || failure.code !== 'codex_source_busy') throw error
+        if (!waiting) {
+          waiting = true
+          io.event?.({ kind: 'log', data: { text: failure.reason } })
+        }
+        io.activity?.()
+        await delay(500, undefined, { signal: io.signal })
+        preparingUntil = Date.now() + CONVERSATION_MS.prepare
+      }
+    }
+    if (ended || !response) return done
     const thread = obj(response.thread)
     for (const turn of list(thread.turns)) historicalTurns.add(str(turn.id))
     threadId = str(thread.id)
     if (!threadId) throw Error('Codex did not return a thread id.')
+    if (mode === 'resume' && threadId !== params.threadId) throw Error('Codex did not return the requested session.')
     work.root(threadId, list(response.retainedThreads).map(t => str(t.id)))
     for (const terminal of list(response.retainedTerminals)) retained.set(`terminal:${str(terminal.threadId)}:${str(terminal.itemId)}`, str(terminal.processId))
     provider = str(thread.modelProvider) || undefined

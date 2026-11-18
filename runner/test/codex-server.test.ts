@@ -6,10 +6,16 @@ import path from 'node:path'
 import { after, afterEach, beforeEach, it } from 'node:test'
 import { once } from 'node:events'
 import { codexServer, threadConfig } from '../src/codex-server'
-import { initializeNative, leaseFile, nativeConnection, nativeDirectory, readPrivate, type NativeBackend } from '../src/codex-native'
-import { connect } from '../../cli/src/lib/agent/wire/rpc'
+import { initializeNative, leaseFile, nativeConnection, nativeDirectory, readPrivate, writePrivate, type NativeBackend } from '../src/codex-native'
+import { createCodexClient } from '../../cli/src/lib/agent/wire/codex'
+import { connect, RpcError } from '../../cli/src/lib/agent/wire/rpc'
 import { reconcileCodexLeases } from '../src/codex-ownership'
 import { until } from './fake-cloud'
+import { projectStateDir } from '../../cli/src/lib/machine/project'
+import { IDLE_TIMEOUT } from '../../cli/src/lib/agent/idle'
+import { openResume, openRun, patch, peekRun } from '../../cli/src/lib/agent/sessions'
+import { setBoardRoot } from '../../cli/src/lib/paths'
+import { watchRun } from '../../cli/src/lib/agent/watch'
 
 const previous = process.env.WILDCRANE_HOME
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-native-test-'))
@@ -40,11 +46,16 @@ it('shares native backends while isolating settings, thread ownership and stops 
  await Promise.all([a.rpc.call('turn/start',{threadId:aid.id}),b.rpc.call('turn/start',{threadId:bid.id})])
  const duplicate=await peer([],{KANBAN_RUN:'duplicate',AI4KANBAN_TASK:'task-b'});await assert.rejects(duplicate.rpc.call('thread/resume',{threadId:aid.id}),error=>{
   assert.match(String(error),/already in use/)
+  assert.ok(error instanceof RpcError)
+  assert.equal((error.data as any).wildcraneFailure.code, 'codex_ownership_unconfirmed')
+  assert.equal((error.data as any).wildcraneFailure.source, 'invariant')
   const details=JSON.parse((error as Error).message.slice((error as Error).message.indexOf('{')))
   assert.equal(details.thread,aid.id);assert.equal(details.owner.run,'a');assert.equal(details.owner.task,'task-a')
   assert.equal(details.requester.run,'duplicate');assert.equal(details.requester.task,'task-b');assert.equal(details.status,'owner-alive')
   return true
  })
+ await assert.rejects(b.rpc.call('wildcrane/stopForRetry', { ...(a.hello.wildcrane as object), threadId: aid.id, turnId: 'turn-1' }), /already in use/)
+ assert.equal(read().slice(offset).filter(c => c.method === 'turn/interrupt').length, 0)
  await assert.rejects(b.rpc.call('turn/interrupt',{threadId:aid.id,turnId:'other'}),/does not own/)
  await a.close();assert.equal(b.notifications.some(n=>n.method==='turn/completed'),false)
  await b.close();await duplicate.close()
@@ -56,6 +67,139 @@ it('shares native backends while isolating settings, thread ownership and stops 
  assert.equal(started[1].params.config['mcp_servers.defaultProbe.env'].CUSTOM_TASK_VALUE,'task-b')
  assert.equal(relevant.find(c=>c.method==='spawn').marker,undefined)
 })
+for (const stop of [false, true]) it(`holds a discussion fork before submission until its owner releases it (${stop ? 'stopped' : 'continues'}, #883)`, async () => {
+ const owner = await peer()
+ const source = (await owner.rpc.call('thread/start', {})).thread as { id: string }
+ await owner.rpc.call('turn/start', { threadId: source.id, input: [{ text: 'source discussion' }] })
+ const child = spawn(process.execPath, [path.join(process.env.RUNNER_DIST!, 'codex-proxy.mjs'), fake, 'app-server'], {
+  env: { ...process.env, ...manager.env, KANBAN_RUN: 'new-task' }, stdio: ['pipe', 'pipe', 'pipe'],
+ })
+ peers.add(child)
+ const request = 'first task request'
+ const controller = new AbortController()
+ const sessions: string[] = []
+ let waiting = false
+ const offset = read().length
+ // The fake completes "finish" without background work.
+ const run = createCodexClient({ mode: 'fork', threadId: source.id, images: [] }).turn({
+  stdout: child.stdout, stdin: child.stdin, cwd: root, prompt: stop ? request : 'finish', signal: controller.signal,
+  log: () => {}, gotModel: () => {}, gotResumeId: id => sessions.push(id),
+  event: event => { if (event.kind === 'log' && event.data.text.includes('source conversation')) waiting = true },
+ })
+ try {
+  await until(() => waiting)
+  assert.deepEqual(sessions, [])
+  assert.equal(read().slice(offset).filter(row => row.method === 'thread/fork' || row.method === 'turn/start').length, 0)
+  await manager.close()
+  manager = await codexServer()
+  if (stop) controller.abort()
+  else await owner.close()
+  assert.equal((await run).ok, !stop)
+  const calls = read().slice(offset)
+  assert.equal(calls.filter(row => row.method === 'thread/fork').length, stop ? 0 : 1)
+  assert.equal(calls.filter(row => row.method === 'turn/start').length, stop ? 0 : 1)
+  assert.equal(sessions.length, stop ? 0 : 1)
+  if (!stop) assert.notEqual(sessions[0], source.id)
+ } finally { controller.abort(); child.stdin.end(); await owner.close() }
+})
+
+for (const scenario of ['recover', 'restart', 'budget', 'unknown', 'live', 'stop']) {
+ it(`recovers managed Codex idle after git worktree add (${scenario}, #882)`, { timeout: 25_000 }, async () => {
+  const neighbour = await peer()
+  const other = strThread(await neighbour.rpc.call('thread/start', {}))
+  await neighbour.rpc.call('turn/start', { threadId: other, input: [{ text: 'separate task' }] })
+  const offset = read().length
+  const workspace = fs.mkdtempSync(path.join(root, 'work-'))
+  fs.mkdirSync(path.join(workspace, 'docs', 'kanban', 'todo'), { recursive: true })
+  setBoardRoot(workspace)
+  writePrivate(path.join(projectStateDir(path.join(workspace, 'docs', 'kanban')), 'ui.config.json'), {
+    runtimes: [{ id: 'global', name: 'Global', harness: 'codex', settings: { command: `${fake} exec --json` } }],
+  })
+  const previousEnv = Object.fromEntries(Object.keys(manager.env).map(key => [key, process.env[key]]))
+  Object.assign(process.env, manager.env)
+  const oldIdle = IDLE_TIMEOUT.milliseconds
+  IDLE_TIMEOUT.milliseconds = 350
+  const request = `Idle regression ${scenario}`
+  const started = openRun({ action: 'prune-memory' }, request, [])
+  if ('error' in started) throw Error(started.error)
+  let latest = started.run.sessionId
+  const seen: string[] = []
+  const backoff = () => scenario === 'stop' ? 5_000 : 0
+  const resume: NonNullable<Parameters<typeof watchRun>[1]> = async (id, options) => {
+    const previous = peekRun(id)!
+    assert.equal(previous.failure?.code, 'idle_timeout')
+    assert.equal(previous.cleanup?.idleStop?.threadId, previous.resumeId)
+    assert.equal(previous.cleanup?.status, 'confirmed')
+    assert.ok(previous.retry?.pending)
+    if (previous.agentPid) assert.throws(() => process.kill(previous.agentPid!, 0), { code: 'ESRCH' })
+    const continued = await openResume(id, options)
+    if ('error' in continued) throw Error(continued.error)
+    assert.equal(continued.run.resumeId, previous.resumeId)
+    latest = continued.run.sessionId
+    seen.push(previous.resumeId!)
+    patch(latest, run => { run.pid = process.pid })
+    await watchRun(latest, resume, backoff)
+    return { run: continued.run, spawned: true }
+  }
+  patch(latest, run => { run.pid = process.pid })
+  try {
+    const watching = watchRun(latest, resume, backoff)
+    await until(() => read().slice(offset).some(call => call.method === 'turn/start'), 8000)
+    if (scenario === 'restart') {
+      const instance = backends()[0]!.instance
+      await manager.close()
+      manager = await codexServer()
+      assert.equal(backends()[0]!.instance, instance)
+    }
+    if (scenario === 'stop') {
+      await until(() => !!peekRun(latest)?.retry?.pending, 8000)
+      patch(latest, run => { run.stopping = true })
+      process.emit('SIGTERM', 'SIGTERM')
+    }
+    await watching
+    const record = peekRun(latest)!
+    const trace = read().slice(offset)
+    const starts = trace.filter(call => call.method === 'turn/start')
+    const thread = starts[0]?.params.threadId
+    const expected = scenario === 'budget' ? 4 : ['recover', 'restart'].includes(scenario) ? 2 : 1
+    assert.equal(starts.length, expected, record.error)
+    assert.equal(starts.filter(call => call.params.input[0].text === request).length, 1)
+    assert.ok(starts.every(call => call.params.threadId === thread))
+    assert.equal(trace.filter(call => call.method === 'thread/start').length, 1)
+    assert.equal(trace.filter(call => call.method === 'turn/interrupt' && call.params.threadId === other).length, 0)
+    assert.equal(fs.readFileSync(path.join(workspace, `${thread}.worktree-result`), 'utf8'), 'worktree created\n')
+    assert.equal(seen.length, expected - 1)
+    if (expected > 1) {
+      const find = (method: string, predicate = (_call: any) => true) => trace.findIndex(call => call.method === method && call.params.threadId === thread && predicate(call))
+      const interrupt = find('turn/interrupt')
+      const confirmation = find(scenario === 'restart' ? 'thread/turns/list' : 'thread/read', call => scenario === 'restart' || call.params.includeTurns)
+      const release = find('thread/unsubscribe')
+      const resume = find('thread/resume')
+      assert.ok(interrupt >= 0 && interrupt < confirmation && confirmation < release && release < resume)
+    }
+    if (scenario === 'budget') {
+      assert.equal(record.retry?.attempt, 4)
+      assert.equal(record.retryPause, 'limit')
+    } else if (scenario === 'unknown' || scenario === 'live') {
+      assert.equal(record.retryPause, 'unsafe')
+      assert.equal(record.cleanup?.status, 'unconfirmed')
+      assert.equal(record.failure?.code, 'idle_timeout')
+    } else {
+      assert.equal(record.status, scenario === 'stop' ? 'stopped' : 'done')
+    }
+  } finally {
+    IDLE_TIMEOUT.milliseconds = oldIdle
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    await neighbour.close()
+  }
+ })
+}
+
+const strThread = (value: Record<string, unknown>) => (value.thread as { id: string }).id
+
 it('releases fork sources and failed preparation reservations (#762)',async()=>{
  const a=await peer();const id=((await a.rpc.call('thread/start',{})).thread as any).id;await a.close()
  const offset=read().length

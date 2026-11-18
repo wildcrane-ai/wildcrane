@@ -14,7 +14,7 @@
     "resolveJsonModule": true,
     "jsx": "react-jsx",
     // Shared ../cli/src code resolves its packages here.
-    "paths": { "*": ["./node_modules/@types/*", "./node_modules/*"] }
+    "paths": { "commander": ["../cli/node_modules/commander"], "*": ["./node_modules/@types/*", "./node_modules/*"] }
   },
   "include": ["src", "test", "../cli/src/lib/agents/text-imports.d.ts", "../cli/src/guide/guides.d.ts"]
 }

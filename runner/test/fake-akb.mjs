@@ -212,9 +212,10 @@ if (a === 'raw' && b === 'init') {
 } else if (a === 'review-dismissals') {
   // What a review reads, as the board lays it out, and the note it writes.
   const how = plan['review-dismissals'] ?? {}
-  const list = (dir) => (fs.existsSync(path.join(board, dir)) ? fs.readdirSync(path.join(board, dir)).filter((n) => n.endsWith('.md')).map((n) => `${dir}/${n}`) : [])
+  const input = process.env.AI4KANBAN_REJECTION_INPUT ?? board
+  const list = (dir) => (fs.existsSync(path.join(input, dir)) ? fs.readdirSync(path.join(input, dir)).filter((n) => n.endsWith('.md')).map((n) => `${dir}/${n}`) : [])
   const seen = [...list('.archive/.sync'), ...list('triage/dismissed'), ...list('triage/archived')]
-  fs.writeFileSync(path.join(state, 'learned'), JSON.stringify({ args: words, seen: Object.fromEntries(seen.map((f) => [f, fs.readFileSync(path.join(board, f), 'utf8')])) }))
+  fs.writeFileSync(path.join(state, 'learned'), JSON.stringify({ args: words, seen: Object.fromEntries(seen.map((f) => [f, fs.readFileSync(path.join(input, f), 'utf8')])) }))
   if (how.failed) {
     console.log(JSON.stringify({ ok: false, error: { kind: 'run-failed', message: how.failed } }))
     process.exit(1)

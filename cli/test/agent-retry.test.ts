@@ -46,9 +46,12 @@ it('uses a structured retry delay without changing the level', () => {
 it('uses terminal Codex events and ignores tool errors and retry prose', () => {
   const renderer = createCodexStreamRenderer()
   const send = (frame: object) => renderer.push(JSON.stringify(frame) + '\n')
-  send({ type: 'item.completed', item: { type: 'error', message: 'ECONNRESET' } })
+  for (const status of [403, 503]) send({ type: 'item.completed', item: { type: 'command_execution', exit_code: 1, aggregated_output: `Expected HTTP ${status} in test fixture` } })
   send({ type: 'error', willRetry: true, message: 'connection lost' })
   assert.equal(renderer.executionFailure?.(), undefined)
+  send({ type: 'turn.failed', error: { codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 403 } } } })
+  assert.equal(renderer.executionFailure?.()?.code, 'provider_refused')
+  assert.equal(renderer.executionFailure?.()?.source, 'provider')
   for (const message of ['quota exceeded', '503 retry-after: 10']) {
     send({ type: 'turn.failed', error: { message, codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 502 } } } })
     assert.equal(renderer.executionFailure?.()?.level, 2)
@@ -67,6 +70,7 @@ it('classifies a confirmed Claude output validation failure regardless of its wo
     assert.equal(renderer.executionFailure?.(), undefined)
     renderer.push(JSON.stringify({ type: 'result', is_error: true, subtype: 'error_max_structured_output_retries', errors: [reason] }) + '\n')
     assert.equal(renderer.executionFailure?.()?.level, 1)
+    assert.equal(renderer.executionFailure?.()?.source, 'validation')
   }
 })
 

@@ -15,6 +15,7 @@ previews:
   prompts:
     icon: prompt
     title: {en: Prompts, zh: 提示词}
+    description: {en: Review changes to instructions., zh: 审阅指令变更。}
 ---
 
 Produce only the requested work. Keep outputs concise.
@@ -29,10 +30,11 @@ or Set for more than two files.
 ```
 
 - **Metadata**: required nonempty `name`; optional `names`, `description`, `needsArtifact`,
-  Studio `icon` and `previews`. The display map is `{<id>: {icon?, title?}}`, with unique
-  lowercase dash-separated IDs. `title` maps supported app language codes (`en`, `zh`)
-  to nonempty strings; either or both may be omitted. Empty metadata `{}` is valid.
-  Resolve labels by current language, then `en`, then ID; omitted icon displays `file`.
+  Studio `icon` and `previews`. The display map uses unique lowercase dash-separated IDs.
+  Custom Preview authoring requires non-blank `en` and `zh` entries in both `title` and
+  `description`. A missing `icon` displays `file`. Older definitions remain readable:
+  labels fall back to English, another supplied title, or the ID. Review points open
+  the description when it is available in the current language.
 - **Schema**: use one shared strict JSON Schema, with additionalProperties:false for
   Studio metadata and each Preview metadata object, explicit locale keys, no coercion,
   and existing glyph/path-part icon constraints. Reject nulls, malformed or duplicate YAML
@@ -46,7 +48,7 @@ or Set for more than two files.
   grammar without treating the Markdown body as an XML document. Fenced and inline code
   examples are literal; headings inside a block are ordinary output requirements.
 - **ID correspondence**: map keys and body block IDs must match exactly in both directions.
-  Every block needs one map entry, even if `{}`; an unused metadata entry fails. Without
+  Every block needs one map entry. An unused metadata entry fails. Without
   blocks, omit `previews` or use `{}`. Block order determines result order; YAML key order
   does not. Renaming a title or icon leaves the explicit ID unchanged.
 - **Context**: the app parses the complete file and provides only the work instructions,
@@ -155,7 +157,7 @@ akb studio push ./release-notes-edit --request-id release-notes-2
 
 ### `akb studio list --json`
 
-Each entry includes `previews: [{id, instructions, title?, icon?}]` joined from Preview blocks and the YAML display map, or `[]`.
+Each entry includes `previews: [{id, instructions, title?, description?, icon?}]` joined from Preview blocks and the YAML display map, or `[]`.
 `instructions` is the short section body; linked references are not expanded.
 It has no format discriminator, `agent`, `after`, `land` or memory entries.
 
@@ -188,8 +190,8 @@ akb raw components --studio coding --docs --json
 ## HTTP
 
 Use the existing bearer credential, workspace access rules and response envelope.
-Application Preview entries are `{id, instructions, title?, icon?}`, joined by ID from `STUDIO.md`;
-`title` is the locale map, not a generated heading. Model prompts receive only `{id, instructions}`. There is no `format` discriminator
+Application Preview entries are `{id, instructions, title?, description?, icon?}`, joined by ID from `STUDIO.md`;
+`title` and `description` are locale maps. Model prompts receive only `{id, instructions}`. There is no `format` discriminator
 or alternate role-based response.
 
 ### `GET /v1/studios?workspace=<id>`

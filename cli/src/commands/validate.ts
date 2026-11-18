@@ -12,7 +12,7 @@ export function cmdValidate(id?: number): MoveResult {
   const reason = errors.length ? formatContractErrors(errors) : undefined
   const session = insideRun()
   if (session) patch(session, run => {
-    run.validationFailure = reason ? { code: 'validation_failed', level: 1, reason } : undefined
+    run.validationFailure = reason ? { code: 'validation_failed', level: 1, source: 'validation', reason } : undefined
   })
   if (reason) die(reason, { kind: 'spec-contract', errors })
   say(`Spec format valid (${cards.length} card${cards.length === 1 ? '' : 's'}).`)

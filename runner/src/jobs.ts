@@ -1,8 +1,9 @@
 import { reviewBoundary } from '../../cli/src/lib/shared/review-plan'
 import { createHash } from 'node:crypto'
 import { conflictPrompt, pendingConflicts } from '../../cli/src/lib/shared/board-conflicts'
+import { idleStopConfirmed } from '../../cli/src/lib/agent/wire/codex-background-types'
 import { createIdleWatchdog, IDLE_FAILURE } from '../../cli/src/lib/agent/idle'
-import { pauseLine, planRetry, type ExecutionFailure, type RetryPause } from '../../cli/src/lib/agent/retry'
+import { pauseLine, planRetry, syncRepairPrompt, type ExecutionFailure, type RetryPause } from '../../cli/src/lib/agent/retry'
 import { executionFailure } from '../../cli/src/lib/agent/wire/failures'
 import { taskStudioContext } from './task-folder'
 import { connectionIdentity, endConnection } from '../../cli/src/lib/agent/connection-process'
@@ -333,8 +334,8 @@ function streamOut(deps: Shared, id: string, lease: Lease) {
   const event = (e: RunEvent) => {
     if (!valid()) return
     if (e.kind === 'message') messages.push(e.data.text)
-    const content = ['message', 'tool_call', 'tool_call_update', 'plan'].includes(e.kind) || e.kind === 'phase' && !!e.data.contentAt
-    const immediate = e.kind === 'phase' || content && !firstContent
+    const content = ['message', 'tool_call', 'tool_call_update', 'plan'].includes(e.kind) || e.kind === 'phase' && !!e.data.contentAt || e.kind === 'status' && e.data.state === 'thinking'
+    const immediate = e.kind === 'phase' || e.kind === 'status' || content && !firstContent
     firstContent ||= content
     const stamped = Object.assign({}, e, { data: { ...e.data, eventAt: 'eventAt' in e.data ? e.data.eventAt : new Date().toISOString() } })
     const chars = JSON.stringify(stamped).length
@@ -482,7 +483,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   const local = readCheckpoint(id)
   const previous = local ?? (job.recoveryOf ? readCheckpoint(job.recoveryOf) : null)
   const checkpoint: Checkpoint = previous ?? { pending: [], started: false, effects: false }
-  if (checkpoint.boardContinuation) job = { ...job, flow: undefined, review: undefined, handoff: undefined, prompt: checkpoint.boardContinuation.prompt, resume: checkpoint.session, fork: false }
+  if (checkpoint.boardContinuation) job = { ...job, task: job.task ?? job.review?.tasks[0], flow: undefined, review: undefined, handoff: undefined, prompt: checkpoint.boardContinuation.prompt, resume: checkpoint.session, fork: false }
   const reply = !!(job.chat || job.discussion) && !job.flow
   const spent = (): JobReport | undefined => reply && checkpoint.attempts?.length && !(job.recoveryOf && !local && checkpoint.completed)
     ? { session: checkpoint.session, ...replySpent(checkpoint, job.runtime) } : undefined
@@ -516,7 +517,13 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     delete checkpoint.attempts
     delete checkpoint.partialReply
   }
-  checkpoint.session ??= job.resume ?? undefined
+  const forkSource = job.fork ? job.resume : checkpoint.forkSource
+  if (forkSource && !checkpoint.submitted) {
+    checkpoint.forkSource = forkSource
+    if (!job.fork && !checkpoint.session && replayable(checkpoint)) job = { ...job, resume: forkSource, fork: true }
+  }
+  if (forkSource && checkpoint.session === forkSource && checkpoint.submitted !== true) delete checkpoint.session
+  if (!forkSource) checkpoint.session ??= job.resume ?? undefined
   const updateContinuation = updating && !checkpoint.failure && !checkpoint.retry?.pending
   const updateReplay = reply && updateContinuation && !checkpoint.session && job.runtime !== 'antigravity'
     && checkpoint.cleanup?.status !== 'unconfirmed' && replayable(checkpoint)
@@ -568,8 +575,8 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     || (job.retryReplay === true && !local)
     || (!!pendingRetry && pendingRetry.failure.level === 2 && replayable(checkpoint)
       && (pendingRetry.failure.code !== 'runner_interrupted' || !checkpoint.session)))
-  if (recovering && checkpoint.session && !replay) job = { ...job, resume: checkpoint.session, fork: false }
-  if (replay) job = { ...job, resume: null, fork: false }
+  if (recovering && checkpoint.session && (!replay || forkSource && !checkpoint.submitted)) job = { ...job, resume: checkpoint.session, fork: false }
+  else if (replay && !forkSource) job = { ...job, resume: null, fork: false }
   if (updating) {
     delete checkpoint.updating
     saveCheckpoint(id, checkpoint)
@@ -600,9 +607,8 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   }
   if (job.secret) return runSecret(job, deps)
   if (job.test) return runTest(job, deps, lease)
-  if (job.agent) return runAgentJob(job as Job & { agent: AgentJob }, deps, track, keep, lease, checkpoint, persist)
 
-  const waitingStream = pendingRetry ? replyStream ?? (scope.waitingStream = streamOut(deps, id, lease)) : undefined
+  const waitingStream = pendingRetry || (job.task && !job.flow && !job.agent && !job.review) ? replyStream ?? (scope.waitingStream = streamOut(deps, id, lease)) : undefined
   if (pendingRetry && waitingStream) {
     const stream = waitingStream
     track(stream.stop)
@@ -633,7 +639,8 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
 
   // A task, and a review in its first task's, runs only in the project's folder here (#516).
   const task = job.task ?? job.review?.tasks[0] ?? null
-  const folder = task && !job.projectDir ? { refused: NO_FOLDER } : folderFor(job)
+  const folder = task && !job.projectDir ? { refused: NO_FOLDER }
+    : job.agent && !job.projectDir ? { refused: 'This project has no folder on this computer.' } : folderFor(job)
   if (folder && 'refused' in folder) {
     return finishClaimed('failed', folder.refused)
   }
@@ -643,6 +650,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   let run: Plan | null = null
   let goalFile: string | null = null
   let discussed: string | undefined
+  let syncDiagnostic = ''
   const sendResult = (report: JobReport, landed = () => {}) => {
     const prior = checkpoint.boardContinuation?.report
     const sum = (key: keyof NonNullable<JobReport['usage']>) => (prior?.usage?.[key] ?? 0) + (report.usage?.[key] ?? 0)
@@ -651,44 +659,70 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     const costUsd = prior?.costUsd !== undefined && report.costUsd !== undefined && !reply && job.runtime !== 'claude-code'
       ? prior.costUsd + report.costUsd : report.costUsd ?? prior?.costUsd
     const completed = prior ? { ...prior, session: report.session ?? prior.session, ...(usage ? { usage } : {}), ...(costUsd !== undefined ? { costUsd } : {}) } : report
-    return sendBack(deps, id, lease, ws!, completed, landed, async () => {
-      const records = pendingConflicts(ws!.board)
-      const facts = createHash('sha256').update(JSON.stringify(records.map(r => ({ id: r.id, state: r.state, files: r.files })))).digest('hex')
-      const original = completed
-      if (!records.length) return finishClaimed('failed', 'The board write was refused without recoverable conflict facts.', original)
-      if (checkpoint.boardContinuation?.facts === facts) return finishClaimed('failed', `Board content conflicts remain unresolved: ${records.map(r => r.id).join(', ')}. Contents and resolution drafts are preserved.`, original)
+    return sendBack(deps, id, lease, ws!, completed, landed, async pushed => {
+      const records = pushed.conflict ? pendingConflicts(ws!.board) : []
+      const facts = createHash('sha256').update(JSON.stringify(pushed.conflict
+        ? records.map(r => ({ id: r.id, state: r.state, files: r.files })) : pushed.failure)).digest('hex')
+      if (pushed.conflict && !records.length) {
+        console.error(JSON.stringify({ code: 'board_conflict_missing', phase: 'publish-result', job: id, task: job.task, project: job.project }))
+        return finishClaimed('failed', 'The result could not be saved safely. Saved work was preserved.', completed)
+      }
+      if (checkpoint.boardContinuation?.facts === facts || !pushed.conflict && checkpoint.boardContinuation?.validation) {
+        return finishClaimed('failed', pushed.conflict ? `Board content conflicts remain unresolved: ${records.map(r => r.id).join(', ')}. Contents and resolution drafts are preserved.` : pushed.error, completed)
+      }
       const session = report.session ?? checkpoint.session
-      if (!session) return finishClaimed('failed', 'Board content conflicts are preserved, but the task session could not be recovered.', original)
+      if (job.review && !session) return finishClaimed('failed', pushed.error, completed)
       const requestedAt = leaseNow()
       const renewed = await deps.api.renewJob(deps.machineId, id)
       if (!renewed.ok || !renewed.value.renewed || !held(deps, lease)) return
-      if (renewed.value.stop) return finishClaimed('stopped', '', original)
+      if (renewed.value.stop) return finishClaimed('stopped', '', completed)
       Object.assign(lease, requestedAt)
-      if (deps.authorize && !await deps.authorize(job)) return finishClaimed('failed', 'Project authorization changed. Board conflict contents are preserved.', original)
-      const prompt = conflictPrompt(ws!.board, 'Resolve and confirm synchronization, preserve completed work, then return the saved result.')
-      checkpoint.boardContinuation = { report: original, facts, prompt }
+      if (deps.authorize && !await deps.authorize(job)) return finishClaimed('failed', 'Project authorization changed. Saved work was preserved.', completed)
+      const prompt = pushed.conflict
+        ? conflictPrompt(ws!.board, 'Resolve and confirm synchronization, preserve completed work, then return the saved result.')
+        : syncRepairPrompt(pushed.failure!.reason)
+      checkpoint.boardContinuation = { report: completed, facts, prompt, validation: !pushed.conflict || checkpoint.boardContinuation?.validation }
       checkpoint.session = session
       delete checkpoint.completed
       persist()
       scope.progress?.cancel()
       scope.bridge?.close()
-      await runClaimed({ ...job, flow: undefined, review: undefined, handoff: undefined, prompt, resume: session, fork: false }, deps, track, keep, lease)
+      await runClaimed({ ...job, prompt, resume: session, fork: false }, deps, track, keep, lease)
+    }, async () => {
+      const reviewed = checkpoint.reviewedRejections
+      if (!reviewed) return { ok: true, value: undefined }
+      const marked = await deps.api.markReviewed(reviewed.tasks, reviewed.triage)
+      if (marked.ok) {
+        delete checkpoint.reviewedRejections
+        persist()
+      }
+      return marked
     })
   }
   try {
-    if (task) {
+    if (job.agent) {
+      ws = openAgentFolder(job, folder.cwd)
+      cwd = ws.cwd
+      keep(cwd)
+      if (!checkpoint.boardContinuation) return runAgentJob(job as Job & { agent: AgentJob }, ws, deps, track, lease, checkpoint, persist, sendResult)
+    } else if (task) {
       ws = openTaskFolder({ ...job, task }, folder?.cwd ?? null)
       cwd = ws.cwd
       keep(cwd)
       // A flow job, and a review, pulls once its board is there.
       if (!job.flow && !job.review) {
-        const pulled = await pull(ws, deps.machineId)
-        if (!pulled.ok && pulled.code !== 'board_content_conflict') throw new Error(pulled.error)
+        if (waitingStream) track(waitingStream.stop)
+        const pulled = await pull(ws, deps.machineId, () => !held(deps, lease) || !!waitingStream?.asked() || !!waitingStream?.lost())
+        if (!pulled.ok) {
+          if (pulled.code === 'stopped') return waitingStream?.asked() ? finishClaimed('stopped') : undefined
+          if (pulled.failure?.level === 1) syncDiagnostic = syncRepairPrompt(pulled.failure.reason)
+          else if (pulled.code !== 'board_content_conflict') throw new Error(pulled.error)
+        }
       }
     }
     if (ws && job.chat && !job.flow && !checkpoint.completed) {
       const folder = ws
-      scope.bridge = await replyApprovalBridge(job.task!, job.number!, (comment, asked, target) => withBoard(folder, async (send) => {
+      scope.bridge = await replyApprovalBridge(job.task!, job.number!, async (comment, asked, target) => await withBoard(folder, async (send) => {
         if (checkpoint.approvalCancelled) return { ok: false, error: 'This reply failed before. Ask again in a new reply.' }
         const pushed = await send({ id, machineId: deps.machineId })
         if (!pushed.ok) return { ok: false, error: pushed.error }
@@ -701,7 +735,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
         checkpoint.approvalRequested = true
         persist()
         return api.approveReply(deps.machineId, id, { card_version: version, review_revision: target.review_revision, stage: target.stage, comment })
-      }))
+      }, () => !held(deps, lease) || !!waitingStream?.asked()) ?? { ok: false, error: 'Task preparation stopped.' })
     }
     if (checkpoint.completed) {
       const done = checkpoint.completed
@@ -724,12 +758,12 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       // Behind the reply: until it lands, the catalogue on disk names the window.
       void refreshCatalog()
       const attachments = writeAttachments(job)
-      const head = (job.taskReview ? reviewBoundary(job.taskReview) + '\n\n' : '') + folderLines(ws) + (ws ? '\n\n' + conflictPrompt(ws.board) : '') + (ws ? "\n\n" + taskStudioContext(ws, !job.resume) : "") + attachments.text
+      const head = (syncDiagnostic ? syncDiagnostic + '\n\n' : '') + (job.taskReview ? reviewBoundary(job.taskReview) + '\n\n' : '') + folderLines(job.agent ? null : ws) + (ws ? '\n\n' + conflictPrompt(ws.board) : '') + (ws && !job.agent ? '\n\n' + taskStudioContext(ws, !job.resume) : '') + attachments.text
       const file = writeTranscript(job, attachmentsOf(job))
       const transcript = file ? `\n\nThis task came out of a discussion. Read it for what the card leaves out: ${file}` : ''
       const promptOf = (said: string) => {
         const lines = (head + said).trim()
-        const prompt = recovering && !replay && (checkpoint.started || job.recoveryOf)
+        const prompt = recovering && !replay && (!forkSource || checkpoint.submitted === true) && (checkpoint.started || job.recoveryOf)
           ? [job.runtime === 'antigravity' ? job.prompt : '', '连接恢复后继续之前中断的回复。先核对已有进度和操作结果，保留完成的工作与用户决定，不要重复已经执行的操作；结果尚未确认时先检查实际状态。', pendingRetry ? `Previous execution failed: ${pendingRetry.failure.reason}` : ''].filter(Boolean).join('\n\n')
           : job.prompt
         return lines ? `${lines}\n\n---\n\n${prompt}` : prompt
@@ -738,7 +772,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
         let p = deps.plan(job.runtime, promptOf(said), cwd, resume, job.model, settingsOf(job), fork, cloudLanguage(job))
         p.renderer?.setRequiredImages?.(attachments.files)
         // A task's chat changes its card with the akb the Runner carries, on the task's board.
-        if (ws) p = { ...p, env: akbEnv(deps.akb, ws.board, ws.task, cloudLanguage(job), p.env) }
+        if (ws) p = { ...p, env: akbEnv(deps.akb, ws.board, ws.cloudTask ?? undefined, cloudLanguage(job), p.env) }
         if (ws) p = { ...p, env: { ...p.env, AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId }) } }
         if (scope.bridge) p = { ...p, env: { ...p.env, AI4KANBAN_REPLY_APPROVAL: scope.bridge.env } }
         if (goalFile) p = { ...p, env: { ...akbEnv(deps.akb, discussed, undefined, cloudLanguage(job), p.env), KANBAN_GOALS: goalFile, KANBAN_IDEAS: goalFile } }
@@ -807,7 +841,8 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   }
   const account = readSession()?.subject
   const generation = accountGeneration()
-  const evidence = scope.progress = conversationProgress((checkpoint.retry?.attempt ?? 1) + Number(!!pendingRetry), async progress => {
+  const replyAttempt = (checkpoint.retry?.attempt ?? 1) + Number(!!pendingRetry)
+  const evidence = scope.progress = conversationProgress(replyAttempt, async progress => {
     const result = await deps.api.renewJob(deps.machineId, id, { ...progress, ...(job.claim ? { claim: job.claim } : {}) })
     if (!evidence.active()) return
     if (!result.ok) throw new Error(result.error)
@@ -821,7 +856,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     idleWatch?.event(event)
     if (stream.lost()) return
     const at = new Date().toISOString()
-    event = Object.assign({}, event, { data: { ...event.data, eventAt: at } })
+    event = Object.assign({}, event, { data: { ...event.data, eventAt: at, ...(reply ? { attempt: replyAttempt } : {}) } })
     evidence.observe(event, at)
     subagents.event(event)
     checkpointEvent(checkpoint, event)
@@ -830,7 +865,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       checkpoint.partialReply = messages.join('\n\n')
     }
     const session = run?.session()
-    if (session) checkpoint.session = session
+    if (session && (!job.fork || session !== forkSource)) checkpoint.session = session
     if (attempt && !run?.converse) measure(report(job, run!))
     persist()
     stream.event(event)
@@ -876,7 +911,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   }
   track(stream.stop)
 
-  const io = { show: stream.out, event: remember, track: stream.adopt, onStop: stream.onStop, lost: stream.lost }
+  const io = { show: stream.out, event: remember, track: stream.adopt, onStop: stream.onStop, lost: stream.lost, asked: stream.asked }
   if (job.review) {
     checkpoint.started = true
     persist()
@@ -933,7 +968,8 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     checkpoint.mark = stopMark()
     checkpoint.started = true
     checkpoint.opaque = !plan.converse && !plan.renderer?.events
-    checkpoint.session = plan.session() ?? (replay ? undefined : checkpoint.session)
+    const session = plan.session()
+    checkpoint.session = job.fork && session === forkSource ? undefined : session ?? (replay && !forkSource ? undefined : checkpoint.session)
     checkpoint.launching = true
     delete checkpoint.process
     delete checkpoint.cleanup
@@ -961,10 +997,20 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     child.stderr.on('data', (chunk: string) => stream.out(quietLines(plan, chunk)))
     const spawned = new Promise<ExecutionFailure>((resolve) => child.on('error', (e) => resolve(executionFailure(e))))
     const cancellation = new AbortController()
+    const idle = new AbortController()
+    let uncertainAtIdle = false
     void stream.whenAsked.then(() => cancellation.abort())
     let timedOut!: (end: TurnEnd) => void
     const timeout = new Promise<TurnEnd>(resolve => { timedOut = resolve })
     idleWatch = createIdleWatchdog(() => {
+      if (plan.idleRecovery) {
+        uncertainAtIdle = checkpoint.pending.length > 0
+        checkpoint.failure = IDLE_FAILURE
+        checkpoint.cleanup = { status: 'unconfirmed', execution: id, kept: [] }
+        persist()
+        idle.abort()
+        return
+      }
       timedOut({ ok: false, error: IDLE_FAILURE.reason, failure: IDLE_FAILURE,
         ...(plan.managedProcess ? { cleanup: { status: 'unconfirmed', execution: id, kept: [] } } : {}) })
       cancellation.abort()
@@ -972,13 +1018,16 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     }, () => !!plan.background?.())
     const end = await Promise.race([
       timeout,
-      converse(child, remember, false, Date.now() + CONVERSATION_MS.prepare, cancellation.signal, () => idleWatch?.touch()),
+      converse(child, remember, false, Date.now() + CONVERSATION_MS.prepare, cancellation.signal, () => idleWatch?.touch(), idle.signal),
       spawned.then((failure): TurnEnd => ({ ok: false, error: failure.reason, failure })),
       // Killed, the turn ends with what it said so far; one that never does is not waited on.
       stream.whenAsked.then(() => wait(KILL_GRACE_MS * 2)).then((): TurnEnd => ({ ok: true })),
     ])
     idleWatch.close()
-    checkpoint.cleanup = end.cleanup
+    if (idle.signal.aborted) {
+      if (!uncertainAtIdle && !checkpoint.pending.length && idleStopConfirmed(end.cleanup, checkpoint.session)) checkpoint.cleanup = end.cleanup
+      else checkpoint.cleanup = { ...end.cleanup, status: 'unconfirmed', execution: end.cleanup?.execution ?? id, kept: end.cleanup?.kept ?? [] }
+    } else checkpoint.cleanup = end.cleanup
     persist()
     let measured = measure(report(job, plan, end))
     if (reply && end.replyParts) {
@@ -990,7 +1039,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       })
       if (parts) measured = { ...measured, parts, reply: parts.filter(p => p.type === 'text').map(p => p.text).join('') }
     }
-    const rawFailure = end.ok ? undefined : end.failure ?? { code: 'execution_failed', level: 3 as const, reason: end.error ?? 'The agent did not complete the reply.' }
+    const rawFailure = idle.signal.aborted ? IDLE_FAILURE : end.ok ? undefined : end.failure ?? { code: 'execution_failed', level: 3 as const, reason: end.error ?? 'The agent did not complete the reply.' }
     if (rawFailure?.code === 'session_not_found') checkpoint.session = undefined
     measured = retainReply(measured, !end.ok)
     if (await retry(rawFailure)) return
@@ -1105,19 +1154,10 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
 }
 
 /** A periodic agent, on the project's folder here; a job for a project with none here fails. */
-async function runAgentJob(job: Job & { agent: AgentJob }, deps: StepDeps, track: (stop: () => Promise<void>) => void, keep: (dir: string) => void, lease: Lease, checkpoint: Checkpoint, persist: () => void): Promise<void> {
-  const folder = job.projectDir ? folderFor(job) : { refused: 'This project has no folder on this computer.' }
-  let ws: TaskFolder
-  try {
-    if ('refused' in folder) throw new Error(folder.refused)
-    ws = openAgentFolder(job, folder.cwd)
-    keep(ws.cwd)
-  } catch (e) {
-    await deps.api.finishJob(deps.machineId, job.id, 'failed', e instanceof Error ? e.message : String(e))
-    return
-  }
+async function runAgentJob(job: Job & { agent: AgentJob }, ws: TaskFolder, deps: StepDeps, track: (stop: () => Promise<void>) => void,
+  lease: Lease, checkpoint: Checkpoint, persist: () => void, sendResult: (report: JobReport) => Promise<void>): Promise<void> {
   if (!held(deps, lease)) return
-  if (checkpoint.completed) return sendBack(deps, job.id, lease, ws, checkpoint.completed.report, () => {})
+  if (checkpoint.completed) return sendResult(checkpoint.completed.report)
   checkpoint.started = true
   persist()
   const stream = streamOut(deps, job.id, lease)
@@ -1127,15 +1167,17 @@ async function runAgentJob(job: Job & { agent: AgentJob }, deps: StepDeps, track
     checkpointEvent(checkpoint, event)
     persist()
     stream.event(event)
-  }, track: stream.adopt, onStop: stream.onStop, lost: stream.lost })
+  }, track: stream.adopt, onStop: stream.onStop, lost: stream.lost, asked: stream.asked })
   if (ended.ok && !stream.lost()) {
     checkpoint.completed = { outcome: 'done', report: ended.report }
+    checkpoint.reviewedRejections = ended.reviewed
     persist()
   }
   await stream.end()
   if (stream.lost()) return
+  if (stream.asked()) return finish(deps, job.id, lease, 'stopped')
   if (!ended.ok) return finish(deps, job.id, lease, 'failed', ended.reason)
-  return sendBack(deps, job.id, lease, ws, ended.report)
+  return sendResult(ended.report)
 }
 
 const quietLines = (plan: Plan, chunk: string) =>
@@ -1143,12 +1185,16 @@ const quietLines = (plan: Plan, chunk: string) =>
 
 function canRetryReply(checkpoint: Checkpoint, failure: ExecutionFailure, runtime: string): boolean {
   if (checkpoint.cleanup?.status === 'unconfirmed') return false
+  if (checkpoint.managedProcess && failure.code === 'idle_timeout') {
+    return resumable(checkpoint) && idleStopConfirmed(checkpoint.cleanup, checkpoint.session)
+  }
   if (resumable(checkpoint)) return true
   return failure.level === 2 && runtime !== 'antigravity' && replayable(checkpoint)
 }
 
 function replyReason(failure: ExecutionFailure | undefined, pause: RetryPause | undefined, job: Job, unsafe: boolean): string | undefined {
   if (!failure) return
+  if (failure.source === 'invariant') return failure.reason
   if (unsafe || pause === 'unsafe') return 'recovery_unsafe'
   if (failure.code === 'session_not_found' && job.sessionFallback) return 'session_unavailable'
   return pause ? `${failure.reason}\n${pauseLine(pause, cloudLanguage(job) === 'zh')}` : failure.reason
@@ -1222,16 +1268,24 @@ async function finish(deps: Shared, id: string, lease: Lease, outcome: Outcome, 
 }
 
 /** What the job changed goes back, then how it ended; `landed` once both were taken. */
-async function sendBack(deps: StepDeps, id: string, lease: Lease, ws: TaskFolder, said: JobReport, landed = () => {}, onConflict?: () => Promise<void>): Promise<void> {
+async function sendBack(deps: StepDeps, id: string, lease: Lease, ws: TaskFolder, said: JobReport, landed = () => {}, repair?: (problem: Extract<Pushed, { ok: false }>) => Promise<void>, confirm?: () => Promise<api.Call<unknown>>): Promise<void> {
   const report = said
   const pushed = await whileOffline<Pushed>(deps, id, lease, () => push(ws, { id, machineId: deps.machineId }))
   if (!pushed) return
   if (pushed.ok) {
+    if (confirm) {
+      const result = await whileOffline(deps, id, lease, async () => {
+        const answer = await confirm()
+        return { answer, offline: !answer.ok && !answer.code }
+      })
+      if (!result || result.offline) return
+      if (!result.answer.ok) return finish(deps, id, lease, 'failed', result.answer.error, report)
+    }
     if (await ended(deps, id, lease, 'done', '', { ...report, ...(readCheckpoint(id)?.approvalRequested ? { replyApprovalSynced: report.replyApprovalSynced !== false && replyAssetsSynced(ws) } : {}) })) landed()
     return
   }
   if (pushed.offline) return
-  if (pushed.conflict && onConflict) return onConflict()
+  if ((pushed.conflict || pushed.failure?.level === 1) && repair) return repair(pushed)
   await finish(deps, id, lease, 'failed', pushed.error, report)
 }
 

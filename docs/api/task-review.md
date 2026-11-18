@@ -9,21 +9,21 @@ Preview 是待审产物，不是执行步骤；节点不引用 Preview Agent。
 
 ```json
 [
-  {"id":"script","title":"脚本","previews":["script"]},
-  {"id":"style","title":"画面风格","after":[],"previews":["keyframes"]},
-  {"id":"storyboard","title":"分镜","after":["script","style"],"previews":["storyboard"]}
+  {"id":"script","previews":["script"]},
+  {"id":"style","after":[],"previews":["keyframes"]},
+  {"id":"storyboard","after":["script","style"],"previews":["storyboard"]}
 ]
 ```
 
 - **`id`**：任务内唯一、非空且稳定的节点标识。
-- **`title`**：非空，使用任务语言；工作内容沿用 Goal 的产出与验收条件。
 - **`after?`**：直接前置节点的 ID；省略为 `[]`。全部前置获得有效批准才解锁。
-- **`previews?`**：所属 Studio 的 Preview 标识；省略为 `[]`，可跨节点复用。无 Preview 时仍审核正文。
+- **`previews?`**：所属 Studio 的 Preview 标识；省略为 `[]`，可跨节点复用。界面按语言显示 Studio 的名称和说明。无 Preview 时审核正文，显示系统文案。
 - **`null`**：安排未定，只允许规划；`[]` 表示无需额外审核，执行已授权工作。
 
 前后端、CLI 与 Runner 共用 Zod Schema 和 Kahn 拓扑校验纯函数，开放代码不导入 Cloud 或 Web。
 先校验字段类型与非空值，再拒绝重复 ID、重复依赖、未知引用、自依赖、循环和未知 Preview。
 引用可指向数组后面的节点。校验输出规范化列表（补齐两个空数组）和拓扑层级；层级由依赖计算，不另存一份计划。
+节点写入只接受上述字段。既有计划或冻结快照可能仍含历史标题，界面使用 Studio 元数据。
 失败不部分保存、不派发工作；HTTP 返回 `400 bad_request`，CLI 非零退出，MCP 返回 `isError:true`。
 
 ## 读取任务
@@ -40,9 +40,9 @@ GET /v1/tasks/W-818
   "review": {
     "revision": 8,
     "plan": [
-      {"id":"script","title":"脚本","after":[],"previews":["script"]},
-      {"id":"style","title":"画面风格","after":[],"previews":["keyframes"]},
-      {"id":"storyboard","title":"分镜","after":["script","style"],"previews":["storyboard"]}
+      {"id":"script","after":[],"previews":["script"]},
+      {"id":"style","after":[],"previews":["keyframes"]},
+      {"id":"storyboard","after":["script","style"],"previews":["storyboard"]}
     ],
     "pending_plan": null,
     "stages": [
@@ -51,9 +51,9 @@ GET /v1/tasks/W-818
         "stageId":"script",
         "body":"已同步的脚本正文",
         "plan":[
-          {"id":"script","title":"脚本","after":[],"previews":["script"]},
-          {"id":"style","title":"画面风格","after":[],"previews":["keyframes"]},
-          {"id":"storyboard","title":"分镜","after":["script","style"],"previews":["storyboard"]}
+          {"id":"script","after":[],"previews":["script"]},
+          {"id":"style","after":[],"previews":["keyframes"]},
+          {"id":"storyboard","after":["script","style"],"previews":["storyboard"]}
         ],
         "previews":[{"id":"script","assets":[]}]
       }},
@@ -80,14 +80,14 @@ GET /v1/tasks/W-818
 `review_revision` 必须是读取时的 **`review.revision`**；成功返回最新 Task。
 
 ```json
-{"operation":"plan","review_revision":8,"review_plan":[{"id":"script","title":"脚本","previews":["script"]}]}
+{"operation":"plan","review_revision":8,"review_plan":[{"id":"script","previews":["script"]}]}
 ```
 
 `plan` 校验候选安排并冻结到 `pending_plan`，不替换有效计划。
 安排未定时的首次提案也需确认；待确认期间暂停新节点派发。
 批准计划只接受约定，不批准其中的产物。
 批准后按新依赖重算解锁状态；定义改变或删除的节点及其下游失去有效批准，按新旧依赖的并集确定影响范围。
-仅调整展示顺序或标题不使产物批准失效；未受影响节点保留状态、版本和批准。
+仅调整展示顺序不使产物批准失效；未受影响节点保留状态、版本和批准。
 
 ```json
 {"operation":"status","review_revision":8,"stage":"style","status":"done"}

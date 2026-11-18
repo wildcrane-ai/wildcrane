@@ -12,9 +12,15 @@ export function executionOwner(environment: NodeJS.ProcessEnv) {
   return { run: environment.KANBAN_RUN?.trim() || undefined, task: environment.AI4KANBAN_TASK?.trim() || undefined, job: str(execution.job).trim() || undefined }
 }
 
-export function ownershipConflict(thread: string, requester: Partial<ThreadLease>, owner: ThreadLease | undefined, status: string) {
+export function ownershipConflict(thread: string, requester: Partial<ThreadLease>, owner: ThreadLease | undefined, status: string, phase: string, wait = false) {
   const describe = (value?: Partial<ThreadLease>) => ({ run: value?.run ?? 'unknown', task: value?.task ?? 'unknown', job: value?.job ?? 'unknown', pid: value?.pid ?? 'unknown', lease: value?.lease ?? 'unknown' })
-  return Error(`Codex thread is already in use by another run. ${JSON.stringify({ thread, requester: describe(requester), owner: describe(owner), status })}`)
+  const evidence = { thread, requester: describe(requester), owner: describe(owner), status, phase }
+  const failure = wait
+    ? { code: 'codex_source_busy', level: 2, source: 'harness', reason: 'Waiting for the source conversation to finish.' }
+    : { code: 'codex_ownership_unconfirmed', level: 3, source: 'invariant', reason: 'The conversation could not be opened safely. Saved work was preserved.' }
+  if (!wait) console.error(JSON.stringify({ code: failure.code, ...evidence }))
+  const message = status === 'caller-does-not-own-thread' ? 'This run does not own that Codex thread.' : 'Codex thread is already in use by another run.'
+  return new RpcError(`${message} ${JSON.stringify(evidence)}`, -32000, { wildcraneFailure: failure })
 }
 
 export async function inspectThread(rpc: Awaited<ReturnType<typeof nativeConnection>>['rpc'], threadId: string) {

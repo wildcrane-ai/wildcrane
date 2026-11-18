@@ -26,6 +26,7 @@ import type { ContextWindow, TokenUsage } from '../types'
 export interface ClientTurn {
   activity?: () => void
   signal?: AbortSignal
+  idleSignal?: AbortSignal
   /** The command's own streams. The client owns the conversation on both: this stdout is a
    *  protocol, not a log, and nothing else reads it for meaning. The runner listens to it
    *  too, but only to count bytes against the silence window (#394). */
@@ -86,6 +87,7 @@ export interface TurnEnd {
 export interface RunClient {
   /** Codex owns managed work; close only its connection process. */
   managedProcess?: boolean
+  idleRecovery?: boolean
   /** Drive one turn to its end. Never rejects: every way this can go wrong is an ending
    *  worth showing in the log. */
   turn(io: ClientTurn): Promise<TurnEnd>

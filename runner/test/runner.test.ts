@@ -1710,10 +1710,10 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.deepEqual(stop, { reason: 'elsewhere', machine: 'laptop' })
   })
 
-  it('registers with protocol 25', async () => {
+  it('registers with protocol 26', async () => {
     start()
     await until(() => cloud.registrations > 0)
-    assert.equal(cloud.protocol, 25)
+    assert.equal(cloud.protocol, 26)
   })
 
   it('stops as outdated when Cloud no longer takes its protocol', async () => {
@@ -2913,6 +2913,25 @@ describe('a task’s folder (#2037)', () => {
     }
   })
 
+  it('reports an invalid required storyboard and an oversized card as content failures (#885)', async () => {
+    await prepareBoard()
+    const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cached())
+    fs.appendFileSync(path.join(board(), CARD), '\n<Preview id="ui-design">\n\n<Storyboard src="deck.json" />\n\n</Preview>\n')
+    fs.writeFileSync(path.join(board(), 'todo/deck.json'), '{ incomplete')
+    let result = await push(ws, { id: 'result', machineId: MACHINE })
+    assert.ok(!result.ok)
+    assert.equal(result.failure?.source, 'validation')
+    assert.match(result.error, /deck\.json: not valid JSON/)
+    assert.equal(cloud.file(CARD), BODY)
+
+    fs.writeFileSync(path.join(board(), CARD), BODY + 'x'.repeat(10 * 1024 * 1024))
+    result = await push(ws, { id: 'result', machineId: MACHINE })
+    assert.ok(!result.ok)
+    assert.equal(result.failure?.code, 'card_too_large')
+    assert.match(result.error, /Move large results to assets/)
+    assert.equal(cloud.file(CARD), BODY)
+  })
+
   it('does not rewrite unchanged asset records or reorder their index', async (t) => {
     const first = await runTask('j1', `
       const fs = require('fs')
@@ -3412,6 +3431,84 @@ describe('a task’s folder (#2037)', () => {
     assert.ok(!cloud.log.some(l => l.includes('finish') && l.includes('conflict')))
   })
 
+  it('waits for another task to publish its preparation and stops a queued task cleanly (#882)', async () => {
+    await prepareBoard()
+    const holder = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cached())
+    const next = openTaskFolder({ task: 'task_2', project: 'prj_1', number: 2 }, cached())
+    let release!: () => void
+    let entered = false
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const original = withBoard(holder, async () => {
+      fs.writeFileSync(path.join(board(), 'memory/readme.md'), 'temporary preparation')
+      entered = true
+      await gate
+      fs.writeFileSync(path.join(board(), 'memory/readme.md'), 'Shipped')
+    })
+    await until(() => entered)
+    let stopped = false, created = 0
+    const cancelled = withBoard(next, async () => { created++ }, () => stopped)
+    const ready = pull(next, MACHINE)
+    try {
+      assert.equal(await Promise.race([ready.then(() => 'early'), new Promise(resolve => setTimeout(resolve, 160, 'waiting'))]), 'waiting')
+      stopped = true
+      await cancelled
+      assert.equal(created, 0)
+      assert.equal(cloud.file('memory/readme.md'), 'Shipped')
+    } finally { release(); await original }
+    assert.ok((await ready).ok)
+    await withBoard(next, async () => { created++ })
+    assert.equal(created, 1)
+    assert.equal(cloud.file('memory/readme.md'), 'Shipped')
+  })
+
+  it('repairs a required Preview attachment in the saved task session (#885)', async () => {
+    await prepareBoard()
+    const output = `
+<Preview id="ui-design">
+
+<Asset src="required.txt" label="Result" />
+
+</Preview>
+`
+    const original = `const fs = require('fs'); fs.appendFileSync('.akb/kanban/${CARD}', ${JSON.stringify(output)}); fs.appendFileSync('original-work.txt', 'once')`
+    const repair = "require('fs').writeFileSync('.akb/kanban/todo/required.txt', 'original result')"
+    start('', { plan: (r, prompt, cwd, resume) => fakeRuntime(prompt.includes('Correct the diagnostics') ? repair : original)(r, prompt, cwd, resume) })
+    const job = cloud.dispatch({ id: 'attachment-repair', task: 'task_1', project: 'prj_1', number: 1, studio: 'wf_own' })
+    await until(() => job.state === 'finished', 10_000)
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(planned.length, 2)
+    assert.equal(planned[1]!.resume, 'fresh-session')
+    assert.match(planned[1]!.prompt, /required\.txt: file not found/)
+    assert.equal(fs.readFileSync(path.join(cached(), 'original-work.txt'), 'utf8'), 'once')
+    const pin = JSON.parse(cloud.file('assets/task_1.json')!)['required.txt']
+    assert.equal(cloud.task.artifacts.get(pin.artifact)?.[pin.version - 1]?.toString(), 'original result')
+  })
+
+  it('reconciles an archived Coding Preview copy without hiding a substantive conflict (#874, #842)', async () => {
+    const archive = '.archive/842-coding-preview-memory.md'
+    const modern = '# Archive\n\n<Preview id="prompts">\n\nOriginal result.\n\n</Preview>\n\n## Scope\n\nArchived.\n'
+    const old = '# Archive\n\n## By `prompt-writer` agent\n\nOriginal result.\n\n## Scope\n\nArchived.\n'
+    cloud.put({ [archive]: modern })
+    await prepareBoard()
+    const ws = keptBoard(cached())!
+    fs.writeFileSync(path.join(board(), archive), old)
+    cloud.put({ [archive]: modern.replace('Original result.', 'Cloud result.') })
+    assert.ok((await pull(ws, MACHINE)).ok)
+    assert.match(read(archive), /Cloud result./)
+    assert.equal(conflictList(board()).length, 0)
+    const drafts = fs.readdirSync(path.join(board(), '.sync/legacy-previews'))
+    assert.equal(fs.readFileSync(path.join(board(), '.sync/legacy-previews', drafts[0]!, archive), 'utf8'), old)
+
+    fs.writeFileSync(path.join(board(), archive), old.replace('Original result.', 'Local result.'))
+    cloud.put({ [archive]: modern.replace('Original result.', 'New remote result.') })
+    assert.equal((await pull(ws, MACHINE)).ok, false)
+    const record = conflictShow(board(), conflictList(board())[0]!.id)
+    const fact = record.files.find(file => file.path === archive)!
+    assert.match(fact.base.content!, /Cloud result./)
+    assert.match(fact.local.content!, /Local result./)
+    assert.match(fact.remote.content!, /New remote result./)
+  })
+
   it('keeps task preparation private while allowing the agent to take the sync lock (#806)', async () => {
     await prepareBoard()
     const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cached())
@@ -3677,7 +3774,12 @@ describe('flow jobs (#2020)', () => {
     if (verb === 'create') {
       assert.equal((await pushBoard(keptBoard(cached())!, MACHINE)).ok, false, 'preparation must remain private after resolution')
       assert.equal((await push({ ...ws, task: 'other', cloudTask: 'other', number: 3 }, { id: 'other', machineId: MACHINE })).ok, false)
-      await assert.rejects(withBoard(ws, async send => send({ id: 'other', machineId: MACHINE })), /preparing task content/)
+      let cancelled = false, entered = false
+      const queued = withBoard(ws, async () => { entered = true }, () => cancelled)
+      await new Promise(resolve => setTimeout(resolve, 125))
+      cancelled = true
+      await queued
+      assert.equal(entered, false)
       assert.equal(cloud.file('todo/2-pricing-page.md'), null)
     }
     assert.equal(await withSyncLock(ws.board, async () => 'available'), 'available')
@@ -4583,6 +4685,32 @@ describe('periodic agents on the Runner (#2068)', () => {
     assert.equal(six('2026-10-26T11:59:50', '2026-10-26T17:00:00'), false, 'a pass stamped before the hour came round early')
     assert.equal(new Date(nextHour(Date.parse('2026-10-26T12:00:00'))).getHours(), 13)
     assert.equal(new Date(nextHour(Date.parse('2026-10-26T12:59:59'))).getHours(), 13)
+  })
+
+  it('resolves a scheduled agent’s saved three-way conflict without replaying its work (#885)', async () => {
+    const note = 'memory/describe-project.md'
+    cloud.put({ 'config.md': '# Board\n', [note]: 'Original description.\n' })
+    cloud.beforeNextCommit = () => cloud.put({ [note]: 'Cloud description.\n' })
+    const repair = `
+      const fs = require('fs'), cp = require('child_process'), path = require('path')
+      const board = process.env.AI4KANBAN_BOARD
+      const cli = ${JSON.stringify(path.join(process.env.RUNNER_DIST!, 'akb/bin/ai4kanban.mjs'))}
+      const call = (...args) => JSON.parse(cp.execFileSync(process.execPath, [cli, '--board', board, 'raw', 'conflict', ...args, '--json']))
+      const id = call('list').conflicts[0].id
+      const record = call('show', id).conflict
+      const found = record.files.find(file => file.path === '${note}')
+      if (found.base.content !== 'Original description.\\n' || found.remote.content !== 'Cloud description.\\n') throw Error('Expected three versions')
+      const file = path.join(board, '.sync/description-resolution.json')
+      fs.writeFileSync(file, JSON.stringify({ files: [{ path: found.path, content: 'Merged description.\\n' }] }))
+      call('resolve', id, '--expect', record.revision, '--file', file)
+    `
+    start('', { plan: fakeRuntime(repair) })
+    const job = cloud.dispatch({ id: crypto.randomUUID(), project: 'prj_1', projectDir: project,
+      agent: { name: 'describe-project' }, runtime: 'claude-code' })
+    await until(() => job.state === 'finished', 10_000)
+    assert.equal(job.outcome, 'done', [job.reason, ...job.events.map(event => event.text)].join('\n'))
+    assert.equal(cloud.file(note), 'Merged description.\n')
+    assert.equal(conflictList(board()).length, 0)
   })
 
   it('looks only when the hour comes: not on connecting, nor on a heartbeat (#291)', async () => {

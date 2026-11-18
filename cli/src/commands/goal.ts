@@ -1,7 +1,7 @@
 // 目标草稿沿用 KANBAN_IDEAS 和 ideas 文件字段，兼容旧 Runner。
 
 import fs from 'node:fs'
-import { parseReviewPlan, type ReviewPlan } from '../lib/shared/review-plan'
+import { parseReviewPlan, readReviewPlan, type ReviewPlan } from '../lib/shared/review-plan'
 
 import { say } from '../lib/io'
 import { die } from '../lib/paths'
@@ -53,6 +53,7 @@ export function loadGoals(): { file: string; held: GoalsFile } {
   if (held.goals !== undefined && held.ideas !== undefined && JSON.stringify(held.goals) !== JSON.stringify(held.ideas)) die('goals and ideas do not match.')
   const goals = held.goals ?? held.ideas
   if (!Array.isArray(goals)) die('The goals array is missing or invalid.')
+  for (const goal of goals) if (goal.review_plan !== undefined) goal.review_plan = readReviewPlan(goal.review_plan)
   return { file, held: { ...held, studios: held.studios ?? [], goals } }
 }
 

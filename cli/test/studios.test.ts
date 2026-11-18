@@ -19,6 +19,7 @@ icon: notebook
 previews:
   notes:
     title: {en: Release notes, zh: 更新说明}
+    description: {en: Review release notes., zh: 审阅更新说明。}
 ---
 
 Write requested notes.
@@ -74,6 +75,22 @@ it('keeps indented historical examples literal without masking list resources (#
   assert.equal(checkStudioFiles({ ...files, 'STUDIO.md': nested }).ok, false)
 })
 
+it('requires localized display text when authoring custom Previews and keeps legacy definitions readable', () => {
+  const legacy = source.replace(/    description: .*\n/, '')
+  assert.equal(previewCatalog({ ...files, 'STUDIO.md': legacy })[0]?.description, undefined)
+  for (const text of [
+    legacy,
+    source.replace('Review release notes.', '   '),
+    source.replace(', zh: 审阅更新说明。', ''),
+    source.replace(', zh: 更新说明}', '}'),
+  ]) {
+    const result = checkStudioFiles({ ...files, 'STUDIO.md': text })
+    assert.ok(!result.ok)
+    assert.match(result.reason, /notes/)
+  }
+  assert.ok(checkStudioFiles(files).ok)
+})
+
 it('preserves display metadata and resources through full definition round trips', () => {
   const read = checkStudioFiles(files)
   assert.ok(read.ok)
@@ -120,7 +137,7 @@ it('migrates old groups idempotently without losing Sets, file versions or sourc
   assert.deepEqual(migrateTask(first.body, first.previews, { 'api-designer': 'api-docs' }, first.historical), first)
   assert.equal(first.body.split('<!-- agent -->')[1], old.split('<!-- agent -->')[1])
   const converted = migrateStudio({ 'STUDIO.md': '---\nname: Old\npreviews: [writer]\nland: []\n---\n\nDo requested work.', 'agents/writer/AGENT.md': '---\nname: writer\ndescription: Write notes\n---\n\nWrite a short document.' })
-  assert.ok(checkStudioFiles(converted.files).ok)
+  assert.ok(checkStudioFiles(converted.files, false, true).ok)
   assert.ok(!Object.keys(converted.files).some(p => p.startsWith('agents/')))
   assert.deepEqual(migrateStudio(converted.files).files, converted.files)
 })

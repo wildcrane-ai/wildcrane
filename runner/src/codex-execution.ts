@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { bounded } from '../../cli/src/lib/shared/conversation'
@@ -22,17 +23,26 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
   let closing: Promise<void> | undefined
   let settled: ThreadLease['retained'] | undefined
   let keeper = false
+  let stoppingForRetry = false
   const state = (): ThreadLease => ({ ...identity, lease, instance: backend.instance, settings, threads: [...threads], ...(settled ? { retained: settled } : {}) })
   const owned = (id: string) => readPrivate<ThreadLease>(leaseFile(backend, id))?.lease === lease
   const remove = (id: string) => { if (owned(id)) fs.rmSync(leaseFile(backend, id), { force: true }) }
-  const claim = (id: string, loaded = true, previous?: ThreadLease) => {
+  const leaseAt = (id: string, phase: string) => {
+    const file = leaseFile(backend, id)
+    try {
+      const current = readPrivate<ThreadLease>(file)
+      if (current === undefined || typeof current.lease === 'string' && Array.isArray(current.threads)) return current
+    } catch { /* An unreadable owner must not be replaced. */ }
+    throw ownershipConflict(id, state(), undefined, 'invalid-ownership-record', phase)
+  }
+  const claim = (id: string, loaded = true, previous?: ThreadLease, forkSource = false) => {
     if (!id) return
     const file = leaseFile(backend, id)
     const release = tryLock(file + '.lock')
-    if (!release) throw ownershipConflict(id, state(), readPrivate<ThreadLease>(file), 'ownership-transfer; try again')
+    if (!release) throw ownershipConflict(id, state(), leaseAt(id, 'claim-thread'), 'ownership-transfer', loaded ? 'claim-thread' : 'reserve-source', forkSource)
     try {
-      const current = readPrivate<ThreadLease>(file)
-      if (current && current.lease !== lease && current.lease !== previous?.lease) throw ownershipConflict(id, state(), current, liveLease(current) ? 'owner-alive' : 'unverified')
+      const current = leaseAt(id, 'claim-thread')
+      if (current && current.lease !== lease && current.lease !== previous?.lease) throw ownershipConflict(id, state(), current, liveLease(current) ? 'owner-alive' : 'unverified', loaded ? 'claim-thread' : 'reserve-source', forkSource && liveLease(current))
       if (loaded) threads.add(id)
       writeLease(backend, id, { ...state(), ...(previous?.retained ? { retained: previous.retained, adopting: previous.lease } : {}) })
       for (const thread of threads) {
@@ -41,8 +51,8 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
       }
     } finally { release() }
   }
-  const reserve = async (id: string) => {
-    const previous = readPrivate<ThreadLease>(leaseFile(backend, id))
+  const reserve = async (id: string, forkSource: boolean) => {
+    const previous = leaseAt(id, 'reserve-source')
     if (previous && previous.lease !== lease) {
       if (previous.retained) {
         if (previous.retained.root !== id) throw Error('Resume the owning Codex thread to adopt its retained work.')
@@ -52,22 +62,26 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
         const key = (value: Json) => JSON.stringify([value.threadId, value.itemId, value.processId])
         if (actual.length !== previous.retained.kept.length || actual.some(value => !previous!.retained!.kept.some(item => key(item) === key(value)))) throw Error('The retained Codex services changed; no new work was submitted.')
       } else {
-        if (liveLease(previous)) throw ownershipConflict(id, state(), previous, 'owner-alive')
+        if (liveLease(previous)) throw ownershipConflict(id, state(), previous, 'owner-alive', 'reserve-source', forkSource)
         for (const thread of new Set([id, ...previous.threads])) {
           let status: string
           try { status = await inspectThread(connection.rpc, thread) }
-          catch { throw ownershipConflict(thread, state(), previous, 'unverified') }
-          if (status !== 'idle' && status !== 'notLoaded') throw ownershipConflict(thread, state(), previous, status === 'active' || status === 'background-work' ? 'work still running; automatic replay refused' : 'unverified')
+          catch { throw ownershipConflict(thread, state(), previous, 'unverified', 'verify-source') }
+          if (status !== 'idle' && status !== 'notLoaded') throw ownershipConflict(thread, state(), previous, status === 'active' || status === 'background-work' ? 'work still running; automatic replay refused' : 'unverified', 'verify-source')
         }
       }
     }
-    claim(id, false, previous)
+    claim(id, false, previous, forkSource)
     preparing.set(id, (preparing.get(id) ?? 0) + 1)
     return { previous: previous?.retained ? previous : undefined, release() {
       const remaining = preparing.get(id)! - 1
       if (remaining) preparing.set(id, remaining)
       else { preparing.delete(id); if (!threads.has(id)) remove(id) }
     } }
+  }
+  const failNotification = (error: unknown) => {
+    send({ method: 'error', params: { error: error instanceof RpcError ? error.data : { message: String(error) } } })
+    void close()
   }
   const notify = (message: Message) => {
     const params = obj(message.params), thread = obj(params.thread)
@@ -76,7 +90,7 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
     if (!threads.has(id)) {
       const parent = str(thread.parentThreadId) || str(thread.forkedFromId)
       if (parent && threads.has(parent)) {
-        try { claim(id) } catch (error) { send({ method: 'error', params: { error: { message: String(error) } } }); return }
+        try { claim(id) } catch (error) { failNotification(error); return }
       }
     }
     if (!threads.has(id)) {
@@ -84,12 +98,12 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
       return
     }
     if (message.method === 'turn/started') active.set(id, str(obj(params.turn).id))
-    if (message.method === 'turn/completed') active.delete(id)
+    if (message.method === 'turn/completed' && active.get(id) === str(obj(params.turn).id)) active.delete(id)
     const item = obj(params.item)
     const children = item.type === 'subAgentActivity' && item.kind === 'started' ? [item.agentThreadId]
       : item.type === 'collabAgentToolCall' && item.tool === 'spawnAgent' && Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : []
     for (const child of children) if (typeof child === 'string' && !threads.has(child)) {
-      try { claim(child) } catch (error) { send({ method: 'error', params: { error: { message: String(error) } } }); return }
+      try { claim(child) } catch (error) { failNotification(error); return }
     }
     if (message.id !== undefined) requests.add(String(message.id))
     send(message)
@@ -135,6 +149,52 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
       console.error(error instanceof Error ? error.message : String(error))
     } finally { connection.close() }
   })()
+  const stopForRetry = async (params: Json) => {
+    const threadId = str(params.threadId), turnId = str(params.turnId)
+    if (params.instance !== backend.instance || params.lease !== lease || !turnId || active.get(threadId) !== turnId || !owned(threadId)) {
+      throw ownershipConflict(threadId, state(), threadId ? leaseAt(threadId, 'stop-idle-turn') : undefined, 'idle-turn-ownership-unconfirmed', 'stop-idle-turn')
+    }
+    stoppingForRetry = true
+    const otherWork = pending.size || requests.size || active.size !== 1
+    await bounded(connection.rpc.call('turn/interrupt', { threadId, turnId }), CODEX_TIMEOUT, 'Codex did not acknowledge interrupting the idle turn.')
+    if (otherWork) throw Error('Other Codex operations were pending when the idle turn was interrupted.')
+    const deadline = Date.now() + CODEX_TIMEOUT
+    const call = (method: string, input: Json) => bounded(connection.rpc.call(method, input), deadline - Date.now(), 'Codex did not confirm the idle turn stopped.')
+    for (;;) {
+      const snapshot = obj((await call('thread/read', { threadId, includeTurns: false })).thread)
+      if (snapshot.id !== threadId || closing) throw Error('Codex session availability could not be confirmed.')
+      if (obj(snapshot.status).type === 'idle' && !active.has(threadId)) {
+        const paginated = snapshot.historyMode === 'paginated'
+        const listed = paginated
+          ? (await call('thread/turns/list', { threadId, sortDirection: 'desc', limit: 1, itemsView: 'full' })).data
+          : obj((await call('thread/read', { threadId, includeTurns: true })).thread).turns
+        const turns = Array.isArray(listed) ? listed.map(obj) : []
+        const turn = turns.at(paginated ? 0 : -1)
+        if (turn?.id !== turnId || turn.status !== 'interrupted' || !Array.isArray(turn.items)) {
+          throw Error('Codex did not record the interrupted turn in the original session.')
+        }
+        if (turn.items.map(obj).some(item => ['inProgress', 'interrupted'].includes(str(item.status))
+          || item.type === 'commandExecution' && typeof item.exitCode !== 'number')) {
+          throw Error('Codex has operations with unconfirmed results.')
+        }
+        break
+      }
+      if (Date.now() >= deadline) throw Error('Codex did not confirm the idle turn stopped.')
+      await delay(50)
+    }
+    const claimed = [...threads]
+    for (const thread of claimed) {
+      if (!owned(thread) || active.has(thread) || requests.size || closing) throw Error('Codex ownership or pending operations changed during interruption.')
+      const status = await bounded(inspectThread(connection.rpc, thread), CODEX_TIMEOUT, 'Codex work is unconfirmed after interruption.')
+      if (status !== 'idle' && (thread === threadId || status !== 'notLoaded')) throw Error('Codex has unfinished work after interruption.')
+    }
+    await Promise.all(claimed.map(thread => releaseNativeThread(connection, thread, undefined, false, unloading)))
+    if (active.size || requests.size || threads.size !== claimed.length || claimed.some(thread => !owned(thread)) || closing) {
+      throw Error('Codex ownership or pending operations changed during release.')
+    }
+    for (const thread of claimed) { remove(thread); threads.delete(thread) }
+    return { instance: backend.instance, lease, threadId, turnId }
+  }
   const request = async (message: Message) => {
     const id = message.id
     let source: string | undefined, previous: ThreadLease | undefined
@@ -147,11 +207,16 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
         else connection.rpc.reply(id, obj(message.result))
         return
       }
-      if (closing) throw Error('Codex execution is stopping.')
+      if (closing || stoppingForRetry) throw Error('Codex execution is stopping.')
       if (keeper) throw Error('Codex execution already handed off its retained services.')
-      if (message.method === 'initialize') { send({ id, result: { ...initialized, wildcrane: { instance: backend.instance, lease } } }); return }
+      if (message.method === 'initialize') { send({ id, result: { ...initialized, wildcrane: { instance: backend.instance, lease, idleRecovery: true } } }); return }
       if (message.method === 'initialized') return
       let params = obj(message.params)
+      if (message.method === 'wildcrane/stopForRetry') {
+        const result = await stopForRetry(params)
+        send({ id, result })
+        return
+      }
       if (message.method === 'wildcrane/settled') {
         if (params.instance !== backend.instance || params.lease !== lease || !threads.has(str(params.threadId)) || params.confirmed !== true || !str(params.execution)) throw Error('Codex cleanup ownership is unconfirmed.')
         const kept = Array.isArray(params.kept) ? params.kept.map(obj) : []
@@ -171,9 +236,9 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
       if (['thread/start', 'thread/resume', 'thread/fork'].includes(message.method)) {
         if (message.method !== 'thread/start') {
           const id = str(params.threadId)
-          if (message.method !== 'thread/fork' || !readPrivate<ThreadLease>(leaseFile(backend, id))?.retained) {
+          if (message.method !== 'thread/fork' || !leaseAt(id, 'reserve-source')?.retained) {
             source = id
-            const reservation = await reserve(source)
+            const reservation = await reserve(source, message.method === 'thread/fork')
             previous = reservation.previous; releaseSource = reservation.release
           }
         }
@@ -183,12 +248,15 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
         params = { ...params, cwd: params.cwd ?? cwd, config: overrides }
       } else {
         const thread = str(params.threadId)
-        if (!threads.has(thread) || !owned(thread)) throw Error('This run does not own that Codex thread.')
+        if (!threads.has(thread) || !owned(thread)) throw ownershipConflict(thread, state(), thread ? readPrivate<ThreadLease>(leaseFile(backend, thread)) : undefined, 'caller-does-not-own-thread', message.method)
       }
       if (message.method === 'turn/start') settled = undefined
       const result = await connection.rpc.call(message.method, params)
       if (message.method === 'thread/resume' && !previous?.retained && str(config.model) && result.model && result.model !== config.model) throw Error('The previous Codex runtime has not unloaded; new execution settings were not applied. No new work was submitted.')
       const thread = str(obj(result.thread).id)
+      if (!thread && ['thread/start', 'thread/resume', 'thread/fork'].includes(message.method)) {
+        throw ownershipConflict(source ?? '', state(), undefined, 'missing-thread-id', message.method)
+      }
       if (thread) claim(thread, true, message.method === 'thread/resume' ? previous : undefined)
       if (previous?.retained && message.method === 'thread/resume') {
         for (const child of previous.threads) if (child !== thread) {

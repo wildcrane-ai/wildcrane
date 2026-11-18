@@ -209,7 +209,7 @@ export function createStreamRenderer(): StreamRenderer {
         failure = ev.is_error === true ? whyItFailed(ev) : undefined
         classified = failure
           ? ev.subtype === 'error_max_structured_output_retries'
-            ? { code: 'validation_failed', level: 1, reason: failure }
+            ? { code: 'validation_failed', level: 1, source: 'validation', reason: failure }
             : { ...(apiFailure ?? providerFailure(ev.error, failure)), reason: failure }
           : undefined
         apiFailure = undefined

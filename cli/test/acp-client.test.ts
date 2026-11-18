@@ -220,6 +220,13 @@ describe('what else an ACP session opens with and reports', () => {
     assert.deepEqual(end.context, { used: 15891, limit: 200000 })
   })
 
+  it('reports ACP thoughts as activity status without copying their text (#885)', async () => {
+    const update = (sessionUpdate: string, text: string) => ({ method: 'session/update', params: { update: { sessionUpdate, content: { type: 'text', text } } } })
+    const { events } = await scripted([update('agent_thought_chunk', ''), update('agent_thought_chunk', 'private thought'), update('agent_message_chunk', 'Answer')])
+    assert.deepEqual(events.filter(e => e.kind === 'status').map(e => e.data), [{ state: 'thinking', source: 'acp' }, { state: 'running', source: 'acp' }])
+    assert.equal(JSON.stringify(events).includes('private thought'), false)
+  })
+
   it("turns Cursor's todo requests into plans, merged by id, and answers them", async () => {
     const todos = (list: unknown[], merge: boolean) => ({ method: 'cursor/update_todos', params: { toolCallId: 't', todos: list, merge } })
     const { events, replies } = await scripted([

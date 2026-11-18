@@ -104,7 +104,7 @@ it('审核安排区分未定与空安排，保留依赖并拒绝静默删除 Pre
   held.studios[0].previews = [{ id: 'ui-design', instructions: 'UI' }]
   held.studios[1].previews = []
   fs.writeFileSync(file, JSON.stringify(held))
-  const plan = [{ id: 'ui', title: 'UI', after: [], previews: ['ui-design'] }]
+  const plan = [{ id: 'ui', after: [], previews: ['ui-design'] }]
   const reviewFile = path.join(dir, 'review.json'); fs.writeFileSync(reviewFile, JSON.stringify(plan))
   cmdGoal(['new'], { title: 'Review', bodyFile: draft('Deliver.'), reviewFile })
   assert.deepEqual(read().ideas[1].review_plan, plan)

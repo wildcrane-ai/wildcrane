@@ -7,6 +7,7 @@ import { createRequire } from 'node:module'
 import { after, afterEach, before, beforeEach, it } from 'node:test'
 import { canKeepFlow, reclaimFlowWorkers, stopFlowWorker, watchFlowWorker } from '../src/flow-worker'
 import { tryLock } from '../../cli/src/lib/lock'
+import { openTaskFolder, withBoard } from '../src/task-folder'
 import { defaultDeps } from '../src/jobs'
 import { runnerHome } from '../src/home'
 import { FakeCloud, until, writeFakeSession } from './fake-cloud'
@@ -99,6 +100,35 @@ for (const verb of ['create', 'refine', 'implement']) for (const signal of ['SIG
     assert.ok(!calls().some((c) => c[1] === 'run' && c[2] === 'stop'))
   })
 }
+
+it('waits for another worker to prepare the board without recreating the card after Runner restart (#882)', async () => {
+  cloud.put({ 'todo/2-test.md': null })
+  process.env.FAKE_AKB = JSON.stringify({ refine: { result: 'Prepared once', status: 'planned' } })
+  const ws = openTaskFolder({ task: 'other', project: 'prj_1', number: 3 }, folder())
+  let ready!: () => void, unlock!: () => void
+  const entered = new Promise<void>(resolve => { ready = resolve })
+  const held = withBoard(ws, async () => {
+    ready()
+    await new Promise<void>(resolve => { unlock = resolve })
+  })
+  await entered
+  const job = cloud.dispatch({ id: 'job', task: 'task_1', project: 'prj_1', projectDir: folder(), number: 2,
+    runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb: 'create' } })
+  try {
+    launch()
+    await until(() => job.state === 'claimed')
+    await exit('SIGKILL')
+    assert.equal(calls().filter(args => args[0] === 'raw' && args[1] === 'create').length, 0)
+    launch()
+    await until(() => cloud.registrations >= 2)
+  } finally { unlock(); await held }
+  await until(() => job.state === 'finished', 15_000)
+  assert.equal(job.outcome, 'done', `${log}
+${job.reason}`)
+  assert.equal(calls().filter(args => args[0] === 'raw' && args[1] === 'create').length, 1)
+  assert.equal(commands('refine').length, 1)
+  assert.equal(job.claims, 1)
+})
 
 it('collects a result completed with the Runner offline (#693)', async () => {
   process.env.FAKE_AKB = JSON.stringify({ refine: { gates: [gate(1)], result: 'Offline result', status: 'planned' } })

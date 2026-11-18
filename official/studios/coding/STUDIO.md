@@ -15,6 +15,7 @@ previews:
   ui-design:
     icon: screen
     title: {en: UI design, zh: 界面设计}
+    description: {en: "Review page layouts, interactions, and user flows.", zh: "审阅页面布局、交互和用户流程。"}
   api-docs:
     icon: api
     title: {en: API docs, zh: 接口文档}

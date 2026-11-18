@@ -19,7 +19,7 @@ beforeEach(() => {
   setBoardRoot(root)
   base = path.join(root, 'base'); draft = path.join(root, 'draft')
   for (const dir of [base, draft]) {
-    write(path.join(dir, 'STUDIO.md'), '---\nname: Review\npreviews: {writer: {title: {en: Writer, zh: 写作}}}\n---\n\n<Preview id="writer">\nWrite the requested document.\n</Preview>\n')
+    write(path.join(dir, 'STUDIO.md'), '---\nname: Review\npreviews: {writer: {title: {en: Writer, zh: 写作}, description: {en: Read the document., zh: 审阅文档。}}}\n---\n\n<Preview id="writer">\nWrite the requested document.\n</Preview>\n')
     write(path.join(dir, 'version.json'), '{"id":"wf_review","version":3}')
     write(path.join(dir, 'references/writer.md'), '---\nname: writer\ndescription: Writes previews\nakb:\n  i18n:\n    en:\n      title: Writer\n    zh:\n      title: 写作\n---\nWrite.\n')
     write(path.join(dir, 'references/writer/notes.md'), 'Before\n')

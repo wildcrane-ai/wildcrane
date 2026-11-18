@@ -54,6 +54,25 @@ it('finishes ordinary turns on old servers without inventing background work', a
   assert.equal(s.client.background?.(), 0)
 })
 
+it('leaves announced provider retries with Codex and clears waiting on current-turn output (#885)', async () => {
+  const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : {})
+  await tick()
+  s.notify('turn/started', { threadId: 'main', turn: { id: 't1' } })
+  const error = { message: 'Selected model is at capacity.', codexErrorInfo: 'serverOverloaded' }
+  s.notify('error', { threadId: 'other', turnId: 't1', willRetry: true, error })
+  s.notify('error', { threadId: 'main', turnId: 'old', willRetry: true, error })
+  assert.equal(s.events.some(e => e.kind === 'status'), false)
+  s.notify('error', { threadId: 'main', turnId: 't1', willRetry: true, error })
+  assert.deepEqual(s.events.filter(e => e.kind === 'status').map(e => e.data), [{ state: 'retrying', source: 'codex', code: 'service_overloaded' }])
+  s.notify('item/reasoning/textDelta', { threadId: 'main', turnId: 'old', delta: 'stale' })
+  assert.equal(s.events.filter(e => e.kind === 'status').at(-1)?.data.state, 'retrying')
+  s.notify('item/reasoning/summaryTextDelta', { threadId: 'main', turnId: 't1', delta: 'continuing' })
+  assert.equal(s.events.filter(e => e.kind === 'status').at(-1)?.data.state, 'thinking')
+  s.reply('Recovered on the original turn', 'reply'); s.complete()
+  assert.equal((await s.end).ok, true)
+  assert.equal(s.calls.filter(c => c.method === 'turn/start').length, 1)
+})
+
 
 it('fails an unexpected connection close with a pending subagent', async () => {
   const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : {})

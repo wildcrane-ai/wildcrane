@@ -8,6 +8,7 @@ export interface StudioPreview {
   id: string
   instructions: string
   title?: Record<string, string>
+  description?: Record<string, string>
   icon?: AgentIcon
 }
 export interface StudioDef {
@@ -36,13 +37,13 @@ export const STUDIO_SCHEMA = {
     name: { type: 'string', minLength: 1, pattern: '\\S' }, names: titles,
     description: { type: 'string' }, needsArtifact: { type: 'boolean' }, icon,
     previews: { type: 'object', propertyNames: { pattern: PREVIEW_ID.source }, additionalProperties: {
-      type: 'object', additionalProperties: false, properties: { title: titles, icon },
+      type: 'object', additionalProperties: false, properties: { title: titles, description: titles, icon },
     } },
   },
 } as const
 const validate = new Ajv({ allErrors: true, meta: false, validateSchema: false }).compile(STUDIO_SCHEMA)
 
-export function parseStudioFile(id: string, source: string, from: string): { def: StudioDef } | { problem: string; problems: SourceProblem[] } {
+export function parseStudioFile(id: string, source: string, from: string, requirePreviewCopy = false): { def: StudioDef } | { problem: string; problems: SourceProblem[] } {
   const problems: SourceProblem[] = []
   const fail = (offset: number, path: string, code: string, message: string, hint: string) => problems.push({ file: from, ...sourcePosition(source, offset), path, code, message, hint })
   const result = () => ({ problem: problems.map(p => `${p.file}:${p.line}:${p.column} ${p.path}: ${p.code} — ${p.message}. ${p.hint}`).join('\n'), problems })
@@ -62,16 +63,25 @@ export function parseStudioFile(id: string, source: string, from: string): { def
       const key = error.params.additionalProperty ?? error.params.missingProperty
       if (key) parts.push(String(key))
       const node = parts.length ? document.getIn(parts, true) as { range?: number[] } | undefined : document.contents
-      fail(metaOffset + (node?.range?.[0] ?? 0), parts.join('.'), 'studio-schema', `${parts.join('.') || 'metadata'} ${error.message}`, 'Use only Studio metadata and previews: {id: {title?, icon?}} with the declared field types.')
+      fail(metaOffset + (node?.range?.[0] ?? 0), parts.join('.'), 'studio-schema', `${parts.join('.') || 'metadata'} ${error.message}`, 'Use only Studio metadata and previews: {id: {title?, description?, icon?}} with the declared field types.')
     }
   }
   const body = source.slice(bodyOffset)
   const parsed = parsePreviewBlocks(body, from)
   problems.push(...parsed.problems.map(p => ({ ...p, line: p.line + source.slice(0, bodyOffset).split('\n').length - 1 })))
   if (problems.length) return result()
-  const map = (raw.previews ?? {}) as Record<string, { title?: Record<string, string>; icon?: AgentIcon }>
+  const map = (raw.previews ?? {}) as Record<string, Omit<StudioPreview, 'id' | 'instructions'>>
   for (const block of parsed.blocks) if (!Object.hasOwn(map, block.id)) fail(bodyOffset + block.start, `previews.${block.id}`, 'preview-metadata-missing', `Preview ${block.id} has no metadata entry`, 'Add the ID under previews, using {} if needed.')
   for (const key of Object.keys(map)) if (!parsed.blocks.some(b => b.id === key)) fail(metaOffset + ((document.getIn(['previews', key], true) as { range?: number[] })?.range?.[0] ?? 0), `previews.${key}`, 'preview-body-missing', `Preview ${key} has no body`, 'Add its block or remove unused metadata.')
+  if (requirePreviewCopy) for (const block of parsed.blocks) {
+    const metadata = Object.hasOwn(map, block.id) ? map[block.id]! : undefined
+    if (!metadata) continue
+    for (const field of ['title', 'description'] as const) for (const lang of ['en', 'zh']) {
+      if (metadata[field]?.[lang]) continue
+      fail(bodyOffset + block.start, `previews.${block.id}.${field}.${lang}`, 'preview-display-missing',
+        `Preview ${block.id} needs a ${lang} ${field}`, 'Add non-blank en and zh display text in the Preview metadata.')
+    }
+  }
   if (problems.length) return result()
   let rules = '', at = 0
   for (const block of parsed.blocks) { rules += body.slice(at, block.start); at = block.end }

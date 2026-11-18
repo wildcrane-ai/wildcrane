@@ -11,7 +11,9 @@ import { runnerHome } from './home'
 export const UNCERTAIN = '更新中断时有操作结果尚未确认，请检查已有结果后再续跑。'
 
 export interface Checkpoint {
-  boardContinuation?: { report: JobReport; facts: string; prompt: string }
+  forkSource?: string
+  reviewedRejections?: import('./triage').Laid
+  boardContinuation?: { report: JobReport; facts: string; prompt: string; validation?: boolean }
   approvalRequested?: boolean
   approvalCancelled?: boolean
   mark?: Mark

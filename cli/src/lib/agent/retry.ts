@@ -4,6 +4,7 @@ export interface ExecutionFailure {
   code: string
   level: 1 | 2 | 3
   reason: string
+  source?: 'validation' | 'provider' | 'harness' | 'invariant'
   retryAfterMs?: number
 }
 
@@ -38,9 +39,9 @@ export function planRetry(failure: ExecutionFailure, attempt: number, now = Date
 
 export function readFailure(raw: unknown): ExecutionFailure | undefined {
   if (!raw || typeof raw !== 'object') return
-  const { code, level, reason, retryAfterMs } = raw as Partial<ExecutionFailure>
+  const { code, level, reason, source, retryAfterMs } = raw as Partial<ExecutionFailure>
   if (typeof code !== 'string' || !code || typeof reason !== 'string' || (level !== 1 && level !== 2 && level !== 3)) return
-  return { code, level, reason, ...(typeof retryAfterMs === 'number' && retryAfterMs >= 0 ? { retryAfterMs } : {}) }
+  return { code, level, reason, ...(['validation', 'provider', 'harness', 'invariant'].some(value => value === source) ? { source } : {}), ...(typeof retryAfterMs === 'number' && retryAfterMs >= 0 ? { retryAfterMs } : {}) }
 }
 
 export function readRetryPlan(raw: unknown, attempt: number): RetryPlan | undefined {
@@ -65,4 +66,10 @@ export function pauseLine(pause: RetryPause, zh = translating()): string {
 export function retryLine(plan: RetryPlan, attempt: number, now = Date.now()): string {
   const seconds = Math.max(0, Math.ceil((plan.at - now) / 1_000))
   return `${plan.failure.reason} — retrying ${seconds ? `in ${seconds}s` : 'now'} (attempt ${attempt + 1} of ${plan.of}).`
+}
+
+export function syncRepairPrompt(reason: string): string {
+  return `The Harness could not synchronize the saved result. Correct the diagnostics below, verify the original result and its attachments, then continue from the saved work. Preserve completed work and archive state. Read the task review before changing an approved output and revise its stage first.
+
+${reason}`
 }
