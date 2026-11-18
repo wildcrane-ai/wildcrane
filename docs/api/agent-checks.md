@@ -6,7 +6,7 @@ Agents verify requirements and outputs, then explicitly record delivery. Process
 
 `akb raw inspect <id> --json` reads saved facts without starting work; `akb raw validate <id>` explicitly checks card format and assets. Findings do not silently repair or approve work.
 
-Use `akb task review <task>` for the effective plan, node states, immutable evidence and revisions. Work only on the stages assigned to this execution. Sync body and assets before reporting a node `done`; this freezes its evidence. Nonterminal nodes wait for explicit user approval; terminal outputs complete without another approval button.
+Use `akb task review <task>` for the effective plan, node states, immutable evidence and revisions. Work only on the stages assigned to this execution. Sync body and assets before reporting a node `done`; this freezes its evidence. A dependency between review nodes waits for user approval. Dependencies involving a `kind: "work"` node wait for completion.
 
 ```sh
 akb task review W-818

@@ -18,7 +18,7 @@ export interface PlanEntry {
 
 export type RunEvent =
   | { kind: 'phase'; data: { phase: import('../../shared/conversation').ConversationPhase; at: string; contentAt?: string } }
-  | { kind: 'status'; data: { state: 'thinking' | 'retrying' | 'running'; source: 'codex' | 'acp'; code?: string } }
+  | { kind: 'status'; data: { state: 'thinking' | 'retrying' | 'running'; source: 'codex' | 'acp' | 'sync'; code?: string } }
   | { kind: 'message'; data: { text: string } }
   | { kind: 'tool_call'; data: { toolCallId: string; title: string; kind: ToolKind; status: string; target?: string; subagent?: true } }
   | { kind: 'tool_call_update'; data: { toolCallId: string; status: string; result?: string } }

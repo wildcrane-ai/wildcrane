@@ -34,7 +34,7 @@ export interface FakeJob {
   resumeCostUsd?: number | null
   fork?: boolean
   transcript?: string | null
-  flow?: { review_stages?: string[]; review_revision?: number; verb: string; studio: string; card?: number; text?: string; title?: string; resume?: boolean; replan?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null
+  flow?: { review_stages?: string[]; review_revision?: number; sync_recovery_of?: string; verb: string; studio: string; card?: number; text?: string; title?: string; resume?: boolean; replan?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null
   discussion?: { id: string; workspace: string; goals?: Record<string, unknown>[]; ideas: Record<string, unknown>[] } | null
   chat?: { message: string; body: string } | null
   review?: { tasks: string[] } | null
@@ -129,6 +129,9 @@ export class FakeCloud {
   refusedUploads = new Map<string, string>()
   unreachableArtifacts = new Set<string>()
   serviceUnavailableUploads = false
+  boardTimeouts = 0
+  loseVersionReply = false
+  private lostVersion?: { upload: string; version: number }
   /** The type each artifact was made with. */
   types = new Map<string, string>()
   jobs = new Map<string, FakeJob>()
@@ -500,6 +503,10 @@ export class FakeCloud {
     const board = /^\/v1\/projects\/([^/]+)\/board(\/commits)?$/.exec(route)
     const ours = (p: string) => p.startsWith(`projects/${board![1]}/`) || p.startsWith('memory/')
     if (board && !board[2] && method === 'GET') {
+      if (this.boardTimeouts > 0) {
+        this.boardTimeouts--
+        return refuse(408, 'refused', 'Sync request timed out.')
+      }
       const since = url.searchParams.get('since')
       const files = [...this.board].filter(([p, f]) => ours(p) && (since === null ? f.content !== null : f.seq > Number(since)))
         .map(([p, f]) => ({ path: p, content: f.content, seq: f.seq }))
@@ -617,8 +624,14 @@ export class FakeCloud {
     }
     m = /^\/v1\/artifacts\/([^/]+)\/versions$/.exec(route)
     if (m) {
+      if (this.lostVersion?.upload === body.upload) return send(201, { version: this.lostVersion!.version })
       const versions = task.artifacts.get(m[1]!)!
       versions.push(this.uploads.get(m[1]!)!)
+      if (this.loseVersionReply) {
+        this.loseVersionReply = false
+        this.lostVersion = { upload: body.upload, version: versions.length }
+        return refuse(503, 'service_unavailable', 'The version was saved, but its response was lost.')
+      }
       return send(201, { version: versions.length })
     }
     return refuse(404, 'not_found', 'no')

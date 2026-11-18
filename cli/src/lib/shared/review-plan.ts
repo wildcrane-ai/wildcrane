@@ -5,6 +5,7 @@ export const reviewNodeSchema = z.object({
   id,
   after: z.array(id).max(50).default([]),
   previews: z.array(id).max(50).default([]),
+  kind: z.literal('work').optional(),
 }).strict()
 export type ReviewNode = z.infer<typeof reviewNodeSchema>
 export type ReviewPlan = ReviewNode[] | null
@@ -52,7 +53,27 @@ export function parseReviewPlan(value: unknown, previews?: readonly string[]): R
 
 /** Projects stored plans onto the current contract, including plans saved with legacy titles. */
 export function readReviewPlan(plan: ReviewPlan | undefined): ReviewPlan {
-  return plan?.map(({ id, after, previews }) => ({ id, after, previews })) ?? null
+  return plan?.map(({ id, after, previews, kind }) => ({ id, after, previews, ...(kind && { kind }) })) ?? null
+}
+
+export function reviewEdgeNeedsApproval(from: ReviewNode, to: ReviewNode): boolean {
+  return from.kind !== 'work' && to.kind !== 'work'
+}
+
+export function reviewDependencies(plan?: ReviewPlan): ReviewNode[] {
+  const nodes = new Map((plan ?? []).map(node => [node.id, node]))
+  const linked = new Set<string>()
+  const points = (plan ?? []).map(node => {
+    const after = node.after.filter(id => {
+      const from = nodes.get(id)
+      if (!from || !reviewEdgeNeedsApproval(from, node)) return false
+      linked.add(id)
+      linked.add(node.id)
+      return true
+    })
+    return { ...node, after }
+  })
+  return points.filter(point => linked.has(point.id))
 }
 
 type ReviewAuthorization =

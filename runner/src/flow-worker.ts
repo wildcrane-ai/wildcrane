@@ -131,6 +131,23 @@ function writerStopped(worker: Worker): boolean {
     { pid: worker.pid!, since: worker.processAt! })
 }
 
+/** The saved work may be reclaimed only after its previous writer is gone. */
+export function retireSyncWorker(id: string, machine: string): boolean {
+  const file = fileOf(id)
+  if (!fs.existsSync(file)) return true
+  const release = tryLock(`${file}.lock`)
+  if (!release) return false
+  try {
+    const worker = read(id)
+    if (!worker || worker.machine !== machine || worker.account !== readSession()?.subject
+        || worker.generation !== accountGeneration() || !writerStopped(worker)) return false
+    fs.rmSync(file, { force: true })
+    fs.rmSync(stopFile(id), { force: true })
+    fs.rmSync(`${file}.log`, { force: true })
+    return true
+  } finally { release() }
+}
+
 /** Reattached workers can outlive their ended record while their sockets close. */
 export async function reclaimFlowWorkerAfterExit(id: string, machine: string, given?: Deps, token?: string): Promise<void> {
   const worker = read(id)
@@ -244,10 +261,16 @@ export async function runFlowWorker(id: string, token: string, given?: Deps, ent
       return base.api.renewJob(...args)
     } }, authorize: async (job) => {
       if (!valid() || !canKeepFlow(job)) return false
-      if (base.authorize && !await base.authorize(job)) return false
+      if (base.authorize) {
+        const allowed = await base.authorize(job)
+        if (typeof allowed !== 'boolean') {
+          if (!allowed.ok || !allowed.value) return allowed
+        } else if (!allowed) return false
+      }
       if (!job.projectDir) return true
       const folders = await api.listFolders(worker.machine)
-      return valid() && folders.ok && folders.value.folders.some((f) => f.project === job.project && f.path === job.projectDir)
+      if (!valid()) return false
+      return folders.ok ? folders.value.folders.some(f => f.project === job.project && f.path === job.projectDir) : folders
     } }
     await runJob(id, deps, (stop) => { halt = stop; if (stopped || !valid()) void stop() }, () => stopped || !valid())
   } finally {

@@ -13,7 +13,13 @@ import { secretsSet } from './secrets'
 
 import type { ExecutionFailure } from '../../cli/src/lib/agent/retry'
 
-export type Call<T> = { ok: true; value: T } | { ok: false; error: string; code?: string; project?: string; failure?: ExecutionFailure }
+export type Call<T> = { ok: true; value: T } | { ok: false; error: string; code?: string; status?: number; project?: string; failure?: ExecutionFailure }
+
+export function temporaryCloudFailure(error: { code?: string; status?: number }): boolean {
+  if (error.code && ['unauthenticated', 'machine_offline', 'quota_exceeded', 'daily_write_budget_reached', 'storage_limit_reached'].includes(error.code)) return false
+  return error.code === 'idempotency_in_progress' || error.code === 'service_unavailable' || error.code === 'artifacts_unavailable'
+    || error.status === 408 || (error.status !== undefined ? error.status >= 500 : !error.code)
+}
 
 /** Every connector a job can run on, in the board's order. */
 export const RUNTIMES = ['claude-code', 'codex', 'cursor', 'opencode', 'kimi', 'dsh', 'zcode', 'grok', 'antigravity'] as const
@@ -98,6 +104,7 @@ export interface AgentJob {
 export interface Flow {
   review_stages?: string[]
   review_revision?: number
+  sync_recovery_of?: string
   feedback?: string
   verb: 'create' | 'resolve' | 'revise' | 'approve' | 'implement' | 'refine' | 'discard'
   /** The task's studio id, e.g. `wf_builtin_coding`. */
@@ -161,7 +168,7 @@ export interface SettingDecl {
 
 /** Raised by Cloud when it no longer takes this Runner's protocol. 9 keeps keys (#2135); 10 stops
  *  a flow job, pausing its board runs (#2128); 11 holds the computer's lock (#2161); 14 shares local settings and account revocation; 18 says Studio (#645). */
-export const PROTOCOL = 26
+export const PROTOCOL = 27
 
 const TIMEOUT_MS = 20_000
 
@@ -195,12 +202,17 @@ async function send(method: Method, route: string, body: unknown, signedIn: bool
 }
 
 async function answerOf<T>(response: Response): Promise<Call<T>> {
-  const answer = (await response.json().catch(() => null)) as { error?: { code?: string; message?: string; project?: string } } | null
+  let answer: { error?: { code?: string; message?: string; project?: string } } | null
+  try { answer = await response.json() } catch (error) {
+    if (response.ok) return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    answer = null
+  }
   if (response.ok) return { ok: true, value: answer as T }
   return {
     ok: false,
     error: answer?.error?.message ?? `Cloud answered ${response.status}`,
-    code: answer?.error?.code ?? (response.status >= 500 ? undefined : 'refused'),
+    code: answer?.error?.code ?? (response.status === 401 ? 'unauthenticated' : response.status >= 500 ? undefined : 'refused'),
+    status: response.status,
     ...(answer?.error?.project ? { project: answer.error.project } : {}),
   }
 }
@@ -555,16 +567,20 @@ export const readArtifact = (artifact: string) => request<{ latest_version: numb
 export const readVersion = (artifact: string, version: number) =>
   request<{ content: unknown; file: { url: string } | null }>('GET', `/v1/artifacts/${q(artifact)}/versions/${version}`)
 
-export const createArtifact = (task: string, name: string, type: string) =>
-  request<{ id: string }>('POST', `/v1/tasks/${q(task)}/artifacts`, { type, name })
+export async function createArtifact(task: string, name: string, type: string, key: string) {
+  const sent = await send('POST', `/v1/tasks/${q(task)}/artifacts`, { type, name }, true, TIMEOUT_MS, undefined, { 'idempotency-key': key })
+  return sent.ok ? answerOf<{ id: string }>(sent.value) : sent
+}
 
 export const createUpload = (artifact: string, contentType: string, size: number) =>
   request<{ id: string; url?: string; parts?: { count: number; size: number; url: string } }>('POST', `/v1/artifacts/${q(artifact)}/uploads`, { content_type: contentType, size })
 
 export const completeUpload = (url: string) => request<unknown>('POST', url)
 
-export const createVersion = (artifact: string, upload: string) =>
-  request<{ version: number }>('POST', `/v1/artifacts/${q(artifact)}/versions`, { upload })
+export async function createVersion(artifact: string, upload: string) {
+  const sent = await send('POST', `/v1/artifacts/${q(artifact)}/versions`, { upload }, true, TIMEOUT_MS, undefined, { 'idempotency-key': `runner-version-${upload}` })
+  return sent.ok ? answerOf<{ version: number }>(sent.value) : sent
+}
 
 // --- triage and the rejection review (#2067) -----------------------------------
 

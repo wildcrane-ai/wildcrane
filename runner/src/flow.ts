@@ -28,6 +28,7 @@ import { reviewAllows, reviewAuthorization } from '../../cli/src/lib/shared/revi
 import { layOut, type Laid } from './triage'
 import { removeLegacyKanbanSkill } from './kanban-skill'
 import { installCommitHook } from '../../cli/src/lib/skill/hook'
+import { syncRefusal, syncStopped, type Sync, type SyncStep } from './sync-retry'
 
 /** Why the runtime a job names cannot run here; null when it can. */
 export function unavailable(wanted: Job['runtime'], reports: RuntimeReport[]): string | null {
@@ -55,9 +56,18 @@ export interface FlowIo {
   lost: () => boolean
   asked?: () => boolean
   diagnostic?: string
+  sync?: Sync
 }
 
 const stopping = (io: FlowIo) => io.lost() || !!io.asked?.()
+const attemptSync = <T>(io: FlowIo, step: SyncStep, operation: () => Promise<api.Call<T>>) => io.sync ? io.sync(step, operation) : operation()
+
+function refusedSync(job: Job, problem: Extract<api.Call<unknown>, { ok: false }>): string {
+  if (problem.code === 'stopped') return ''
+  console.error('runner: task sync refused', { job: job.id, code: problem.code, error: problem.error })
+  return syncRefusal(job, problem)
+}
+
 
 export type FlowEnd = { ok: true; report: JobReport; reviewed?: Laid } | { ok: false; reason: string; stopped?: boolean }
 
@@ -291,10 +301,10 @@ async function setUp(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Prom
   removeLegacyKanbanSkill(ws.cwd)
   const hook = installCommitHook(ws.cwd, ws.board)
   if (hook.note) io.show(`${hook.note}\n`)
-  const pulled = await pull(ws, deps.machineId, () => stopping(io))
+  const pulled = await attemptSync(io, 'prepare', () => pull(ws, deps.machineId, () => stopping(io)))
   if (!pulled.ok) {
     if (pulled.failure?.level === 1) io.diagnostic = pulled.failure.reason
-    else if (pulled.code !== 'board_content_conflict') return pulled.error
+    else if (pulled.code !== 'board_content_conflict') return refusedSync(job, pulled)
   }
   const used = await akb(['raw', 'agent', 'use', runtime])
   if (used.code !== 0) return refusal(used)
@@ -503,8 +513,8 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
 
   async function refreshReview(): Promise<string | undefined> {
     if (!hasReview) return
-    const current = await deps.api.readTask(ws.task)
-    if (!current.ok) return current.error
+    const current = await attemptSync(io, 'review', () => deps.api.readTask(ws.task))
+    if (!current.ok) return refusedSync(job, current)
     const review = current.value.review
     if (!review || ['stopped', 'done', 'cancelled'].includes(current.value.status ?? '')) {
       return 'This execution no longer has review authorization.'
@@ -520,7 +530,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
 
   async function launch(...args: Parameters<typeof akb>): Promise<Ran & { reviewRefused?: string }> {
     const denied = await refreshReview()
-    return denied ? { code: 1, out: '', last: denied, reviewRefused: denied } : akb(...args)
+    return denied || stopping(io) ? { code: 1, out: '', last: denied || 'Task preparation stopped.', reviewRefused: denied } : akb(...args)
   }
 
   const failed = await setUp(job, ws, deps, io)
@@ -534,8 +544,8 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     // Cloud sends the title and the request with the job; the task is read only when it did not.
     let said = { title: flow.title?.trim() ?? '', request: flow.text?.trim() ?? '' }
     if (!said.title) {
-      const task = await deps.api.readTask(ws.task)
-      if (!task.ok) return fail(task.error)
+      const task = await attemptSync(io, 'review', () => deps.api.readTask(ws.task))
+      if (!task.ok) return fail(refusedSync(job, task))
       said = { title: task.value.title?.trim() ?? '', request: task.value.request?.trim() ?? '' }
     }
     const title = said.title || 'Untitled'
@@ -543,27 +553,32 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     fs.mkdirSync(path.dirname(body), { recursive: true })
     // The card takes the task's number (#2063), and no other.
     if (!ws.number) return fail('This task has no number yet.')
-    // Publish the new card before another task can pull the board (#575).
-    const created = await withBoard(ws, async (push): Promise<api.Call<number> & { ended?: FlowEnd }> => {
+    const created = await withBoard(ws, async () => {
       const existing = akbCardOf(ws)
-      if (existing) return { ok: true, value: existing }
+      if (existing) return { ok: true as const, value: existing }
       fs.writeFileSync(body, `${said.request || title}\n${pictures(job, ws, ws.number!)}`)
-      const card = await akb(['raw', 'create', '--title', title, '--studio', studioName(flow.studio), '--body-file', body,
+      return akb(['raw', 'create', '--title', title, '--studio', studioName(flow.studio), '--body-file', body,
         '--id', String(ws.number), ...cardFlags(ws, flow.metadata), '--json']).then(made).finally(() => fs.rmSync(body, { force: true }))
-      if (!card.ok || stopping(io)) return card
-      const sent = await push({ id: job.id, machineId: deps.machineId })
-      if (sent.ok) return card
-      if (sent.conflict && pendingConflicts(ws.board).length) {
-        const ended = await onCard(card.value)
-        if (ended.ok && !stopping(io) && !pendingConflicts(ws.board).length) await push({ id: job.id, machineId: deps.machineId })
-        return { ...card, ended }
-      }
-      return { ok: false, error: sent.error }
     }, () => stopping(io))
     if (!created || stopping(io)) return fail('')
     if (!created.ok) return fail(created.error)
-    if (created.ended) return created.ended
     id = created.value
+  }
+  if (flow.verb === 'create' && id && !stopping(io)) {
+    const card = id
+    const sent = await attemptSync(io, 'create', async () => await withBoard(ws, async (send): Promise<api.Call<FlowEnd | undefined>> => {
+      const claim = { id: job.id, machineId: deps.machineId }
+      const result = await send(claim)
+      if (result.ok) return { ok: true, value: undefined }
+      if (result.conflict && pendingConflicts(ws.board).length) {
+        const ended = await onCard(card)
+        if (ended.ok && !stopping(io) && !pendingConflicts(ws.board).length) await send(claim)
+        return { ok: true, value: ended }
+      }
+      return { ok: false, error: result.error, code: result.offline ? undefined : result.code ?? 'refused', failure: result.failure }
+    }, () => stopping(io)) ?? syncStopped)
+    if (!sent.ok) return fail(refusedSync(job, sent))
+    if (sent.value) return sent.value
   }
   if (stopping(io)) return fail('')
   if (!id) return fail('This task has no card on this computer.')
@@ -694,8 +709,8 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
 
   /** A discarded build (#61): every delivery on the card still holding a checkout gives it up. */
   async function discardBuilds(): Promise<FlowEnd> {
-    const pulled = await pull(ws, deps.machineId, () => stopping(io))
-    if (!pulled.ok) return fail(pulled.error)
+    const pulled = await attemptSync(io, 'prepare', () => pull(ws, deps.machineId, () => stopping(io)))
+    if (!pulled.ok) return fail(refusedSync(job, pulled))
     const card = akbCardOf(ws) ?? flow.card
     if (!card) return { ok: true, report: {} }
     for (const delivery of checkoutsOf(ws, card)) {

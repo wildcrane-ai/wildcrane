@@ -71,6 +71,7 @@ interface Record_ {
   /** `kind` is the artifact's type (#2003); an `html` one is the page a mockup draws, and its
    *  hash is the page's. */
   assets: { [path: string]: Entry & { artifact: string; kind?: Kind; dependencies?: string[] } }
+  pendingVersions?: Record<string, { artifact: string; hash: string; upload: string }>
   /** Legacy agents placed on the board, by file hash. */
   agents?: { [path: string]: string }
   /** Its skills written into the project, by file hash, and the MCP servers its runs get (#2030). */
@@ -98,9 +99,9 @@ interface Base {
 
 export type Pushed =
   | { ok: true; changed: boolean }
-  | { ok: false; conflict: boolean; error: string; offline?: boolean; failure?: ExecutionFailure; previews?: SourceProblem[]; tasks?: Record<string, SyncProblem> }
+  | { ok: false; conflict: boolean; error: string; offline?: boolean; code?: string; failure?: ExecutionFailure; previews?: SourceProblem[]; tasks?: Record<string, SyncProblem> }
 
-type SyncProblem = { error: string; offline?: boolean; blocking?: boolean; failure?: ExecutionFailure }
+type SyncProblem = { error: string; offline?: boolean; code?: string; blocking?: boolean; failure?: ExecutionFailure }
 const validationFailure = (reason: string, code = 'validation_failed'): ExecutionFailure => ({ code, level: 1, source: 'validation', reason })
 
 const TASK_ID = /^[\w-]{1,100}$/
@@ -235,7 +236,9 @@ function writeRecord(ws: TaskFolder, record: Record_): void {
   countSync('recordWrites')
   if (syncDebug) countSync('recordBytes', Buffer.byteLength(content))
   fs.mkdirSync(path.dirname(recordFile(ws)), { recursive: true })
-  fs.writeFileSync(recordFile(ws), content)
+  const file = recordFile(ws)
+  fs.writeFileSync(`${file}.tmp`, content)
+  fs.renameSync(`${file}.tmp`, file)
 }
 
 /** Only a successful Cloud read can retire an index; missing local files alone prove nothing. */
@@ -546,7 +549,7 @@ export function pull(ws: TaskFolder, machineId: string, stopped?: () => boolean)
           const prepared = await prepareConflictTask(ws)
           if (!prepared.ok) return prepared
         }
-        return { ok: false, error: `This computer's board changes could not be sent: ${refused.error}`, ...(refused.offline ? {} : { code: sent.conflict ? 'board_content_conflict' : 'version_conflict' }) }
+        return { ok: false, error: `This computer's board changes could not be sent: ${refused.error}`, ...(refused.offline ? {} : { code: sent.conflict ? 'board_content_conflict' : refused.code ?? 'version_conflict' }) }
       }
     }
     const read = await readCloud(ws, !!validation)
@@ -933,7 +936,7 @@ function undrawn(ws: TaskFolder, reason: string): string {
   return reason.replace(/ \(at [^)]*file:\/\/[^)]*\)$/, '').slice(0, 500)
 }
 
-async function uploadAsset(artifact: string, { bytes, type }: Sent): Promise<api.Call<number>> {
+async function uploadAsset(artifact: string, { bytes, type }: Sent): Promise<api.Call<string>> {
   const upload = await api.createUpload(artifact, type, Math.max(bytes.length, 1))
   if (!upload.ok) return upload
   const { id, url, parts } = upload.value
@@ -948,9 +951,11 @@ async function uploadAsset(artifact: string, { bytes, type }: Sent): Promise<api
     const put = await api.upload(url ?? `/v1/uploads/${encodeURIComponent(id)}`, bytes, type)
     if (!put.ok) return put
   }
-  const version = await api.createVersion(artifact, upload.value.id)
-  return version.ok ? { ok: true, value: version.value.version } : version
+  return { ok: true, value: id }
 }
+
+const artifactKey = (task: string, file: string, kind: Kind, previous?: string) =>
+  'runner-artifact-' + hashOf(JSON.stringify([task, file, kind, previous]))
 
 /** 每次成功上传即记账，失败重试可复用。任一预览处理失败都不阻塞推送：沿用旧版本或建空记录，并在清单里记下原因（#456, #457）。 */
 async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Promise<api.Call<Assets | undefined>> {
@@ -1034,7 +1039,7 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
           if (!ws.cloudTask) continue
           let artifact = previous?.artifact
           if (!artifact) {
-            const made = await api.createArtifact(ws.cloudTask, node.key.slice(0, 200), kind)
+            const made = await api.createArtifact(ws.cloudTask, node.key.slice(0, 200), kind, artifactKey(ws.cloudTask, node.key, kind))
             if (!made.ok) return { ...made, error: `${node.key}: ${made.error}` }
             artifact = made.value.id
             for (const alias of node.aliases) record.assets[alias] = { artifact, kind, version: 0, hash: '' }
@@ -1086,15 +1091,31 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
         if (!ws.cloudTask) continue
         let artifact = previous && (previous.kind ?? kindOf(path.extname(node.file).toLowerCase())) === out.kind ? previous.artifact : undefined
         if (!artifact) {
-          const made = await api.createArtifact(ws.cloudTask, node.key.slice(0, 200), out.kind)
+          const made = await api.createArtifact(ws.cloudTask, node.key.slice(0, 200), out.kind, artifactKey(ws.cloudTask, node.key, out.kind, previous?.artifact))
           if (!made.ok) return { ...made, error: `${node.key}: ${made.error}` }
           artifact = made.value.id
           for (const alias of node.aliases) record.assets[alias] = { artifact, kind: out.kind, version: 0, hash: '' }
           writeRecord(ws, record)
         }
-        const sent = await uploadAsset(artifact, out)
-        if (!sent.ok) return { ...sent, error: `${node.key}: ${sent.error}` }
-        entry = { artifact, version: sent.value, hash, kind: out.kind }
+        record.pendingVersions ??= {}
+        let pending = record.pendingVersions[node.key]
+        if (pending?.artifact !== artifact || pending.hash !== hash) {
+          const sent = await uploadAsset(artifact, out)
+          if (!sent.ok) return { ...sent, error: `${node.key}: ${sent.error}` }
+          pending = record.pendingVersions[node.key] = { artifact, hash, upload: sent.value }
+          writeRecord(ws, record)
+        }
+        const version = await api.createVersion(artifact, pending.upload)
+        if (!version.ok) {
+          if (version.code === 'conflict' && version.error === 'That upload is unfinished, or already used.') {
+            delete record.pendingVersions[node.key]
+            writeRecord(ws, record)
+            return { ok: false, error: `${node.key}: ${version.error}` }
+          }
+          return { ...version, error: `${node.key}: ${version.error}` }
+        }
+        delete record.pendingVersions[node.key]
+        entry = { artifact, version: version.value.version, hash, kind: out.kind }
       }
       entry = { ...entry, localHash: localHash ?? undefined, dependencies: [...node.dependencies.values()] }
       let changed = false
@@ -1145,13 +1166,15 @@ export function mergeFile(base: string | null, mine: string | null, theirs: stri
   return { content: lines.join('\n') }
 }
 
-const conflictFailure = (ws: TaskFolder): Pushed => ({ ok: false, conflict: true,
+const conflictFailure = (ws: TaskFolder): Pushed => ({ ok: false, conflict: true, code: 'board_content_conflict',
   error: `Board content conflicts require explicit resolution: ${conflictList(ws.board).map(r => `${r.id} (${r.paths.join(', ')})`).join('; ')}. Read akb guide resolve-conflict.` })
 
-export const push = (ws: TaskFolder, job: { id: string; machineId: string }): Promise<Pushed> =>
-  inFolder(ws.cwd, () => busy(preparationKey(ws))
-    ? Promise.resolve({ ok: false as const, conflict: false, offline: true, error: 'Task content is still being prepared.' })
-    : sendMarked(ws, job))
+export const push = (ws: TaskFolder, job: { id: string; machineId: string }, stopped?: () => boolean): Promise<Pushed> =>
+  inFolder(ws.cwd, async () => {
+    if (stopped?.()) return { ok: false, conflict: false, code: 'stopped', error: 'Task preparation stopped.' }
+    if (busy(preparationKey(ws))) return { ok: false, conflict: false, offline: true, error: 'Task content is still being prepared.' }
+    return sendMarked(ws, job)
+  })
 
 const preparationKey = (ws: TaskFolder) => path.join(projectStateDir(ws.board), 'preparing')
 
@@ -1308,7 +1331,8 @@ function affectedTasks(ws: TaskFolder, paths: Iterable<string>): Set<string> {
 async function send(ws: TaskFolder, job: { id: string | null; machineId: string }, paths?: string[]): Promise<Pushed> {
   const record = readRecord(ws)
   const base = readBase(ws)
-  const fail = (error: string, conflict = false, code?: string): Pushed => ({ ok: false, conflict, error, ...(code ? {} : { offline: true }) })
+  const fail = (error: string, conflict = false, code?: string, status?: number): Pushed =>
+    ({ ok: false, conflict, error, code, ...(api.temporaryCloudFailure({ code, status }) ? { offline: true } : {}) })
 
   // A first reconciliation also catches edits made while the Runner was stopped.
   if (!syncIndex(ws)?.ready) paths = undefined
@@ -1384,10 +1408,10 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
         selected?.add(list)
         continue
       }
-      if (!boardSync && !assets.failure) return fail(assets.error, false, assets.code)
+      if (!boardSync && !assets.failure) return fail(assets.error, false, assets.code, assets.status)
       if (job.id && ws.cloudTask && assets.failure) return { ok: false, conflict: false, error: assets.error, failure: assets.failure }
       if (assets.code !== 'conflict' || !assets.error.endsWith(': This task has finished.')) {
-        assetErrors[item.folder.task] = { error: assets.error, failure: assets.failure, ...(assets.code ? {} : { offline: true }) }
+        assetErrors[item.folder.task] = { error: assets.error, failure: assets.failure, code: assets.code, ...(api.temporaryCloudFailure(assets) ? { offline: true } : {}) }
       }
     }
     deferredCards.add(item.folder.number!)
@@ -1564,7 +1588,7 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
     }
   }
   if (!sent.ok && sent.previewProblems?.length) return { ok: false, conflict: false, error: sent.error, failure: validationFailure(sent.error), previews: sent.previewProblems }
-  if (!sent.ok) return fail(sent.error, sent.code === 'version_conflict', sent.code)
+  if (!sent.ok) return fail(sent.error, sent.code === 'version_conflict', sent.code, sent.status)
 
   // The base keeps its `head_seq`: what others wrote meanwhile is read at the next pull.
   for (const c of changes) {

@@ -36,8 +36,9 @@ import { confirmFlowStopped, runAgent, runFlow, runReview, writeTranscript } fro
 import { hold } from './cache'
 import { allowedProjects } from './folders'
 import { readGoals, writeGoals } from './goals'
-import { replySpent, checkpointEvent, clearCheckpoint, readCheckpoint, saveCheckpoint, stopReply, replayable, resumable, type Checkpoint } from './recovery'
+import { replySpent, checkpointEvent, clearCheckpoint, readCheckpoint, saveCheckpoint, stopReply, replayable, resumable, syncing, type Checkpoint } from './recovery'
 import { runnerHome } from './home'
+import { retryableSync, syncBackoff, syncRefusal, syncStopped, SYNC_RETRY_MAX_MS, type Sync } from './sync-retry'
 import { trackSubagents } from './subagents'
 import { followProxy } from './proxy'
 import { detectRuntimes, forks, plan as realPlan, type Plan, type Settings } from './runtimes'
@@ -71,7 +72,7 @@ export const STOP_MS = 10_000
 export const TEST_MS = 30_000
 
 interface Shared {
-  authorize?: (job: Job) => Promise<boolean>
+  authorize?: (job: Job) => Promise<boolean | api.Call<boolean>>
   machineId: string
   api: Pick<typeof api, 'claimJob' | 'renewJob' | 'openLog' | 'finishJob' | 'readTask' | 'readStudio' | 'listStudios' | 'readRejections' | 'markReviewed' | 'readAgents' | 'readChat' | 'readDecisions' | 'listChats'>
   plan: (runtime: Job['runtime'], prompt: string, cwd: string, resume?: string | null, model?: string | null, settings?: Settings, fork?: boolean, language?: 'zh' | 'en' | null) => Plan
@@ -85,6 +86,7 @@ interface Shared {
   leaseMs: number
   retryMs: number
   replyBackoff?: (attempt: number) => number
+  syncBackoff?: (attempt: number) => number
   stopMs: number
   /** How long a board change waits for the next before it goes; null watches no board. */
   watchMs: number | null
@@ -444,10 +446,6 @@ export async function runJob(id: string, deps: Deps, track: (stop: () => Promise
   if (!claim.ok || !claim.value.claimed || stopped() || !held(deps, lease)) return
   const job = claim.value.job
   if (job.chat || job.discussion) console.info('reply-dispatch', { event: 'claimed', job: id, at: new Date().toISOString() })
-  if (deps.authorize && !await deps.authorize(job)) {
-    await deps.api.finishJob(deps.machineId, id, 'failed', '项目目录授权已撤销或暂时无法验证，请重新确认后重试。')
-    return
-  }
   const releases: (() => void)[] = []
   try {
     const akb = deps.akb()
@@ -481,7 +479,9 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   lease: Lease, scope: JobScope, replyStream?: ReturnType<typeof streamOut>): Promise<void> {
   const id = job.id
   const local = readCheckpoint(id)
-  const previous = local ?? (job.recoveryOf ? readCheckpoint(job.recoveryOf) : null)
+  const sourceId = job.flow?.sync_recovery_of ?? job.recoveryOf
+  const source = sourceId ? readCheckpoint(sourceId) : null
+  const previous = local ?? (job.flow && !syncing(source) ? null : source)
   const checkpoint: Checkpoint = previous ?? { pending: [], started: false, effects: false }
   if (checkpoint.boardContinuation) job = { ...job, task: job.task ?? job.review?.tasks[0], flow: undefined, review: undefined, handoff: undefined, prompt: checkpoint.boardContinuation.prompt, resume: checkpoint.session, fork: false }
   const reply = !!(job.chat || job.discussion) && !job.flow
@@ -507,7 +507,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   }
   const manual = job.manualRecovery === true
   const updating = checkpoint.updating === true
-  const recovering = updating || !!job.recoveryOf || !!checkpoint.retry?.pending
+  const recovering = updating || !!job.recoveryOf || !!(job.flow?.sync_recovery_of && previous) || !!checkpoint.retry?.pending
   const persist = () => {
     checkpoint.updating ||= readCheckpoint(id)?.updating
     saveCheckpoint(id, checkpoint)
@@ -580,7 +580,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   if (updating) {
     delete checkpoint.updating
     saveCheckpoint(id, checkpoint)
-  } else if (reply || !recovering) persist()
+  } else if (reply || !recovering || checkpoint.syncRetry || checkpoint.completed) persist()
   if (!reply && !job.flow && updating && checkpoint.started && !checkpoint.completed && !resumable(checkpoint)) {
     return finishClaimed('failed', 'recovery_unsafe')
   }
@@ -605,10 +605,68 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       catch { return finishClaimed('failed', '无法准备新隔离目录，已有文件已保留。') }
     }
   }
+  const watching = () => {
+    const stream = replyStream ?? (scope.waitingStream ??= streamOut(deps, id, lease))
+    track(stream.stop)
+    return stream
+  }
+  const sync: Sync = async (step, operation) => {
+    const stream = watching()
+    let waiting = false
+    while (!stream.lost() && !stream.asked()) {
+      let renewed: Extract<api.Call<unknown>, { ok: false }> | undefined
+      const retry = checkpoint.syncRetry?.step === step ? checkpoint.syncRetry : undefined
+      if (retry) {
+        if (!waiting) stream.event({ kind: 'status', data: { state: 'retrying', source: 'sync' } })
+        waiting = true
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const ms = Math.max(0, Math.min(SYNC_RETRY_MAX_MS, retry.at - Date.now()))
+        await Promise.race([new Promise<void>(resolve => { timer = setTimeout(resolve, ms) }), stream.whenAsked])
+        clearTimeout(timer)
+        if (stream.asked() || stream.lost()) break
+        const requestedAt = leaseNow()
+        const hold = await deps.api.renewJob(deps.machineId, id)
+        if (stream.lost()) break
+        if (hold.ok) {
+          if (!hold.value.renewed) { await stream.stop(); break }
+          Object.assign(lease, requestedAt)
+          if (hold.value.stop) { stream.requestStop(); break }
+        } else renewed = hold
+      }
+      const result = renewed ?? await operation()
+      if (stream.asked() || stream.lost()) break
+      if (result.ok || !retryableSync(result)) {
+        if (waiting) stream.event({ kind: 'status', data: { state: 'running', source: 'sync' } })
+        if (retry) {
+          delete checkpoint.syncRetry
+          persist()
+        }
+        return result
+      }
+      console.error('runner: task sync', { job: id, code: result.code, error: result.error })
+      const attempt = (checkpoint.syncRetry?.attempt ?? 0) + 1
+      checkpoint.syncRetry = { step, attempt, at: Date.now() + (deps.syncBackoff ?? syncBackoff)(attempt) }
+      persist()
+    }
+    return syncStopped
+  }
+  const authorize = async () => !deps.authorize ? { ok: true as const, value: true } : sync('authorize', async () => {
+    const allowed = await deps.authorize!(job)
+    return typeof allowed === 'boolean' ? { ok: true, value: allowed } : allowed
+  })
+  const unauthorized = async (allowed: api.Call<boolean>) => {
+    const stream = scope.waitingStream ?? replyStream
+    await stream?.end()
+    if (stream?.lost()) return
+    if (stream?.asked()) return finishClaimed('stopped')
+    return finishClaimed('failed', allowed.ok ? '项目目录授权已变化，请重新确认后重试。' : syncRefusal(job, allowed))
+  }
+  const allowed = await authorize()
+  if (!allowed.ok || !allowed.value) return unauthorized(allowed)
   if (job.secret) return runSecret(job, deps)
   if (job.test) return runTest(job, deps, lease)
 
-  const waitingStream = pendingRetry || (job.task && !job.flow && !job.agent && !job.review) ? replyStream ?? (scope.waitingStream = streamOut(deps, id, lease)) : undefined
+  const waitingStream = pendingRetry || job.task ? watching() : replyStream
   if (pendingRetry && waitingStream) {
     const stream = waitingStream
     track(stream.stop)
@@ -629,7 +687,8 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       return pauseRecovery(pause, true)
     }
     if (stream.asked() || stream.lost()) return finishWait('authorization')
-    if (deps.authorize && !await deps.authorize(job)) return finishWait('authorization')
+    const allowed = await authorize()
+    if (!allowed.ok || !allowed.value) return finishWait('authorization')
     const requestedAt = leaseNow()
     const renewed = await deps.api.renewJob(deps.machineId, id)
     if (renewed.ok && renewed.value.stop) stream.requestStop()
@@ -659,7 +718,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     const costUsd = prior?.costUsd !== undefined && report.costUsd !== undefined && !reply && job.runtime !== 'claude-code'
       ? prior.costUsd + report.costUsd : report.costUsd ?? prior?.costUsd
     const completed = prior ? { ...prior, session: report.session ?? prior.session, ...(usage ? { usage } : {}), ...(costUsd !== undefined ? { costUsd } : {}) } : report
-    return sendBack(deps, id, lease, ws!, completed, landed, async pushed => {
+    return sendBack(job, deps, lease, ws!, completed, sync, watching(), landed, async pushed => {
       const records = pushed.conflict ? pendingConflicts(ws!.board) : []
       const facts = createHash('sha256').update(JSON.stringify(pushed.conflict
         ? records.map(r => ({ id: r.id, state: r.state, files: r.files })) : pushed.failure)).digest('hex')
@@ -677,7 +736,8 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       if (!renewed.ok || !renewed.value.renewed || !held(deps, lease)) return
       if (renewed.value.stop) return finishClaimed('stopped', '', completed)
       Object.assign(lease, requestedAt)
-      if (deps.authorize && !await deps.authorize(job)) return finishClaimed('failed', 'Project authorization changed. Saved work was preserved.', completed)
+      const allowed = await authorize()
+      if (!allowed.ok || !allowed.value) return unauthorized(allowed)
       const prompt = pushed.conflict
         ? conflictPrompt(ws!.board, 'Resolve and confirm synchronization, preserve completed work, then return the saved result.')
         : syncRepairPrompt(pushed.failure!.reason)
@@ -704,19 +764,24 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       ws = openAgentFolder(job, folder.cwd)
       cwd = ws.cwd
       keep(cwd)
-      if (!checkpoint.boardContinuation) return runAgentJob(job as Job & { agent: AgentJob }, ws, deps, track, lease, checkpoint, persist, sendResult)
+      if (!checkpoint.boardContinuation) return runAgentJob(job as Job & { agent: AgentJob }, ws, deps, watching(), sync, lease, checkpoint, persist, sendResult)
     } else if (task) {
       ws = openTaskFolder({ ...job, task }, folder?.cwd ?? null)
       cwd = ws.cwd
       keep(cwd)
       // A flow job, and a review, pulls once its board is there.
-      if (!job.flow && !job.review) {
-        if (waitingStream) track(waitingStream.stop)
-        const pulled = await pull(ws, deps.machineId, () => !held(deps, lease) || !!waitingStream?.asked() || !!waitingStream?.lost())
+      if (!job.flow && !job.review && !checkpoint.completed) {
+        const pulled = await sync('prepare', () => pull(ws!, deps.machineId, () => !!waitingStream?.asked() || !!waitingStream?.lost()))
         if (!pulled.ok) {
-          if (pulled.code === 'stopped') return waitingStream?.asked() ? finishClaimed('stopped') : undefined
+          if (pulled.code === 'stopped') {
+            await waitingStream?.end()
+            return waitingStream?.asked() ? finishClaimed('stopped') : undefined
+          }
           if (pulled.failure?.level === 1) syncDiagnostic = syncRepairPrompt(pulled.failure.reason)
-          else if (pulled.code !== 'board_content_conflict') throw new Error(pulled.error)
+          else if (pulled.code !== 'board_content_conflict') {
+            console.error('runner: task sync refused', { job: id, code: pulled.code, error: pulled.error })
+            throw new Error(syncRefusal(job, pulled))
+          }
         }
       }
     }
@@ -789,17 +854,21 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     return finishClaimed('failed', e instanceof Error ? e.message : String(e))
   }
 
-  if (deps.authorize && !await deps.authorize(job)) {
-    await waitingStream?.end()
-    return pendingRetry ? pauseRecovery('authorization', true) : finishClaimed('failed', '项目目录授权已变化，请重新确认后重试。')
-  }
+  const authorized = await authorize()
+  if (!authorized.ok || !authorized.value) return unauthorized(authorized)
   if (!held(deps, lease)) return
   if (reply) {
     for (let check = 0; ; check++) {
-      const requestedAt = leaseNow()
-      const renewed = await deps.api.renewJob(deps.machineId, id)
+      let requestedAt = leaseNow()
+      const renewed = await sync('prepare', () => {
+        requestedAt = leaseNow()
+        return deps.api.renewJob(deps.machineId, id)
+      })
+      if (waitingStream?.asked() || renewed.ok && renewed.value.stop) {
+        await waitingStream?.end()
+        return finishClaimed('stopped', '', { stopped: true })
+      }
       if (!renewed.ok || !renewed.value.renewed || !held(deps, lease)) return
-      if (renewed.value.stop) return finishClaimed('stopped', '', { stopped: true })
       Object.assign(lease, requestedAt)
       if (!job.discussion || !renewed.value.catalog || renewed.value.catalog.version === job.discussion.catalog?.version && renewed.value.catalog.account === job.discussion.catalog.account) break
       if (check >= 2) return finishClaimed('failed', 'The studio catalog keeps changing. Try again.')
@@ -807,14 +876,13 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       const wrote = await writeGoals({ ...job, discussion: job.discussion }, deps.api.listStudios, true)
       if ('error' in wrote) return finishClaimed('failed', wrote.error)
       goalFile = wrote.file
-      if (deps.authorize && !await deps.authorize(job)) {
-        return pendingRetry ? pauseRecovery('authorization', true) : finishClaimed('failed', '项目目录授权已变化，请重新确认后重试。')
-      }
+      const authorized = await authorize()
+      if (!authorized.ok || !authorized.value) return unauthorized(authorized)
     }
   }
   if (waitingStream?.lost()) return
   if (waitingStream?.asked()) return finishClaimed('stopped', '', { stopped: true })
-  const stream = waitingStream ?? replyStream ?? streamOut(deps, id, lease)
+  const stream = watching()
   if (pendingRetry) stream.event({ kind: 'log', data: { text: '[chat-recovery] running' } })
   if (run?.startNote) stream.out(`${run.startNote}\n`)
   let attempt: NonNullable<Checkpoint['attempts']>[number] | undefined
@@ -911,7 +979,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   }
   track(stream.stop)
 
-  const io = { show: stream.out, event: remember, track: stream.adopt, onStop: stream.onStop, lost: stream.lost, asked: stream.asked }
+  const io = { show: stream.out, event: remember, track: stream.adopt, onStop: stream.onStop, lost: stream.lost, asked: stream.asked, sync }
   if (job.review) {
     checkpoint.started = true
     persist()
@@ -939,10 +1007,12 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     const refs = tasks.map((c) => `${c.task}:${c.number}`)
     const ended = refs.length ? await runReview(job, ws!, refs, deps, io) : { ok: true as const, report: {} }
     if (ended.ok) complete('done', ended.report)
-    await stream.end()
-    if (stream.lost()) return
-    if (!ended.ok) return finishClaimed('failed', ended.reason)
-    return sendResult(ended.report, () => markReviewed(marks))
+    if (!ended.ok) {
+      await stream.end()
+      if (!stream.lost()) return finishClaimed(stream.asked() ? 'stopped' : 'failed', ended.reason)
+      return
+    }
+    return !stream.lost() ? sendResult(ended.report, () => markReviewed(marks)) : undefined
   }
   if (!run) {
     checkpoint.started = true
@@ -952,7 +1022,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     // Stopped by the user (#2128), or its delivery cancelled (#59): kept here for a resume.
     const stopped = !ended.ok && (stream.asked() || ended.stopped === true)
     if (stopped && stream.asked()) await stream.halted()
-    await stream.end()
+    if (!ended.ok) await stream.end()
     if (stream.lost()) return
     const boardStopped = await confirmFlowStopped(ws!, job, deps)
     const evidence = job.handoff?.action === 'continue' || job.handoff?.action === 'restart' ? progressEvidence(job, ws!.cwd) : null
@@ -1057,10 +1127,13 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     const failure = replyReason(rawFailure, checkpoint.retryPause, job, unsafe)
     if (!stream.asked()) complete(ok ? 'done' : 'failed', said, failure)
     if (!ok && rawFailure && unsafe) stream.event({ kind: 'error', data: { text: rawFailure.reason } })
-    await stream.end()
-    if (stream.lost()) return
-    if (!ok || !ws) return finishClaimed(ok ? 'done' : 'failed', ok ? '' : failure, said)
-    return sendResult(said, () => keepChat(job, said.reply))
+    if (!ok || !ws || stream.asked()) {
+      await stream.end()
+      if (stream.lost()) return
+      if (stream.asked() && ws && !reply) return finishClaimed('stopped', '', said)
+      return finishClaimed(ok ? 'done' : 'failed', ok ? '' : failure, said)
+    }
+    if (!stream.lost()) return sendResult(said, () => keepChat(job, said.reply))
   }
   const printed = async (plan: Plan) => {
     const child = launchAttempt(plan)
@@ -1146,38 +1219,38 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     ...(reply ? { recovery: { safe: replayable(checkpoint), stopped, resumable: resumable(checkpoint) } } : {}),
   }
   if (!stream.asked()) complete(failure ? 'failed' : 'done', said, failure)
-  await stream.end()
-  if (stream.lost()) return
-  if (stream.asked() && job.runtime === 'antigravity') return finishClaimed('stopped', '', said)
-  if (failure || !ws) return finishClaimed(failure ? 'failed' : 'done', failure, said)
-  return await sendResult(said, () => keepChat(job, said.reply))
+  if (failure || !ws || stream.asked()) {
+    await stream.end()
+    if (stream.lost()) return
+    if (stream.asked() && (ws && !reply || job.runtime === 'antigravity')) return finishClaimed('stopped', '', said)
+    return finishClaimed(failure ? 'failed' : 'done', failure, said)
+  }
+  if (!stream.lost()) return sendResult(said, () => keepChat(job, said.reply))
 }
 
 /** A periodic agent, on the project's folder here; a job for a project with none here fails. */
-async function runAgentJob(job: Job & { agent: AgentJob }, ws: TaskFolder, deps: StepDeps, track: (stop: () => Promise<void>) => void,
-  lease: Lease, checkpoint: Checkpoint, persist: () => void, sendResult: (report: JobReport) => Promise<void>): Promise<void> {
-  if (!held(deps, lease)) return
+async function runAgentJob(job: Job & { agent: AgentJob }, ws: TaskFolder, deps: StepDeps, stream: ReturnType<typeof streamOut>, sync: Sync, lease: Lease,
+  checkpoint: Checkpoint, persist: () => void, sendResult: (report: JobReport) => Promise<void>): Promise<void> {
+  if (stream.lost()) return
   if (checkpoint.completed) return sendResult(checkpoint.completed.report)
   checkpoint.started = true
   persist()
-  const stream = streamOut(deps, job.id, lease)
-  track(stream.stop)
   const ended = await runAgent(job, ws, deps, { show: stream.out, event: (event) => {
     if (stream.lost()) return
     checkpointEvent(checkpoint, event)
     persist()
     stream.event(event)
-  }, track: stream.adopt, onStop: stream.onStop, lost: stream.lost, asked: stream.asked })
+  }, track: stream.adopt, onStop: stream.onStop, lost: stream.lost, asked: stream.asked, sync })
   if (ended.ok && !stream.lost()) {
     checkpoint.completed = { outcome: 'done', report: ended.report }
     checkpoint.reviewedRejections = ended.reviewed
     persist()
   }
+  if (ended.ok && !stream.asked() && !stream.lost()) return sendResult(ended.report)
   await stream.end()
   if (stream.lost()) return
   if (stream.asked()) return finish(deps, job.id, lease, 'stopped')
   if (!ended.ok) return finish(deps, job.id, lease, 'failed', ended.reason)
-  return sendResult(ended.report)
 }
 
 const quietLines = (plan: Plan, chunk: string) =>
@@ -1257,7 +1330,7 @@ type Outcome = 'done' | 'failed' | 'conflict' | 'stopped'
 async function ended(deps: Shared, id: string, lease: Lease, outcome: Outcome, reason = '', report?: JobReport): Promise<boolean> {
   const sent = await whileOffline(deps, id, lease, async () => {
     const done = await deps.api.finishJob(deps.machineId, id, outcome, reason, report)
-    return { offline: !done.ok && !done.code, finished: done.ok && done.value.finished }
+    return { offline: !done.ok && retryableSync(done), finished: done.ok && done.value.finished }
   })
   if (sent?.finished && (outcome !== 'failed' || !report?.recovery)) clearCheckpoint(id)
   return sent?.finished ?? false
@@ -1268,25 +1341,26 @@ async function finish(deps: Shared, id: string, lease: Lease, outcome: Outcome, 
 }
 
 /** What the job changed goes back, then how it ended; `landed` once both were taken. */
-async function sendBack(deps: StepDeps, id: string, lease: Lease, ws: TaskFolder, said: JobReport, landed = () => {}, repair?: (problem: Extract<Pushed, { ok: false }>) => Promise<void>, confirm?: () => Promise<api.Call<unknown>>): Promise<void> {
-  const report = said
-  const pushed = await whileOffline<Pushed>(deps, id, lease, () => push(ws, { id, machineId: deps.machineId }))
-  if (!pushed) return
-  if (pushed.ok) {
-    if (confirm) {
-      const result = await whileOffline(deps, id, lease, async () => {
-        const answer = await confirm()
-        return { answer, offline: !answer.ok && !answer.code }
-      })
-      if (!result || result.offline) return
-      if (!result.answer.ok) return finish(deps, id, lease, 'failed', result.answer.error, report)
-    }
-    if (await ended(deps, id, lease, 'done', '', { ...report, ...(readCheckpoint(id)?.approvalRequested ? { replyApprovalSynced: report.replyApprovalSynced !== false && replyAssetsSynced(ws) } : {}) })) landed()
-    return
+async function sendBack(job: Job, deps: StepDeps, lease: Lease, ws: TaskFolder, report: JobReport, sync: Sync, stream: ReturnType<typeof streamOut>,
+  landed: () => void, repair: (problem: Extract<Pushed, { ok: false }>) => Promise<void>, confirm: () => Promise<api.Call<unknown>>): Promise<void> {
+  const result = await sync('publish', async () => {
+    const pushed = await push(ws, { id: job.id, machineId: deps.machineId }, () => stream.asked() || stream.lost())
+    return !pushed.ok && pushed.offline ? { ok: false, error: pushed.error } : { ok: true, value: pushed }
+  })
+  const pushed = result.ok ? result.value : result
+  const confirmed = pushed.ok ? await sync('confirm', confirm) : undefined
+  const repairable = !pushed.ok && 'conflict' in pushed && (pushed.conflict || pushed.failure?.level === 1) ? pushed : null
+  const denied = confirmed && !confirmed.ok ? confirmed : !pushed.ok && !repairable ? pushed : null
+  if (denied && !stream.lost() && !stream.asked()) stream.event({ kind: 'error', data: { text: syncRefusal(job, denied) } })
+  await stream.end()
+  if (stream.lost()) return
+  if (stream.asked()) return finish(deps, job.id, lease, 'stopped', '', report)
+  if (repairable) return repair(repairable)
+  if (denied) {
+    console.error('runner: task sync refused', { job: job.id, code: denied.code, error: denied.error })
+    return finish(deps, job.id, lease, 'failed', syncRefusal(job, denied), report)
   }
-  if (pushed.offline) return
-  if ((pushed.conflict || pushed.failure?.level === 1) && repair) return repair(pushed)
-  await finish(deps, id, lease, 'failed', pushed.error, report)
+  if (await ended(deps, job.id, lease, 'done', '', { ...report, ...(readCheckpoint(job.id)?.approvalRequested ? { replyApprovalSynced: report.replyApprovalSynced !== false && replyAssetsSynced(ws) } : {}) })) landed()
 }
 
 /** The runtime's settings and the keys this computer holds for it. */

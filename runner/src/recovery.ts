@@ -7,10 +7,12 @@ import { readFailure, readRetryPlan, type ExecutionFailure, type RetryPause, typ
 import type { RunEvent } from '../../cli/src/lib/agent/wire'
 import type { JobReport } from './api'
 import { runnerHome } from './home'
+import type { SyncStep } from './sync-retry'
 
 export const UNCERTAIN = '更新中断时有操作结果尚未确认，请检查已有结果后再续跑。'
 
 export interface Checkpoint {
+  syncRetry?: { step: SyncStep; attempt: number; at: number }
   forkSource?: string
   reviewedRejections?: import('./triage').Laid
   boardContinuation?: { report: JobReport; facts: string; prompt: string; validation?: boolean }
@@ -42,6 +44,9 @@ export function readCheckpoint(id: string): Checkpoint | null {
   try {
     const held = JSON.parse(fs.readFileSync(fileOf(id), 'utf8')) as Checkpoint
     if (!held || !Array.isArray(held.pending) || !held.pending.every((id) => typeof id === 'string')) throw new Error('进度格式错误')
+    if (held.syncRetry && (!Number.isSafeInteger(held.syncRetry.attempt) || held.syncRetry.attempt < 1 || !Number.isFinite(held.syncRetry.at))) {
+      delete held.syncRetry
+    }
     held.failure = readFailure(held.failure)
     if (held.retry?.pending) {
       const pending = readRetryPlan(held.retry.pending, held.retry.attempt)
@@ -93,6 +98,10 @@ export async function stopReply(id: string, timeout: number): Promise<boolean> {
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
   return true
+}
+
+export function syncing(checkpoint: Checkpoint | null): boolean {
+  return !!checkpoint && (!!checkpoint.syncRetry || checkpoint.completed?.outcome === 'done')
 }
 
 export function replayable(checkpoint: Checkpoint): boolean {

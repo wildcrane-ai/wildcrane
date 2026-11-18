@@ -1,4 +1,4 @@
-// wildcrane-runner 0.6.93 — built by runner/scripts/build.mjs. Do not edit.
+// wildcrane-runner 0.6.94 — built by runner/scripts/build.mjs. Do not edit.
 import { createRequire as __ai4kanbanRequire } from 'node:module'
 const require = __ai4kanbanRequire(import.meta.url)
 var __create = Object.create;
@@ -62688,7 +62688,8 @@ var init_review_plan = __esm({
     reviewNodeSchema = external_exports.object({
       id,
       after: external_exports.array(id).max(50).default([]),
-      previews: external_exports.array(id).max(50).default([])
+      previews: external_exports.array(id).max(50).default([]),
+      kind: external_exports.literal("work").optional()
     }).strict();
     reviewPlanSchema = external_exports.array(reviewNodeSchema).max(50).superRefine((nodes, ctx) => {
       try {

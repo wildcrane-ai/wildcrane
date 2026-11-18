@@ -21,7 +21,7 @@ import { pruneChats, reviewChats } from './chats'
 import { watchBoards, type BoardWatch } from './board-watch'
 import { answerHint } from './diff'
 import { stopLeftBehind } from './flow'
-import { replySpent, readCheckpoint, replayable, saveCheckpoint, stopReply, UNCERTAIN } from './recovery'
+import { replySpent, readCheckpoint, replayable, saveCheckpoint, stopReply, syncing, UNCERTAIN } from './recovery'
 import { status, t } from './i18n'
 import { holdMachine, type Holder } from './lock'
 import { STOP_MS, defaultDeps, folderFor, runJob, type Deps } from './jobs'
@@ -31,7 +31,7 @@ import { MODEL_REFRESH_MS } from './model-list'
 import { codexServer } from './codex-server'
 import { akbCardOf, openTaskFolder } from './task-folder'
 import { logSync } from './sync-debug'
-import { canKeepFlow, reclaimFlowWorkerAfterExit, reclaimFlowWorkers, flowWorkerEntry, hasFlowWorker, launchFlowWorker, stopFlowWorker, watchFlowWorker } from './flow-worker'
+import { canKeepFlow, reclaimFlowWorkerAfterExit, retireSyncWorker, reclaimFlowWorkers, flowWorkerEntry, hasFlowWorker, launchFlowWorker, stopFlowWorker, watchFlowWorker } from './flow-worker'
 
 /** Re-register this often: it is what keeps the computer counted as connected, inside Cloud's
  *  15-minute lease. */
@@ -109,7 +109,8 @@ export function startRunner(options: Options): Runner {
       if (!validAccount()) return false
       if (!job.projectDir) return true
       const folders = await api.listFolders(registration!.machineId)
-      return validAccount() && folders.ok && folders.value.folders.some((f) => f.project === job.project && f.path === job.projectDir)
+      if (!validAccount()) return false
+      return folders.ok ? folders.value.folders.some(f => f.project === job.project && f.path === job.projectDir) : folders
     } }), runtimes: () => base.runtimes().then(redetected) }
   }
 
@@ -229,7 +230,7 @@ export function startRunner(options: Options): Runner {
         return finish({ reason: 'elsewhere', machine: (held.ok && held.value.runner?.machineName) || '?' })
       }
       if (answer.code === 'runner_outdated') return finish({ reason: 'outdated' })
-      if (answer.code && answer.code !== 'service_unavailable') return finish({ reason: 'refused', message: answer.error })
+      if (!api.temporaryCloudFailure(answer)) return finish({ reason: 'refused', message: answer.error })
       connected = false
       options.onReconnecting?.()
       status(t.reconnecting())
@@ -315,6 +316,11 @@ export function startRunner(options: Options): Runner {
       for (const id of attempted) if (!listed.has(id) && !running.has(id)) attempted.delete(id)
       for (const job of list.value.jobs) {
         if (closed || preparing) break
+        const waitingToSync = !!job.task && syncing(readCheckpoint(job.id))
+        const syncSource = job.flow?.sync_recovery_of
+        if (syncSource && syncing(readCheckpoint(syncSource))
+            && (running.has(syncSource) || !retireSyncWorker(syncSource, registration.machineId))) continue
+        if (waitingToSync && !running.has(job.id) && hasFlowWorker(job.id)) retireSyncWorker(job.id, registration.machineId)
         if (workerEntry && canKeepFlow(job) && !running.has(job.id)
             && (job.state === 'waiting' || job.state === 'claimed') && !attempted.has(job.id)) {
           let keep = hasFlowWorker(job.id)
@@ -327,7 +333,7 @@ export function startRunner(options: Options): Runner {
           if (keep) { startWorker(job); continue }
         }
         // 本地运行停止后，由 Cloud 自动恢复重启遗留的任务一次。
-        if ((job.state === 'claimed' || job.state === 'interrupted') && !running.has(job.id) && (!attempted.has(job.id) || !job.flow && !!(job.chat || job.discussion))) {
+        if ((job.state === 'claimed' || job.state === 'interrupted') && !running.has(job.id) && (waitingToSync || !attempted.has(job.id) || !job.flow && !!(job.chat || job.discussion))) {
           const failure = await stopLeftOn(job)
           if (closed || preparing) break
           const checkpoint = readCheckpoint(job.id)
@@ -338,12 +344,14 @@ export function startRunner(options: Options): Runner {
               || checkpoint.cleanup?.status === 'unconfirmed'
               || (!job.flow && checkpoint.started && !checkpoint.session && !(reply && replayable(checkpoint))))
           const safeFork = checkpoint?.forkSource && replayable(checkpoint)
-          if (reply && checkpoint && (checkpoint.retry?.pending || safeFork) && !checkpoint.updating && processesStopped && !uncertain && !failure) {
+          const preserveSync = waitingToSync && (!reply || processesStopped)
+          if (checkpoint && (preserveSync || reply && (checkpoint.retry?.pending || safeFork) && processesStopped && !uncertain)
+              && !checkpoint.updating && !failure) {
             const prepared = await api.finishJob(registration.machineId, job.id, 'update_prepare')
             if (prepared.ok && prepared.value.prepared) {
               checkpoint.updating = true
               saveCheckpoint(job.id, checkpoint)
-            } else if (prepared.ok && prepared.value.finished) {
+            } else if (prepared.ok && prepared.value.finished || preserveSync) {
               continue
             }
           }
@@ -432,6 +440,7 @@ export function startRunner(options: Options): Runner {
           }
         }
       } catch (e) {
+        if (syncing(readCheckpoint(id))) return
         const held = !closed && validAccount() ? await api.renewJob(registration!.machineId, id) : null
         const claimed = held?.ok && !held.value.renewed && validAccount() ? await api.claimJob(registration!.machineId, id) : null
         if (held?.ok && held.value.renewed || claimed?.ok && claimed.value.claimed) {
@@ -444,7 +453,10 @@ export function startRunner(options: Options): Runner {
       running.delete(id)
       workers.delete(id)
       void reclaimFlowWorkerAfterExit(id, registration!.machineId, options.deps)
-      if (!closed) { boards?.look(); status(idle()); void readJobs() }
+      if (!closed) {
+        if (syncing(readCheckpoint(id)) && !retireSyncWorker(id, registration!.machineId)) return
+        boards?.look(); status(idle()); void readJobs()
+      }
     })
     jobs.add(watched)
   }

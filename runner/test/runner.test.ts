@@ -30,6 +30,7 @@ import { HARNESSES } from '../../cli/src/lib/agent/harnesses'
 import { SYSTEM_LANGUAGE_EN, SYSTEM_LANGUAGE_ZH } from '../../cli/src/lib/agent/language'
 import { plan as runtimePlan } from '../src/runtimes'
 import { toWire, type Deps } from '../src/jobs'
+import { syncBackoff } from '../src/sync-retry'
 import { akbEnv, akbHome, runAkb } from '../src/akb'
 import { readAkbState } from '../src/akb-version'
 import { AKB_CONTRACT } from '../src/protocol'
@@ -371,7 +372,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal(checked, true)
     assert.equal(job.outcome, 'failed')
     assert.equal(planned.length, 0)
-    assert.match(job.reason!, /授权已撤销或暂时无法验证/)
+    assert.match(job.reason!, /目录授权已变化/)
   })
 
   it('退出账号停止真正执行者和候补会话，不再领取新任务', async () => {
@@ -1710,10 +1711,10 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.deepEqual(stop, { reason: 'elsewhere', machine: 'laptop' })
   })
 
-  it('registers with protocol 26', async () => {
+  it('registers with protocol 27', async () => {
     start()
     await until(() => cloud.registrations > 0)
-    assert.equal(cloud.protocol, 26)
+    assert.equal(cloud.protocol, 27)
   })
 
   it('stops as outdated when Cloud no longer takes its protocol', async () => {
@@ -1768,7 +1769,7 @@ describe('a task’s folder (#2037)', () => {
 
   const prepareBoard = async () => {
     const result = await pull(openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1')), MACHINE)
-    assert.equal(result.ok, true)
+    assert.equal(result.ok, true, JSON.stringify(result))
   }
 
   for (const copy of ['empty', 'existing']) {
@@ -1804,8 +1805,14 @@ describe('a task’s folder (#2037)', () => {
         fetch(url, { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify({ task: '1', review_revision: 1 }) })
           .then(r => r.json()).then(r => { fs.writeFileSync('reply-result.json', JSON.stringify(r)); console.log('done'); });
       `
-      const job = await runTask('reply-approval', script, { chat: { message: 'm1', body: 'Start' } })
-      assert.equal(job.outcome, pending ? 'failed' : 'done', job.reason)
+      const running = runTask('reply-approval', script, { chat: { message: 'm1', body: 'Start' } })
+      if (pending) {
+        await until(() => fs.existsSync(path.join(board(), 'reply-result.json')))
+        assert.equal(cloud.replyApprovals.length, 0)
+        cloud.serviceUnavailableUploads = false
+      }
+      const job = await running
+      assert.equal(job.outcome, 'done', job.reason)
       const answer = JSON.parse(read('reply-result.json'))
       assert.equal(answer.ok, !pending, JSON.stringify(answer))
       assert.equal(cloud.replyApprovals.length, pending ? 0 : 1)
@@ -2607,22 +2614,67 @@ describe('a task’s folder (#2037)', () => {
     assert.deepEqual(refs['data.bin'], refs['./data.bin'])
   })
 
-  it('retains safe retry evidence when required asset sync fails before the reply starts', async () => {
+  it('automatically resumes task preparation after repeated attachment 503s and a board timeout (#892)', async () => {
     await prepareBoard()
     fs.writeFileSync(path.join(board(), 'todo/hero.png'), 'local edit')
     cloud.serviceUnavailableUploads = true
-    const job = await runTask('sync-before-reply', '', { chat: { message: 'm1', body: 'Explain this' } })
-    assert.equal(job.outcome, 'failed')
-    assert.match(job.reason!, /board changes could not be sent/)
+    const delays: number[] = []
+    start('', { syncBackoff: attempt => { delays.push(syncBackoff(attempt)); return 25 } })
+    const job = cloud.dispatch({ id: 'sync-before-reply', task: 'task_1', project: 'prj_1', number: 1,
+      chat: { message: 'm1', body: 'Explain this' } })
+    await until(() => delays.length >= 11 && job.events.some(e => e.data?.source === 'sync' && e.data.state === 'retrying'))
+    assert.equal(job.state, 'claimed')
     assert.equal(planned.length, 0)
-    assert.deepEqual(job.report?.recovery, { safe: true, stopped: true, resumable: false })
-    assert.equal(readCheckpoint(job.id)?.started, false)
+    assert.equal(cloud.task.artifacts.get('art_1')!.length, 1)
+    assert.deepEqual(delays.slice(0, 11), [1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000, 300000, 300000])
+    cloud.boardTimeouts = 1
     cloud.serviceUnavailableUploads = false
-    const retried = await runTask('retry-sync', '', {
-      chat: { message: 'm1', body: 'Explain this' }, recoveryOf: job.id, manualRecovery: true, retryReplay: true,
-    })
-    assert.equal(retried.outcome, 'done', retried.reason)
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'done', job.reason)
     assert.equal(planned.length, 1)
+    assert.equal(job.claims, 1)
+    assert.ok(job.events.some(e => e.data?.source === 'sync' && e.data.state === 'running'))
+    assert.deepEqual(cloud.task.artifacts.get('art_1')!.map(b => b.toString()), ['hero-1', 'local edit'])
+  })
+
+  it('runs unrelated tasks and cancels a task waiting for attachments on the same board (#892)', async () => {
+    await prepareBoard()
+    fs.writeFileSync(path.join(board(), 'todo/hero.png'), 'unsent edit')
+    cloud.serviceUnavailableUploads = true
+    start('', { syncBackoff: () => 300_000 })
+    const blocked = cloud.dispatch({ id: 'blocked-sync', task: 'task_1', project: 'prj_1', number: 1 })
+    await until(() => !!readCheckpoint(blocked.id)?.syncRetry)
+    cloud.put({ 'todo/2-other.md': '# Other' })
+    const other = cloud.dispatch({ id: 'independent', task: 'task_2', project: 'prj_1', number: 2 })
+    await until(() => other.state === 'finished')
+    assert.equal(other.outcome, 'done', other.reason)
+    assert.equal(blocked.state, 'claimed')
+    blocked.stop = true
+    await until(() => blocked.state === 'finished')
+    assert.equal(blocked.outcome, 'stopped')
+    assert.equal(planned.length, 1)
+    assert.equal(read('todo/hero.png'), 'unsent edit')
+  })
+
+  it('resumes the same publication after Runner restart and reuses its uploaded version (#892)', async () => {
+    await prepareBoard()
+    cloud.loseVersionReply = true
+    const current = start("require('fs').writeFileSync('.akb/kanban/todo/hero.png', 'new image')",
+      { syncBackoff: () => 1_000 })
+    const job = cloud.dispatch({ id: 'publish-after-restart', task: 'task_1', project: 'prj_1', number: 1 })
+    await until(() => !!readCheckpoint(job.id)?.syncRetry)
+    assert.equal(readCheckpoint(job.id)?.completed?.outcome, 'done')
+    assert.equal(cloud.task.artifacts.get('art_1')!.length, 2)
+    await current.close()
+    assert.equal(job.state, 'claimed')
+    start()
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(job.claims, 2)
+    assert.equal(planned.length, 1)
+    assert.equal(cloud.log.filter(line => line === 'PUT /v1/uploads/upl_art_1').length, 1)
+    assert.equal(cloud.task.artifacts.get('art_1')!.length, 2)
+    assert.equal(JSON.parse(cloud.file('assets/task_1.json')!)['hero.png'].version, 2)
   })
 
   it('ignores unrelated oversized files while syncing a task reply', async () => {
@@ -2646,7 +2698,8 @@ describe('a task’s folder (#2037)', () => {
       fs.writeFileSync(path.join(board(), 'todo/hero.png'), 'required edit')
       const job = await runTask('strict')
       assert.equal(job.outcome, 'failed')
-      assert.match(job.reason!, /上传被拒绝/)
+      assert.match(job.reason!, code === 'unauthenticated' ? /Sign in|重新登录/ : /Free up|释放/)
+      assert.doesNotMatch(job.reason!, /hero.png|上传被拒绝/)
     })
   }
 
@@ -3176,11 +3229,12 @@ describe('a task’s folder (#2037)', () => {
       'assets/task_1.json': JSON.stringify({ ...JSON.parse(cloud.file('assets/task_1.json')!), 'data.json': { artifact: 'art_json', version: 1 } }),
     })
     cloud.failArtifactRead = 'art_json'
-    assert.equal((await runTask('j1')).outcome, 'failed')
+    const waiting = runTask('j1')
+    await until(() => !!readCheckpoint('j1')?.syncRetry)
     assert.equal(fs.existsSync(path.join(board(), 'todo/data.json')), false)
     assert.equal(fs.existsSync(path.join(board(), '.sync/task_1.json')), false)
     cloud.failArtifactRead = null
-    const retry = await runTask('j2')
+    const retry = await waiting
     assert.equal(retry.outcome, 'done', retry.reason)
     assert.deepEqual(fs.readFileSync(path.join(board(), 'todo/data.json')), bytes)
     cloud.failArtifactRead = 'art_json'
@@ -3261,15 +3315,16 @@ describe('a task’s folder (#2037)', () => {
     const manifest = cloud.file('assets/task_1.json')
     cloud.uploadFailure = { after: 1, code }
     const failed = await runTask('j1', `const fs = require('fs'); fs.writeFileSync('todo/first.png', '先'); fs.writeFileSync('todo/second.png', '后'); fs.writeFileSync('${CARD}', ${JSON.stringify(BODY)} + '\\n<Compare a="first.png" b="second.png" />\\n')`)
-    assert.equal(failed.outcome, 'failed')
-    assert.equal(cloud.file(CARD), card)
-    assert.equal(cloud.file('assets/task_1.json'), manifest)
+    assert.equal(failed.outcome, code === 'offline' ? 'done' : 'failed')
     const first = [...cloud.task.artifacts].find(([, versions]) => versions[0]?.toString() === '先')!
     assert.ok(first)
-    const count = cloud.log.filter(l => l === `PUT /v1/uploads/upl_${first[0]}`).length
-    const retry = await runTask('j2')
-    assert.equal(retry.outcome, 'done', retry.reason)
-    assert.equal(cloud.log.filter(l => l === `PUT /v1/uploads/upl_${first[0]}`).length, count)
+    if (code !== 'offline') {
+      assert.equal(cloud.file(CARD), card)
+      assert.equal(cloud.file('assets/task_1.json'), manifest)
+      const retry = await runTask('j2')
+      assert.equal(retry.outcome, 'done', retry.reason)
+    }
+    assert.equal(cloud.log.filter(l => l === `PUT /v1/uploads/upl_${first[0]}`).length, 1)
     assert.equal(JSON.parse(cloud.file('assets/task_1.json')!)['first.png'].artifact, first[0])
   })
 
@@ -3277,7 +3332,8 @@ describe('a task’s folder (#2037)', () => {
     const card = cloud.file(CARD)
     const failed = await runTask('j1', `const fs = require('fs'); fs.writeFileSync('todo/bad.json', '{"a":"bad.json","b":"hero.png"}'); fs.writeFileSync('${CARD}', ${JSON.stringify(BODY)} + '\\n<Compare a="bad.json" b="hero.png" />\\n')`)
     assert.equal(failed.outcome, 'failed')
-    assert.match(failed.reason!, /资源依赖循环/)
+    assert.match(failed.reason!, /preview attachments|预览附件/)
+    assert.doesNotMatch(failed.reason!, /bad\.json/)
     assert.equal(cloud.file(CARD), card)
   })
 
@@ -4021,6 +4077,25 @@ describe('flow jobs (#2020)', () => {
     assert.match(job.reason ?? '', /Finish the agreed review stages/)
     assert.ok(!calls().some(c => c[0] === 'delivery' && c[1] === 'resume'))
     assert.deepEqual(cardCalls(), [])
+  })
+
+  it('publishes a completed flow after the lease lapses without starting the Agent again (#892)', async () => {
+    const card = 'todo/2-pricing.md'
+    cloud.put({ [card]: readyCard })
+    const flow = { studio: 'wf_builtin_coding', verb: 'refine', resume: true }
+    const source = cloud.dispatch({ id: 'prior-publication', state: 'finished', task: 'task_1', project: 'prj_1', number: 2, flow })
+    const ws = openTaskFolder({ task: source.task, project: source.project, number: source.number }, source.projectDir)
+    assert.ok((await pull(ws, MACHINE)).ok)
+    fs.appendFileSync(path.join(ws.board, card), '\nSaved by the original flow.\n')
+    saveCheckpoint(source.id, { pending: [], started: true, completed: { outcome: 'done', report: { card: 2, reply: 'Original reply' } } })
+    const successor = cloud.dispatch({ id: 'continue-publication', task: source.task, project: source.project, number: source.number,
+      flow: { ...flow, sync_recovery_of: source.id } })
+    start()
+    await until(() => successor.state === 'finished')
+    assert.equal(successor.outcome, 'done', successor.reason)
+    assert.equal(successor.report?.reply, 'Original reply')
+    assert.match(cloud.file(card)!, /Saved by the original flow/)
+    assert.equal(fs.existsSync(process.env.FAKE_AKB_LOG!), false)
   })
 
   it('builds a card made unplanned straight after writing it (#2139)', async () => {
