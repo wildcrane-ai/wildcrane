@@ -1,3 +1,4 @@
+import type { ExecutionFailure } from '../retry'
 // What a printing connector's output is turned into, and what a run learns from it.
 //
 // Four of the board's agents are started, handed the prompt on their command line, and read
@@ -15,16 +16,18 @@ import type { ContextWindow, TokenUsage } from '../types'
 export interface StreamRenderer {
   /** Feed a chunk of stdout; returns the log text it renders to (may be ""). */
   push(chunk: string): string
+  activity?(): number
   stderr?(chunk: string): void
+  /** Current turn's required image paths, supplied by the attachment owner. */
+  setRequiredImages?(paths: string[]): void
   /** Render a trailing partial line at close; returns the remaining text. */
   flush(): string
   /** The agent's final message, once the `result` event has arrived. */
   result(): string | undefined
   replyParts?(): LocalReplyPart[]
-  /** What this run cost in US dollars, once the `result` event has reported one.
-   *  An ESTIMATE the agent works out on its own machine from token counts at list
-   *  prices — not a bill (task #90). Only harnesses whose output reports a cost
-   *  implement this; the rest leave it out and the UI shows no number. */
+  /** This run's estimated US dollar cost, reported by the agent or calculated from
+   *  its token counts at verified list prices. Not an actual bill; missing data
+   *  stays undefined, and a partial amount is marked by costIncomplete(). */
   costUsd?(): number | undefined
   costIncomplete?(): boolean | undefined
   /** The tokens the run consumed, once the `result` event has reported them —
@@ -56,14 +59,8 @@ export interface StreamRenderer {
    *  Read after `flush`, so the closing event is in. Undefined means the stream reported
    *  no failure — never "the run passed", which is still the exit code's to say. */
   failure?(): string | undefined
-  /** The last line this CLI printed that was NOT one of its own events (#525). A `claude -p`
-   *  whose connection drops mid-stream dies here and nowhere else: no `result` event ever
-   *  arrives, so `result()` and `failure()` are both empty and this line is the only thing
-   *  the run said about why. Only Claude Code implements it; the rest leave it out.
-   *
-   *  Read after `flush`. It is the CLI talking, not the agent — everything the agent says
-   *  arrives as an event — so a reader still has to judge whether the words are a failure. */
-  offStream?(): string | undefined
+  executionFailure?(): ExecutionFailure | undefined
+  terminalFailure?(): boolean
   /** The id this harness's own CLI resumes by, once its output has reported one.
    *  Only harnesses that mint their own id mid-run implement this — one that
    *  adopts the id we generate (Claude Code, via `--session-id`) knows it before

@@ -203,7 +203,7 @@ if (a === 'raw' && b === 'init') {
   const home = process.env.AI4KANBAN_HOME
   const chatOf = (t) => path.join(home, 'chats', `${t.split(':')[0]}.jsonl`)
   const said = tasks.filter((t) => fs.existsSync(chatOf(t))).map((t) => fs.readFileSync(chatOf(t), 'utf8').trim().split('\n').map((l) => JSON.parse(l).text).join(' / '))
-  for (const [file, line] of [['memory/agents/copywriting/style.md', 'Style'], ['memory/agents/copywriting/writing.md', 'Writing']]) {
+  for (const [file, line] of [['memory/previews/coding/prompts/workspace/style.md', 'Style'], ['memory/previews/coding/prompts/project/rules.md', 'Writing']]) {
     fs.mkdirSync(path.dirname(path.join(board, file)), { recursive: true })
     fs.appendFileSync(path.join(board, file), `${line}: ${said.join(' | ')}\n`)
   }

@@ -107,15 +107,6 @@ describe('an agent with a runtime of its own', () => {
 
   beforeEach(() => config(board))
 
-  it('spawns the row the board gave it, whole', () => {
-    const run = plan({ action: 'implement', studio: 'coding' })
-    assert.equal(run.agent, 'builder')
-    assert.equal(run.harness, 'codex')
-    assert.equal(run.runtime, 'cheap')
-    assert.ok(run.argv.includes('gpt-5.1-codex'))
-    assert.equal(run.note, null)
-  })
-
   it('leaves every other agent on Global default', () => {
     const run = plan({ action: 'clarify', refineRound: 1 })
     assert.equal(run.agent, 'planner')
@@ -150,14 +141,6 @@ describe('an agent with a runtime of its own', () => {
     assert.deepEqual([flow('refine')?.agent, flow('refine')?.harness], ['planner', 'claude-code'])
     assert.equal(flow('review'), undefined)
   })
-
-  it('falls back and says so when the pick is a row the board no longer has', () => {
-    config({ ...board, agentRuntime: { builder: 'was-deleted' } })
-    const run = plan({ action: 'implement', studio: 'coding' })
-    assert.equal(run.runtime, 'global')
-    assert.match(run.note ?? '', /was-deleted/)
-    assert.equal(agentRun('builder').unknownRuntime, 'was-deleted')
-  })
 })
 
 describe('two runtimes on one harness', () => {
@@ -170,15 +153,6 @@ describe('two runtimes on one harness', () => {
       agentRuntime: { builder: 'gateway' },
     })
     env(`${secretVar('ANTHROPIC_API_KEY', 'global')}=sk-one\n${secretVar('ANTHROPIC_API_KEY', 'gateway')}=sk-two\n`)
-  })
-
-  it('sit on two gateways and sign with two keys, with nothing inherited between them', () => {
-    const planner = openPlan(plan({ action: 'clarify' }))
-    const builder = openPlan(plan({ action: 'implement', studio: 'coding' }))
-    assert.equal(planner.env.ANTHROPIC_BASE_URL, 'https://one.example')
-    assert.equal(builder.env.ANTHROPIC_BASE_URL, 'https://two.example')
-    assert.equal(planner.env.ANTHROPIC_AUTH_TOKEN, 'sk-one')
-    assert.equal(builder.env.ANTHROPIC_AUTH_TOKEN, 'sk-two')
   })
 
   it('each says on its own row which of its keys this computer holds', () => {

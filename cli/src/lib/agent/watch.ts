@@ -1,7 +1,6 @@
+import { reviewBoundary, type TaskReview } from '../shared/review-plan'
 import { connectionIdentity, connectionStopped, endConnection } from './connection-process'
 import { boardCommandFor } from './command'
-import { activatePreviewRun, previewStagePrompt, readPreviewProgress, updatePreviewProgress } from './preview-progress'
-import { nextDeliveryRun } from './progress'
 import { findDelivery } from './deliveries'
 // The process that watches one run.
 //
@@ -19,24 +18,27 @@ import { spawn, type ChildProcessByStdio, type StdioNull, type StdioPipe } from 
 import type { Readable, Writable } from 'node:stream'
 import fs from 'node:fs'
 
-import { REPO_ROOT, SESSIONS_DIR } from '../paths'
+import { conflictPrompt } from '../shared/board-conflicts'
+
+import { KANBAN, REPO_ROOT, SESSIONS_DIR } from '../paths'
 import { eventsPathOf, readRuns, withStore } from './store'
 import { lastSessionTotal, ownCost, reportsSessionTotal } from './own-cost'
 import { cleanupDiscardedCards } from '../../commands/remove'
 import { discardedCardsPrompt } from './prompts'
 import { contextLimit, refreshCatalog } from './catalog'
-import { BACKGROUND_WAIT, silenceMinutes } from './settings'
 import { runEnv } from './flow'
 import { spawnable } from './spawnable'
 import { endAgent, killMarked, processesStopped, runMark } from './stop'
-import { refineRunsAfter, specRunsAfter } from './follow'
+import { refineRunsAfter } from './follow'
 import { queueCompleted } from './propose'
 import { costLine, durationLine, modelLine, RESULT_MARKER, usageLine } from './log'
-import { backgroundWaitMessage as backgroundSaid } from './wire/background'
 import { createStderrFilter, streamFinished, type RunEvent } from './wire'
 import { restartPrompt, resumePrompt } from './prompts'
 import { openPlan } from './resolve'
-import { planRetry, retryLine } from './retry'
+import { createIdleWatchdog, IDLE_FAILURE, IDLE_MS } from './idle'
+import { pauseLine, planRetry, retryLine, type ExecutionFailure, type RetryPause } from './retry'
+import { executionFailure } from './wire/failures'
+import { executionHeld, executionOf } from '../cloud/execution'
 import {
   claimChanges,
   markBoard,
@@ -46,9 +48,6 @@ import {
 } from './refine'
 import {
   acquireIndexLock,
-  askForSpec,
-  noteSpecRefusals,
-  readSpecRefusals,
   claimCard,
   clearAsks,
   carriesSession,
@@ -59,7 +58,6 @@ import {
   peekRun,
   readRefineAsks,
   readSpec,
-  readSpecAsks,
   liveSubRuns,
   stopSubRuns,
   resumeSessionId,
@@ -81,14 +79,7 @@ const STOP_CLOSE_MS = 2_000
 // leaves anyway.
 const STOP_FINISH_MS = 10_000
 
-// How long a run may produce NOTHING AT ALL before the board ends it (#394). The limit
-// itself is the board's own setting (agent/settings.ts); this is the line the run is closed
-// with, because nothing here reads an agent's error format.
-//
-// The window is counted from the SPAWN and restarted by every raw byte on either pipe —
-// rendered text does not count, since an agent grinding through a long tool call writes
-// events that render to nothing. So a run queued behind the index lock is never ended
-// before it begins, and one that never says a word is still ended.
+// Five minutes of pure waiting, excluding active local work.
 const silenceSaid = (minutes: number): string =>
   `the agent said nothing for ${minutes} minute${minutes === 1 ? '' : 's'}, so the run was ended.`
 
@@ -159,8 +150,10 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
   // that reports it, and every other line of the log as `log`.
   const eventsFile = fs.createWriteStream(eventsPathOf(sessionId), { flags: 'a' })
   eventsFile.on('error', () => {})
+  let observeActivity = (_e: RunEvent) => {}
   const pendingOperations = new Set<string>()
   const event = (e: RunEvent) => {
+    observeActivity(e)
     if (e.kind === 'tool_call' && !['read', 'search', 'fetch'].includes(e.data.kind) && !['completed', 'failed'].includes(e.data.status)) pendingOperations.add(e.data.toolCallId)
     if ((e.kind === 'tool_call' || e.kind === 'tool_call_update') && ['completed', 'failed'].includes(e.data.status ?? '')) pendingOperations.delete(e.data.toolCallId)
     eventsFile.write(`${JSON.stringify(e)}\n`)
@@ -186,17 +179,11 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
   if (active.startNote) log.write(`[board] ${active.startNote}\n`)
   // Resume the recorded action, not another phase of the same delivery. A resume that could
   // only open a new session (#1321) brings the whole ask instead.
-  if (record.action === 'spec' && record.cardId !== null && record.specAgent) {
-    try { await activatePreviewRun(record.cardId, record.specAgent, sessionId) } catch (error) {
-      await closeRun(sessionId, { status: 'error', code: null, error: error instanceof Error ? error.message : 'Could not prepare the preview stage.' })
-      log.end()
-      letGo()
-      return 1
-    }
-  }
-  const stagePrompt = record.action === 'spec' && record.cardId !== null && record.specAgent ? previewStagePrompt(record.cardId, record.specAgent, boardCommandFor(record.cardId)) : ''
   const basePrompt = record.resumedFrom ? spec.prompt || resumePrompt(record.deliveryId, record.action) : spec.prompt
-  const prompt = [basePrompt, basePrompt.includes(stagePrompt) ? '' : stagePrompt, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n')
+  const recoveryPrompt = record.harness === 'antigravity' && record.resumedFrom
+    ? 'First verify existing progress and operation results. Preserve user decisions and completed work; do not repeat completed operations. Check actual state before continuing any operation whose result is uncertain.' : ''
+  const boundary = process.env.AI4KANBAN_TASK_REVIEW ? reviewBoundary(JSON.parse(process.env.AI4KANBAN_TASK_REVIEW) as TaskReview, process.env.AI4KANBAN_REVIEW_STAGES ? JSON.parse(process.env.AI4KANBAN_REVIEW_STAGES) : undefined) : ''
+  const prompt = [record.retry ? `Previous execution failed: ${record.retry.reason}. Check existing results before continuing; do not repeat completed operations.` : '', conflictPrompt(KANBAN), boundary, basePrompt, recoveryPrompt, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n')
 
   // The board as it was the moment before the agent touched it. The difference between this
   // and the same read at the close is what this run could be answerable for; which of it
@@ -207,13 +194,13 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
   // (agent/harnesses/types.ts): one that reads a path out of the words has them in the
   // prompt already (agent/prompts.ts), and one with a flag per file is handed them here.
   const takes = active.images
+  active.renderer?.setRequiredImages?.(record.pictures ?? [])
   const shots = takes?.as === 'args' ? (record.pictures ?? []).flatMap((file) => takes.args(file)) : []
   const [cmd, ...args] = [...active.argv, ...shots]
   const workDir = active.cwd ?? REPO_ROOT
   // How long this run may say nothing. Read once, here, like every other setting a run
   // uses: a limit changed mid-run belongs to the next run.
-  const silenceFor = silenceMinutes()
-  const silenceMs = silenceFor * 60_000
+  const silenceFor = IDLE_MS / 60_000
   // The catalogue the context ring's window comes from (#675), pulled behind the run rather
   // than in front of it: this supervisor outlives the download, and a run must never wait on
   // a network the board doesn't need. Whatever is already on disk answers until it lands.
@@ -223,7 +210,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
   // because that is the half of the conversation this end writes (agent/wire/client.ts).
   const client = active.client
   if (active.harness === 'codex' && !client) log.write('[Codex] Custom command preserved; managed background cleanup is unavailable for this command shape.\n')
-  const restartBase = !client ? undefined
+  const restartBase = !client || record.cardId !== null || record.retry?.launching ? undefined
     : record.resumedFrom ? restartPrompt(requestOf(record), record.deliveryId)
     : record.continues && !record.continues.fork ? spec.prompt : undefined
   const restart = restartBase ? [restartBase, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n') : undefined
@@ -235,6 +222,18 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
   const stdio: [StdioNull | StdioPipe, StdioPipe, StdioPipe] = [client || stdinPrompt ? 'pipe' : 'ignore', 'pipe', 'pipe']
   // stdout and stderr are pipes whichever shape this is; only stdin differs.
   let child: ChildProcessByStdio<Writable | null, Readable, Readable>
+  if (record.retry?.launching && !await executionHeld(executionOf())) {
+    log.end()
+    await closeRun(sessionId, { status: 'error', code: null, error: joinNotes(record.retry.reason, pauseLine('authorization')), retryPause: 'authorization', failure: record.failure })
+    letGo()
+    return 1
+  }
+  if (record.retry?.launching && peekRun(sessionId)?.stopping) {
+    log.end()
+    await closeRun(sessionId, { status: 'stopped', code: null })
+    letGo()
+    return 1
+  }
   try {
     const start = spawnable(cmd!, client || stdinPrompt ? args : [...args, prompt], {
       // Where this run works: the project, or — inside a delivery with a worktree of its
@@ -258,7 +257,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     patch(sessionId, (r) => {
       r.unspawned = true
     })
-    await closeRun(sessionId, { status: 'error', ok: false, code: null, error: String(e) })
+    await closeRun(sessionId, { status: 'error', ok: false, code: null, error: String(e), failure: executionFailure(e) })
     letGo()
     return 1
   }
@@ -266,6 +265,10 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
   const agentStartedAt = Date.now()
   if (child.pid) {
     patch(sessionId, (r) => {
+      if (r.retry?.launching) {
+        r.retry.attempt++
+        delete r.retry.launching
+      }
       r.agentPid = child.pid
       r.agentStartedAt = agentStartedAt
       r.managedProcess = client?.managedProcess
@@ -351,6 +354,8 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
   // is where the run can be ended. stdout is listened to even when nothing renders it: a
   // conversation's protocol is still the agent talking.
   let touch = (): void => {}
+  let activityVersion = 0
+  let endTerminal = () => {}
   child.stdout.on('data', (d: Buffer) => {
     if (renderer) {
       append(renderer.push(d.toString()))
@@ -359,24 +364,27 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       gotModel(renderer.model?.())
       gotContext(renderer.context?.())
       afterTurn()
+      if (renderer.terminalFailure?.()) endTerminal()
     }
     // After the render, so the window it restarts knows what is in the background now.
-    touch()
+    const version = renderer?.activity?.() ?? 0
+    if (version !== activityVersion) { activityVersion = version; touch() }
   })
   const errs = createStderrFilter(active.quietStderr)
   child.stderr.on('data', (d: Buffer) => {
-    touch()
     renderer?.stderr?.(d.toString())
     const text = errs.push(d.toString())
     if (text) log.write(text)
   })
 
   let spawnError: string | undefined
+  let spawnFailure: ExecutionFailure | undefined
   let spawnWhy: RunReason | undefined
   child.on('error', (err) => {
     // The one failure worth saying in our own words: the agent's binary isn't on this
     // machine — or isn't on the PATH this run started with. "spawn claude ENOENT" tells a
     // user nothing.
+    spawnFailure = executionFailure(err)
     const missing = (err as NodeJS.ErrnoException)?.code === 'ENOENT'
     spawnError = missing
       ? `${cmd} isn't installed, or isn't on this run's PATH. Install it with: ${active.install}`
@@ -398,12 +406,9 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     // How the conversation ended, on a run the board talked to. It stands in for
     // everything a printing agent's own output would have said.
     let spoken: TurnEnd | undefined
-    let crashed = false
-    // The silence window: whether it ran out, and the timer it runs on. `waited` is set
-    // when it ran out on background tasks (#1540).
+    // The idle clock belongs to this execution.
     let silent = false
-    let waited = false
-    let idle: ReturnType<typeof setTimeout> | undefined
+    let watchdog: ReturnType<typeof createIdleWatchdog> | undefined
     // How a wait between retry attempts is cut short (#525). Set only while one is going,
     // and it is what a stop reaches then: there is no child left to signal.
     let wakeUp: (() => void) | undefined
@@ -423,7 +428,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       if (done) return
       done = true
       let asked = wanted
-      if (idle) clearTimeout(idle)
+      watchdog?.close()
       // Its sub-runs end first, so what they leave is in the folder this close reads.
       await stopSubRuns(sessionId)
       const taskCompleted = completed()
@@ -460,70 +465,49 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       // Only Claude Code does (agent/wire/stream.ts) — read after the flush above, so the
       // closing event is in. A run that failed this way must not close as done: its card
       // would advance and the refinements behind it would run on work that never happened.
-      let failure = renderer?.failure?.() ?? (!taskCompleted && renderer?.background?.() ? 'The agent exited with unfinished background tasks.' : undefined)
-      if (!asked && pendingOperations.size > 0 && (code !== 0 || spoken?.ok === false)) {
-        failure = `${failure ?? spoken?.error ?? 'Agent exited.'} Operation results are unconfirmed; automatic recovery was skipped.`
-      }
-      const unfinished = blocker || failure
-      const result = spoken ? spoken.result : renderer?.result()
-
-      // ---- a provider that failed for a moment, or a run gone silent (#525) ----
-      //
-      // Waited out HERE, before the run is written down, so it stays the card's live run.
-      // A stop or a recorded blocker is never retried, and neither is a run with no
-      // conversation to pick up: this continues the turn that died, never starts afresh.
       const held = peekRun(sessionId) ?? record
-      const ours = asked || silent || !!blocker
-      const said = failure ?? spoken?.error
-      // What the CLI printed outside its own events — where a connection that dropped
-      // mid-stream leaves its only word, with no `result` event behind it.
-      const offStream = renderer?.offStream?.()
-      // A run that went silent is continued too: the agent picks up its own turn.
-      const quiet = silent && !asked && !blocker && !sub && !!resumeSessionId(held)
-      let blip = quiet
-        ? { reason: waited ? backgroundSaid(BACKGROUND_WAIT.minutes) : silenceSaid(silenceFor) }
-        : ours || sub || pendingOperations.size > 0 || (code === 0 && !said) || !resumeSessionId(held)
-          ? undefined
-          : active.transient?.({ failure: said, result, offStream }) ?? (crashed && !said ? { reason: `Agent process exited unexpectedly (${child.signalCode}).` } : undefined)
-      if (blip) {
-        const mark = runMark(sessionId, agentStartedAt)
-        const root = child.pid ? { pid: child.pid, since: agentStartedAt } : undefined
-        const until = Date.now() + STOP_GRACE_MS + STOP_CLOSE_MS
-        while (!(client?.managedProcess ? connectionStopped({ pid: child.pid!, identity: peekRun(sessionId)?.agentIdentity }) : processesStopped(mark, root)) && Date.now() < until) await sleep(100)
-        if (!(client?.managedProcess ? connectionStopped({ pid: child.pid!, identity: peekRun(sessionId)?.agentIdentity }) : processesStopped(mark, root))) {
-          blip = undefined
-          failure = 'Previous execution could not be confirmed stopped; existing results were preserved.'
+      const rendered = renderer?.failure?.() ?? (!taskCompleted && renderer?.background?.() ? 'The agent exited with unfinished background tasks.' : undefined)
+      const said = spawnError ?? (silent ? silenceSaid(silenceFor) : spoken?.error ?? rendered)
+      const failed = code !== 0 || spoken?.ok === false || !!rendered || silent || !!blocker
+      const failure: ExecutionFailure | undefined = failed && !asked
+        ? silent ? { ...IDLE_FAILURE, reason: said ?? IDLE_FAILURE.reason }
+          : spawnFailure ?? spoken?.failure ?? renderer?.executionFailure?.()
+          ?? (!blocker ? held.validationFailure : undefined)
+          ?? { code: blocker ? 'execution_blocked' : 'execution_failed', level: 3, reason: said ?? blocker?.cause ?? `Agent exited with code ${code}.` }
+        : undefined
+      const result = spoken ? spoken.result : renderer?.result()
+      let retryPause: RetryPause | undefined
+      let retrying = false
+      if (failure && !sub && !taskCompleted) {
+        const attempt = held.retry?.attempt ?? 1
+        const decision = planRetry(failure, attempt)
+        if ('pause' in decision) retryPause = decision.pause
+        else if (blocker || pendingOperations.size || !structured || !resumeSessionId(held)
+          || spoken?.cleanup?.status === 'unconfirmed' || client?.managedProcess && silent) retryPause = 'unsafe'
+        else {
+          const mark = runMark(sessionId, agentStartedAt)
+          const root = child.pid ? { pid: child.pid, since: agentStartedAt, identity: held.agentIdentity } : undefined
+          const stopped = () => client?.managedProcess ? connectionStopped(root) : processesStopped(mark, root)
+          const until = Date.now() + STOP_GRACE_MS + STOP_CLOSE_MS
+          while (!stopped() && Date.now() < until) await sleep(100)
+          if (!stopped()) retryPause = 'unsafe'
+          else {
+            const pending = decision.plan
+            patch(sessionId, r => {
+              r.failure = failure
+              r.error = said ?? failure.reason
+              r.retry = { attempt, of: pending.of, reason: failure.reason, at: pending.at, since: held.retry?.since ?? held.startedAt, pending }
+            })
+            log.write(`\n[board] ${retryLine(pending, attempt)}\n`)
+            if (!stoppedByUser()) await sleep(Math.max(0, pending.at - Date.now()))
+            retrying = true
+          }
         }
       }
-      const serviceClosed = said === 'Codex connection closed before all work and results finished.'
-      const again = blip ? planRetry(held.retry, blip, serviceClosed || crashed ? Date.now() : held.startedAt, Date.now(), Math.random, !quiet) : null
-      if (again) {
-        log.write(`\n[board] ${retryLine(again)}\n`)
-        patch(sessionId, (r) => {
-          r.retry = again
-        })
-        await sleep(Math.max(0, again.at - Date.now()))
-        // A stop that landed during the wait ends the run here rather than after one more
-        // attempt — it is the Cancel the runs view offers beside the countdown.
-        if (stopped || peekRun(sessionId)?.stopping === true) asked = true
-      }
-      const retrying = !!again && !asked
-      // Planning (#1304) or a build (#271) that carried a session on and failed before one
-      // request came back: the session is gone, so the step is started again in a new one.
-      const spent = spoken ? spoken.usage : renderer?.usage?.()
-      const lost =
-        !!spec.again && (!held.deliveryId || held.action === 'implement') && !ours && !retrying && !spawnError && code !== 0 && lastUsed === 0 &&
-        !(spent && spent.input + spent.output + spent.cacheRead + spent.cacheCreation > 0)
-
-      // A run the silence window ended is a failure whatever the killed command or a
-      // connector's last turn goes on to report: we ended it, so our own call stands.
-      let status: RunStatus = asked
-        ? 'stopped'
-        : silent || unfinished
-          ? 'error'
-          : code === 0
-            ? 'done'
-            : 'error'
+      asked ||= stoppedByUser()
+      retrying &&= !asked
+      const error = asked ? undefined : joinNotes(said ?? failure?.reason, retryPause ? pauseLine(retryPause) : undefined)
+      const status: RunStatus = asked ? 'stopped' : failed || code !== 0 ? 'error' : 'done'
       const reported = spoken ? spoken.costUsd : renderer?.costUsd?.()
       // A session total carries what the session it continues spent (#1480, #1483).
       const totals = reportsSessionTotal(record.harness)
@@ -574,13 +558,6 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       //
       // Worked out BEFORE the record closes, so anything watching for the run to end sees
       // the note it ended with rather than catching the record a beat too early.
-      if (status !== 'done' && record.action === 'spec' && record.cardId !== null && record.specAgent) {
-        updatePreviewProgress(record.cardId, (all) => {
-          const progress = all[record.specAgent!]
-          const stage = progress?.stages.find((stage) => stage.id === progress.currentStageId)
-          if (stage?.status === 'running' && progress.execution?.endsWith(sessionId)) stage.status = 'failed'
-        })
-      }
       const settled = status === 'done' && !sub ? settleBoard(record, changed, original) : null
       const note = status === 'done' ? settled?.stalled : undefined
       const noteWhy: RunReason[] = status === 'done' ? settled?.stalledWhy ?? [] : []
@@ -589,17 +566,15 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       const saidOurs = !asked && silent && !spawnError
       const errorWhy: RunReason[] = [
         ...(spawnWhy ? [spawnWhy] : []),
-        ...(saidOurs ? [waited
-          ? { kind: 'backgroundSilent' as const, args: { n: String(BACKGROUND_WAIT.minutes / 60) } }
-          : { kind: 'silent' as const, args: { n: String(silenceFor) } }] : []),
+        ...(saidOurs ? [{ kind: 'silent' as const, args: { n: String(silenceFor) } }] : []),
       ]
-      const quietSaid = waited ? backgroundSaid(BACKGROUND_WAIT.minutes) : silenceSaid(silenceFor)
       if (sub) {
         await closeRun(sessionId, {
           status,
           ok: asked ? undefined : status === 'done',
           code: asked ? null : code,
-          error: spawnError ?? (asked ? undefined : silent ? quietSaid : (spoken?.error ?? failure)),
+          error,
+          failure,
           errorWhy,
           endedAt,
         })
@@ -615,7 +590,9 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
         // What went wrong, in whoever's words know: ours when the command wouldn't start or
         // when it went quiet, the agent's own when the conversation ended badly or its
         // stream said so. That cause leads; a card it left half-written follows.
-        error: spawnError ?? (asked ? undefined : silent ? quietSaid : (spoken?.error ?? failure)),
+        error,
+        failure,
+        retryPause,
         note,
         errorWhy,
         noteWhy,
@@ -623,18 +600,12 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       })
       letGo()
       if (retrying) {
-        const next = await resume(sessionId)
+        const next = await resume(sessionId, { automatic: true })
         if ('error' in next) patch(sessionId, (r) => {
+          if (r.retry) delete r.retry.pending
           r.error = joinNotes(r.error, `Could not try again: ${next.error}`)
           r.errorWhy = [...r.errorWhy ?? [], { kind: 'retryUnstarted', refusals: [next] }]
         })
-      }
-      const missingSession = record.resumedFrom && !/auth|unauthorized|forbidden|login|log.in/i.test(failure ?? spoken?.error ?? '') && /(?:no (?:conversation|session|thread) found|(?:session|conversation|thread)[^\n]*(?:not found|does not exist))/i.test(failure ?? spoken?.error ?? '')
-      if (status === 'error' && !asked && (lost || missingSession)) {
-        const next = missingSession
-          ? await startResume(sessionId, { deliveryId: record.deliveryId, fresh: true })
-          : await startRun(spec.again!)
-        if (!missingSession && !('error' in next)) forgetRun(sessionId)
       }
       // And the proposer's queue (#534, #1467): every card that reached the archive while this
       // run was up — the one it archived itself, the one its landing completed, a group closed
@@ -683,8 +654,11 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
       })
     }
 
+    endTerminal = () => { watchdog?.close(); giveUp(false) }
+
     const cancellation = new AbortController()
     let stopped = false
+    const stoppedByUser = () => stopped || peekRun(sessionId)?.stopping === true
     const askToStop = () => {
       if (stopped) return
       stopped = true
@@ -701,36 +675,14 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
     process.on('SIGTERM', askToStop)
     process.on('SIGINT', askToStop)
 
-    // The silence window (see silenceSaid), restarted by every byte the command writes and
-    // started here, a tick after the spawn — so a run that never says a word runs out too.
-    // A limit of 0 switches it off. Unref'd, like every other timer here: a window still
-    // open cannot hold this process past the run it was watching.
-    // Background tasks still running (#1540) wait longer, on the same switch.
-    touch = () => {
-      if (done || !silenceMs) return
-      if (idle) clearTimeout(idle)
-      const background = client?.background?.() ?? renderer?.background?.() ?? 0
-      idle = setTimeout(() => {
-        if (done || stopped || silent) return
-        // A run waiting on its sub-runs says nothing, and is not silent (#1421).
-        if (liveSubRuns(sessionId).length) {
-          touch()
-          return
-        }
-        // The background emptied and no turn followed: the agent has nothing left to say.
-        if (inputOpen && turnsSeen && !background) {
-          endInput()
-          touch()
-          return
-        }
-        silent = true
-        waited = background > 0
-        log.write(`\n[board] ${waited ? backgroundSaid(BACKGROUND_WAIT.minutes) : silenceSaid(silenceFor)}\n`)
-        giveUp(false)
-      }, background ? BACKGROUND_WAIT.minutes * 60_000 : silenceMs)
-      if (typeof idle.unref === 'function') idle.unref()
-    }
-    touch()
+    watchdog = createIdleWatchdog(() => {
+      if (done || stopped || silent) return
+      silent = true
+      log.write(`\n[board] ${silenceSaid(silenceFor)}\n`)
+      giveUp(false)
+    }, () => !!(client?.background?.() ?? renderer?.background?.()) || liveSubRuns(sessionId).length > 0)
+    touch = watchdog.touch
+    observeActivity = watchdog.event
 
     // The conversation, on a run the board talks to. It is the run: a command that answers
     // back is a server and never exits on its own, so the turn's ending is the run's
@@ -758,6 +710,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
             event,
             gotContext,
             completed,
+            activity: touch,
             signal: cancellation.signal,
           })
           .then((end) => {
@@ -772,8 +725,7 @@ export async function watchRun(sessionId: string, resume = startResume): Promise
 
     // An agent that exited on its own leaves what it put in the background running, in a
     // worktree about to go and often holding the pipe `close` waits on (#1499).
-    child.once('exit', (_code, signal) => {
-      crashed = !ending && !!signal && ['SIGKILL', 'SIGTERM', 'SIGSEGV', 'SIGABRT', 'SIGBUS', 'SIGILL'].includes(signal)
+    child.once('exit', () => {
       if (!ending && !client?.managedProcess) killMarked(runMark(sessionId), child.pid ? { pid: child.pid, since: agentStartedAt } : undefined)
     })
     child.on('close', (code) => void finish(code, peekRun(sessionId)?.stopping === true || stopped))
@@ -792,9 +744,7 @@ function settleBoard(
   before: BoardMarks,
 ): RefinementFollowUp | null {
   try {
-    const helpers = specRunsAfter(readSpecAsks(run.sessionId))
-    const waitingForSpec = helpers.some((req) => req.id === run.cardId)
-    return refinementRunsAfter(run, changed, before, waitingForSpec, readSpecRefusals(run.sessionId))
+    return refinementRunsAfter(run, changed, before, false, [])
   } catch {
     // an unreadable board — the run it followed is done either way
     return null
@@ -824,55 +774,14 @@ async function followUp(
   const join = (req: AgentRequest): AgentRequest =>
     req.flowId || !flowId ? req : { ...req, flowId }
   try {
-    // Started first, then forgotten — so a crash between the two costs a repeated agent at
-    // worst, and never a section nobody ever writes.
-    await startHelpersInTurn(specRunsAfter(readSpecAsks(sessionId)), join, sessionId)
     const asked = [
       ...refineRunsAfter(readRefineAsks(sessionId)),
     ]
     for (const req of asked) await startRun(join(req))
     clearAsks(sessionId)
-    const next = nextDeliveryRun()
-    if (next) await startRun(join(next))
     for (const req of runs) await startRun(join(req))
   } catch {
     // a spawn that wouldn't — the run it followed is done either way
-  }
-}
-
-// The spec agents one run asked for, started ONE AT A TIME (#714).
-//
-// They are the planning stage's helpers, and every one of them writes into the same card.
-// Two sessions rewriting one card at once is what a user reads as work being overwritten, so
-// only the first is started here; the rest are handed to it, and its own close starts the
-// next.
-//
-// A helper that will not start is skipped rather than taking the queue down with it, and its
-// reason travels with the round to the planner, which asks again.
-async function startHelpersInTurn(
-  helpers: AgentRequest[],
-  join: (req: AgentRequest) => AgentRequest,
-  self: string,
-): Promise<void> {
-  const refused = readSpecRefusals(self)
-  let queue = helpers
-  while (queue.length) {
-    const [next, ...rest] = queue
-    const started = await startRun(join(next!))
-    if ('error' in started) {
-      refused.push({ error: started.error, ...(started.reason ? { reason: started.reason } : {}), ...(started.args ? { args: started.args } : {}) })
-      queue = rest
-      continue
-    }
-    noteSpecRefusals(started.run.sessionId, refused)
-    for (const req of rest) {
-      askForSpec(started.run.sessionId, {
-        specAgent: req.specAgent ?? '',
-        cardId: req.id as number,
-        ...(req.notes ? { notes: req.notes } : {}),
-      })
-    }
-    return
   }
 }
 

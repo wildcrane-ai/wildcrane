@@ -31,12 +31,7 @@ export const isCustomAgent = (name: string | undefined): boolean =>
 
 /** The project's own agents that are on: on means some studio runs it. */
 export function customAgentsOn(): string[] {
-  const running = new Set<string>()
-  for (const flow of studios()) {
-    for (const h of [...previewAgents(flow), ...landAgents(flow)]) running.add(h.agent)
-    for (const scheduled of scheduledMembers(flow)) if (!scheduled.off) running.add(scheduled.agent)
-  }
-  return projectAgents().filter((agent) => running.has(agent.name)).map((agent) => agent.name)
+  return []
 }
 
 // ---- removing one -----------------------------------------------------------

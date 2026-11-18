@@ -9,8 +9,6 @@ import { after, afterEach, beforeEach, describe, it } from 'node:test'
 import { RUN_ENV } from '../src/lib/agent/env.ts'
 import { writeSession } from '../src/lib/cloud/session.ts'
 import { readRuns } from '../src/lib/agent/store.ts'
-import { startCollecting, stopCollecting } from '../src/lib/io.ts'
-import { findCard } from '../src/lib/view/read.ts'
 import { restoreMachineHome, run } from './helpers/board.ts'
 
 const SUPABASE = 'https://project.supabase.co'
@@ -74,59 +72,9 @@ afterEach(() => {
 after(() => fs.rmSync(root, { recursive: true, force: true }))
 
 describe('card approve on a Runner board', () => {
-  it('decides in Cloud on the review it reads, and starts no run here', async () => {
-    await run(root, ['raw', 'card', 'approve', '3', '--board', board])
-    const post = sent.find((s) => s.method === 'POST')!
-    assert.equal(post.route, '/v1/tasks/WC-3/decisions')
-    assert.deepEqual(post.body, { decision: 'approve', review_revision: 4 })
+  it('requires an explicit reviewed revision and starts no run', async () => {
+    await assert.rejects(() => run(root, ['raw', 'card', 'approve', '3', '--board', board]), /Use akb task approve with the --revision you reviewed/)
+    assert.equal(sent.some(s => s.method === 'POST'), false)
     assert.equal(readRuns().length, 0)
   })
-
-  it('a refusal says what Cloud said', async () => {
-    serve({ status: 409, code: 'conflict', message: 'A step is already running.' })
-    await assert.rejects(() => run(root, ['raw', 'card', 'approve', '3', '--board', board]), /Cloud did not approve #3: A step is already running\./)
-  })
-
-  const staged = (phase: number, status: string, questions = '[]') => {
-    process.env.AI4KANBAN_TASK = 'task_3'
-    fs.writeFileSync(path.join(board, 'todo', '3-pricing.md'), `---\ntitle: Pricing\nstudio: blog-post\npreviews: [blog-planner, blog-illustrator, blog-writer]\nphase: ${phase}\nstatus: ${status}\nquestions: ${questions}\n---\n\nPlan.\n`)
-  }
-
-  const approve = async () => {
-    const sink = startCollecting()
-    try {
-      await run(root, ['raw', 'card', 'approve', '3', '--board', board, '--print'])
-      assert.deepEqual(sent, [])
-      assert.equal(readRuns().length, 0)
-      return sink.out.join('\n')
-    } finally {
-      stopCollecting()
-    }
-  }
-
-  for (const phase of [1, 2]) {
-    it(`Runner 批准第 ${phase} 阶段时在本地进入下一阶段`, async () => {
-      staged(phase, 'ready')
-      assert.match(await approve(), /approve #3/)
-      assert.equal(findCard(3)!.stage, phase + 1)
-      assert.equal(findCard(3)!.status, 'todo')
-    })
-  }
-
-  for (const [phase, status, questions] of [
-    [2, 'todo', '[]'],
-    [3, 'todo', '[]'],
-    [3, 'ready', '[]'],
-    [2, 'ready', '[{question: 选哪个角度？}]'],
-  ] as const) {
-    it(`Runner 重跑阶段 ${phase}（${status}，问题 ${questions}）继续规划`, async () => {
-      staged(phase, status, questions)
-      const text = await approve()
-      assert.match(text, /^clarify #3/)
-      assert.match(text, /akb guide refine/)
-      assert.doesNotMatch(text, /implement #3|archive #3|approve #3/)
-      assert.equal(findCard(3)!.stage, phase)
-      assert.equal(findCard(3)!.status, status)
-    })
-  }
 })

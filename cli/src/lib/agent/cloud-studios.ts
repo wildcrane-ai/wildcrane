@@ -29,6 +29,7 @@ export interface HeldVersion {
   name: string
   names?: Record<string, string>
   files: StudioFiles
+  historicalPreviews?: Record<string, unknown>
 }
 
 /** One studio as this board runs it. */
@@ -49,6 +50,7 @@ interface List {
 interface Pin {
   studio: string
   version: number
+  historicalPreviews?: Record<string, unknown>
 }
 
 const DEV = 'AI4KANBAN_STUDIOS'
@@ -101,7 +103,7 @@ export function saveVersion(held: HeldVersion): void {
 /** The version a task runs on, never changing once read. */
 export function savePin(task: string, held: HeldVersion): void {
   saveVersion(held)
-  writeJson(pinFile(task), { studio: held.id, version: held.version } satisfies Pin)
+  writeJson(pinFile(task), { studio: held.id, version: held.version, historicalPreviews: held.historicalPreviews } satisfies Pin)
 }
 
 export const readPin = (task: string): Pin | null => readJson<Pin>(pinFile(task))
@@ -183,10 +185,10 @@ async function versionOf(id: string, version: number): Promise<Answer<HeldVersio
 async function pinTask(task: string): Promise<Answer<HeldVersion>> {
   const pin = readPin(task)
   const held = pin && readVersion(pin.studio, pin.version)
-  if (held) return { ok: true, value: held }
-  const read = await call<{ studio: string; version: number; name: string; files: StudioFiles }>('GET', `/v1/tasks/${encodeURIComponent(task)}/studio`)
+  if (held && 'def' in parseStudioFile('studio', held.files['STUDIO.md'] ?? '', 'STUDIO.md')) return { ok: true, value: held }
+  const read = await call<{ historicalPreviews?: Record<string, unknown>; studio: string; version: number; name: string; files: StudioFiles }>('GET', `/v1/tasks/${encodeURIComponent(task)}/studio`)
   if (!read.ok) return read
-  const value = { id: read.value.studio, version: read.value.version, name: read.value.name, files: read.value.files }
+  const value = { id: read.value.studio, version: read.value.version, name: read.value.name, files: read.value.files, historicalPreviews: read.value.historicalPreviews }
   savePin(task, value)
   return { ok: true, value }
 }
@@ -201,7 +203,7 @@ export async function syncStudios(force = false): Promise<void> {
   const held = readJson<List>(listFile(project))
   const fresh = held && Date.now() - Date.parse(held.at) < FRESH_MS
   try {
-    if (task && !readPin(task)) {
+    if (task) {
       const pinned = await pinTask(task)
       if (!pinned.ok && !pinned.code) offline = true
     }
@@ -300,4 +302,9 @@ export function cloudAgentFiles(): { files: Record<string, string>; official: Se
     }
   }
   return { files, official }
+}
+
+export function taskHistoricalPreviews(): string[] {
+  const task = workspaceTask()
+  return task ? Object.keys(readPin(task)?.historicalPreviews ?? {}) : []
 }

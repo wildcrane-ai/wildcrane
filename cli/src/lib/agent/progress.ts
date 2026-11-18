@@ -6,7 +6,7 @@ import type { AgentRequest, DeliveryRecord } from './types'
 export function deliveryStep(delivery: DeliveryRecord): number {
   const count = delivery.completions?.length ?? 0
   const last = delivery.completions?.[count - 1]
-  const end = delivery.studio?.land?.length ?? 1
+  const end = 1
   return last && !last.finished && last.step + 1 >= end ? last.step : count
 }
 

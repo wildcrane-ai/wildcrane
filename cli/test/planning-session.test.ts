@@ -1,9 +1,3 @@
-// A card's planning carries its session on (#1304): the planning after an answer resumes the
-// one that asked.
-// Anything else — no session, another CLI, one that cannot fork — opens a new session as before,
-// and a session that turns out to be gone has its step started again in a new one. The run's
-// log opens by saying which of these it was (#1309).
-
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -168,10 +162,10 @@ describe('a new session, as before', () => {
     assert.equal(resumeSessionId(answered), 'kimi-planning')
   })
 
-  it('for a build and a spec agent', async () => {
+  it('starts ordinary implementation independently', async () => {
     const planned = await start({ action: 'clarify', id: 1 })
     await end(planned.sessionId)
-    for (const req of [{ action: 'implement', id: 1 }, { action: 'spec', id: 1, specAgent: 'ui-designer' }] as AgentRequest[]) {
+    for (const req of [{ action: 'implement', id: 1 }] as AgentRequest[]) {
       const run = await start(req)
       assert.equal(run.continues, undefined)
       assert.ok(!run.argv?.includes('--resume'))
@@ -182,28 +176,16 @@ describe('a new session, as before', () => {
 })
 
 describe('a session that turns out to be gone', () => {
-  it('has its step started again in a new session, and leaves one row', async () => {
+  it('stays failed until an explicit takeover', async () => {
     board('claude-code', true)
     const planned = await start({ action: 'clarify', id: 1 })
     await end(planned.sessionId)
-    const lost = await start({ action: 'resolve', id: 1, title: 'Card one', notes: 'keep it small' })
+    const lost = await start({ action: 'resolve', id: 1 })
     patch(lost.sessionId, (r) => { r.pid = process.pid })
     fs.writeFileSync(lost.logPath, '')
     await watchRun(lost.sessionId, async () => ({ error: 'no resume' }))
-
-    assert.equal(peekRun(lost.sessionId), undefined)
-    assert.ok(!fs.existsSync(lost.logPath))
-    const again = readRuns().filter((r) => r.cardId === 1 && r.action === 'resolve')
-    assert.equal(again.length, 1)
-    const [run] = again
-    assert.equal(run!.status, 'running')
-    assert.equal(run!.continues, undefined)
-    assert.equal(run!.flowId, lost.flowId)
-    assert.equal(run!.input, 'keep it small')
-    assert.ok(!run!.argv?.includes('--resume'))
-    const spec = readSpec(run!.sessionId)!
-    assert.deepEqual(spec.notes, ['new session — the earlier one is gone, so this step was started again'])
-    assert.doesNotMatch(spec.prompt, /outranks/)
+    assert.equal(peekRun(lost.sessionId)?.status, 'error')
+    assert.equal(readRuns().filter((r) => r.cardId === 1 && r.action === 'resolve').length, 1)
   })
 
   it('stays a failure when the agent had started working', async () => {
@@ -250,16 +232,7 @@ describe("a Cloud task's session (#2146)", () => {
     assert.match(readSpec(run.sessionId)!.prompt, new RegExp(`came out of a discussion.*${TRANSCRIPT}`))
   })
 
-  it('reads the discussion once the session turns out to be gone', async () => {
-    board('claude-code', true)
-    const lost = await start({ action: 'resolve', id: 1, carry: { resumeId: 'ts1', transcript: TRANSCRIPT } })
-    patch(lost.sessionId, (r) => { r.pid = process.pid })
-    fs.writeFileSync(lost.logPath, '')
-    await watchRun(lost.sessionId, async () => ({ error: 'no resume' }))
-    const [run] = readRuns().filter((r) => r.cardId === 1 && r.action === 'resolve')
-    assert.ok(run && !run.argv?.includes('--resume'))
-    assert.match(readSpec(run.sessionId)!.prompt, new RegExp(`came out of a discussion.*${TRANSCRIPT}`))
-  })
+
 })
 
 describe('a new implementation session (#768)', () => {

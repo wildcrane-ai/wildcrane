@@ -4,6 +4,8 @@
 // linked folder's `.akb/` alone — unless a job runs there, a delivery is paused there (#2128), or
 // its last write to Cloud failed.
 
+import { pendingConflicts } from '../../cli/src/lib/shared/board-conflicts'
+
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -99,7 +101,10 @@ export function busy(dir: string): boolean {
 }
 
 /** A job, unsent work or a paused delivery still holds the folder. */
-export const kept = (dir: string) => busy(dir) || unsent(dir) || paused(dir)
+function conflicted(dir: string): boolean {
+  try { return pendingConflicts(path.join(dir, '.akb', 'kanban')).length > 0 } catch { return true }
+}
+export const kept = (dir: string) => busy(dir) || unsent(dir) || paused(dir) || conflicted(dir)
 
 /** Empty a linked folder's `.akb/`, its own files untouched; false when it is kept. */
 export function clearAkb(dir: string): boolean {

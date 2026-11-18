@@ -21,8 +21,6 @@ import {
   MODEL_KEY,
   RAW_ARGS_KEY,
   type ImageInput,
-  type RunFailure,
-  type TransientFailure,
   harnessByName,
   namesFlag,
   uniqueIds,
@@ -407,7 +405,6 @@ export interface ActiveRun extends RunPlan {
   images?: ImageInput
   /** Reads this connector's failure output for a provider that merely stumbled (#525).
    *  Undefined for one that recognises none, whose runs never retry. */
-  transient?: (failure: RunFailure) => TransientFailure | undefined
   /** Set when the PATH's copy couldn't start and argv runs a desktop app's instead. */
   startNote?: string
 }
@@ -528,7 +525,6 @@ export function openPlan(plan: RunPlan): ActiveRun {
     stdinPrompt: harness.stdinPrompt?.(argv),
     quietStderr: harness.quietStderr,
     images: harness.images,
-    transient: harness.transient?.bind(harness),
   }
 }
 

@@ -167,39 +167,9 @@ describe("what an agent says to a reader who doesn't read English", () => {
     assert.equal(agent.body.includes('i18n'), false)
   })
 
-  it('ships both bundled agents with their Chinese lines', () => {
-    for (const name of ['ui-designer', 'tech-stack-advisor']) {
-      const said = agentLines(findSpecAgent(name)!, 'zh')
-      assert.match(said.title, /[\u4e00-\u9fa5]/, name)
-      assert.match(said.description, /[\u4e00-\u9fa5]/, name)
-    }
-  })
-
 })
 
 describe('the agents this command ships', () => {
-  it('reads each of them out of their own AGENT.md', () => {
-    const { agents, problems } = specAgentCatalog()
-    assert.deepEqual(problems, [])
-    assert.deepEqual(
-      agents.map((a) => a.name),
-      ['api-designer', 'blog-illustrator', 'blog-planner', 'blog-writer', 'builder', 'carousel-planner', 'carousel-renderer', 'competitor-research', 'cover-designer', 'deck-builder', 'deck-planner', 'demo-rehearser', 'email-planner', 'hyperframes-editor', 'prompt-writer', 'schema-designer', 'scriptwriter', 'social-illustrator', 'studio-publisher', 'studio-writer', 'tech-stack-advisor', 'ui-designer', 'video-cloner', 'video-template-builder'],
-    )
-    const ui = findSpecAgent('ui-designer')!
-    assert.match(ui.description, /^Routes copy/)
-    assert.match(ui.when!, /^A card needs/)
-    assert.deepEqual(ui.after, [])
-    assert.deepEqual(ui.stages?.map((stage) => stage.id), ['copywriting', 'illustration', 'core-design', 'ui-draft'])
-    assert.match(ui.when!, /not a typo/)
-    assert.match(ui.body, /Prepare only the current stage's work/)
-    assert.equal(ui.builtIn, true)
-  })
-
-  it('draws no setting on `ui-designer`, and names its reference as a file', () => {
-    const agent = findSpecAgent('ui-designer')!
-    assert.ok(agent.files.includes('references/rendered-screen.md'))
-    assert.match(agent.file('references/ui-draft.md')!, /references\/rendered-screen\.md/)
-  })
 
   it('does not resolve retired names', () => {
     for (const name of ['recommend-tech-stack', 'technology-selection', 'ui-design', 'video-assets', 'memory-reviewer', 'user-docs']) assert.equal(findSpecAgent(name), null)
@@ -208,16 +178,6 @@ describe('the agents this command ships', () => {
 })
 
 describe('an agent the project adds', () => {
-  it('拒绝与内置 builder 同名的项目 Agent，保留内置正文', () => {
-    const body = findSpecAgent('builder')!.body
-    project('builder', { 'AGENT.md': AGENT.replace('name: api-contract', 'name: builder') })
-    const { agents, problems, refused } = specAgentCatalog()
-    assert.equal(agents.filter((a) => a.name === 'builder').length, 1)
-    assert.equal(findSpecAgent('builder')!.builtIn, true)
-    assert.equal(findSpecAgent('builder')!.body, body)
-    assert.match(problems.join('\n'), /an agent named `builder` is already on this board/)
-    assert.ok(refused.some((a) => a.name === 'builder' && a.cause === 'nameTaken'))
-  })
 
   it('joins the same catalog', () => {
     project('api-contract', { 'AGENT.md': AGENT })
@@ -252,14 +212,6 @@ describe('an agent the project adds', () => {
     const agent = findSpecAgent('api-contract')!
     // The file it named is an ordinary file beside `AGENT.md` now, offered by its path.
     assert.ok(agent.files.includes('references/openapi.md'))
-  })
-
-  it('is refused rather than allowed to shadow a built-in name', () => {
-    project('ui-designer', { 'AGENT.md': AGENT.replace('name: api-contract', 'name: ui-designer') })
-    const { agents, problems } = specAgentCatalog()
-    assert.equal(agents.filter((a) => a.name === 'ui-designer').length, 1)
-    assert.equal(findSpecAgent('ui-designer')?.builtIn, true)
-    assert.match(problems.join('\n'), /already on this board/)
   })
 })
 
@@ -324,98 +276,9 @@ describe('an agent nobody can read', () => {
   it('reports a folder whose AGENT.md calls itself something else', () => {
     assert.match(problemFor({ 'AGENT.md': AGENT }), /make the two match/)
   })
-
-  it('leaves the agents that do parse usable', () => {
-    project('broken', { 'AGENT.md': 'Just instructions.' })
-    assert.ok(findSpecAgent('ui-designer'))
-  })
 })
 
 describe('what a session is shown', () => {
-  it('gives a planning session the names and descriptions and no instructions', () => {
-    const catalog = specAgentSelector(12, 'coding', { previews: ['ui-designer'], phase: 1 })
-    assert.match(catalog, /<preview-agents>/)
-    assert.match(catalog, /^- `ui-designer` — /m)
-    assert.doesNotMatch(catalog, /\bowns\b/i)
-    assert.ok(catalog.includes(findSpecAgent('ui-designer')!.description))
-    assert.doesNotMatch(catalog, /When:|choose and run them/)
-    assert.doesNotMatch(catalog, /planned by guess|Asking for none is the usual answer/)
-    assert.match(catalog, /akb raw previews <agent> 12 <short note>/)
-    assert.doesNotMatch(catalog, /Rendered screen/)
-    assert.doesNotMatch(catalog, /Prepare only the current stage's work/)
-  })
-
-  it('lists a project preview in both the selector and command listing', () => {
-    project('api-contract', { 'AGENT.md': AGENT })
-    assert.equal(switchAgent('coding', 'api-contract', true).ok, true)
-    const agent = findSpecAgent('api-contract')!
-    assert.ok(specAgentSelector(12, 'coding', { previews: ['api-contract'], phase: 1 }).includes(agent.description))
-    assert.ok(specAgentList('akb').includes(agent.description))
-  })
-
-  // A card created without a choice once listed all nine previews at once (#422).
-  it('has an unchosen card choose and save its previews, listing no agent', () => {
-    const ask = specAgentSelector(12, 'coding', null)
-    assert.match(ask, /akb raw previews --triggers --studio coding/)
-    assert.match(ask, /akb raw update 12 --previews/)
-    assert.match(ask, /Always/)
-    assert.doesNotMatch(ask, /^- `/m)
-    assert.match(specAgentSelector(12, 'coding', { previews: [], phase: 1 }), /^$/)
-  })
-
-  it('says nothing at all when the card\'s studio runs no one', () => {
-    for (const name of ['tech-stack-advisor', 'email-planner', 'ui-designer', 'api-designer', 'schema-designer', 'prompt-writer', 'competitor-research', 'illustrator']) {
-      assert.equal(switchAgent('coding', name, false).ok, true)
-    }
-    assert.equal(specAgentSelector(12, 'coding', null), '')
-  })
-
-  // The list is printed with no card in hand, so it names every agent on the board; which of
-  // them a card may ask for is its own studio's answer, and the ask is where that is read.
-  it('lists every agent on the board, whatever a studio runs', () => {
-    assert.equal(switchAgent('coding', 'ui-designer', false).ok, true)
-    assert.doesNotMatch(specAgentSelector(12, 'coding', { previews: ['ui-designer'], phase: 1 }), /`ui-designer` — /)
-    const listed = specAgentList('akb')
-    assert.match(listed, /ui-designer/)
-    assert.doesNotMatch(listed, /Switched off/)
-  })
-
-  it('refuses an ask for an agent the card\'s studio does not assign', async () => {
-    card(12)
-    board()
-    assert.equal(switchAgent('coding', 'ui-designer', false).ok, true)
-    await assert.rejects(
-      () => run(root, ['raw', 'previews', 'ui-designer', '12', 'a note']),
-      /is off or no preview of the studio of #12/,
-    )
-  })
-
-  it('points a spec run to the contract, and hands it its agent and the paths of its own files', () => {
-    const prompt = buildPrompt({ action: 'spec', id: 12, specAgent: 'ui-designer' })
-    assert.match(prompt, /You are the `ui-designer` preview agent on task 12/)
-    assert.match(prompt, /guide preview-agent` — read it unless it is already in your context/)
-    assert.doesNotMatch(prompt, /Be a preview agent/)
-    assert.match(prompt, /Prepare only the current stage's work/)
-    assert.match(prompt, /——— your own files ———/)
-    assert.match(prompt, /`references\/rendered-screen\.md`/)
-    // Named, never pasted in: the run opens it when the work calls for it.
-    assert.doesNotMatch(prompt, /How to draw a rendered screen/)
-  })
-
-  // A board that saved the retired Mockup style gets its run log told, so somebody who never
-  // opens the agent's page is not quietly given a different answer than last time (#1003).
-  it('ignores retired mockup settings without compatibility notes', () => {
-    board({ specAgents: { 'ui-designer': { mockupStyle: 'ascii' } } })
-    const notes: string[] = []
-    buildPrompt({ action: 'spec', id: 12, specAgent: 'ui-designer' }, notes)
-    assert.deepEqual(notes, [])
-  })
-
-  it('says nothing about a style no board saved', () => {
-    const notes: string[] = []
-    buildPrompt({ action: 'spec', id: 12, specAgent: 'ui-designer' }, notes)
-    assert.doesNotMatch(notes.join('\n'), /Mockup style/)
-  })
 })
 
 // A preview's trigger and order are their own keys (#2151).
@@ -423,32 +286,6 @@ describe('`akb.after`', () => {
   const preview = (name: string, extra: string[] = []): string =>
     ['---', `name: ${name}`, `description: ${name} works.`, 'akb:', `  when: ${name} applies.`, ...extra, '---', '', 'Body.', ''].join('\n')
   const problems = (): string[] => specAgentCatalog().problems
-
-  it('reports and drops an `after` that names nobody or closes a loop', async () => {
-    project('first', { 'AGENT.md': preview('first', ['  after: [second]']) })
-    project('second', { 'AGENT.md': preview('second', ['  after: [first, nobody]']) })
-    for (const name of ['first', 'second']) assert.equal(switchAgent('coding', name, true).ok, true)
-    const { agentKeyProblems, agentAfter } = await import('../src/lib/agent/studios.ts')
-    const said = agentKeyProblems().filter((p) => p.includes('akb.after'))
-    assert.equal(said.length, 2, said.join('\n'))
-    assert.ok(said.some((p) => p.includes('`nobody`, which is not an agent on this board')))
-    assert.ok(said.some((p) => p.includes('`first`, which waits on `second` already')))
-    assert.deepEqual(agentAfter('first'), ['second'])
-    assert.deepEqual(agentAfter('second'), [])
-    assert.deepEqual(problems(), [])
-  })
-
-  it('stages by the longest `after` chain among the chosen, studio order within a stage', () => {
-    project('a-one', { 'AGENT.md': preview('a-one', ['  after: [c-three]']) })
-    project('b-two', { 'AGENT.md': preview('b-two') })
-    project('c-three', { 'AGENT.md': preview('c-three', ['  after: [b-two]']) })
-    project('d-four', { 'AGENT.md': preview('d-four', ['  after: [b-two]']) })
-    for (const name of ['a-one', 'b-two', 'c-three', 'd-four']) assert.equal(switchAgent('coding', name, true).ok, true)
-    const coding = studioById('coding')!
-    assert.deepEqual(previewStages(coding, ['a-one', 'b-two', 'c-three', 'd-four']), [['b-two'], ['c-three', 'd-four'], ['a-one']])
-    // An agent the card leaves out does not hold the others back.
-    assert.deepEqual(previewStages(coding, ['a-one', 'c-three', 'd-four']), [['c-three', 'd-four'], ['a-one']])
-  })
 })
 
 describe("the YAML an agent's frontmatter is written in", () => {
@@ -551,17 +388,6 @@ describe("an agent's memory folder", () => {
     assert.ok(findSpecAgent('api-contract'))
   })
 
-  // Which files hold in every project (#2078): read for the cloud sync, nothing else.
-  it('reads `akb.memoryFiles.workspace`, and leaves everything project-only without it', () => {
-    const declares = (lines: string): string => AGENT.replace('  when: A card needs it.\n', `  when: A card needs it.\n${lines}`)
-    project('api-contract', { 'AGENT.md': declares('  memoryFiles:\n    workspace: [style.md, motions/, format-*.md]\n') })
-    project('api-notes', { 'AGENT.md': AGENT.replace('api-contract', 'api-notes') })
-    assert.deepEqual(specAgentCatalog().problems, [])
-    assert.deepEqual(findSpecAgent('api-contract')?.memoryFiles, { workspace: ['style.md', 'motions/', 'format-*.md'] })
-    assert.deepEqual(findSpecAgent('api-notes')?.memoryFiles, { workspace: [] })
-    assert.deepEqual(findSpecAgent('ui-designer')?.memoryFiles, { workspace: ['style.md'] })
-  })
-
   for (const [value, says] of [
     ['    workspace: style.md\n', /not a list of paths/],
     ['    workspace: [../planner/decisions.md]\n', /outside its memory folder/],
@@ -579,40 +405,6 @@ describe("an agent's memory folder", () => {
   it('marks no agent in the roster', () => {
     assert.doesNotMatch(specAgentSelector(12, 'coding', null), /remembers|memory\/agents/)
   })
-
-  it('hands a spec run every file in the folder, whatever it is named', () => {
-    wrote('ui-designer', 'redesign.md', '# What `ui-designer` was corrected on\n\n- One figure per tile was rejected.\n')
-    wrote('ui-designer', 'preferences.md', '- This product never opens a modal.\n')
-    const prompt = buildPrompt({ action: 'spec', id: 12, specAgent: 'ui-designer' })
-    assert.match(prompt, /——— what you remember ———/)
-    assert.match(prompt, /`docs\/kanban\/memory\/agents\/ui-designer\/`/)
-    assert.match(prompt, /### `preferences\.md`\n\n- This product never opens a modal\./)
-    assert.match(prompt, /### `redesign\.md`\n\n# What `ui-designer` was corrected on/)
-    assert.ok(prompt.indexOf('——— you, the `ui-designer` agent ———') < prompt.indexOf('——— what you remember ———'))
-    assert.doesNotMatch(prompt, /spec-write|--redesign|--decisions|Follow your memory below/)
-  })
-
-  it('puts the memory rule in the contract, and the look in the agent that needs it', () => {
-    const prompt = buildPrompt({ action: 'spec', id: 12, specAgent: 'ui-designer' })
-    assert.match(findGuide('preview-agent')!.text, /\*\*Memory\*\*: `docs\/kanban\/memory\/agents\/<agent-name>\/` is yours/)
-    assert.match(prompt, /## Memory[\s\S]*`writing\.md`[\s\S]*`redesign\.md`/)
-  })
-
-  it('only names the folder when nothing is in it', () => {
-    const prompt = buildPrompt({ action: 'spec', id: 12, specAgent: 'tech-stack-advisor' })
-    assert.match(prompt, /Your memory folder is `docs\/kanban\/memory\/agents\/tech-stack-advisor\/`\. Nothing is in it yet\./)
-    assert.doesNotMatch(prompt, /### `/)
-  })
-
-  it('does not adopt old memories during a read', () => {
-    const dir = path.join(kanban(), 'memory/agents')
-    fs.mkdirSync(path.join(dir, 'video-assets'), { recursive: true })
-    fs.writeFileSync(path.join(dir, 'ui-designer.md'), 'old preference')
-    fs.writeFileSync(path.join(dir, 'video-assets/assets.md'), 'old catalogue')
-    assert.doesNotMatch(buildPrompt({ action: 'spec', id: 12, specAgent: 'ui-designer' }), /old preference/)
-    assert.doesNotMatch(buildPrompt({ action: 'spec', id: 12, specAgent: 'hyperframes-editor' }), /old catalogue/)
-    assert.equal(fs.readFileSync(path.join(dir, 'ui-designer.md'), 'utf8'), 'old preference')
-  })
 })
 
 // Where a spec agent's section goes (#1574): above the boundary, for every hook. There is no
@@ -623,17 +415,7 @@ describe("where a spec agent's section goes", () => {
     assert.doesNotMatch(specAgentList('akb'), /Output:/)
   })
 
-  it('tells every spec run nothing about halves, and lands above the boundary', () => {
-    board({ specAgents: { 'hyperframes-editor': { output: 'agent' } } })
-    const prompt = buildPrompt({ action: 'spec', id: 12, specAgent: 'hyperframes-editor' })
-    assert.doesNotMatch(prompt, /Your output is set to/)
-    assert.match(findGuide('preview-agent')!.text, /edit your section in place above `<!-- agent -->`/)
-  })
-
   // #226: `studio-writer` writes `STUDIO.md` and agents, not only its section.
-  it('lets an agent write any file its instructions name', () => {
-    assert.match(findGuide('preview-agent')!.text.replace(/\s+/g, ' '), /any file your instructions tell you to write/)
-  })
 
   it('loads an `AGENT.md` that still declares `akb.output`, and ignores it', () => {
     project('api-contract', { 'AGENT.md': AGENT.replace('  when: A card needs it.', '  when: A card needs it.\n  output: nobody') })
@@ -699,81 +481,4 @@ describe('preview command queries (#397)', () => {
       console.log = log
     }
   }
-
-  it('lists original triggers in catalog order, including off and unassigned agents, with the same diagnostics', async () => {
-    project('api-contract', { 'AGENT.md': AGENT.replace('  when: A card needs it.', '  when: A card needs it.\n  i18n:\n    zh:\n      when: 本地化条件') })
-    project('plain', { 'AGENT.md': AGENT.replace('api-contract', 'plain').replace('  when: A card needs it.\n', '') })
-    project('ui-designer', { 'AGENT.md': AGENT.replace('api-contract', 'ui-designer') })
-    project('broken', { 'AGENT.md': 'broken' })
-    assert.equal(switchAgent('coding', 'ui-designer', false).ok, true)
-    fs.writeFileSync(path.join(kanban(), 'config.md'), '# Board\n')
-    const before = readRuns()
-    const listed = await query(['raw', 'previews'])
-    const files = () => Object.fromEntries((fs.readdirSync(kanban(), { recursive: true }) as string[])
-      .filter((name) => fs.statSync(path.join(kanban(), name)).isFile())
-      .map((name) => [name, fs.readFileSync(path.join(kanban(), name), 'utf8')]))
-    const unchanged = files()
-    const triggers = await query(['raw', 'previews', '--triggers', '--board', kanban()])
-    assert.equal(triggers.code, 0, triggers.output)
-    assert.equal(triggers.data.ok, true)
-    assert.deepEqual(triggers.data.agents, specAgentCatalog().agents.map((agent) => ({ name: agent.name, when: agent.when ?? null })))
-    assert.deepEqual(triggers.data.agents.map((agent: { name: string }) => agent.name), listed.data.agents)
-    assert.deepEqual(triggers.data.problems, listed.data.problems)
-    assert.ok(triggers.data.problems.some((problem: string) => problem.includes('already on this board')))
-    assert.deepEqual(triggers.data.agents.find((agent: { name: string }) => agent.name === 'plain'), { name: 'plain', when: null })
-    assert.deepEqual(triggers.data.agents.find((agent: { name: string }) => agent.name === 'api-contract'), { name: 'api-contract', when: 'A card needs it.' })
-    const text = await query(['raw', 'previews', '--triggers', '--dir', root], false)
-    assert.equal(text.code, 0)
-    assert.equal(text.output.trimEnd(), triggers.data.output)
-    assert.match(text.output, /plain\n  Always/)
-    assert.doesNotMatch(text.output, /Runs on:|Use when a card changes|本地化条件/)
-    assert.deepEqual(readRuns(), before)
-    assert.deepEqual(files(), unchanged)
-  })
-
-  it('rejects trigger queries combined with run arguments and options without starting a run', async () => {
-    for (const args of [
-      ['ui-designer'], ['ui-designer', '12'], ['ui-designer', '12', 'note'],
-      ['--print'], ['--follow'], ['-f'], ['--notes', 'note'], ['--notes', ''],
-    ]) {
-      const result = await query(['raw', 'previews', '--triggers', ...args])
-      assert.equal(result.code, 1, args.join(' '))
-      assert.equal(result.data.error.kind, 'invalid-usage')
-    }
-    assert.deepEqual(readRuns(), [])
-  })
-
-  it('documents trigger queries, removes the old command and prints a preview through the new entry', async () => {
-    const help = await query(['raw', 'previews', '--help'], false)
-    assert.match(help.output, /--triggers/)
-    assert.match(help.output, /akb raw previews --triggers --json/)
-    const old = await query(['spec'])
-    assert.equal(old.code, 1)
-    assert.equal(old.data.error.kind, 'unknownCommand')
-    const uiFile = path.join(editableOfficial(), 'agents/ui-designer/AGENT.md')
-    fs.writeFileSync(uiFile, fs.readFileSync(uiFile, 'utf8').replace(/  stages:\n[\s\S]*?(?=  memoryFiles:)/, ''))
-    const previewCard = card(12)
-    fs.writeFileSync(previewCard, fs.readFileSync(previewCard, 'utf8').replace('questions: []', 'previews: [tech-stack-advisor]\nquestions: []'))
-    const printed = await query(['raw', 'previews', 'tech-stack-advisor', '12', '--print'])
-    assert.equal(printed.code, 0)
-    assert.match(printed.data.output, /You are the `tech-stack-advisor` preview agent on task 12/)
-    assert.deepEqual(readRuns(), [])
-    for (const guide of ['refine', 'revise', 'write-agent']) {
-      assert.match(findGuide(guide)!.text, /akb raw previews/)
-      assert.doesNotMatch(findGuide(guide)!.text, /akb spec\b/)
-    }
-  })
-
-  it('makes an empty catalog explicit', async () => {
-    try {
-      fs.rmSync(path.join(editableOfficial(), 'studios'), { recursive: true })
-      fs.mkdirSync(path.join(editableOfficial(), 'studios'))
-      const result = await query(['raw', 'previews', '--triggers'])
-      assert.equal(result.code, 0)
-      assert.deepEqual(result.data.agents, [])
-      assert.match(result.data.output, /no preview agent/)
-    } finally {
-      resetOfficial()
-    }
-  })
 })

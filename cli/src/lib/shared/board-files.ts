@@ -8,7 +8,7 @@ const ROOTS = ['todo/', '.archive/', 'memory/', 'studios/', 'triage/', 'assets/'
 export const SETTINGS = ['modules.md', 'config.md']
 
 /** A settings file: one of those, an agent's rule, or the rule for a studio's cards. */
-export const isSettingsPath = (path: string) => SETTINGS.includes(path) || /^rules\/(?:studios\/)?[^/]+\.md$/.test(path)
+export const isSettingsPath = (path: string) => SETTINGS.includes(path) || /^rules\/(?:studios\/[^/]+|proposer|project-writer|dismissal-reviewer|memory-pruner)\.md$/.test(path)
 
 /** A file over this goes up as an asset, not on the board. */
 export { BOARD_FILE_LIMIT } from './file-limits.ts'

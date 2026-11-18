@@ -1,16 +1,7 @@
-/**
- * A studio as files (#2040): `STUDIO.md` and the folders of the agents it runs,
- * `agents/<name>/AGENT.md` and whatever sits beside it — the layout of a board, read by the
- * same code akb reads them with. Used by the API and by the build that packs the built-ins.
- * An official studio may also carry skills, `skills/<name>/SKILL.md` and its files, and the
- * MCP servers its runs get, `mcp.json` (#2030). `shared/` holds what all its agents use (#656):
- * `shared/RULES.md`, sent with every run, and files any of them may read. `CARD.md` is the
- * template its planner fits each card to (#660).
- */
-
-import { groupLines, parseStudioFile, stagesOf, type StudioDef } from '../agent/studio-def.ts'
-import { AGENT_NAME, parseSpecAgent, type SpecAgent } from '../agents/parse.ts'
-import { studioDiagram, type StudioDiagram } from '../agent/studio-diagram.ts'
+import { parseStudioFile, type StudioDef } from '../agent/studio-def.ts'
+import { withoutCode, sourcePosition, type SourceProblem } from './preview-blocks.ts'
+import type { StudioDiagram } from '../agent/studio-diagram.ts'
+import { GUIDE_TOPICS } from './guide-topics.ts'
 
 export type StudioFiles = Record<string, string>
 
@@ -34,25 +25,13 @@ export const hashInput = (files: StudioFiles) => JSON.stringify(Object.entries(f
 
 export type Checked =
   | { ok: true; def: StudioDef; files: StudioFiles }
-  | { ok: false; file: string; reason: string; tooLarge?: boolean }
+  | ({ ok: false; problems: FilesProblem[] } & FilesProblem)
 
 /** What Cloud's approval reads of a studio: whether a card's last approval lands it or archives
  *  it. How many approvals there are is the card's own `stages` (#2154). */
-export const landsOf = (def: StudioDef) => ({ lands: def.land.some((h) => !h.off) })
+export const landsOf = (_def: StudioDef) => ({ lands: true })
 
-/** The approvals a card's chosen previews make (#2154), each agent's `after` read from the
- *  studio's own files, as the board stages them. */
-export function stagesFrom(files: StudioFiles, chosen: string[]): string[][] {
-  const read = parseStudioFile('studio', files[STUDIO_FILE] ?? '', STUDIO_FILE)
-  if ('problem' in read) return []
-  const previews = read.def.previews.filter((h) => !h.off).map((h) => h.agent)
-  const after = (name: string): string[] => {
-    const text = files[`agents/${name}/AGENT.md`]
-    const parsed = text === undefined ? null : parseSpecAgent(text, name, (path) => files[`agents/${name}/${path}`] ?? null, false)
-    return parsed && 'agent' in parsed ? parsed.agent.after.filter((other) => previews.includes(other)) : []
-  }
-  return stagesOf(previews.filter((name) => chosen.includes(name)), after)
-}
+export function stagesFrom(_files: StudioFiles, chosen: string[]): string[][] { return [chosen] }
 
 /** Its `icon` (#461), or null when unset or unreadable. */
 export function iconFrom(files: StudioFiles) {
@@ -61,15 +40,7 @@ export function iconFrom(files: StudioFiles) {
 }
 
 /** The studio drawn for its detail page (#451), as akb draws a card's; null when unreadable. */
-export function diagramFrom(files: StudioFiles): StudioDiagram | null {
-  const read = parseStudioFile('studio', files[STUDIO_FILE] ?? '', STUDIO_FILE)
-  if ('problem' in read) return null
-  return studioDiagram(read.def, (name) => {
-    const text = files[`agents/${name}/AGENT.md`]
-    const parsed = text === undefined ? null : parseSpecAgent(text, name, (path) => files[`agents/${name}/${path}`] ?? null, false)
-    return parsed && 'agent' in parsed ? parsed.agent : null
-  })
-}
+export function diagramFrom(_files: StudioFiles): StudioDiagram | null { return null }
 
 const SEGMENT = /^[\w.-]+$/
 
@@ -102,7 +73,7 @@ const isSharedFile = (file: string) => {
 /** `<top>/<name>/<path>` → `[name, path]`; null for any other path. */
 function folderPath(file: string, top: string): [string, string] | null {
   const parts = file.split('/')
-  if (parts.length < 3 || parts[0] !== top || !AGENT_NAME.test(parts[1] as string)) return null
+  if (parts.length < 3 || parts[0] !== top || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(parts[1] as string)) return null
   if (parts.slice(2).some((p) => !SEGMENT.test(p) || p === '.' || p === '..')) return null
   return [parts[1] as string, parts.slice(2).join('/')]
 }
@@ -119,7 +90,7 @@ function mcpProblem(text: string): string | null {
   if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return 'must hold `mcpServers`, an object of name → server'
   for (const [name, server] of Object.entries(servers)) {
     const { command, args, ...rest } = (server ?? {}) as Record<string, unknown>
-    if (!AGENT_NAME.test(name)) return `names a server \`${name}\`; use lowercase letters, digits and dashes`
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) return `names a server \`${name}\`; use lowercase letters, digits and dashes`
     if (typeof command !== 'string' || !command) return `server \`${name}\` needs a \`command\``
     if (args !== undefined && !(Array.isArray(args) && args.every((a) => typeof a === 'string'))) return `server \`${name}\`: \`args\` must be a list of strings`
     if (Object.keys(rest).length) return `server \`${name}\` takes only \`command\` and \`args\``
@@ -127,13 +98,13 @@ function mcpProblem(text: string): string | null {
   return null
 }
 
-export type FilesProblem = { file: string; reason: string; tooLarge?: boolean }
+export type FilesProblem = Partial<SourceProblem> & { file: string; reason: string; tooLarge?: boolean }
 
 /** `official` lets the files carry skills and MCP servers. */
 export function checkStudioFiles(value: unknown, official = false): Checked {
   const read = inspect(value, official)
   const first = read.problems[0]
-  return first ? { ok: false, ...first } : { ok: true, def: read.def!, files: read.files! }
+  return first ? { ok: false, ...first, problems: read.problems } : { ok: true, def: read.def!, files: read.files! }
 }
 
 /** Every problem `checkStudioFiles` would refuse the files for. */
@@ -151,7 +122,6 @@ function inspect(value: unknown, official: boolean): { problems: FilesProblem[];
   if (entries.length > FILE_LIMITS.count) return fail('files', `holds at most ${FILE_LIMITS.count} files`, true)
 
   let total = 0
-  const folders = new Map<string, Map<string, string>>()
   const skills = new Set<string>()
   for (const [file, text] of entries) {
     if (typeof text !== 'string' || text.includes('\u0000')) {
@@ -179,13 +149,8 @@ function inspect(value: unknown, official: boolean): { problems: FilesProblem[];
       continue
     }
     if (isSharedFile(file)) continue
-    const at = folderPath(file, 'agents')
-    if (!at) {
-      fail(file, `is neither ${STUDIO_FILE}, ${CARD_TEMPLATE_FILE}, shared/ nor inside agents/<name>/`)
-      continue
-    }
-    if (!folders.has(at[0])) folders.set(at[0], new Map())
-    folders.get(at[0])!.set(at[1], text)
+    if (/^(?:references|scripts)\//.test(file) && file.split('/').every(p => SEGMENT.test(p) && p !== '.' && p !== '..')) continue
+    fail(file, `use ${STUDIO_FILE}, ${CARD_TEMPLATE_FILE}, references/, scripts/ or shared/`)
   }
 
   for (const name of skills) {
@@ -195,34 +160,23 @@ function inspect(value: unknown, official: boolean): { problems: FilesProblem[];
   const source = files[STUDIO_FILE]
   const read = typeof source === 'string' ? parseStudioFile('studio', source, STUDIO_FILE) : null
   if (!read) fail(STUDIO_FILE, 'is missing')
-  else if ('problem' in read) fail(STUDIO_FILE, read.problem.replace(`${STUDIO_FILE}: `, ''))
-
-  const agents = new Map<string, SpecAgent>()
-  for (const [name, own] of folders) {
-    const from = `agents/${name}/AGENT.md`
-    const text = own.get('AGENT.md')
-    if (text === undefined) {
-      fail(from, 'is missing')
-      continue
-    }
-    const parsed = parseSpecAgent(text, from, (p) => own.get(p) ?? null, false, () => [...own.keys()].filter((p) => p !== 'AGENT.md'))
-    if ('problem' in parsed) fail(from, parsed.problem.replace(`${from}: `, ''))
-    else if (parsed.agent.name !== name) fail(from, `calls itself \`${parsed.agent.name}\`; it must match its folder`)
-    else agents.set(name, parsed.agent)
-  }
-
+  else if ('problem' in read) for (const problem of read.problems) problems.push({ ...problem, reason: problem.message })
   if (!read || 'problem' in read) return { problems }
   const def = read.def
-  const named: [string, string][] = [
-    ...def.previews.map((h): [string, string] => [h.agent, 'it previews with']),
-    ...def.land.map((h): [string, string] => [h.agent, 'it lands with']),
-    ...def.scheduled.map((s): [string, string] => [s.agent, 'it schedules']),
-  ]
-  for (const { agent } of [...def.land, ...def.scheduled]) {
-    if (agents.get(agent)?.stages) fail(`agents/${agent}/AGENT.md`, '`akb.stages` is only supported for preview agents')
-  }
-  for (const [name, why] of named) {
-    if (!agents.has(name) && !folders.has(name)) fail(STUDIO_FILE, `${why} \`${name}\`, which has no agents/${name}/AGENT.md`)
+  for (const [file, text] of Object.entries(files)) {
+    if (typeof text !== 'string' || !file.endsWith('.md')) continue
+    const masked = withoutCode(text)
+    const reference = (offset: number, link: string, message: string) => problems.push({ file, ...sourcePosition(text, offset), path: link, code: 'studio-reference', message, reason: message, hint: 'Use an existing safe relative resource or a shipped AKB Guide.' })
+    for (const match of masked.matchAll(/!?\[[^\]]*\]\(([^\s)]+)(?:\s+[^)]*)?\)/g)) {
+      const link = match[1]!.replace(/^<|>$/g, '')
+      if (/^(?:https?:|mailto:|#)/i.test(link)) continue
+      let decoded: string
+      try { decoded = decodeURIComponent(link.split(/[?#]/)[0]!) } catch { reference(match.index!, link, 'Invalid resource URL'); continue }
+      if (/^(?:[a-z][\w+.-]*:|[/\\])|\\/i.test(decoded) || decoded.split('/').includes('..')) { reference(match.index!, link, 'Unsafe resource path'); continue }
+      const target = [...file.split('/').slice(0, -1), ...decoded.split('/').filter(p => p !== '.')].join('/')
+      if (!Object.hasOwn(files, target)) reference(match.index!, link, `Missing resource ${target}`)
+    }
+    for (const match of text.matchAll(/akb guide ([a-z][a-z-]*)/g)) if (!GUIDE_TOPICS.includes(match[1]!)) reference(match.index!, match[1]!, `Unknown AKB Guide ${match[1]}`)
   }
   return { problems, def, files: files as StudioFiles }
 }
@@ -257,29 +211,8 @@ export function cloneFiles(files: StudioFiles, name?: string): { files: StudioFi
   return { files: kept }
 }
 
-/** Its files with the workspace's `off` preview agents written `off: true` (#571). */
-export function withPreviewsOff(files: StudioFiles, off: string[]): StudioFiles {
-  const source = files[STUDIO_FILE] ?? ''
-  const read = parseStudioFile('studio', source, STUDIO_FILE)
-  if ('problem' in read || !read.def.previews.some((h) => !h.off && off.includes(h.agent))) return files
-  const lines = source.split('\n')
-  const end = lines.indexOf('---', 1)
-  const at = lines.findIndex((line, i) => i > 0 && i < end && /^previews\s*:/.test(line))
-  let to = at + 1
-  while (to < end && /^[\s-]/.test(lines[to] as string)) to++
-  lines.splice(at, to - at, ...groupLines('previews', read.def.previews.map((h) => (off.includes(h.agent) ? { ...h, off: true } : h))))
-  return { ...files, [STUDIO_FILE]: lines.join('\n') }
-}
-
 export function previewCatalog(files: StudioFiles) {
   const read = parseStudioFile('studio', files[STUDIO_FILE] ?? '', STUDIO_FILE)
   if ('problem' in read) throw new Error(read.problem)
-  return read.def.previews.filter((h) => !h.off).map(({ agent: name }) => {
-    const text = files[`agents/${name}/AGENT.md`]
-    if (text === undefined) throw new Error(`Preview agent ${name} is missing.`)
-    const parsed = parseSpecAgent(text, name, (path) => files[`agents/${name}/${path}`] ?? null, false)
-    if ('problem' in parsed) throw new Error(parsed.problem)
-    const agent = parsed.agent
-    return { agent: name, title: { en: agent.i18n.en?.title, zh: agent.i18n.zh?.title }, when: agent.when ?? '' }
-  })
+  return read.def.previews
 }

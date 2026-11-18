@@ -1,4 +1,7 @@
-import type { TokenUsage } from '../types'
+import path from 'node:path'
+import type { ContextWindow, TokenUsage } from '../types'
+import type { ExecutionFailure } from '../retry'
+import { priceUsd } from '../prices'
 import { translating } from '../language'
 import { createEventCollector, type ToolKind } from './events'
 import { obj, str, num } from './json'
@@ -6,7 +9,7 @@ import { createLineReader, frame, type StreamRenderer } from './stream'
 
 const KINDS: Record<string, ToolKind> = {
   run_command: 'execute', command_status: 'execute', send_command_input: 'execute',
-  view_file: 'read', list_dir: 'read', grep_search: 'search', find_by_name: 'search',
+  read_file: 'read', view_file: 'read', list_dir: 'read', grep_search: 'search', find_by_name: 'search',
   write_file: 'edit', write_to_file: 'edit', replace_file_content: 'edit', multi_replace_file_content: 'edit',
   read_url_content: 'fetch', search_web: 'fetch',
 }
@@ -33,14 +36,40 @@ function failureHint(reason: string): string {
   return hint ? `${reason}\n${hint}` : reason
 }
 
-export function createAntigravityRenderer(expectedSession?: string): StreamRenderer {
+const imagePath = (target: string) => /\.(?:png|jpe?g|gif|webp|bmp|tiff?|svg)$/i.test(target)
+
+export function createAntigravityRenderer(expectedSession?: string, cwd = process.cwd()): StreamRenderer {
   let session: string | undefined = expectedSession
   let model: string | undefined
+  let partial = ''
   let final: string | undefined
   let failure: string | undefined
+  let classified: ExecutionFailure | undefined
+  let imageFailure: string | undefined
+  let requiredImages: string[] = []
+  const readImages = new Set<string>()
+  const imageErrors = new Map<string, string>()
+  const imageError = (target: string, reason: string) => translating()
+    ? `Antigravity 无法读取图片 ${target}：${reason}` : `Antigravity could not read image ${target}: ${reason}`
   let terminal = false
   let offStream: string | undefined
   let stderr = ''
+  let context: ContextWindow | undefined
+  let contextStep = -1
+  const started = Date.now()
+  let cost: number | undefined
+  let incomplete = false
+  const priced = new Set<number>()
+  const countCost = (step: Record<string, unknown>) => {
+    const index = step.step_index
+    if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || priced.has(index)) return
+    priced.add(index)
+    const u = obj(step.usage)
+    const valid = [u.input_tokens, u.output_tokens, u.cache_read_tokens].every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0)
+    const usd = valid ? priceUsd('antigravity', model, usageOf(u), started) : undefined
+    if (usd === undefined) incomplete = true
+    else cost = (cost ?? 0) + usd
+  }
   let used: TokenUsage | undefined
   let turnUsage = zero()
   let previous: TokenUsage | undefined
@@ -48,13 +77,20 @@ export function createAntigravityRenderer(expectedSession?: string): StreamRende
   const calls = new Set<string>()
   const closed = new Set<string>()
   const events = createEventCollector()
-  const fail = (reason: string) => { failure = failureHint(reason); events.error(failure) }
+  const fail = (reason: string, code = 'provider_failed') => {
+    failure = failureHint(reason)
+    classified = { code, level: 3, reason: failure }
+    events.error(failure)
+  }
   const reader = createLineReader((line) => {
     const e = frame(line)
-    if (!e) { offStream = line.trim() || offStream; return `${line}\n` }
+    if (!e) {
+      offStream = line.trim() || offStream
+      return `${line}\n`
+    }
     if (e.event === 'init') {
       const got = str(e.conversation_id)
-      if (expectedSession && got !== expectedSession) { fail(translating() ? 'Antigravity 未续接指定会话，请检查本机原会话后重试。' : 'Antigravity did not resume the requested conversation.'); return '' }
+      if (expectedSession && got !== expectedSession) { fail(translating() ? 'Antigravity 未续接指定会话，请检查本机原会话后重试。' : 'Antigravity did not resume the requested conversation.', 'session_mismatch'); return '' }
       session = got || session
       model = str(obj(e.init).model) || model
       return ''
@@ -64,10 +100,21 @@ export function createAntigravityRenderer(expectedSession?: string): StreamRende
       if (expectedSession && str(step.conversation_id) !== expectedSession) return ''
       session = str(step.conversation_id) || session
       const id = String(step.step_index ?? '')
+      if (step.state === 'DONE' && ['agent_response', 'checkpoint'].includes(str(step.step_type))) countCost(step)
       if (step.step_type === 'agent_response') {
         const text = str(step.text_delta)
+        partial += text
         if (text) events.update({ sessionUpdate: 'agent_message_chunk', content: { text } })
         const index = num(step.step_index)
+        if (step.state === 'DONE' && Number.isSafeInteger(index) && step.step_index === index && index > contextStep) {
+          contextStep = index
+          const u = obj(step.usage)
+          // agy counts fresh input and cache reads separately; result.usage is cumulative.
+          const counts = [u.input_tokens, u.cache_read_tokens]
+          const prompt = counts.every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0)
+            ? num(u.input_tokens) + num(u.cache_read_tokens) : 0
+          context = prompt > 0 && Number.isFinite(prompt) ? { used: prompt } : undefined
+        }
         if (step.state === 'DONE' && step.usage && !counted.has(index)) {
           counted.add(index)
           turnUsage = add(turnUsage, usageOf(step.usage))
@@ -88,10 +135,20 @@ export function createAntigravityRenderer(expectedSession?: string): StreamRende
         }
         const error = obj(tool.error)
         const reason = str(error.message) || str(error.type)
-        if (reason && /permission|denied|soft.den/i.test(reason)) fail(reason)
         if (['DONE', 'ERROR', 'CANCELED', 'INTERRUPTED'].includes(str(step.state)) && !closed.has(id)) {
           closed.add(id)
-          events.toolResult(id, reason || step.state !== 'DONE' ? 'failed' : 'completed', str(tool.output) || reason)
+          const failed = !!reason || step.state !== 'DONE'
+          if (['read_file', 'view_file'].includes(name) && imagePath(target)) {
+            const file = path.resolve(cwd, target)
+            if (failed) {
+              imageErrors.set(file, reason || str(step.state))
+              out += `\n${imageError(target, reason || str(step.state))}\n`
+            } else {
+              readImages.add(file)
+              imageErrors.delete(file)
+            }
+          }
+          events.toolResult(id, failed ? 'failed' : 'completed', str(tool.output) || reason)
         }
         return out
       }
@@ -99,7 +156,7 @@ export function createAntigravityRenderer(expectedSession?: string): StreamRende
     }
     if (e.event === 'result') {
       const result = obj(e.result)
-      if (expectedSession && str(result.conversation_id) && result.conversation_id !== expectedSession) { fail(translating() ? 'Antigravity 未续接指定会话，请检查本机原会话后重试。' : 'Antigravity did not resume the requested conversation.'); terminal = true; return '' }
+      if (expectedSession && str(result.conversation_id) && result.conversation_id !== expectedSession) { fail(translating() ? 'Antigravity 未续接指定会话，请检查本机原会话后重试。' : 'Antigravity did not resume the requested conversation.', 'session_mismatch'); terminal = true; return '' }
       session = str(result.conversation_id) || session
       terminal = true
       final = typeof result.response === 'string' ? result.response : undefined
@@ -110,35 +167,51 @@ export function createAntigravityRenderer(expectedSession?: string): StreamRende
         : num(result.num_turns) === 1 ? total : turnUsage
       previous = total
       if (!Object.values(used).some(n => n > 0)) used = undefined
-      if (Array.isArray(result.denied_actions) && result.denied_actions.length) fail(translating() ? 'Antigravity 权限拒绝，请检查权限规则后重试。' : 'Antigravity permission denied. Check permission rules, then retry.')
-      if (typeof result.response !== 'string' || result.status !== 'SUCCESS' || str(result.error) || (result.finished_reason && result.finished_reason !== 'completed' && result.finished_reason !== 'success')) {
-        fail(str(result.error) || `Antigravity: ${str(result.status) || 'missing status'}`)
+      const missing = requiredImages.length
+        ? requiredImages.filter(file => !readImages.has(file)) : [...imageErrors.keys()]
+      imageFailure = missing.length ? missing.map(file => imageError(file, imageErrors.get(file)
+        || (translating() ? '本轮未成功读取所需图片。' : 'Required image was not successfully read this turn.'))).join('\n') : undefined
+      if (imageFailure) events.error(imageFailure)
+      readImages.clear()
+      imageErrors.clear()
+      if (Array.isArray(result.denied_actions) && result.denied_actions.length) fail(translating() ? 'Antigravity 权限拒绝，请检查权限规则后重试。' : 'Antigravity permission denied. Check permission rules, then retry.', 'permission_denied')
+      else if (!failure && (typeof result.response !== 'string' || result.status !== 'SUCCESS' || str(result.error) || (result.finished_reason && result.finished_reason !== 'completed' && result.finished_reason !== 'success'))) {
+        fail(result.status === 'CANCELED' ? `Antigravity: CANCELED${result.error ? `: ${str(result.error)}` : ''}` : str(result.error) || `Antigravity: ${str(result.status) || 'missing status'}`)
       }
       events.end()
       turnUsage = zero()
       counted.clear()
-      return failure ? `\n[error] ${failure}\n` : ''
+      return failure || imageFailure ? `\n[error] ${failure || imageFailure}\n` : ''
     }
     return ''
   })
   return {
     push: reader.push,
+    setRequiredImages(files) { requiredImages = files.filter(imagePath).map(file => path.resolve(cwd, file)) },
     flush() {
       const text = reader.flush()
-      if (!terminal) fail(translating() ? 'Antigravity 未返回最终结果，请检查日志后重试。' : 'Antigravity returned no final result. Check the log, then retry.')
+      if (!terminal) {
+        incomplete = true
+        const diagnostics = [stderr.trim(), offStream?.match(/^(?:error:|rpc error:|API error\b)/i) ? offStream : undefined]
+        if (!failure) fail(diagnostics.find(Boolean) || (translating() ? 'Antigravity 未返回最终结果，请检查日志后重试。' : 'Antigravity returned no final result. Check the log, then retry.'), 'result_missing')
+      }
       events.end()
       return text
     },
     stderr(chunk) {
       stderr = (stderr + chunk).slice(-16_000)
-      if (/soft.denied|auto-denied|permission (?:denied|required)|denied by.*(?:policy|rule)|requires? (?:user )?(?:approval|permission)/i.test(stderr)) fail(stderr.trim())
     },
-    result: () => final,
+    result: () => final || (failure ? partial || undefined : final),
     resumeId: () => session,
     model: () => model,
     usage: () => used,
-    failure: () => failure,
-    offStream: () => offStream,
+    costUsd: () => cost,
+    costIncomplete: () => incomplete || undefined,
+    context: () => context,
+    failure: () => failure || imageFailure,
+    terminalFailure: () => terminal && !!classified,
+    executionFailure: () => classified ?? (imageFailure ? { code: 'image_read_failed', level: 3, reason: imageFailure } : undefined),
     events: events.events,
+    activity: events.activity,
   }
 }

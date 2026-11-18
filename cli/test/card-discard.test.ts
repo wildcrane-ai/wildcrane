@@ -88,7 +88,7 @@ describe('raw reject', () => {
     } finally {
       stopCollecting()
     }
-    assert.deepEqual((res.note as { files: string[] }).files, [path.join('docs', 'kanban', 'memory', 'readme.md')])
+    assert.deepEqual((res.note as { files: string[] }).files, [])
     assert.deepEqual((res.mentions as { file: string }[]).map((m) => m.file), [path.join('docs', 'kanban', 'todo', '81-an-idea.md')])
     assert.match(box.out.join('\n'), /next — /)
   })

@@ -2,72 +2,91 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, it } from 'node:test'
-
-import note from '../../skill/SKILL.md'
-import { prepareKanbanSkill } from '../src/kanban-skill'
-
+import { afterEach, beforeEach, it, mock } from 'node:test'
+import { removeLegacyKanbanSkill } from '../src/kanban-skill'
 let root: string
 const skill = (folder = '.claude') => path.join(root, folder, 'skills/kanban')
 beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-skill-')) })
-afterEach(() => { fs.rmSync(root, { recursive: true, force: true }) })
-
-it('两份技能同源且内容不变时不改写', () => {
-  prepareKanbanSkill(root)
-  for (const folder of ['.claude', '.agents']) {
-    const file = path.join(skill(folder), 'SKILL.md')
-    assert.equal(fs.readFileSync(file, 'utf8'), `${note.trimEnd()}\n\n<!-- ai4kanban managed -->\n`)
-    const stamp = fs.statSync(file).mtimeMs
-    prepareKanbanSkill(root)
-    assert.equal(fs.statSync(file).mtimeMs, stamp)
+afterEach(() => { mock.restoreAll(); fs.rmSync(root, { recursive: true, force: true }) })
+it('retires current and historical managed copies without installing or restoring them', () => {
+  removeLegacyKanbanSkill(root)
+  assert.deepEqual(fs.readdirSync(root), [])
+  for (const [folder, marker] of [['.claude', 'managed'], ['.agents', '0.1.0']]) {
+    fs.mkdirSync(skill(folder), { recursive: true })
+    fs.writeFileSync(path.join(skill(folder), 'SKILL.md'), `Old\n<!-- ai4kanban ${marker} -->\n`)
   }
+  removeLegacyKanbanSkill(root)
+  removeLegacyKanbanSkill(root)
+  for (const folder of ['.claude', '.agents']) assert.equal(fs.existsSync(skill(folder)), false)
 })
-
-it('只刷新带产品标记的正文，保留旧配置与其他文件', () => {
+it('preserves user content, empty directories, configuration and nonordinary files', () => {
   fs.mkdirSync(skill(), { recursive: true })
-  fs.writeFileSync(path.join(skill(), 'SKILL.md'), '<!-- ai4kanban 0.1.0 -->\n旧技能')
-  fs.writeFileSync(path.join(skill(), 'config.md'), '用户配置')
-  prepareKanbanSkill(root)
-  assert.match(fs.readFileSync(path.join(skill(), 'SKILL.md'), 'utf8'), /name: kanban/)
-  assert.equal(fs.readFileSync(path.join(skill(), 'config.md'), 'utf8'), '用户配置')
+  removeLegacyKanbanSkill(root)
+  assert.ok(fs.existsSync(skill()))
+  const file = path.join(skill(), 'SKILL.md')
+  fs.writeFileSync(file, 'User skill')
+  removeLegacyKanbanSkill(root)
+  assert.equal(fs.readFileSync(file, 'utf8'), 'User skill')
+  fs.writeFileSync(file, '<!-- ai4kanban managed -->')
+  fs.writeFileSync(path.join(skill(), 'config.md'), 'User config')
+  removeLegacyKanbanSkill(root)
+  assert.equal(fs.existsSync(file), false)
+  assert.equal(fs.readFileSync(path.join(skill(), 'config.md'), 'utf8'), 'User config')
+  fs.mkdirSync(file)
+  removeLegacyKanbanSkill(root)
+  assert.ok(fs.statSync(file).isDirectory())
 })
-
-it('用户自有技能可直接使用，缺少正文时明确报错', () => {
-  fs.mkdirSync(skill(), { recursive: true })
-  assert.throws(() => prepareKanbanSkill(root), /无法准备.*缺少可读/)
-  fs.writeFileSync(path.join(skill(), 'SKILL.md'), '用户技能')
-  prepareKanbanSkill(root)
-  assert.equal(fs.readFileSync(path.join(skill(), 'SKILL.md'), 'utf8'), '用户技能')
-})
-
-it('不覆盖目录、正文或父目录上的符号链接', () => {
-  for (const kind of ['folder', 'file', 'parent']) {
-    const target = path.join(root, kind)
-    fs.mkdirSync(target)
-    fs.writeFileSync(path.join(target, 'SKILL.md'), '<!-- ai4kanban 0.1.0 -->\n用户链接')
-    if (kind === 'folder') {
-      fs.mkdirSync(path.dirname(skill()), { recursive: true })
-      fs.symlinkSync(target, skill())
-    } else if (kind === 'file') {
-      fs.mkdirSync(skill(), { recursive: true })
-      fs.symlinkSync(path.join(target, 'SKILL.md'), path.join(skill(), 'SKILL.md'))
-    } else {
-      fs.mkdirSync(path.join(target, 'skills/kanban'), { recursive: true })
-      fs.writeFileSync(path.join(target, 'skills/kanban/SKILL.md'), '用户链接')
-      fs.symlinkSync(target, path.join(root, '.claude'))
-    }
-    prepareKanbanSkill(root)
-    assert.equal(fs.readFileSync(path.join(target, 'SKILL.md'), 'utf8'), '<!-- ai4kanban 0.1.0 -->\n用户链接')
+it('never follows links at any component, even dangling links', () => {
+  for (const part of ['.claude', '.claude/skills', '.claude/skills/kanban', '.claude/skills/kanban/SKILL.md']) {
+    const target = fs.mkdtempSync(path.join(root, 'target-'))
+    const suffix = '.claude/skills/kanban/SKILL.md'.slice(part.length + 1)
+    const held = suffix ? path.join(target, suffix) : path.join(target, 'file')
+    fs.mkdirSync(path.dirname(held), { recursive: true })
+    fs.writeFileSync(held, '<!-- ai4kanban managed -->')
+    const link = path.join(root, part)
+    fs.mkdirSync(path.dirname(link), { recursive: true })
+    fs.symlinkSync(suffix ? target : held, link)
+    removeLegacyKanbanSkill(root)
+    assert.equal(fs.readFileSync(held, 'utf8'), '<!-- ai4kanban managed -->')
+    fs.unlinkSync(link)
+    fs.symlinkSync(path.join(root, 'missing'), link)
+    removeLegacyKanbanSkill(root)
+    assert.ok(fs.lstatSync(link).isSymbolicLink())
     fs.rmSync(path.join(root, '.claude'), { recursive: true, force: true })
   }
 })
-
-it('写入路径不可用时拒绝启动', () => {
-  fs.writeFileSync(path.join(root, '.claude'), '不是目录')
-  assert.throws(() => prepareKanbanSkill(root), /无法准备/)
+it('preserves a linked project root and a non-directory parent', () => {
+  fs.mkdirSync(skill(), { recursive: true })
+  const file = path.join(skill(), 'SKILL.md')
+  fs.writeFileSync(file, '<!-- ai4kanban managed -->')
+  const link = `${root}-link`
+  fs.symlinkSync(root, link)
+  try {
+    removeLegacyKanbanSkill(link)
+    assert.ok(fs.existsSync(file))
+  } finally { fs.unlinkSync(link) }
+  fs.rmSync(path.join(root, '.claude'), { recursive: true })
+  fs.writeFileSync(path.join(root, '.claude'), 'User file')
+  removeLegacyKanbanSkill(root)
+  assert.equal(fs.readFileSync(path.join(root, '.claude'), 'utf8'), 'User file')
 })
-
-it('各插件发行目录保留 discuss-goal，不带 kanban 技能', () => {
+it('reports cleanup permission failures internally and continues with other folders', () => {
+  fs.mkdirSync(skill(), { recursive: true })
+  fs.writeFileSync(path.join(skill(), 'SKILL.md'), '<!-- ai4kanban managed -->')
+  fs.mkdirSync(skill('.agents'), { recursive: true })
+  fs.writeFileSync(path.join(skill('.agents'), 'SKILL.md'), '<!-- ai4kanban managed -->')
+  const unlink = fs.unlinkSync
+  mock.method(fs, 'unlinkSync', (file: fs.PathLike) => {
+    if (file === path.join(skill(), 'SKILL.md')) throw Object.assign(new Error('denied'), { code: 'EACCES' })
+    unlink(file)
+  })
+  const log = mock.method(process.stderr, 'write', () => true)
+  assert.doesNotThrow(() => removeLegacyKanbanSkill(root))
+  assert.match(String(log.mock.calls[0].arguments[0]), /无法清理.*denied/)
+  assert.ok(fs.existsSync(path.join(skill(), 'SKILL.md')))
+  assert.equal(fs.existsSync(skill('.agents')), false)
+})
+it('keeps plugin skills without kanban', () => {
   for (const host of ['claude-code', 'codex', 'cursor', 'dsh']) {
     const skills = path.resolve(process.env.RUNNER_DIST!, '../../plugins', host, 'skills')
     assert.match(fs.readFileSync(path.join(skills, 'discuss-goal/SKILL.md'), 'utf8'), /`akb guide discuss-goal`/)

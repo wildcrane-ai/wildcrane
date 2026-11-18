@@ -32,15 +32,17 @@ import {
 import { cmdComponents } from '../../commands/components'
 import { cmdGoal } from '../../commands/goal'
 import {
+  type TaskLocation,
   projectList,
   runnerList,
   taskApprove,
+  taskReview,
   taskUpdateQuestions,
   taskChat,
   taskComment,
   taskCreate,
   taskList,
-  taskRemove,
+  taskRemove, taskRestore,
   taskResume,
   taskShow,
   taskStop,
@@ -113,10 +115,10 @@ const studioList = (cmd: Command, cli: AgentCliOptions) =>
 async function boardless(
   cmd: Command,
   cli: AgentCliOptions,
-  work: (program: string) => Promise<Record<string, unknown> | void> | Record<string, unknown> | void,
+  work: (program: string, location: TaskLocation) => Promise<Record<string, unknown> | void> | Record<string, unknown> | void,
 ): Promise<void> {
   const ctx = ctxOf(cmd, cli.program)
-  await runAction(ctx, {}, async () => (await work(cli.program)) ?? {})
+  await runAction(ctx, {}, async () => (await work(cli.program, { board: ctx.board, dir: ctx.dir, cwd: cli.cwd })) ?? {})
 }
 
 // What Commander hands an action handler: the declared arguments, then the options, then
@@ -181,29 +183,17 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
   // ---- a named agent that fills one part of a card's spec --------------------
 
   withShared(program.command('previews'))
-    .argument('[agent]', 'which preview agent; left off, the agents this board has are listed')
+    .argument('[agent]', 'retired role argument; prepare outputs in the task session')
     .argument('[id]', 'the card to put it on', cardId)
     .argument('[note...]', 'what the flow wants looked at')
-    .summary('put a preview agent on a card; bare, list the preview agents this board has')
-    .description(
-      'Fill one part of a card spec. Use --print to follow the specialist instructions in the current ' +
-        'session. Without --print, start a separate run; inside a board run, queue it until that run ends.',
-    )
+    .summary('list Preview output IDs and instructions')
     .option('-f, --follow', 'watch its log instead of returning')
     .option('--notes <text>', 'what the flow wants looked at, for a caller building a command')
     .option('--print', 'print specialist instructions and work in this session')
-    .option('--reset-stages', 'explicitly change the preview scope and choose its stages again')
-    .option('--revise-from <id>', 'start the requested revision at its earliest affected stage')
-    .option('--stages <ids>', 'save this preview agent’s ordered stage selection')
-    .option('--status <status>', 'report running or done for the current stage')
-    .addOption(new Option('--submit').hideHelp())
-    .option('--stage <id>', 'the authorized stage to work on')
-    .option('--events', 'with --follow: print structured events')
-    .option('--continue', 'continue the saved preview stage')
-    .option('--triggers', 'list agent names and trigger conditions without starting a run')
-    .option('--studio <id>', 'only enabled preview agents of this studio')
+    .option('--triggers', 'list Preview IDs and instructions')
+    .option('--studio <id>', 'Preview outputs of this Studio')
     .option('--workspace <id>', 'the workspace whose studios to query')
-    .addHelpText('after', `\nList trigger conditions: ${raw} previews --triggers --json`)
+    .addHelpText('after', `\nList Preview outputs: ${raw} previews --triggers --json`)
     .action(async function (this: Command, ...vals: unknown[]) {
       const [agent, id, note] = positional(vals) as [string | undefined, number | undefined, string[]]
       const opts = this.opts()
@@ -258,7 +248,6 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
 
   withShared(program.command('components'))
     .summary('list an agent or studio’s Preview Components and their usage')
-    .option('--agent <name>', 'one agent’s components')
     .option('--studio <id>', 'all components used by a studio')
     .option('--docs', 'include component usage documentation')
     .action(async function (this: Command) {
@@ -269,8 +258,8 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
 
   const studio = noun('studio', "check a studio folder or draw its diagram")
   withShared(studio.command('validate'))
-    .argument('<folder>', 'a studio folder: STUDIO.md and agents/')
-    .summary('report every problem in a studio folder; agents it names but lacks are read from the board')
+    .argument('<folder>', 'a studio folder containing STUDIO.md')
+    .summary('validate the complete Studio definition and its references')
     .action(async function (this: Command, folder: string) {
       await onBoard(this, cli, () => cmdStudioValidate(folder))
     })
@@ -278,8 +267,7 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
     .argument('<card>', 'the card to review the Studio on', cardId)
     .requiredOption('--folder <draft>', 'the complete draft Studio folder')
     .requiredOption('--base <baseline>', 'the baseline folder, or empty for a new Studio')
-    .option('--results <manifest>', 'explicit existing Agent results')
-    .summary('freeze real Studio files, unified diffs and supplied results')
+    .summary('freeze Studio files and print Studio and attachment previews')
     .action(async function (this: Command, card: number) {
       await onBoard(this, cli, () => cmdStudioPreview(card, this.opts()))
     })
@@ -299,7 +287,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
 
   const ON_WEB = 'Reads and writes WildCrane Cloud as the signed-in account; changes show on the web at once.'
   const task = withShared(program.command('task'))
-    .summary('see where WildCrane tasks stand; list, create, approve, stop, resume and remove them')
+    .summary('see where WildCrane tasks stand; list, create, approve, stop, resume, remove and restore them')
     .description(`${ON_WEB} <task> is WC-12, task_…, or just 12 in a linked folder.`)
     .action(function (this: Command) {
       this.help()
@@ -310,32 +298,41 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .option('--workspace <id>', 'every project of a workspace')
     .option('--status <status>', 'queued, running, waiting_review, done, failed, cancelled or stopped')
     .action(async function (this: Command) {
-      await boardless(this, cli, () => taskList(this.opts()))
+      await boardless(this, cli, (_, location) => taskList(this.opts(), location))
     })
   withShared(task.command('show'))
     .argument('<task>')
     .summary('a task and its card')
     .action(async function (this: Command, id: string) {
-      await boardless(this, cli, () => taskShow(id))
+      await boardless(this, cli, (_, location) => taskShow(id, location))
     })
   withShared(task.command('create'))
     .argument('<request...>', 'what the task should do')
-    .summary('create a task')
+    .summary('create a task and prepare its card asynchronously')
     .option('--project <id>', 'the project; default: this folder’s linked one')
-    .option('--studio <id>', 'a name `akb studio list` shows')
+    .option('--studio <id>', 'required: a name `akb studio list` shows')
     .action(async function (this: Command, request: string[]) {
-      await boardless(this, cli, () => taskCreate(request.join(' '), this.opts()))
+      await boardless(this, cli, (_, location) => taskCreate(request.join(' '), this.opts(), location))
     })
   withShared(task.command('approve'))
     .argument('<task>')
     .summary('approve the current review point')
-    .option('--preview <agent>', 'confirm this preview’s intermediate stage')
-    .option('--preview-stage <id>', 'the stage reviewed')
-    .option('--preview-version <n>', 'the version reviewed')
-    .option('--definition-revision <revision>', 'the frozen definition reviewed')
+    .option('--stage <id>', 'the reviewed node')
+    .requiredOption('--revision <n>', 'the node or proposed plan version you reviewed')
     .option('--comment <text>', 'a note with the approval')
     .action(async function (this: Command, id: string) {
-      await boardless(this, cli, () => taskApprove(id, this.opts().comment, this.opts()))
+      await boardless(this, cli, (_, location) => taskApprove(id, this.opts().comment, this.opts(), location))
+    })
+  withShared(task.command('review'))
+    .argument('<task>')
+    .summary('read or report the task review plan')
+    .option('--file <path>', 'propose a JSON review plan')
+    .option('--stage <id>', 'the node to report')
+    .option('--status <status>', 'running or done')
+    .option('--revise-from <id>', 'revise this node and its dependents')
+    .option('--revision <n>', 'the task review version read before this write')
+    .action(async function (this: Command, id: string) {
+      await boardless(this, cli, (_, location) => taskReview(id, this.opts(), location))
     })
   const questionOps: Typed[] = []
   const opInOrder = ordered(questionOps)
@@ -352,7 +349,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .option('--mode <mode>', 'how many choices the op before it takes: single | multi', opInOrder('mode'))
     .option('--agent <name>', 'the preview agent whose section the op before it is about', opInOrder('agent'))
     .action(async function (this: Command, id: string) {
-      await boardless(this, cli, () => taskUpdateQuestions(id, questionOps))
+      await boardless(this, cli, (_, location) => taskUpdateQuestions(id, questionOps, location))
     })
   withShared(task.command('chat'))
     .argument('<task>')
@@ -367,45 +364,51 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .action(async function (this: Command, id: string, message: string[]) {
       const opts = this.opts()
       validateChatOptions(message, opts)
-      if (opts.follow) return taskChatFollow(id, { ...opts, json: ctxOf(this, cli.program).json })
-      await boardless(this, cli, () => message.length ? taskChat(id, message.join(' ')) : taskChatRead(id, opts))
+      if (opts.follow) return taskChatFollow(id, { ...opts, ...ctxOf(this, cli.program), cwd: cli.cwd })
+      await boardless(this, cli, (_, location) => message.length ? taskChat(id, message.join(' '), location) : taskChatRead(id, { ...opts, ...location }))
     })
   withShared(task.command('remove'))
     .argument('<task>')
     .argument('[reason...]')
-    .summary('remove a task; restore it on the web')
+    .summary('remove a task; bring it back with task restore')
     .action(async function (this: Command, id: string, reason: string[]) {
-      await boardless(this, cli, () => taskRemove(id, reason.join(' ')))
+      await boardless(this, cli, (_, location) => taskRemove(id, reason.join(' '), location))
+    })
+  withShared(task.command('restore'))
+    .argument('<task>')
+    .summary('restore a removed or completed task without starting it')
+    .action(async function (this: Command, id: string) {
+      await boardless(this, cli, (_, location) => taskRestore(id, location))
     })
   withShared(task.command('resume'))
     .argument('<task>')
     .summary('continue its stopped run')
     .action(async function (this: Command, id: string) {
-      await boardless(this, cli, () => taskResume(id))
+      await boardless(this, cli, (_, location) => taskResume(id, location))
     })
   withShared(task.command('stop'))
     .argument('<task>')
     .summary('stop its current run')
     .action(async function (this: Command, id: string) {
-      await boardless(this, cli, () => taskStop(id))
+      await boardless(this, cli, (_, location) => taskStop(id, location))
     })
   withShared(task.command('comment'))
     .argument('<task>')
     .argument('<text...>')
     .summary('comment on a task')
     .action(async function (this: Command, id: string, text: string[]) {
-      await boardless(this, cli, () => taskComment(id, text.join(' ')))
+      await boardless(this, cli, (_, location) => taskComment(id, text.join(' '), location))
     })
 
   const goal = withShared(program.command('goal'))
     .argument('<move>', 'new, save, drop or start')
     .summary('save, drop and start goals of this conversation')
-    .description('Write a temporary draft, then goal new --title "…" --body-file <file> [--studio <id>] [--previews <agents>]; update with goal save --id <goal> and any of --title, --body-file, --studio, --previews. goal drop --id <goal> withdraws one; goal start --id <goal> turns it into a task. A `## Done when` list in the body is what counts as done. Studios are the ones `akb studio list` shows.')
+    .description('Write a temporary draft, then goal new --title "…" --body-file <file> [--studio <id>] [--review-file <json>]; update with goal save --id <goal> and any of --title, --body-file, --studio, --review-file. goal drop --id <goal> withdraws one; goal start --id <goal> turns it into a task. A `## Done when` list in the body is what counts as done. Studios are the ones `akb studio list` shows.')
     .option('--id <goal>', 'the goal to save, drop or start')
     .option('--title <title>', 'what the goal is called')
     .option('--body-file <path>', 'the outcome, then a `## Done when` list')
     .option('--studio <id>', 'the studio that does the work, from `akb studio list`')
-    .option('--previews <agents>', 'review points, comma-separated; empty clears the selection')
+    .option('--review-file <path>', 'JSON review nodes with after dependencies; [] needs no extra review')
   goal.action(async function (this: Command, sub: string) {
     await boardless(this, cli, () => (externalGoalSession() ? cloudGoal([sub], this.opts()) : cmdGoal([sub], this.opts())))
   })
@@ -425,7 +428,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .summary('list Runners')
     .option('--workspace <id>', 'default: the linked project’s')
     .action(async function (this: Command) {
-      await boardless(this, cli, () => runnerList(this.opts()))
+      await boardless(this, cli, (_, location) => runnerList(this.opts(), location))
     })
 
   // ---- Cloud ----------------------------------------------------------------
@@ -626,7 +629,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
   const flowWord = (name: string) => withShared(studio.command(name))
 
   flowWord('list')
-    .summary('every studio this workspace can run, with its previews and what each waits on, land and scheduled agents. Offline, the ones downloaded before, marked (offline).')
+    .summary('every Studio this workspace can run and its Preview outputs. Offline, the ones downloaded before, marked (offline).')
     .action(async function (this: Command) {
       await studioList(this, cli)
     })
@@ -645,7 +648,8 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .option('--workspace <id>', 'the target workspace; otherwise use the linked project')
     .summary('create a workspace studio from a local folder')
     .action(async function (this: Command, folder: string) {
-      await boardless(this, cli, () => cmdStudioCreate(folder, this.opts()))
+      if (this.opts().workspace) await boardless(this, cli, () => cmdStudioCreate(folder, this.opts()))
+      else await onBoard(this, cli, () => cmdStudioCreate(folder, this.opts()))
     })
 
   flowWord('push')
@@ -671,14 +675,13 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     })
 
   flowWord('instructions')
-    .argument('<agent>', 'an agent `akb studio list` names')
+    .argument('<agent>', 'a project background task; invalid names list the choices')
     .option('--text <text>', 'the instructions, for a one-liner; empty clears them')
     .option('--file <path>', 'the instructions, as markdown written to a file first')
-    .summary("set one agent's instructions — appended to every run it does — in the user's own words")
+    .summary("read or set a project background task's instructions")
     .description(
       "Without --text or --file, prints the agent's current instructions. With them, replaces all of them. " +
-        "A studio's agent is the workspace's, shared by every studio listing it; a board's scheduled " +
-        "agent is this project's. Saved to Cloud; empty clears them.",
+        "Saved to Cloud for this project; empty clears them. Studio and Preview names are not background tasks.",
     )
     .action(async function (this: Command, agent: string) {
       await onBoard(this, cli, () => cmdStudioInstructions(agent, this.opts()))
@@ -784,10 +787,11 @@ function declareRunning(run: Command, cli: AgentCliOptions): void {
   verb('resume')
     .argument('[id]', RUN_ID, String)
     .summary('continue a run from its saved work')
-    .description('Reuse its session when available; otherwise continue the original task in the same directory. Preserve task, delivery, triage source and request identities.')
+    .description('Continue the saved session. Use --fresh to explicitly take over saved work when the original session is unavailable.')
     .option('-f, --follow', 'watch its log instead of returning')
     .option('--events', 'with --follow: print its structured events, one JSON object per line')
-    .option('--require-session', 'legacy option; missing sessions still use the saved task context')
+    .option('--fresh', 'explicitly take over saved work in a new session')
+    .option('--require-session', 'require the original session')
     .action(async function (this: Command, ...vals: unknown[]) {
       const [id] = positional(vals) as [string | undefined]
       await onBoard(this, cli, () => cmdResume(id, this.opts()))
@@ -874,7 +878,6 @@ function declareFlow(parent: Command, flow: Flow, cli: AgentCliOptions): void {
   for (const arg of splitArgs(flow.argument)) {
     cmd.argument(arg, argNote(arg, flow), arg.startsWith('<id') ? (byDelivery ? String : cardId) : undefined)
   }
-  if (flow.action === 'approve') cmd.option('--preview <agent>').option('--preview-stage <id>').option('--preview-version <n>').option('--definition-revision <revision>')
   cmd.summary(flow.gloss)
   if (flow.more?.length) cmd.description(`${sentence(flow.gloss)} ${flow.more.join(' ')}`)
   for (const option of flow.options ?? []) addFlowOption(cmd, option)

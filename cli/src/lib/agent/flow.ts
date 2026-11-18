@@ -7,7 +7,7 @@ import { parseFrontmatter } from '../frontmatter'
 import { say } from '../io'
 import { findGuide } from '../guide'
 import { PLANNER, agentMemoryDir, memoryFile } from '../memory'
-import { die, rel, AGENT_MEMORY, ARCHIVE, BOARD_FLAG, MEMORY, PROJECT_MD, REPO_ROOT } from '../paths'
+import { die, rel, ARCHIVE, BOARD_FLAG, MEMORY, PROJECT_MD, REPO_ROOT } from '../paths'
 import { studioRefusal } from './start'
 import type { Meta, MoveResult } from '../types'
 import { boardCommandFor } from './command'
@@ -15,7 +15,7 @@ import { activeDelivery, deliveryFor, withStudio } from './deliveries'
 import { field, metaLine, numbered } from './facts'
 import { taskChatsToReview, type ChatToReview } from './memory-review'
 import { dismissalsToReview, rejectionsToReview, withdrawnSources } from './dismissal-review'
-import { buildAsk, frozenRules, landBlock, reflectedCards, settingsBlock, studioRulesBlock } from './prompts'
+import { buildAsk, frozenRules, reflectedCards, settingsBlock, studioRulesBlock } from './prompts'
 import { ruleFor, ruleOwner, ruleOwnerSays } from './rules'
 import { cardStage, cardStages, studioFor } from './studios'
 import { isRetired, type AgentRequest, type DeliveryRecord, type StartableAction } from './types'
@@ -346,17 +346,14 @@ const GUIDES_FOR: Record<StartableAction, string[]> = {
   spec: [],
 }
 
-// One card as the memory review is handed it (#1322, #165, #188): the card on the block itself,
-// then its modules, its agents with their memory files, its summary, what it settled and the
-// trimmed transcript. Nothing of a card is printed outside its block.
+// Each conversation carries its own Studio/Preview facts and transcript.
 function conversationBlock(chat: ChatToReview): string[] {
   const card = `#${chat.card.id} ${chat.card.title}`.trim().replace(/"/g, "'")
   return [
     `<conversation card="${card}" kind="card">`,
+    `studio: ${chat.studio || '(none)'}`,
+    `previews: ${chat.previews.length ? chat.previews.join(', ') : '(none)'}`,
     `modules: ${chat.modules.length ? chat.modules.join(', ') : '(none)'}`,
-    ...(chat.agents.length
-      ? ['agents:', ...chat.agents.map((a) => `  \`${a.name}\` — ${a.dir}/: ${a.files.join(', ') || 'no files yet'}`)]
-      : ['agents: (none)']),
     ...(chat.summary ? ['summary:', chat.summary] : []),
     ...(chat.settled ? ['settled on the card:', chat.settled] : []),
     ...(chat.transcript ? ['transcript:', chat.transcript] : []),
@@ -410,14 +407,13 @@ function buildFlow(req: AgentRequest, program: string): Flow {
       if (settled) facts.push(...notesField(card))
       facts.push(...stepsField(card))
       if (card.meta.questions.length) facts.push(...questionsField(card.meta))
-      facts.push(...field('memory', memoryLines(card.meta.modules, 'readme.md')))
       close.push(
         ...committingClose(delivery),
         ...(settled
           ? ['honour the notes above as requirements — they are decisions already settled on this card, and nothing here reopens them']
           : []),
         'tick each box in ## Todo as you finish it — they are the record of what was built',
-        `write the shipped line in the memory file above — \`akb guide archive\``,
+        `record the delivered outcome and verification on the task — \`akb guide archive\``,
         delivery
           ? `${self} raw delivery complete ${delivery.deliveryId} — finish your step and follow its handoff; software steps in a git project supply --commit <full-sha> --branch <target>`
           : `${raw} archive ${req.id} — once every box is ticked and the card's goal is met`,
@@ -462,13 +458,6 @@ function buildFlow(req: AgentRequest, program: string): Flow {
           ...card!.text.trimEnd().split('\n').map((line) => `  ${line}`),
         ]),
       )
-      facts.push(
-        ...field('memory', [
-          'open only when the request needs planning context:',
-          ...memoryLines(card!.meta.modules, 'decisions.md').map((file) => `  ${file}`),
-          ...memoryLines(card!.meta.modules, 'redesign.md').map((file) => `  ${file}`),
-        ]),
-      )
       close.push(
         `${raw} update ${req.id} [${EDITABLE_FIELDS}] — the fields are the command's, never hand-written`,
         ...bodyScaffoldClose(),
@@ -477,9 +466,8 @@ function buildFlow(req: AgentRequest, program: string): Flow {
     }
     case 'archive': {
       facts.push(...stepsCount(card!))
-      facts.push(...field('memory', memoryLines(card!.meta.modules, 'readme.md')))
       close.push(
-        'write the shipped line first — one line for what a user can now see or do, nothing for an internal-only change',
+        'record the delivered outcome and verification on the task',
         `${raw} archive ${req.id} — it files the card, drops it from the index, and prints what still mentions it`,
       )
       break
@@ -491,10 +479,8 @@ function buildFlow(req: AgentRequest, program: string): Flow {
     // Squeezing the memory back down (#514). The facts are the files, because the files
     // ARE the job: there is no card to read and nothing on the board to tick afterwards.
     case 'prune-memory': {
-      // Folders, not files: a prune covers everything in each of them, and what that is is
-      // `akb guide board`'s to define rather than this flow's to list.
-      facts.push(...field('memory', [`${rel(MEMORY)} — the board's own record`]))
-      facts.push(...field('agents', `${rel(AGENT_MEMORY)}/<agent>/ — one folder per agent that keeps memory, ${rel(agentMemoryDir(PLANNER))}/ among them`))
+      // The whole internal memory tree, without a file index.
+      facts.push(...field('memory', [`${rel(MEMORY)}/ — all internal project and workspace memory`]))
       close.push(
         'rewrite the files above in place — that is the whole job',
         'raise nothing for anyone: there is no card to question, so what you cannot settle stays in the file',
@@ -517,12 +503,12 @@ function buildFlow(req: AgentRequest, program: string): Flow {
       facts.push(
         ...field('memory', [
           `${rel(agentMemoryDir(PLANNER))}/<module>/ — decisions.md, rejected.md, redesign.md: where a planning note goes, the planner's own files for one spanning modules`,
-          `${rel(AGENT_MEMORY)}/<agent>/ — an agent's own files, which its AGENT.md names, and its redesign.md`,
+          `${rel(MEMORY)}/ — Studio memory policies determine Preview targets and scopes`,
         ]),
       )
       for (const chat of chats) facts.push('', ...conversationBlock(chat))
       close.push(
-        'write the notes into the memory files named above — that is the whole job',
+        'write project notes to the folders above and Preview notes only as each conversation’s Studio policy directs',
         'rewrite or delete a note an earlier review wrote that a conversation has since overturned, rather than adding a second one',
         'writing nothing at all is a complete result, and most conversations earn it',
         'change nothing else — not a card, not the project description, not the code',
@@ -649,7 +635,7 @@ export function printFlow(rawReq: AgentRequest, program = 'akb'): MoveResult {
       say(guide.text.trimEnd())
     }
   }
-  for (const block of [studioRulesBlock(req), landBlock(req), settingsBlock(req)].filter(Boolean)) {
+  for (const block of [studioRulesBlock(req), settingsBlock(req)].filter(Boolean)) {
     say('')
     say(block)
   }

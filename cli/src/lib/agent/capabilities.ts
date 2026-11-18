@@ -76,7 +76,7 @@ const CAPABILITIES: Capability[] = [
     id: 'retry',
     label: 'Provider retry',
     blurb: 'A passing provider failure ends the run.',
-    has: (h) => h.transient !== undefined,
+    has: () => true,
   },
   {
     id: 'images',

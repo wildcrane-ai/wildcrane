@@ -74,7 +74,7 @@ const BOARD_STAGES: StageContract[] = [
   {
     stage: 'plan',
     flows: ['refine', 'resolve', 'approve', 'revise', 'archive', 'reject'],
-    input: 'the card as it stands, the product description, and what planning remembers',
+    input: 'the card as it stands, the product description, and the saved task discussion',
     output: 'a card someone can build from without asking anything else',
     done: "nothing is left open on it but the calls that are the user's to make",
     lead: 'planner',
@@ -87,7 +87,7 @@ const BOARD_STAGES: StageContract[] = [
     flows: ['implement', 'run'],
     input: 'the approved card and the rules its delivery froze',
     output: "the approved outcome and its recorded results",
-    done: 'all studio steps have recorded completion and the card is archived',
+    done: 'the task has recorded completion and the card is archived',
     // The card studio's first land agent; none without one.
     lead: '',
     helpers: [],
@@ -112,14 +112,8 @@ const BOARD_NODES: FlowNode[] = [
 /** The three stage contracts one card runs under, in the order it goes through them, under
  *  `studio` — the card's own (./studios.ts). */
 export function stageContracts(studio?: string): StageContract[] {
-  const flow = studioFor(studio)
-  if (!flow) return BOARD_STAGES
-  // As written down, not as they resolve against the roster: this table is read to BUILD it.
-  return BOARD_STAGES.map((contract) => {
-    if (contract.stage === 'plan') return { ...contract, helpers: previewAgents(flow).map((h) => h.agent) }
-    if (contract.stage === 'build') return { ...contract, lead: landAgents(flow)[0]?.agent ?? '' }
-    return contract
-  })
+  return BOARD_STAGES
+
 }
 
 /** One stage's contract, under one card's studio. */

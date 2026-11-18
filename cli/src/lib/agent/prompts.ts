@@ -1,4 +1,3 @@
-import { freezePreviewProgress, previewStagePrompt } from './preview-progress'
 import { deliveryStep } from './progress'
 // The one place a board action turns into words for an agent.
 //
@@ -8,7 +7,7 @@ import { deliveryStep } from './progress'
 import { agentComponents, studioComponents, componentDocsText } from '../components'
 import path from 'node:path'
 import { locate, locateArchived } from '../cards'
-import { PLANNER } from '../memory'
+import { memoryDirectories } from '../memory'
 import { globalMemoryBlock } from '../memories'
 import { ARCHIVE, boardText, KANBAN, rel, MEMORY, REPO_ROOT } from '../paths'
 import {
@@ -157,15 +156,12 @@ export function buildAsk(rawReq: AgentRequest, notes: string[] = []): string {
   const ask = [actionPrompt(req, command, notes), pictureNote(req), commandNote(command)].filter(Boolean).join(' ')
   // `docs/kanban` in these words is this board's real folder (#407) — the same swap the
   // flows get, so the ask and the flow it names never disagree about where the board is.
-  return realPaths(boardText([ask, roster(req), componentsBlock(req)].filter(Boolean).join('\n\n')), req)
+  return realPaths(boardText([ask, componentsBlock(req)].filter(Boolean).join('\n\n')), req)
 }
 
 function componentsBlock(req: AgentRequest): string {
-  const agent = findSpecAgent(agentForRun(req) ?? '')
   const flow = studioFor(studioForRun(req))
-  const docs = PLANNING_FOR.has(req.action) && flow
-    ? studioComponents(flow.id)
-    : agent ? agentComponents([agent.name]) : []
+  const docs = flow ? studioComponents(flow.id) : []
   const text = componentDocsText(docs)
   return text ? `——— Preview Components ———\n\n${text}` : ''
 }
@@ -192,99 +188,34 @@ function realPaths(text: string, req: AgentRequest): string {
     .join(REPO_ROOT)
 }
 
-// What one studio asks of a preview it runs, on top of the agent's own instructions
-// (#715). Read off the delivery's frozen copy when the run is part of one, and off the board
-// otherwise — the same rule a rule follows.
-//
-// It belongs to the ASSIGNMENT: the same agent in two studios carries a different one in
-// each, and an agent no studio lists carries none.
-function helperExtra(req: AgentRequest): string {
-  const agent = req.specAgent ?? ''
-  if (!agent || req.action !== 'spec') return ''
-  const frozen = deliveryFor(req)?.studio
-  const flow = frozen ? undefined : studioFor(studioForRun(req))
-  const rows = frozen ? (frozen.previews ?? []) : flow ? previewMembers(flow) : []
-  const extra = rows.find((h) => h.agent === agent)?.extra?.trim()
-  return extra ? `——— what this studio asks of you here ———\n\n${extra}` : ''
-}
-
-// The planning passes, which write the card to its studio's rules (#2152).
-const PLANNING_FOR = new Set<AgentAction>(['clarify', 'resolve', 'approve', 'edit'])
-
-/** How a card on this run's studio is written (#2152): its file's body and the user's own
- *  rule for it, and the stage a card is in when it has several. */
 export function studioRulesBlock(req: AgentRequest): string {
-  if (!PLANNING_FOR.has(req.action)) return ''
-  const flow = studioFor(studioForRun(req))
-  if (!flow) return ''
-  const meta = req.id !== undefined ? cardMeta(req.id) : null
-  const stages = cardStages(meta, flow).length
-  const stage = cardStage(meta, flow)
-  const where =
-    req.id !== undefined && stages > 1
-      ? `#${req.id} awaits Approve ${stage} of ${stages}: write only the previews this Approve covers${stage < stages ? '; the next previews start once the user approves' : ''}.`
-      : ''
-  const end = landAgents(flow).length
-    ? 'After the last approval, the studio agents complete the approved outcome and archive the card.'
-    : 'The last Approve archives the card: nothing is built, so leave no todo for a build.'
-  const own = userStudioRules(flow)
-  const template = studioFiles(flow.id)?.[CARD_TEMPLATE_FILE]?.trim()
-  const body = [where, end, flow.rules.trim()].filter(Boolean).join('\n\n')
-  return [
-    [
-      `<studio name="${flow.name}">`,
-      'How a card on this studio is written.',
-      body,
-      '</studio>',
-      ...(template ? ['', '<card-template>', 'Write the card from this template: keep only the parts that fit this card, and fill them in.', template, '</card-template>'] : []),
-      ...(own ? ['', '<rules>', "The user's own rules for cards on this studio; they win over the studio above.", own, '</rules>'] : []),
-    ].join('\n'),
-    ...studioSections(flow.id),
-  ].join('\n\n')
-}
-
-/** A run's studio sections (#656) and its own files: listed there when its studio holds them,
- *  else as their own section. */
-function ownFiles(studio: string | undefined, agent: string | undefined, files: string | undefined): string[] {
-  const sections = studioSections(studio, { agent, memory: true })
-  const listed = !!agent && studioHoldsAgent(studio, agent)
-  return [...sections, ...(files && !listed ? [`——— your own files ———\n\n${files}`] : [])]
-}
-
-/** 按交付顺序叠加各 agent 的专属指令。 */
-export function landBlock(req: AgentRequest): string {
-  if (req.action !== 'implement') return ''
   const frozen = deliveryFor(req)?.studio
-  const flow = frozen ? undefined : studioFor(studioForRun(req))
-  const rows = frozen ? (frozen.land ?? []) : flow ? landAgents(flow) : []
-  const delivery = deliveryFor(req)
-  const studio = frozen?.id ?? flow?.id
-  const step = delivery ? deliveryStep(delivery) : 0
-  const agents = rows.slice(step, step + 1).flatMap((h) => {
-    const agent = findSpecAgent(h.agent)
-    return agent ? [{ agent, extra: h.extra.trim() }] : []
-  })
-  return boardText(
-    agents
-      .map(({ agent, extra }, i) =>
-        [
-          `——— ${agents.length > 1 ? `step ${i + 1}: ` : ''}you, the \`${agent.name}\` agent — where this differs from the shared flow, follow this ———\n\n${agent.body}`,
-          ...ownFiles(studio, agent.name, agentFilesBlock(agent)),
-          globalMemoryBlock(agent) ? `——— global memories ———\n\n${globalMemoryBlock(agent)}` : '',
-          extra ? `——— what this studio asks of you here ———\n\n${extra}` : '',
-        ]
-          .filter(Boolean)
-          .join('\n\n'),
-      )
-      .join('\n\n'),
-  )
+  const flow = studioFor(studioForRun(req))
+  if (!flow && !frozen) return ''
+  const id = frozen?.id ?? flow!.id
+  const meta = req.id !== undefined ? cardMeta(req.id) : null
+  const previews = frozen?.previews ?? flow?.previews ?? []
+  const own = flow ? userStudioRules(flow) : ''
+  const template = studioFiles(id)?.[CARD_TEMPLATE_FILE]?.trim()
+  return [
+    '<studio>', frozen?.rules ?? flow?.rules ?? '',
+    'Prepare only the outputs requested by this task. Previews describe outputs, not agents or approval stages. Revise saved work in place; keep unrelated outputs unchanged.',
+    ...(meta?.previews ? [`Selected Preview IDs: ${JSON.stringify(meta.previews)}`] : []),
+    ...previews.map(p => `<Preview id="${p.id}">\n${p.instructions}\n</Preview>`),
+    'Write task results inside matching Preview tags. The app supplies display metadata. Review the plan and requested outputs together once; after approval, complete and record delivery even without Preview blocks.',
+    '</studio>',
+    ...(template ? [`<card-template>\n${template}\n</card-template>`] : []),
+    ...(own ? [`<rules>\n${own}\n</rules>`] : []),
+    ...studioSections(id),
+    ...memoryDirectories().map(dir => `Memory directory: ${dir}`),
+  ].filter(Boolean).join('\n\n')
 }
 
 /** The words one run is given, this board's own rule for the flow last (#306). It goes
  *  after everything else the board writes, so nothing of the board's follows the user's. */
 export function buildPrompt(rawReq: AgentRequest, notes: string[] = []): string {
   const req = withStudio(rawReq)
-  return [buildAsk(req, notes), studioRulesBlock(req), landBlock(req), settingsBlock(req), ruleBlock(req, frozenRules(req))]
+  return [buildAsk(req, notes), studioRulesBlock(req), settingsBlock(req), ruleBlock(req, frozenRules(req))]
     .filter(Boolean)
     .join('\n\n')
 }
@@ -395,10 +326,6 @@ function roster(req: AgentRequest): string {
 export function buildRun(req: AgentRequest): { prompt: string; notes: string[] } {
   const notes: string[] = []
   let prompt = buildPrompt(req, notes)
-  if (req.action === 'spec' && req.id !== undefined && req.specAgent) {
-    const stage = realPaths(boardText(previewStagePrompt(req.id, req.specAgent, boardCommand())), req)
-    if (stage) prompt = prompt.replace(stage, '')
-  }
   return { prompt, notes }
 }
 
@@ -482,7 +409,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
         .join(' ')
     case 'clarify': {
       return [
-        `Plan task ${req.id} ${named} following \`akb guide refine\`. Work the board only through \`akb\`; a command with \`--print\` prints its flow for you to follow here, and without it starts a separate session.`,
+        `Plan task ${req.id} ${named} following \`akb guide refine\`. A command with \`--print\` prints its flow for you to follow here, and without it starts a separate session.`,
         carriedNote(req),
         // A refine has no note box of its own, but one SCHEDULED on a blocked card
         // carries whatever was typed when it was scheduled — often the very reason the user
@@ -499,7 +426,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
     case 'prune-memory':
       return [
         `Prune this board's memory following \`akb guide prune-memory\`.`,
-        `Cover the board's own record at \`${rel(MEMORY)}/\` and every agent's memory at \`${rel(MEMORY)}/agents/<agent>/\`, the ${PLANNER}'s among them, and each studio's at \`${rel(MEMORY)}/studios/<studio>/\`.`,
+        `Cover project records and all memory folders under \`${rel(MEMORY)}/\`.`,
         `Change nothing but those files: no card, no question for anyone.`,
       ].join(' ')
     // Reading back over the conversations (#748). It names nothing either: which ones have
@@ -535,89 +462,12 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
       ].join('\n')
     }
     // Name the shared contract; inject specialty instructions and selected references.
-    case 'spec': {
-      const agent = findSpecAgent(req.specAgent ?? '')
-      const found = req.id === undefined ? null : locate(req.id)
-      const cardFile = found ? rel(found.kind === 'group' ? path.join(found.target, 'root.md') : found.target) : `task #${req.id}`
-      // The one read of what this agent is set to, taken as the run starts and frozen for it
-      // (#255).
-      const own = agent ? specAgentInstructions(agent) : null
-      // What this agent remembers (#421, #833) — after its instructions, so the board's own
-      // words end before the agent's do.
-      const memory = agent ? agentMemoryBlock(agent) : ''
-      const shared = agent ? globalMemoryBlock(agent) : ''
-      return [
-        [
-          `You are the \`${req.specAgent}\` preview agent on task ${req.id} ${named}.`,
-          `Card: \`${cardFile}\`. Section: \`\`## By \`${req.specAgent}\` agent\`\`.`,
-          `How a preview agent works: \`${command} guide preview-agent\` — read it unless it is already in your context.`,
-          req.notes ? `What the flow that asked for you wants looked at: ${req.notes}` : '',
-          `Don't ask me questions with human-in-the-loop — an open question on the card is how you defer to me.`,
-        ]
-          .filter(Boolean)
-          .join(' '),
-        req.id !== undefined && agent ? previewStagePrompt(req.id, agent.name, command) : '',
-        agent && own ? `——— you, the \`${agent.name}\` agent ———\n\n${req.id !== undefined ? freezePreviewProgress(req.id, agent!.name)?.body ?? own.instructions : own.instructions}` : '',
-        ...ownFiles(studioForRun(req), agent?.name, own?.files),
-        memory ? `——— what you remember ———\n\n${memory}` : '',
-        shared ? `——— global memories ———\n\n${shared}` : '',
-        // What THIS studio asks of it here (#715) — the assignment's own words, after the
-        // agent's instructions and its memory, because it is written on top of them and never
-        // in place of them. A card whose studio does not call this agent in has none.
-        helperExtra(req),
-      ]
-        .filter(Boolean)
-        .join('\n\n')
-    }
-    // A scheduled agent's pass (#1401): who it is, where the board is, and that nobody
-    // answers. When it runs is the board's alone and is never said here.
-    case 'scheduled': {
-      const agent = findSpecAgent(req.specAgent ?? '')
-      const own = agent ? specAgentInstructions(agent) : null
-      const memory = agent ? agentMemoryBlock(agent) : ''
-      const shared = agent ? globalMemoryBlock(agent) : ''
-      const flow = studioById(req.studio ?? '')
-      const extra = flow ? scheduledAgent(flow.id, req.specAgent ?? '')?.extra.trim() : ''
-      return [
-        [
-          `You are the \`${req.specAgent}\` agent of the \`${flow?.name ?? req.studio ?? ''}\` studio.`,
-          `The board is at \`${BOARD_FOLDER}\`, in the project at \`${PROJECT_FOLDER}\`.`,
-          `Nobody is watching: never ask.`,
-          req.deliveryId ? `When the outcome is complete, run \`${command} raw delivery complete ${req.deliveryId}\`.` : '',
-        ].join(' '),
-        agent && own ? `——— you, the \`${agent.name}\` agent ———\n\n${own.instructions}` : '',
-        ...ownFiles(flow?.id, agent?.name, own?.files),
-        extra ? `——— what this studio asks of you here ———\n\n${extra}` : '',
-        memory ? `——— what you remember ———\n\n${memory}` : '',
-        shared ? `——— global memories ———\n\n${shared}` : '',
-      ]
-        .filter(Boolean)
-        .join('\n\n')
-    }
-    // A sub-run (#1421): who started it and what to report, then the agent's own blocks.
-    case 'sub': {
-      const agent = findSpecAgent(req.specAgent ?? '')
-      const own = agent ? specAgentInstructions(agent) : null
-      const memory = agent ? agentMemoryBlock(agent) : ''
-      const shared = agent ? globalMemoryBlock(agent) : ''
-      const whose = agent ? `the \`${agent.name}\` agent's run` : 'run'
-      return [
-        [
-          `You are a sub-run: ${whose} \`${req.parentId ?? ''}\` started you and works beside you in this same folder.`,
-          `The board is at \`${BOARD_FOLDER}\`, in the project at \`${PROJECT_FOLDER}\`.`,
-          `Nobody is watching: never ask.`,
-          req.deliveryId ? `When the outcome is complete, run \`${command} raw delivery complete ${req.deliveryId}\`.` : '',
-        ].join(' '),
-        'Do only the task below, and finish with one message saying what you did and what you could not do: it is all the run that started you will read.',
-        `——— your task ———\n\n${req.description ?? ''}`,
-        agent && own ? `——— you, the \`${agent.name}\` agent ———\n\n${own.instructions}` : '',
-        ...ownFiles(studioForRun(req), agent?.name, own?.files),
-        memory ? `——— what you remember ———\n\n${memory}` : '',
-        shared ? `——— global memories ———\n\n${shared}` : '',
-      ]
-        .filter(Boolean)
-        .join('\n\n')
-    }
+    case 'spec':
+      throw new Error('Preview role sessions are retired. Prepare the requested Preview in the task session.')
+    case 'scheduled':
+      throw new Error('Studio role executions are retired.')
+    case 'sub':
+      return `You are a sub-run: run \`${req.parentId ?? ""}\` started you and works beside you in this same folder. Do only this task and report its result:\n\n${req.description ?? ""}`
     // The flow supplies conflict facts; the guide owns the procedure.
     case 'approve':
       return [

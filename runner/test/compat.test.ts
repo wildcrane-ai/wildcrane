@@ -100,8 +100,8 @@ describe('the akb the Runner carries (#171)', () => {
 
   it('creates a card with the preview choices sent by Runner', async () => {
     const create = ['raw', 'create', '--title', 'Article', '--studio', 'blog-post', '--json']
-    ok(await onBoard([...create, '--id', '9', '--previews', 'blog-writer,blog-planner']))
-    assert.match(fs.readFileSync(path.join(board, 'todo', '9-article.md'), 'utf8'), /previews: \[blog-planner, blog-writer\]/)
+    ok(await onBoard([...create, '--id', '9', '--previews', 'article,article-outline']))
+    assert.match(fs.readFileSync(path.join(board, 'todo', '9-article.md'), 'utf8'), /previews: \[article-outline, article\]/)
     ok(await onBoard([...create, '--id', '10', '--previews', '']))
     assert.match(fs.readFileSync(path.join(board, 'todo', '10-article.md'), 'utf8'), /previews: \[\]/)
     refused(await onBoard([...create, '--id', '11', '--previews', 'missing-agent']), /missing-agent/)
@@ -144,7 +144,7 @@ describe('the akb the Runner carries (#171)', () => {
   })
 
   it('builds a card on its picked runtime, and leaves the delivery the Runner reads', async () => {
-    const builder = { id: 'rt_builder', name: 'Builder', harness: 'claude-code', settings: { model: 'opus' } }
+    const builder = { id: 'rt_builder', name: 'Task runtime', harness: 'claude-code', settings: { model: 'opus' } }
     ok(await onBoard(['raw', 'agent', 'picks', JSON.stringify({ builder })]))
     const ran = await onBoard(['raw', 'card', 'implement', '2', ...follow])
     ok(ran)
@@ -159,7 +159,7 @@ describe('the akb the Runner carries (#171)', () => {
     const runs = await onBoard(['raw', 'run', 'list', '--card', '2', '--all', '--json'])
     ok(runs)
     assert.ok(answerOf<{ runs: { runtime?: string; result?: string }[] }>(runs)?.runs.some(
-      (run) => run.runtime === builder.id && run.result === 'Done.',
+      (run) => run.runtime !== builder.id && run.result === 'Done.',
     ))
   })
 

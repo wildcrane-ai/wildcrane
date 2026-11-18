@@ -2,38 +2,31 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
-import note from '../../skill/SKILL.md'
-
-/** The kanban skill the Runner installs in a project for akb's runs and the person's sessions. */
-export const SKILL_FOLDERS = ['.claude/skills/kanban', '.agents/skills/kanban']
-
-const CONTENT = `${note.trimEnd()}\n\n<!-- ai4kanban managed -->\n`
+const SKILL_FOLDERS = ['.claude/skills/kanban', '.agents/skills/kanban']
 const MANAGED = /^<!-- ai4kanban \S+ -->$/m
 
-/** 只刷新受管理正文；旧配置及其他文件留在原处。 */
-export function prepareKanbanSkill(root: string): void {
+/** Best-effort cleanup of managed files; never follow user links. */
+export function removeLegacyKanbanSkill(root: string): void {
   for (const folder of SKILL_FOLDERS) {
-    const dir = path.join(root, folder)
-    const file = path.join(dir, 'SKILL.md')
     try {
-      let linked = false
       let at = root
-      for (const name of `${folder}/SKILL.md`.split('/')) {
+      if (!fs.lstatSync(at, { throwIfNoEntry: false })?.isDirectory()) continue
+      let safe = true
+      const parts = `${folder}/SKILL.md`.split('/')
+      for (const [i, name] of parts.entries()) {
         at = path.join(at, name)
-        if (fs.lstatSync(at, { throwIfNoEntry: false })?.isSymbolicLink()) linked = true
+        const stat = fs.lstatSync(at, { throwIfNoEntry: false })
+        if (!stat || stat.isSymbolicLink() || (i < parts.length - 1 ? !stat.isDirectory() : !stat.isFile())) {
+          safe = false
+          break
+        }
       }
-      const held = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null
-      const exists = fs.lstatSync(dir, { throwIfNoEntry: false }) !== undefined
-      if (linked || (exists && !MANAGED.test(held ?? ''))) {
-        if (!held?.trim()) throw new Error('用户自有目录或符号链接中缺少可读的 SKILL.md')
-        continue
-      }
-      if (held !== CONTENT) {
-        fs.mkdirSync(dir, { recursive: true })
-        fs.writeFileSync(file, CONTENT)
-      }
+      if (!safe || !MANAGED.test(fs.readFileSync(at, 'utf8'))) continue
+      fs.unlinkSync(at)
+      const dir = path.dirname(at)
+      if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir)
     } catch (e) {
-      throw new Error(`无法准备 ${folder}：${e instanceof Error ? e.message : String(e)}`)
+      process.stderr.write(`wildcrane: 无法清理 ${folder}：${e instanceof Error ? e.message : String(e)}\n`)
     }
   }
 }
@@ -51,11 +44,11 @@ export function keepOutOfGit(dir: string, folders: string[] = SKILL_FOLDERS): vo
   fs.writeFileSync(exclude, `${held}${held && !held.endsWith('\n') ? '\n' : ''}${missing.join('\n')}\n`)
 }
 
-/** A folder just bound: its sessions get the skill at once; a failure leaves the binding alone. */
-export function installKanbanSkill(dir: string): void {
+/** A cleanup failure leaves the binding intact and is reported internally. */
+export function retireKanbanSkill(dir: string): void {
   try {
     keepOutOfGit(dir)
-    prepareKanbanSkill(dir)
+    removeLegacyKanbanSkill(dir)
   } catch (e) {
     process.stderr.write(`wildcrane: ${e instanceof Error ? e.message : String(e)}\n`)
   }

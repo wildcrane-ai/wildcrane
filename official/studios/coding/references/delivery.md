@@ -1,0 +1,13 @@
+# Software delivery
+
+- **Autonomy**: Follow `akb guide implement`.
+- **Approved UI previews**: Implement every screen in the approved previews, compare desktop and mobile layouts, and correct differences.
+- **Approved API previews**: Implement every approved endpoint and document it.
+- **Approved database previews**: Write migrations that match the approved structure.
+- **Worktree**: Always use a separate branch and worktree for this task.
+  - **No git** (not a repository, or no commit yet): copy the project to `.akb/worktrees/<id>/work` and keep an untouched copy at `.akb/worktrees/<id>/base`, skipping `.akb`, `.git`, dependencies and build output; install or link dependencies as needed.
+- **Merge**: Commit this task's changes and merge them into the target branch, preserving others' work.
+  - **No git**: for each file that differs between work and base, write or delete it in the project if the project's copy still matches base, otherwise merge both sides' edits; ask the user when they cannot merge. First back up each original you overwrite or delete to `.akb/backups/<id>/` under its relative path. Touch no other file.
+- **Completion**: After verifying the approved delivery conditions as `akb guide archive` requires, confirm this task's commit is on the target branch, record its full commit and branch with `akb raw delivery complete <id> --commit <sha> --branch <name>`, and finish the returned handoff.
+  - **No git**: run checks on the project, then `akb raw delivery complete <id>` without `--commit`/`--branch`, and delete `.akb/worktrees/<id>/`.
+- **Checks**: Run affected tests and repository-required checks on the combined changes. Rerun affected checks when conflict fixes or newer target changes alter the code.

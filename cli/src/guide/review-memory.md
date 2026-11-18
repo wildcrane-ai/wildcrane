@@ -13,10 +13,9 @@ and that judgement is the whole job.
   oldest first. The card is archived, so it is complete and reviewed this once; open no card or
   transcript file.
 - **Keep them apart**: judge each block by itself; what one conversation settled never
-  becomes a note for another's card or agents.
-- **Hold to the same bar**: "What earns a note" in `akb guide board` governs what you write,
-  exactly as it governs a flow that writes one. A conversation that settled nothing earns no
-  note, and most do not — writing nothing is a complete result.
+  becomes a note for another's card or Studio.
+- **Keep a high bar**: a conversation that settled nothing earns no note, and most do not;
+  writing nothing is a complete result.
 - **Only what the user settled**: a durable preference, constraint, decision or correction
   they stated. Your own proposal is not their decision, and neither is a question, a "what
   if", or a direction the conversation then moved off.
@@ -30,20 +29,18 @@ and that judgement is the whole job.
   goes in its `redesign.md` under the relevant topic as
   `- ❌ **<mistake>** → ✅ <what the design should be instead, one line>.`, written as guidance
   for future tasks, not a history of the fix. Both go in the folder of the module each
-  conversation is listed with (`akb guide board`). Each conversation also lists the agents
-  whose sections its card holds and the memory files each keeps: where what was settled lands
-  on one agent's own work, it goes in that agent's memory, or the studio's when its `shared/RULES.md`
-  keeps it. Read those rules (`akb raw file <studio> agents/<agent>/AGENT.md`, `shared/RULES.md`)
-  only then, and keep the memory the way they say.
+  conversation is listed with. Each conversation names its `studio` and
+  involved `previews`. Read `akb raw file <studio> STUDIO.md`; when it has a memory policy,
+  follow it for settled feedback on the affected Previews, preserving its scopes. Without a
+  Preview memory policy, create no Preview memory; retain planner/module memory duties.
   Distill settled feedback into reusable preferences (dos) and corrections (don'ts), retaining
-  their scope; never copy raw reviews. An agent whose instructions name no memory gets no new file.
+  their scope; never copy raw reviews.
 - **What the card settled**: the summary says what the card was about and earns no note. A
   `Worth noting` line is a decision the user approved, by answering it or letting it stand, so
   it can be a choice but never a correction, and it earns a planner note only where the user's
   own words in the conversation back it; a line under
-  `Overruled by the user` is a call the user reversed, so it goes in `redesign.md`: that of
-  the agent whose section it came from, created there even if its instructions name other
-  files, or the planner's when none did or its instructions name no memory.
+  `Overruled by the user` is a call the user reversed, so it goes in `redesign.md`: the relevant
+  Preview's when its Studio policy provides for it, otherwise the planner's.
 - **Change nothing else**: no card, no open question, no code. The memory
   files are the whole of what this run writes.
 - **Say what you wrote**: finish by reporting each conversation you read, and for each the

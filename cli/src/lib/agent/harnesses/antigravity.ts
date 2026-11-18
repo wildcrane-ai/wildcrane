@@ -11,11 +11,22 @@ import { namesFlag, type Harness } from './types'
 import { translating } from '../language'
 import { createAntigravityRenderer } from '../wire/antigravity'
 
+const EFFORT_ID = /-(?:low|medium|high|xhigh|max)$/i
+const EFFORT_NAME = /\s*\((?:low|medium|high|xhigh|max)\)$/i
+
 export function antigravityModels(output: string): { id: string; name: string }[] {
-  return output.split('\n').flatMap((line) => {
+  const seen = new Set<string>()
+  const models: { id: string; name: string }[] = []
+  for (const line of output.split('\n')) {
     const match = /^([^\s]+)\t(.+)$/.exec(line.trim())
-    return match ? [{ id: match[1]!, name: match[2]! }] : []
-  })
+    if (!match) continue
+    const id = match[1]!.replace(EFFORT_ID, '')
+    const name = match[2]!.replace(EFFORT_NAME, '').trim()
+    if (seen.has(id)) continue
+    seen.add(id)
+    models.push({ id, name })
+  }
+  return models
 }
 
 function args(argv: string[], resume?: string): string[] {
@@ -42,6 +53,22 @@ export const ANTIGRAVITY: Harness = {
     key: 'model', agentOwned: true, label: 'Model', kind: 'text', flags: ['--model'],
     placeholder: 'model-id',
     help: "A model from agy models. Empty uses the CLI default; an invalid model fails the run.",
+  }, {
+    key: 'reasoning',
+    agentOwned: true,
+    label: 'Reasoning effort',
+    kind: 'select',
+    choices: [
+      { value: '', label: "Agent's default" },
+      { value: 'low', label: 'Low' },
+      { value: 'medium', label: 'Medium' },
+      { value: 'high', label: 'High' },
+      { value: 'xhigh', label: 'Extra high (xhigh)' },
+      { value: 'max', label: 'Max' },
+    ],
+    flags: ['--effort'],
+    help: 'Lower is quicker and cheaper, higher is slower and more careful.',
+    overriddenHelp: `Not in effect: this agent's "command" in your ui.config.json already names an effort level, and that wins.`,
   }],
   models() {
     const copy = locate(ANTIGRAVITY)
@@ -51,9 +78,10 @@ export const ANTIGRAVITY: Harness = {
     return result.status === 0 ? antigravityModels(result.stdout ?? '').map(m => m.id) : []
   },
   env: () => ({ ...process.env }),
-  renderer: (_cwd, _binary, argv = []) => {
+  images: { as: 'message' },
+  renderer: (cwd, _binary, argv = []) => {
     const at = argv.indexOf('--conversation')
-    return createAntigravityRenderer(at >= 0 ? argv[at + 1] : argv.find(a => a.startsWith('--conversation='))?.slice(15))
+    return createAntigravityRenderer(at >= 0 ? argv[at + 1] : argv.find(a => a.startsWith('--conversation='))?.slice(15), cwd)
   },
   systemPrompt(text, _argv, env) {
     const rule = `${text}\n\nThe task working directory is ${env.PWD ?? process.cwd()}. Use it as the base for project files and commands. This additional workspace contains only language rules; do not write task output here.`
@@ -64,9 +92,9 @@ export const ANTIGRAVITY: Harness = {
     fs.writeFileSync(file, `---\ntrigger: always_on\n---\n\n${rule}\n`)
     return { args: ['--add-dir', root] }
   },
-  reports: ['tokens', 'model'],
+  reports: ['cost', 'tokens', 'model', 'context'],
   adoptsSessionId: false,
-  savesSessionAtOpen: false,
+  savesSessionAtOpen: true,
   stopsOnRateLimit: false,
   // `models` is read-only. Only explicit authentication errors mean signed out.
   login: {

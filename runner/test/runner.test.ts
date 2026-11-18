@@ -1,16 +1,20 @@
+import { numberOfCard } from '../../cli/src/lib/shared/board-files'
+import { taskPreviewProblems } from '../../cli/src/lib/shared/task-preview-validation'
+import { IDLE_TIMEOUT } from '../../cli/src/lib/agent/idle'
+import { conflictList, conflictShow, pendingConflicts, withSyncLock } from '../../cli/src/lib/shared/board-conflicts'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, it } from 'node:test'
+import { afterEach, beforeEach, describe, it, mock } from 'node:test'
 
 const withoutTime = (raw: Record<string, unknown> | undefined) => { const { eventAt, ...data } = raw ?? {}; assert.equal(typeof eventAt, 'string'); return data }
 
 import * as api from '../src/api'
 import type { RuntimeReport } from '../src/api'
-import { readCheckpoint, saveCheckpoint, UNCERTAIN } from '../src/recovery'
+import { readCheckpoint, saveCheckpoint } from '../src/recovery'
 import { startRunner, type Runner } from '../src/connect'
 import { holdMachine } from '../src/lock'
 import { keepPresence } from '../src/presence'
@@ -20,18 +24,19 @@ import { createAcpClient, createStreamRenderer, createCodexStreamRenderer } from
 import { createCodexClient } from '../../cli/src/lib/agent/wire/codex'
 import { CLAUDE_REPLY } from '../../cli/test/claude-reply'
 import { stopMark } from '../../cli/src/lib/agent/stop'
+import { createAntigravityRenderer } from '../../cli/src/lib/agent/wire/antigravity'
 import { readSession, writeSession } from '../../cli/src/lib/cloud/session'
 import { HARNESSES } from '../../cli/src/lib/agent/harnesses'
 import { SYSTEM_LANGUAGE_EN, SYSTEM_LANGUAGE_ZH } from '../../cli/src/lib/agent/language'
 import { plan as runtimePlan } from '../src/runtimes'
 import { toWire, type Deps } from '../src/jobs'
-import { akbEnv, akbHome } from '../src/akb'
+import { akbEnv, akbHome, runAkb } from '../src/akb'
 import { readAkbState } from '../src/akb-version'
 import { AKB_CONTRACT } from '../src/protocol'
 import { agentDue, nextHour } from '../src/agents'
 import { sharedMemory } from '../src/memory-files'
 import { projectStateDir } from '../../cli/src/lib/machine/project'
-import { NO_FOLDER, keptBoard, mergeFile, openTaskFolder, pull, pullChanges, pushBoard, readHead, workspaceOf } from '../src/task-folder'
+import { NO_FOLDER, keptBoard, mergeFile, openTaskFolder, pull, pullChanges, push, pushBoard, readHead, withBoard, workspaceOf, taskStudioContext } from '../src/task-folder'
 import { watchBoards } from '../src/board-watch'
 import { hold, unsent } from '../src/cache'
 import { FILE_BYTES, diffOf } from '../src/diff'
@@ -46,6 +51,10 @@ const MACHINE = '44444444-4444-4444-8444-444444444444'
 
 let cloud: FakeCloud
 let runner: Runner | null = null
+const overload = { code: 'service_overloaded', level: 2, reason: 'Selected model is at capacity' } as const
+const validation = { code: 'validation_failed', level: 1, reason: 'Schema check failed' } as const
+const disconnect = { code: 'connection_lost', level: 2, reason: 'Temporary network failure' } as const
+
 let planned: { runtime: string; prompt: string; cwd: string; resume?: string | null; model?: string | null; settings?: unknown; line?: 'zh' | 'en' | null }[] = []
 let installed: RuntimeReport[] = []
 const FAKE_AKB = path.join(process.env.RUNNER_DIST ?? '', '..', 'test', 'fake-akb.mjs')
@@ -381,7 +390,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     } finally { await active.close(); await standby.close() }
   })
 
-  it('leaves a chat or discussion reply to the agent\'s own retries, and no other job (#88)', async () => {
+  it('uses the execution retry policy for chat, discussions and other jobs (#869)', async () => {
     const chat = cloud.dispatch({ id: 'j1', chat: { message: 'msg_1', body: 'Why?' } })
     const idea = cloud.dispatch({ id: 'j2', discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
     const other = cloud.dispatch({ id: 'j3' })
@@ -389,8 +398,8 @@ process.stdin.on('data', () => { if (read) return; read = true;
     start('', { plan: (...args: Parameters<typeof said>) => { const p = said(...args); return { ...p, env: { ...p.env, CLAUDE_CODE_MAX_RETRIES: '0' } } } })
     await until(() => [chat, idea, other].every((j) => j.state === 'finished'))
     const retries = (job: typeof chat) => job.events.map((e) => e.text).join('')
-    assert.match(retries(chat), /retries undefined/)
-    assert.match(retries(idea), /retries undefined/)
+    assert.match(retries(chat), /retries 0/)
+    assert.match(retries(idea), /retries 0/)
     assert.match(retries(other), /retries 0/)
   })
 
@@ -551,6 +560,22 @@ process.stdin.on('data', () => { if (read) return; read = true;
       assert.equal(used(unknown), undefined)
     })
 
+    it('does not give AGy a task or discussion ring from another provider’s window (#824)', async () => {
+      const output = fs.readFileSync(path.join(process.cwd(), '../cli/test/fixtures/antigravity/cached.ndjson'), 'utf8')
+      const task = cloud.dispatch({ id: 'agy-task-context', runtime: 'antigravity', model: 'known-model' })
+      const discussion = cloud.dispatch({ id: 'agy-discussion-context', runtime: 'antigravity', model: 'known-model',
+        discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
+      start('', { plan: (runtime, prompt, cwd, resume) => ({
+        ...fakeRuntime(`process.stdout.write(${JSON.stringify(output)})`)(runtime, prompt, cwd, resume),
+        renderer: createAntigravityRenderer(), model: () => 'known-model',
+      }) })
+      await until(() => task.state === 'finished' && discussion.state === 'finished')
+      assert.equal(task.outcome, 'done')
+      assert.equal(discussion.outcome, 'done')
+      assert.equal(used(task), undefined)
+      assert.equal(used(discussion), undefined)
+    })
+
     it('takes the model a talking runtime names over its own connection', async () => {
       process.env.ACP_NO_WINDOW = '1'
       try {
@@ -562,6 +587,30 @@ process.stdin.on('data', () => { if (read) return; read = true;
         delete process.env.ACP_NO_WINDOW
       }
     })
+  })
+
+  it('releases limited AGy tasks and discussions with saved replies and sessions (#829)', async () => {
+    const output = [
+      { event: 'init', conversation_id: 'agy-limited-session' },
+      { event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'Saved work.' } },
+      { event: 'result', result: { status: 'ERROR', error: '429 quota exceeded' } },
+    ].map(e => JSON.stringify(e)).join('\n') + '\n'
+    const task = cloud.dispatch({ id: 'agy-limit-task', runtime: 'antigravity' })
+    const discussion = cloud.dispatch({ id: 'agy-limit-discussion', runtime: 'antigravity',
+      discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
+    start('', { plan: (...args) => {
+      const renderer = createAntigravityRenderer()
+      return { ...fakeRuntime(`process.stdout.write(${JSON.stringify(output)}); setInterval(() => {}, 1000)`)(...args),
+        renderer, session: () => renderer.resumeId?.(), }
+    } })
+    await until(() => task.state === 'finished' && discussion.state === 'finished')
+    for (const job of [task, discussion]) {
+      assert.equal(job.outcome, 'failed')
+      assert.match(job.reason!, /quota exceeded/)
+      assert.equal(job.report?.reply, 'Saved work.')
+      assert.equal(job.report?.session, 'agy-limited-session')
+    }
+    assert.equal(planned.length, 2)
   })
 
   it('joins neighbouring log text and cuts what Cloud would not keep', () => {
@@ -635,7 +684,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     }
   })
 
-  it('copies a discussion task\'s session, and falls back to a new one reading the discussion (#2146)', async () => {
+  it('stops when a carried discussion session is unavailable (#2146)', async () => {
     const job = cloud.dispatch({ id: 'j1', resume: 'ds1', fork: true, transcript: 'User: Tiers?\n\nAgent: Two.' })
     const forked: (boolean | undefined)[] = []
     let read = ''
@@ -658,19 +707,17 @@ process.stdin.on('data', () => { if (read) return; read = true;
       },
     })
     await until(() => job.state === 'finished')
-    assert.deepEqual(planned.map((p) => p.resume), ['ds1', null])
-    assert.deepEqual(forked, [true, false])
+    assert.deepEqual(planned.map((p) => p.resume), ['ds1'])
+    assert.deepEqual(forked, [true])
     assert.equal(planned[0]!.prompt, 'go', 'a carried session was pointed at the discussion')
-    assert.ok(planned[1]!.prompt.endsWith('\n\n---\n\ngo'), "Cloud's prompt was not last")
-    assert.equal(read, 'User: Tiers?\n\nAgent: Two.\n')
-    assert.equal(job.outcome, 'done')
-    assert.deepEqual(job.report, { reply: 'Two tiers.', session: 'fresh-session' })
+    assert.equal(read, '')
+    assert.equal(job.outcome, 'failed')
+
   })
 
   for (const reason of ['Session old not found', 'No conversation found with session ID: old', 'Please sign in']) {
     it(`会话恢复失败保留云端上下文且仅重建缺失会话：${reason}`, async () => {
       const job = cloud.dispatch({ id: 'j1', resume: 'old', prompt: '已有云端上下文\n新的问题', chat: { message: 'm1', body: '新的问题' } })
-      const missing = reason !== 'Please sign in'
       start('', {
         plan: (runtime, prompt, cwd, resume) => {
           planned.push({ runtime, prompt, cwd, resume })
@@ -686,12 +733,12 @@ process.stdin.on('data', () => { if (read) return; read = true;
         },
       })
       await until(() => job.state === 'finished')
-      assert.deepEqual(planned.map((p) => p.resume), missing ? ['old', null] : ['old'])
+      assert.deepEqual(planned.map((p) => p.resume), ['old'])
       assert.ok(planned.every((p) => p.prompt === '已有云端上下文\n新的问题'))
       assert.equal(job.claims, 1)
-      assert.equal(job.outcome, missing ? 'done' : 'failed')
-      assert.equal((job.report?.usage as api.Usage)?.input, missing ? 20 : 10)
-      assert.equal(job.report?.costUsd, missing ? 0.5 : 0.25)
+      assert.equal(job.outcome, 'failed')
+      assert.equal((job.report?.usage as api.Usage)?.input, 10)
+      assert.equal(job.report?.costUsd, 0.25)
     })
   }
 
@@ -709,7 +756,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       },
     })
     await until(() => job.state === 'finished')
-    assert.deepEqual(planned.map((p) => p.resume), ['old', null])
+    assert.deepEqual(planned.map((p) => p.resume), ['old'])
     assert.equal(job.outcome, 'failed')
   })
 
@@ -855,6 +902,78 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal(job.report!.stopped, true)
   })
 
+  for (const discussion of [false, true]) it(`AGy receives isolated pictures on fresh and resumed ${discussion ? 'discussion' : 'task chat'} turns (#825)`, async () => {
+    const session = '00000000-0000-4000-8000-000000000825'
+    const png = fs.readFileSync('test/fixtures/codex-images/reply.png')
+    let turn = 0
+    start('', { plan: (...args) => {
+      assert.equal(args[0], 'antigravity')
+      assert.equal(args[3], turn ? session : null)
+      assert.match(args[1], /Read the pictures in order/)
+      const dir = path.join(runnerHome(), 'attachments', `pictures-${turn}`)
+      const files = [...args[1].matchAll(/^- (.+\.png)$/gm)].map(m => m[1]!)
+      assert.deepEqual(files, Array.from({ length: turn + 1 }, (_, i) => path.join(dir, `${i}.png`)))
+      for (const file of files) assert.deepEqual(fs.readFileSync(file), png)
+      const frames = [
+        { event: 'init', conversation_id: session, init: {} },
+        ...files.map((file, step_index) => ({ event: 'step_update', step_update: { conversation_id: session,
+          step_index, state: 'DONE', step_type: 'tool', tool_info: { name: 'read_file', parameters: { Path: file } } } })),
+        { event: 'result', result: { conversation_id: session, status: 'SUCCESS', response: 'Pictures read.' } },
+      ]
+      const p = fakeRuntime(`console.log(${JSON.stringify(frames.map(f => JSON.stringify(f)).join('\n'))})`)(...args)
+      p.renderer = createAntigravityRenderer(args[3] ?? undefined)
+      p.session = () => p.renderer!.resumeId?.()
+      return p
+    } })
+    for (turn = 0; turn < 2; turn++) {
+      const job = cloud.dispatch({ id: `pictures-${turn}`, runtime: 'antigravity', resume: turn ? session : null,
+        prompt: 'Read the pictures in order', attachments: Array.from({ length: turn + 1 }, (_, i) => ({ name: `${i}.png`, content: png.toString('base64') })),
+        ...(discussion ? { discussion: { id: 'd825', workspace: 'ws_1', ideas: [] } } : { task: 'task_1', project: 'prj_1', number: 1, chat: { message: `m${turn}`, body: 'Read the pictures in order' } }),
+      })
+      await until(() => job.state === 'finished')
+      assert.equal(job.outcome, 'done', job.reason)
+      assert.equal(job.report?.session, session)
+      await until(() => !fs.existsSync(path.join(runnerHome(), 'attachments', job.id)))
+    }
+    assert.equal(planned.length, 2)
+  })
+
+  for (const discussion of [false, true]) it(`AGy completes recovered image reads once in ${discussion ? 'discussion' : 'task chat'} (#828)`, async () => {
+    const session = '00000000-0000-4000-8000-000000000828'
+    const png = fs.readFileSync('test/fixtures/codex-images/reply.png').toString('base64')
+    start('', { plan: (...args) => {
+      const dir = path.join(runnerHome(), 'attachments', 'pictures-recovered')
+      const read = (step_index: number, file: string, failed = false) => ({ event: 'step_update', step_update: {
+        conversation_id: session, step_index, state: failed ? 'ERROR' : 'DONE', step_type: 'tool',
+        tool_info: { name: 'read_file', parameters: { Path: file }, ...(failed ? { error: { message: 'file does not exist' } } : {}) },
+      } })
+      const frames = [
+        { event: 'init', conversation_id: session, init: {} },
+        read(1, path.join(dir, 'optional.png'), true),
+        read(2, path.join(dir, 'wrong', '0.png'), true),
+        read(3, path.join(dir, '0.png')),
+        read(4, path.join(dir, '1.png'), true),
+        read(5, path.join(dir, '1.png')),
+        { event: 'result', result: { conversation_id: session, status: 'SUCCESS', response: 'Both pictures read.' } },
+      ]
+      const p = fakeRuntime(`console.log(${JSON.stringify(frames.map(f => JSON.stringify(f)).join('\n'))})`)(...args)
+      p.renderer = createAntigravityRenderer(args[3] ?? undefined, args[2])
+      p.session = () => p.renderer!.resumeId?.()
+      return p
+    } })
+    const job = cloud.dispatch({ id: 'pictures-recovered', runtime: 'antigravity',
+      attachments: ['0.png', '1.png'].map(name => ({ name, content: png })),
+      ...(discussion ? { discussion: { id: 'd828', workspace: 'ws_1', ideas: [] } }
+        : { task: 'task_1', project: 'prj_1', number: 1, chat: { message: 'm828', body: 'Read both pictures' } }),
+    })
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(job.report?.reply, 'Both pictures read.')
+    assert.equal(planned.length, 1)
+    assert.ok(job.events.some(e => e.kind === 'tool_call_update' && e.data?.status === 'failed' && /file does not exist/.test(String(e.data.result))))
+    assert.ok(!job.events.some(e => e.kind === 'error'))
+  })
+
   it('records a stopped Antigravity reply without reporting success or retrying (#687)', async () => {
     const job = cloud.dispatch({ id: 'j1', runtime: 'antigravity', stop: true })
     start('setInterval(() => console.log("tick"), 20)')
@@ -876,6 +995,29 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal(job.outcome, 'done')
   })
 
+  for (const protocol of [false, true]) it(`five-minute idle recovery uses three retries: ${protocol ? 'protocol' : 'stream'}`, async () => {
+    const original = IDLE_TIMEOUT.milliseconds
+    IDLE_TIMEOUT.milliseconds = 100
+    try {
+      const job = cloud.dispatch({ id: 'idle-recovery', chat: { message: 'm1', body: 'Continue' } })
+      start('', { plan: (...args) => {
+        const p = fakeRuntime('setInterval(() => {}, 1000)')(...args)
+        p.renderer!.events = () => []
+        if (protocol) p.converse = async (_child, event) => {
+          event({ kind: 'message', data: { text: 'Progress before interruption.' } })
+          return new Promise(() => {})
+        }
+        return p
+      } })
+      await until(() => job.state === 'finished')
+      assert.equal(planned.length, 4)
+      assert.equal(job.outcome, 'failed')
+      assert.match(job.reason!, /idle timeout/)
+      assert.equal(readCheckpoint(job.id)?.retry?.attempt, 4)
+      if (protocol) assert.match(String(job.report?.reply ?? ''), /Progress before interruption/)
+    } finally { IDLE_TIMEOUT.milliseconds = original }
+  })
+
   for (const converse of [false, true]) for (const discussion of [false, true]) {
     it(`有限重试保留原消息与附件 ${converse ? 'ACP' : 'printed'} ${discussion ? 'discussion' : 'task'}`, async () => {
       const job = cloud.dispatch({ id: 'retry-turn', prompt: '原消息与上下文', attachments: [{ name: 'shot.png', content: 'aGk=' }],
@@ -885,13 +1027,13 @@ process.stdin.on('data', () => { if (read) return; read = true;
         const failed = ++calls < 2
         const p = fakeRuntime(failed ? 'process.exit(1)' : 'console.log("完成")')(...args)
         p.renderer!.events = () => []
-        p.renderer!.failure = () => failed ? 'Selected model is at capacity' : undefined
+        p.renderer!.executionFailure = () => failed ? overload : undefined
         p.renderer!.usage = () => ({ input: 10, cacheCreation: 1, cacheRead: 2, output: 3 })
         p.renderer!.costUsd = () => 0.25
         if (converse) p.converse = async (_child, event) => {
           event({ kind: 'message', data: { text: failed ? '' : '完成' } })
           const spent = { usage: p.renderer!.usage!(), costUsd: p.renderer!.costUsd!() }
-          return failed ? { ok: false, error: 'Selected model is at capacity', ...spent } : { ok: true, result: '完成', ...spent }
+          return failed ? { ok: false, error: overload.reason, failure: overload, ...spent } : { ok: true, result: '完成', ...spent }
         }
         return p
       } })
@@ -908,13 +1050,74 @@ process.stdin.on('data', () => { if (read) return; read = true;
     })
   }
 
+  for (const discussion of [false, true]) it(`AGy preserves a partial reply after an unclassified EOF ${discussion ? 'discussion' : 'task'} (#841)`, async () => {
+    const session = '00000000-0000-4000-8000-000000000796'
+    const partial = '已完成文件更新，保留用户选择的方案。'
+    const job = cloud.dispatch({ id: 'agy-interrupted', runtime: 'antigravity', prompt: '按已确认方案更新文件',
+      ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', ideas: [] } } : { chat: { message: 'm1', body: '按已确认方案更新文件' } }) })
+    start('', { plan: (...args) => {
+      const frames = [
+        { event: 'init', conversation_id: session },
+        { event: 'step_update', step_update: { conversation_id: session, step_index: 1, step_type: 'agent_response', text_delta: partial } },
+      ]
+      const p = fakeRuntime(`console.log(${JSON.stringify(frames.map(f => JSON.stringify(f)).join('\n'))}); console.error('API error: request failed: EOF'); process.exitCode = 1;`)(...args)
+      p.renderer = createAntigravityRenderer()
+      p.session = () => p.renderer!.resumeId?.()
+      return p
+    } })
+    await until(() => job.state === 'finished')
+    assert.equal(planned.length, 1)
+    assert.equal(job.outcome, 'failed', job.reason)
+    assert.match(job.reason!, /request failed: EOF/)
+    assert.equal(job.report?.reply, partial)
+  })
+
+  for (const discussion of [false, true]) it(`AGy 仅收到 init 时保存会话，重启后带原始请求续接 ${discussion ? 'discussion' : 'task'} (#830)`, async () => {
+    const session = '00000000-0000-4000-8000-000000000830'
+    const job = cloud.dispatch({ id: 'agy-early', runtime: 'antigravity', prompt: '用户决定：保留 Cedar830。',
+      ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', ideas: [] } } : { chat: { message: 'm1', body: '保留 Cedar830' } }) })
+    const plan: NonNullable<Deps['plan']> = (...args) => {
+      const resumed = !!args[3]
+      const frames = [{ event: 'init', conversation_id: session },
+        ...(resumed ? [{ event: 'result', result: { conversation_id: session, status: 'SUCCESS', response: 'Cedar830 preserved.' } }] : [])]
+      const p = fakeRuntime(`console.log(${JSON.stringify(frames.map(e => JSON.stringify(e)).join('\n'))}); ${resumed ? '' : 'setInterval(() => {}, 1000);'}`)(...args)
+      p.renderer = createAntigravityRenderer(args[3] ?? undefined)
+      p.session = () => p.renderer!.resumeId?.()
+      return p
+    }
+    const current = start('', { plan })
+    await until(() => readCheckpoint(job.id)?.session === session)
+    assert.equal(readCheckpoint(job.id)?.effects, false)
+    assert.equal(readCheckpoint(job.id)?.partialReply, undefined)
+    await current.update()
+    start('', { plan })
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(planned.length, 2)
+    assert.equal(planned[1]!.resume, session)
+    assert.match(planned[1]!.prompt, /用户决定：保留 Cedar830/)
+    assert.match(planned[1]!.prompt, /不要重复已经执行的操作/)
+    assert.equal(job.report?.session, session)
+    assert.equal(job.report?.reply, 'Cedar830 preserved.')
+  })
+
+  it('AGy 启动中断未记录会话时明确失败，不创建替代会话 (#830)', async () => {
+    saveCheckpoint('agy-no-session', { updating: true, started: true, effects: false, pending: [] })
+    const job = cloud.dispatch({ id: 'agy-missing-id', runtime: 'antigravity', recoveryOf: 'agy-no-session', chat: { message: 'm1', body: '继续' } })
+    start()
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'failed')
+    assert.match(job.reason!, /did not record.*cannot be resumed/)
+    assert.equal(planned.length, 0)
+  })
+
   for (const resumed of [false, true]) {
     it(`重启保留尝试消耗且不重复累计 ${resumed ? '续接' : '重放'}`, async () => {
       const job = cloud.dispatch({ id: 'restart-spent', runtime: 'claude-code', state: 'claimed', machine: MACHINE,
         chat: { message: 'm1', body: '继续' } })
       const usage = { input: 10, cacheCreation: 1, cacheRead: 2, output: 3 }
       saveCheckpoint(job.id, { updating: true, mark: stopMark(), pending: [], effects: resumed, started: true,
-        session: 'kept', retry: { since: Date.now(), attempt: 1, at: Date.now() },
+        session: 'kept', retry: { since: Date.now(), attempt: 1, pending: { at: Date.now(), of: 4, failure: overload } },
         attempts: [{ session: 'kept', usage, costUsd: 0.5 }] })
       start('', { plan: (...args) => {
         const p = fakeRuntime('console.log("done")')(...args)
@@ -935,8 +1138,28 @@ process.stdin.on('data', () => { if (read) return; read = true;
     })
   }
 
+  for (const discussion of [false, true]) for (const reason of [
+    'authentication failed or timed out', 'permission denied: service unavailable',
+    'invalid model selection: model is unavailable', '429 rate limit: service unavailable',
+    'rpc error: code = ResourceExhausted desc = credits exhausted', 'Antigravity: CANCELED: network error',
+  ]) it(`AGy 不重试需要人工处理的错误 ${discussion ? 'discussion' : 'task'} ${reason} (#827)`, async () => {
+    const job = cloud.dispatch({ id: 'agy-manual-failure', runtime: 'antigravity',
+      ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', ideas: [] } } : { chat: { message: 'm1', body: '继续' } }) })
+    start('', { plan: (...args) => {
+      const p = fakeRuntime('process.exit(1)')(...args)
+      p.renderer!.events = () => []
+      p.renderer!.failure = () => reason
+      return p
+    } })
+    await until(() => job.state === 'finished')
+    assert.equal(planned.length, 1)
+    assert.equal(job.outcome, 'failed')
+    assert.ok(job.reason?.startsWith(reason))
+    assert.equal(readCheckpoint(job.id)?.retry?.attempt, 1)
+  })
+
   for (const reason of ['quota exceeded', 'Please login first', 'unknown model error']) {
-    it(`明确的配置或协议失败不自动重试 ${reason}`, async () => {
+    it(`未知或持续模型失败受直接挂起 ${reason}`, async () => {
       const job = cloud.dispatch({ id: 'model-failure', chat: { message: 'm1', body: '原消息' } })
       start('', { plan: (...args) => {
         const p = fakeRuntime('process.exit(1)')(...args)
@@ -946,7 +1169,9 @@ process.stdin.on('data', () => { if (read) return; read = true;
       } })
       await until(() => job.state === 'finished')
       assert.equal(planned.length, 1)
-      assert.equal(job.reason, reason)
+      assert.equal(job.outcome, 'failed')
+      assert.ok(job.reason?.startsWith(reason))
+      assert.equal(readCheckpoint(job.id)?.retry?.attempt, 1)
     })
   }
 
@@ -956,7 +1181,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       let calls = 0
       start('', { plan: (...args) => {
         const p = fakeRuntime(++calls === 1 ? 'process.exit(1)' : 'console.log("已续接")')(...args)
-        p.renderer!.failure = () => calls === 1 ? 'Temporary network failure' : undefined
+        p.renderer!.executionFailure = () => calls === 1 ? disconnect : undefined
         if (state !== 'opaque') {
           let emitted = false
           p.renderer!.events = () => {
@@ -969,27 +1194,113 @@ process.stdin.on('data', () => { if (read) return; read = true;
         return p
       } })
       await until(() => job.state === 'finished')
-      assert.equal(planned.length, state === 'completed' ? 2 : 1)
-      if (state === 'completed') {
+      assert.equal(planned.length, (state === 'completed') ? 2 : 1)
+      if ((state === 'completed')) {
         assert.equal(planned[1]?.resume, 'fresh-session')
         assert.match(planned[1]!.prompt, /不要重复已经执行的操作/)
       } else assert.equal(job.reason, 'recovery_unsafe')
     })
   }
 
-  it('等待恢复可停止且不再启动进程', async () => {
-    const job = cloud.dispatch({ id: 'stop-wait', chat: { message: 'm1', body: '原消息' } })
+  for (const failures of [[validation, validation], [disconnect, validation], [validation, disconnect, disconnect, disconnect]]) {
+    it(`shares cumulative retry slots across tiers (${failures.map(f => f.level).join(',')})`, async () => {
+      const job = cloud.dispatch({ id: 'mixed-retry', discussion: { id: 'd1', workspace: 'ws_1', ideas: [] } })
+      let calls = 0
+      start('', { plan: (...args) => {
+        const failure = failures[calls++]
+        const p = fakeRuntime('process.exit(1)')(...args)
+        p.renderer!.events = () => []
+        p.renderer!.executionFailure = () => failure
+        return p
+      } })
+      await until(() => job.state === 'finished')
+      assert.equal(job.outcome, 'failed')
+      assert.equal(calls, failures.length)
+      assert.equal(readCheckpoint(job.id)?.retry?.attempt, failures.length)
+      assert.equal(readCheckpoint(job.id)?.retryPause, 'limit')
+      if (failures[0]?.level === 1) assert.match(planned[1]!.prompt, /Schema check failed/)
+    })
+  }
+
+  it('restores a pending deadline without consuming it twice and pauses on a further retry at the limit', async () => {
+    const job = cloud.dispatch({ id: 'pending-deadline', state: 'claimed', machine: MACHINE, chat: { message: 'm1', body: 'Continue' } })
+    const at = Date.now() + 250
+    saveCheckpoint(job.id, { pending: [], started: true, effects: true, session: 'kept',
+      retry: { since: 0, attempt: 3, pending: { at, of: 4, failure: disconnect } } })
+    let startedAt = 0
+    start('', { plan: (...args) => {
+      const p = fakeRuntime('process.exit(1)')(...args)
+      startedAt = Date.now()
+      p.renderer!.events = () => []
+      p.renderer!.executionFailure = () => disconnect
+      return p
+    } })
+    await until(() => job.state === 'finished')
+    assert.ok(startedAt >= at)
+    assert.equal(planned.length, 1)
+    assert.equal(readCheckpoint(job.id)?.retry?.attempt, 4)
+    assert.equal(readCheckpoint(job.id)?.retryPause, 'limit')
+  })
+
+  it('pauses a legacy pending retry without a structured cause and preserves its budget', async () => {
+    const job = cloud.dispatch({ id: 'legacy-retry', state: 'claimed', machine: MACHINE, chat: { message: 'm1', body: 'Continue' } })
+    saveCheckpoint(job.id, { updating: true, pending: [], started: true, effects: true, session: 'kept',
+      retry: { since: 0, attempt: 2, at: Date.now() } })
+    start()
+    await until(() => job.state === 'finished')
+    assert.equal(planned.length, 0)
+    assert.equal(readCheckpoint(job.id)?.retry?.attempt, 2)
+    assert.equal(job.reason, 'recovery_unsafe')
+  })
+
+  for (const runtime of ['codex', 'antigravity'] as const) it(`等待恢复可停止且不再启动进程 ${runtime}`, async () => {
+    const job = cloud.dispatch({ id: 'stop-wait', runtime, chat: { message: 'm1', body: '原消息' } })
     start('', { replyBackoff: () => 500, renewMs: 20, plan: (...args) => {
       const p = fakeRuntime('process.exit(1)')(...args)
-      p.renderer!.failure = () => 'Temporary network failure'
+      p.renderer!.executionFailure = () => overload
       p.renderer!.events = () => []
       return p
     } })
-    await until(() => !!readCheckpoint(job.id)?.retry?.at)
+    await until(() => !!readCheckpoint(job.id)?.retry?.pending)
     job.stop = true
     await until(() => job.state === 'finished')
     assert.equal(planned.length, 1)
     assert.equal(job.report?.stopped, true)
+    assert.equal(job.outcome, runtime === 'antigravity' ? 'stopped' : 'done')
+  })
+
+  it('恢复等待期间撤销目录授权后不再启动 Agent (#796)', async () => {
+    let allowed = true
+    const job = cloud.dispatch({ id: 'revoke-wait', chat: { message: 'm1', body: '继续' } })
+    start('', { authorize: async () => allowed, replyBackoff: () => 150, plan: (...args) => {
+      const p = fakeRuntime('process.exit(1)')(...args)
+      p.renderer!.executionFailure = () => overload
+      p.renderer!.events = () => []
+      return p
+    } })
+    await until(() => !!readCheckpoint(job.id)?.retry?.pending)
+    allowed = false
+    await until(() => job.state === 'finished')
+    assert.equal(planned.length, 1)
+    assert.equal(job.outcome, 'failed')
+  })
+
+  it('手动恢复失败不重复发送上一轮已经保存的回复 (#796)', async () => {
+    saveCheckpoint('saved-partial', { pending: [], effects: false, started: true, partialReply: 'Already delivered.',
+      completed: { outcome: 'failed', report: { reply: 'Already delivered.' } } })
+    const job = cloud.dispatch({ id: 'retry-partial', manualRecovery: true, retryReplay: true, recoveryOf: 'saved-partial',
+      chat: { message: 'm1', body: '继续' } })
+    start('', { plan: (...args) => {
+      const p = fakeRuntime('process.exit(1)')(...args)
+      p.renderer!.result = () => undefined
+      p.renderer!.executionFailure = () => overload
+      p.renderer!.events = () => []
+      return p
+    } })
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'failed')
+    assert.equal(planned.length, 4)
+    assert.equal(job.report?.reply, undefined)
   })
 
   for (const checkpoint of [null, { pending: ['write'], effects: true, started: true, session: 's1' }, { pending: [], effects: false, started: true }]) {
@@ -1005,7 +1316,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
 
   for (const discussion of [false, true]) {
     it(`长时间正常执行的回复重启后仍可沿用原会话 ${discussion ? 'discussion' : 'task'}`, async () => {
-      saveCheckpoint('long-running-original', { mark: stopMark(), pending: ['interrupted-tool'], started: true,
+      saveCheckpoint('long-running-original', { mark: stopMark(), pending: [], started: true,
         submitted: true, effects: true, session: 'original-session', retry: { since: Date.now() - 7_200_000, attempt: 1 } })
       const job = cloud.dispatch({ id: 'long-running-recovered', recoveryOf: 'long-running-original',
         ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', ideas: [] } } : { chat: { message: 'm1', body: '继续' } }) })
@@ -1026,15 +1337,15 @@ process.stdin.on('data', () => { if (read) return; read = true;
     })
   }
 
-  for (const [attempt, elapsed] of [[3, 0], [2, 120_001]]) {
+  for (const [attempt, elapsed] of [[4, 0], [4, 120_001]]) {
     it(`重启不重置已用预算 ${attempt} ${elapsed}`, async () => {
-      const job = cloud.dispatch({ id: 'restart-budget', state: 'claimed', machine: MACHINE, chat: { message: 'm1', body: '继续' } })
-      saveCheckpoint(job.id, { updating: true, mark: stopMark(), pending: [], effects: false, started: true,
+      const job = cloud.dispatch({ id: 'restart-budget', recoveryOf: 'interrupted-turn', machine: MACHINE, chat: { message: 'm1', body: '继续' } })
+      saveCheckpoint(job.id, { mark: stopMark(), pending: [], effects: false, started: true,
         session: 'kept', retry: { since: Date.now() - elapsed, attempt } })
       start()
       await until(() => job.state === 'finished')
       assert.equal(planned.length, 0)
-      assert.equal(job.reason, 'recovery_failed')
+      assert.match(job.reason!, /retry limit/)
       assert.equal(readCheckpoint(job.id)?.retry?.attempt, attempt)
     })
   }
@@ -1102,7 +1413,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
   })
 
   it('断联恢复沿用原会话和附件，已完成结果直接上报', async () => {
-    saveCheckpoint('original', { mark: stopMark(), pending: [], started: true, session: 'original-session' })
+    saveCheckpoint('original', { mark: stopMark(), pending: [], started: true, session: 'original-session', retry: { since: 0, attempt: 1 } })
     const job = cloud.dispatch({ id: 'restored', recoveryOf: 'original', chat: { message: 'm1', body: '继续' }, attachments: [{ name: '图.png', content: 'aGVsbG8=' }] })
     start('', { plan: (...args) => {
       const p = fakeRuntime('console.log("恢复完成")')(...args)
@@ -1122,8 +1433,9 @@ process.stdin.on('data', () => { if (read) return; read = true;
     const unsafe = cloud.dispatch({ id: 'unsafe-recovery', recoveryOf: 'uncertain-original', chat: { message: 'm1', body: '继续' } })
     start()
     await until(() => unsafe.state === 'finished')
-    assert.equal(unsafe.outcome, 'done', unsafe.reason)
-    assert.equal(planned.length, 1)
+    assert.equal(unsafe.outcome, 'failed', unsafe.reason)
+    assert.equal(unsafe.reason, 'recovery_unsafe')
+    assert.equal(planned.length, 0)
     const spent = { usage: { input: 10, cacheCreation: 0, cacheRead: 0, output: 2 }, costUsd: 0.25 }
     saveCheckpoint('completed-original', { pending: [], started: true, attempts: [spent],
       completed: { outcome: 'done', report: { reply: '已有结果', ...spent } } })
@@ -1132,7 +1444,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal(done.report?.reply, '已有结果')
     assert.equal(done.report?.costUsd, 0.25)
     assert.deepEqual(done.report?.usage, spent.usage)
-    assert.equal(planned.length, 1)
+    assert.equal(planned.length, 0)
   })
 
   it('换机原会话缺失时用云端上下文建新会话', async () => {
@@ -1141,13 +1453,13 @@ process.stdin.on('data', () => { if (read) return; read = true;
       const resumed = !!args[3]
       const p = fakeRuntime(resumed ? 'console.error("Session not found");process.exit(1)' : 'console.log("已续接")')(...args)
       p.renderer!.result = () => resumed ? undefined : '已续接'
+      p.renderer!.failure = () => resumed ? 'Session not found' : undefined
       p.renderer!.events = () => []
       return p
     } })
     await until(() => job.state === 'finished')
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.deepEqual(planned.map(p => p.resume), ['absent', null])
-    assert.match(planned[1]!.prompt, /云端历史和最新消息/)
+    assert.equal(job.outcome, 'failed', job.reason)
+    assert.deepEqual(planned.map(p => p.resume), ['absent'])
   })
 
   it('Antigravity 续接失败保留会话且不新建空白会话（#687）', async () => {
@@ -1169,15 +1481,16 @@ process.stdin.on('data', () => { if (read) return; read = true;
     start('', { plan: (...args) => {
       const p = fakeRuntime(args[3] ? 'console.error("Session not found");process.exit(1)' : 'process.exit(1)')(...args)
       p.renderer!.result = () => undefined
+      p.renderer!.failure = () => 'Session not found'
       p.renderer!.events = () => []
       return p
     } })
     await until(() => job.state === 'finished')
-    assert.equal(planned.length, 2)
-    assert.equal(job.reason, 'session_unavailable')
+    assert.equal(planned.length, 1)
+    assert.match(job.reason!, /session/i)
   })
 
-  it('换机会话登录失败不误报丢失，也不重试新会话', async () => {
+  it('换机会话登录失败沿用原会话且受统一预算限制', async () => {
     const job = cloud.dispatch({ id: 'signed-out-session', resume: 'existing', chat: { message: 'm1', body: '继续' } })
     start('', { plan: (...args) => {
       const p = fakeRuntime('console.error("Please login first");process.exit(1)')(...args)
@@ -1187,12 +1500,12 @@ process.stdin.on('data', () => { if (read) return; read = true;
       return p
     } })
     await until(() => job.state === 'finished')
-    assert.equal(planned.length, 1)
-    assert.equal(job.reason, 'Please login first')
+    assert.deepEqual(planned.map(p => p.resume), ['existing'])
+    assert.match(job.reason!, /^Please login first/)
   })
 
   for (const recovery of [false, true]) it(`ACP 会话缺失${recovery ? '不绕过自动恢复边界' : '由 Runner 用云端上下文回退一次'}`, async () => {
-    if (recovery) saveCheckpoint('acp-original', { mark: stopMark(), pending: [], started: true, session: 'absent' })
+    if (recovery) saveCheckpoint('acp-original', { mark: stopMark(), pending: [], started: true, session: 'absent', retry: { since: 0, attempt: 1 } })
     const job = cloud.dispatch({ id: 'acp-resume', runtime: 'cursor', resume: 'absent', recoveryOf: recovery ? 'acp-original' : null, chat: { message: 'm1', body: '继续' }, prompt: '云端文字上下文' })
     start('', { plan: (runtime, prompt, cwd, resume, model, settings, fork, language) => {
       planned.push({ runtime, prompt, cwd, resume })
@@ -1200,10 +1513,9 @@ process.stdin.on('data', () => { if (read) return; read = true;
       return { ...p, command: process.execPath, args: ['-e', ACP_AGENT], env: { ...p.env, ACP_MISSING: '1' } }
     } })
     await until(() => job.state === 'finished')
-    assert.equal(job.outcome, recovery ? 'failed' : 'done', job.reason)
-    assert.equal(planned.length, recovery ? 1 : 2)
-    if (recovery) assert.equal(job.reason, 'recovery_unsafe')
-    else assert.match(planned[1]!.prompt, /云端文字上下文/)
+    assert.equal(job.outcome, 'failed', job.reason)
+    assert.equal(planned.length, 1)
+    assert.match(job.reason!, /^Session not found/)
   })
 
   it('更新保留会话，断网重启后自动续跑且可再次更新', async () => {
@@ -1214,7 +1526,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
         p.renderer!.events = () => []
         return p
       } })
-      await until(() => job.claims === i + 1 && readCheckpoint(job.id)?.started === true)
+      await until(() => job.claims === i + 1 && readCheckpoint(job.id)?.retry?.attempt === i + 1 && !!readCheckpoint(job.id)?.process)
       await current.update()
       assert.equal(job.state, 'claimed')
       assert.equal(readCheckpoint(job.id)?.session, 'fresh-session')
@@ -1292,7 +1604,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     await current.update()
     start()
     await until(() => job.state === 'finished')
-    assert.equal(job.reason, UNCERTAIN)
+    assert.equal(job.reason, 'recovery_unsafe')
     assert.equal(fs.readFileSync(effect, 'utf8'), 'x')
     assert.equal(planned.length, 1)
   })
@@ -1324,7 +1636,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     saveCheckpoint(job.id, { updating: true, session: 's1', started: true, pending: ['external-call'] })
     start()
     await until(() => job.state === 'finished')
-    assert.equal(job.reason, UNCERTAIN)
+    assert.equal(job.reason, 'recovery_unsafe')
     assert.equal(planned.length, 0)
   })
 
@@ -1395,10 +1707,10 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.deepEqual(stop, { reason: 'elsewhere', machine: 'laptop' })
   })
 
-  it('registers with protocol 21', async () => {
+  it('registers with protocol 25', async () => {
     start()
     await until(() => cloud.registrations > 0)
-    assert.equal(cloud.protocol, 21)
+    assert.equal(cloud.protocol, 25)
   })
 
   it('stops as outdated when Cloud no longer takes its protocol', async () => {
@@ -1429,15 +1741,15 @@ describe('a task’s folder (#2037)', () => {
       artifacts: new Map([['art_1', [Buffer.from('hero-1')]], ['art_2', [Buffer.from('a-1')]]]),
       studio: { studio: 'wf_own', version: 2, files: {
         'STUDIO.md': '---\nname: Coding\n---\n',
-        'agents/software-planner/AGENT.md': 'Plan it.',
-        'agents/software-planner/references/notes.md': 'Notes',
+        'references/planning.md': 'Plan it.',
+        'references/notes.md': 'Notes',
       } },
     }
     cloud.put({
       [CARD]: BODY,
       'assets/task_1.json': JSON.stringify({ 'hero.png': { artifact: 'art_1', version: 1 }, 'shots/a.png': { artifact: 'art_2', version: 1 } }),
       'memory/readme.md': 'Shipped',
-      'memory/agents/planner/decisions.md': 'No',
+      'rules/project-writer.md': 'No',
     })
     cloud.putShared({ 'memory/me.md': 'Mine' })
   })
@@ -1446,7 +1758,7 @@ describe('a task’s folder (#2037)', () => {
   const runTask = async (id: string, edit = '', extra: Partial<FakeJob> = {}) => {
     script = edit && `process.chdir('.akb/kanban'); ${edit}`
     const job = cloud.dispatch({ id, task: 'task_1', project: 'prj_1', number: 1, studio: cloud.task.studio?.studio, ...extra })
-    if (!runner) start('', { plan: (r, p, c) => fakeRuntime(script)(r, p, c) })
+    if (!runner) start('', { plan: (r, p, c, resume) => fakeRuntime(script)(r, p, c, resume) })
     await until(() => job.state === 'finished')
     return job
   }
@@ -1468,9 +1780,10 @@ describe('a task’s folder (#2037)', () => {
 
       fs.writeFileSync(path.join(board(), 'memory/readme.md'), 'Unsent edit')
       cloud.put({ 'memory/readme.md': 'Remote edit' })
-      assert.equal((await runTask('j2')).outcome, 'done')
-      assert.equal(read('memory/readme.md'), 'Unsent edit\nRemote edit')
-      assert.equal(cloud.file('memory/readme.md'), read('memory/readme.md'))
+      assert.equal((await runTask('j2')).outcome, 'failed')
+      assert.equal(read('memory/readme.md'), 'Unsent edit')
+      assert.equal(cloud.file('memory/readme.md'), 'Remote edit')
+      assert.equal(conflictList(board()).length, 1)
       assert.equal(fs.existsSync(marker), false)
     })
   }
@@ -1485,7 +1798,7 @@ describe('a task’s folder (#2037)', () => {
         fs.appendFileSync('todo/1-task-1.md', 'Edited before approval.');
         ${pending ? "fs.writeFileSync('todo/hero.png', 'pending edit');" : asset === 'unreferenced' ? "fs.mkdirSync('assets/1', { recursive: true }); fs.writeFileSync('assets/1/pending.json', '{}');" : ''}
         const { url, token } = JSON.parse(process.env.AI4KANBAN_REPLY_APPROVAL);
-        fetch(url, { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify({ task: '1' }) })
+        fetch(url, { method: 'POST', headers: { authorization: 'Bearer ' + token }, body: JSON.stringify({ task: '1', review_revision: 1 }) })
           .then(r => r.json()).then(r => { fs.writeFileSync('reply-result.json', JSON.stringify(r)); console.log('done'); });
       `
       const job = await runTask('reply-approval', script, { chat: { message: 'm1', body: 'Start' } })
@@ -1512,7 +1825,7 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(read('todo/shots/a.png'), 'a-1')
     assert.equal(read('memory/readme.md'), 'Shipped')
     assert.ok(!fs.existsSync(path.join(board(), 'memory', 'me.md')), 'undeclared workspace memory reached the task')
-    assert.equal(read('memory/agents/planner/decisions.md'), 'No')
+    assert.equal(read('rules/project-writer.md'), 'No')
     assert.deepEqual(cloud.log.filter((l) => l.includes('/board')), ['GET /v1/projects/prj_1/board'])
     assert.equal(commits().length, 0, 'a job that changed nothing wrote back')
   })
@@ -1573,7 +1886,7 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(job.outcome, 'done', job.reason)
     const held = path.join(runnerHome(), 'studios')
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(held, 'tasks', 'task_1.json'), 'utf8')), { studio: 'wf_own', version: 2 })
-    assert.equal(JSON.parse(fs.readFileSync(path.join(held, 'versions', 'wf_own@2.json'), 'utf8')).files['agents/software-planner/AGENT.md'], 'Plan it.')
+    assert.equal(JSON.parse(fs.readFileSync(path.join(held, 'versions', 'wf_own@2.json'), 'utf8')).files['references/planning.md'], 'Plan it.')
     assert.ok(!fs.existsSync(path.join(board(), 'agents', 'software-planner')), 'a studio agent was placed on the board')
     assert.ok(!fs.existsSync(path.join(board(), 'agents', 'old', 'AGENT.md')), 'an agent an earlier Runner placed stayed')
     assert.equal(read('agents/old/notes.md'), 'Edited.')
@@ -1617,18 +1930,22 @@ describe('a task’s folder (#2037)', () => {
     `
     cloud.beforeNextCommit = () => cloud.put({ 'triage/new-idea.md': null, 'triage/archived/new-idea.md': item('New idea', 'card_id: 9\ntask: task_9\n') })
     const job = await runTask('j2', mine)
-    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(job.outcome, 'failed', job.reason)
     assert.match(cloud.file('triage/archived/new-idea.md')!, /task: task_9/)
-    assert.equal(read('triage/archived/new-idea.md'), cloud.file('triage/archived/new-idea.md'))
+    assert.match(read('triage/archived/new-idea.md'), /card_id: 9 here/)
+    assert.equal(conflictList(board()).length, 1)
   })
 
   it('keeps the module map, settings and rules in Cloud: the first computer’s go up, and another reads them (#2106)', async () => {
     fs.mkdirSync(path.join(board(), 'rules'), { recursive: true })
     fs.writeFileSync(path.join(board(), 'modules.md'), 'Mine')
-    fs.writeFileSync(path.join(board(), 'rules', 'builder.md'), 'Use pnpm.')
+    fs.writeFileSync(path.join(board(), 'rules', 'proposer.md'), 'Use pnpm.')
+    fs.writeFileSync(path.join(board(), 'rules', 'prompt-writer.md'), 'Preserve for audit.')
     assert.equal((await runTask('j1')).outcome, 'done')
+    assert.equal(cloud.file('rules/prompt-writer.md'), null)
+    assert.equal(read('rules/prompt-writer.md'), 'Preserve for audit.')
     assert.equal(cloud.file('modules.md'), 'Mine')
-    assert.equal(cloud.file('rules/builder.md'), 'Use pnpm.')
+    assert.equal(cloud.file('rules/proposer.md'), 'Use pnpm.')
 
     // Another computer, its own blank template.
     fs.rmSync(path.join(cached(), '.akb', 'base.json'))
@@ -1637,15 +1954,15 @@ describe('a task’s folder (#2037)', () => {
     fs.writeFileSync(path.join(board(), 'modules.md'), 'Template')
     assert.equal((await runTask('j2')).outcome, 'done')
     assert.equal(read('modules.md'), 'Mine')
-    assert.equal(read('rules/builder.md'), 'Use pnpm.')
+    assert.equal(read('rules/proposer.md'), 'Use pnpm.')
     assert.equal(cloud.file('modules.md'), 'Mine')
 
     // Cleared elsewhere, gone here.
-    cloud.put({ 'rules/builder.md': null, 'modules.md': 'Edited' })
+    cloud.put({ 'rules/proposer.md': null, 'modules.md': 'Edited' })
     assert.equal((await runTask('j3')).outcome, 'done')
     assert.equal(read('modules.md'), 'Edited')
-    assert.ok(!fs.existsSync(path.join(board(), 'rules', 'builder.md')), 'a cleared rule came back')
-    assert.equal(cloud.file('rules/builder.md'), null)
+    assert.ok(!fs.existsSync(path.join(board(), 'rules', 'proposer.md')), 'a cleared rule came back')
+    assert.equal(cloud.file('rules/proposer.md'), null)
   })
 
   it('writes the task index from the cards, another computer’s included (#2106)', async () => {
@@ -1697,7 +2014,8 @@ describe('a task’s folder (#2037)', () => {
   it('writes back every file the job changed in one call, on the seq each was read at', async () => {
     const edit = `
       const fs = require('fs')
-      fs.writeFileSync('memory/agents/planner/decisions.md', 'Yes')
+      fs.mkdirSync('rules', { recursive: true })
+      fs.writeFileSync('rules/proposer.md', 'Yes')
       fs.mkdirSync('memory/agents/qa-manager', { recursive: true })
       fs.writeFileSync('memory/agents/qa-manager/notes.md', 'Flaky')
       fs.writeFileSync('todo/README.md', 'generated')
@@ -1708,8 +2026,8 @@ describe('a task’s folder (#2037)', () => {
     const job = await runTask('j1', edit)
     assert.equal(job.outcome, 'done', job.reason)
     assert.equal(commits().length, 1)
-    assert.equal(cloud.file('memory/agents/planner/decisions.md'), 'Yes')
-    assert.equal(cloud.file('memory/agents/qa-manager/notes.md'), 'Flaky')
+    assert.equal(cloud.file('rules/proposer.md'), 'Yes')
+    assert.equal(cloud.file('memory/agents/qa-manager/notes.md'), null)
     assert.equal(cloud.file('triage/idea.md'), 'An idea', 'a triage file stayed behind (#2107)')
     assert.equal(cloud.file('memory/readme.md'), null)
     assert.ok(!cloud.board.has('projects/prj_1/todo/README.md'), 'a generated file went up')
@@ -1756,16 +2074,16 @@ describe('a task’s folder (#2037)', () => {
       const release = protection === 'running' ? hold(cached()) : () => {}
       try {
         cloud.put({ [archive]: null })
-        assert.ok((await pullChanges(ws)).ok)
-        assert.ok((await pullChanges(ws)).ok, 'repeated delete/reconnect is safe')
+        assert.equal((await pullChanges(ws)).ok, protection !== 'card')
+        assert.equal((await pullChanges(ws)).ok, protection !== 'card', 'repeated delete/reconnect is safe')
         const index = path.join(board(), '.sync/task_1.json')
         assert.equal(fs.existsSync(index), protection !== 'none')
         if (protection === 'card') {
           assert.match(read(archive), /Local draft/)
-          assert.equal(JSON.parse(fs.readFileSync(index, 'utf8')).deleted, archive)
+          assert.equal(conflictList(board()).length, 1)
         }
         if (protection === 'asset') assert.equal(read('.archive/hero.png'), 'Local image')
-        assert.ok((await pushBoard(ws, MACHINE)).ok)
+        assert.equal((await pushBoard(ws, MACHINE)).ok, protection !== 'card')
         assert.equal(cloud.file(archive), null, 'deleted archive must not be recreated')
       } finally { release() }
       if (protection === 'running') {
@@ -1784,12 +2102,35 @@ describe('a task’s folder (#2037)', () => {
     fs.appendFileSync(path.join(board(), archive), 'Unsent draft')
     cloud.put({ [archive]: null })
     for (let i = 0; i < 2; i++) {
-      assert.ok((await pull(ws, MACHINE)).ok)
+      assert.equal((await pull(ws, MACHINE)).ok, false)
       assert.match(read(archive), /Unsent draft/)
       assert.equal(cloud.file(archive), null)
-      assert.ok(fs.existsSync(path.join(board(), '.sync/task_1.json')))
+      assert.equal(fs.existsSync(path.join(board(), '.sync/task_1.json')), i === 0)
+      assert.equal(conflictList(board()).length, 1)
       if (i === 0) fs.rmSync(path.join(board(), '.sync/task_1.json'))
     }
+  })
+
+  it('pulls a restored task over an old local archive move and saves its divergent copy (#807)', async () => {
+    await prepareBoard()
+    const archive = '.archive/1-task-1.md'
+    cloud.put({ [CARD]: null, [archive]: BODY })
+    const ws = keptBoard(cached())!
+    assert.ok((await pullChanges(ws)).ok)
+    fs.appendFileSync(path.join(board(), archive), 'Unsent draft')
+    const restored = '---\ntitle: Pricing\nstatus: todo\nrestored: 2026-11-17T01:00:00Z\n---\n' + BODY
+    cloud.put({ [archive]: null, [CARD]: restored })
+    assert.ok((await pullChanges(ws)).ok)
+    assert.equal(read(CARD), restored)
+    assert.ok(!fs.existsSync(path.join(board(), archive)))
+    const saved = fs.readdirSync(path.join(board(), '.sync/restored'))
+    assert.equal(saved.length, 1)
+    assert.match(fs.readFileSync(path.join(board(), '.sync/restored', saved[0]!, archive), 'utf8'), /Unsent draft/)
+    const record = JSON.parse(fs.readFileSync(path.join(board(), '.sync/task_1.json'), 'utf8'))
+    assert.equal(record.deleted, undefined)
+    assert.ok((await pushBoard(ws, MACHINE)).ok)
+    assert.equal(cloud.file(archive), null)
+    assert.equal(cloud.file(CARD), restored)
   })
 
   it('reclaims old orphan indexes only when Cloud confirms the task is gone (#713)', async () => {
@@ -1817,37 +2158,42 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(read('.archive/1-task-1.md'), BODY)
   })
 
-  it('runs a job on when the same line changed here and on Cloud, keeping both (#59)', async () => {
+  it('hands preflight conflicts to the task and preserves both versions if unresolved (#806)', async () => {
     await runTask('j1')
     fs.writeFileSync(path.join(board(), 'memory', 'readme.md'), 'edited by hand')
     cloud.put({ 'memory/readme.md': 'Shipped elsewhere' })
     const job = await runTask('j2')
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(read('memory/readme.md'), 'edited by hand\nShipped elsewhere')
-    assert.equal(cloud.file('memory/readme.md'), 'edited by hand\nShipped elsewhere')
+    assert.equal(job.outcome, 'failed', job.reason)
+    assert.equal(read('memory/readme.md'), 'edited by hand')
+    assert.equal(cloud.file('memory/readme.md'), 'Shipped elsewhere')
+    assert.equal(conflictList(board()).length, 1)
   })
 
-  it('drops a card here that Cloud took off the board, and sends the rest (#135)', async () => {
+  it('retains a removed card draft and refuses the entire conflicting batch (#806)', async () => {
     await runTask('j1')
     fs.writeFileSync(path.join(board(), CARD), 'edited by hand')
     fs.writeFileSync(path.join(board(), 'memory', 'readme.md'), 'Shipped here')
     cloud.put({ [CARD]: null, '.archive/1-task-1.md': 'archived' })
     const job = await runTask('j2')
-    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(job.outcome, 'failed', job.reason)
     assert.equal(cloud.file(CARD), null)
     assert.equal(cloud.file('.archive/1-task-1.md'), 'archived')
-    assert.equal(cloud.file('memory/readme.md'), 'Shipped here')
-    assert.ok(!fs.existsSync(path.join(board(), CARD)), 'the card came back')
-    assert.equal(read('.archive/1-task-1.md'), 'archived')
+    assert.equal(cloud.file('memory/readme.md'), 'Shipped')
+    assert.equal(read(CARD), 'edited by hand')
+    assert.equal(conflictList(board()).length, 1)
   })
 
-  it('keeps an edit to a file Cloud deleted that is no card (#135)', async () => {
+  it('requires an explicit decision for memory edits against deletion (#806)', async () => {
     await runTask('j1')
     fs.writeFileSync(path.join(board(), 'memory', 'readme.md'), 'edited by hand')
     cloud.put({ 'memory/readme.md': null })
     const job = await runTask('j2')
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(cloud.file('memory/readme.md'), 'edited by hand')
+    assert.equal(job.outcome, 'failed', job.reason)
+    assert.equal(cloud.file('memory/readme.md'), null)
+    assert.equal(read('memory/readme.md'), 'edited by hand')
+    const facts = conflictShow(board(), conflictList(board())[0]!.id).files[0]!
+    assert.equal(facts.reason, 'edit-delete')
+    assert.ok(facts.remote.seq > facts.base.seq)
   })
 
   it('sends a board change as it is made, close ones together, and what waited at the start (#59)', async () => {
@@ -1859,13 +2205,13 @@ describe('a task’s folder (#2037)', () => {
     await until(() => cloud.file('memory/readme.md') === 'while away')
     assert.equal(commits().length, 1)
     fs.writeFileSync(path.join(board(), 'memory', 'readme.md'), 'one')
-    fs.writeFileSync(path.join(board(), 'memory', 'agents', 'planner', 'decisions.md'), 'two')
+    fs.writeFileSync(path.join(board(), 'rules', 'proposer.md'), 'two')
     fs.writeFileSync(path.join(board(), 'todo', 'README.md'), 'generated')
     await until(() => commits().length === 2)
     await new Promise((resolve) => setTimeout(resolve, 300))
     assert.equal(commits().length, 2, 'close changes went as more than one write')
     assert.equal(cloud.file('memory/readme.md'), 'one')
-    assert.equal(cloud.file('memory/agents/planner/decisions.md'), 'two')
+    assert.equal(cloud.file('rules/proposer.md'), 'two')
     assert.ok(!cloud.board.has('projects/prj_1/todo/README.md'), 'a generated file went up')
   })
 
@@ -2092,6 +2438,72 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(unsent(cached()), false)
   })
 
+  it('keeps invalid active and archived Preview drafts while a different task creates, resumes and uploads results (#880)', async () => {
+    const archived = '.archive/3-old.md'
+    const moved = '.archive/1-task-1.md'
+    const oldArchive = '# Archived result\n\n## By `prompt-writer` agent\n\nOriginal draft.\n'
+    cloud.put({ [archived]: oldArchive })
+    await prepareBoard()
+    cloud.previewProblems = (file, content) => {
+      const relative = file.replace(/^projects\/[^/]+\//, '')
+      return numberOfCard(relative) === null ? [] : taskPreviewProblems(content, ['ui-design', 'prompts'], [], relative)
+    }
+
+    const retirement = '\n## By `ui-designer` agent\n\nLocal Preview draft.\n'
+    const archivedDraft = oldArchive + '\nUnsent archive edit.\n'
+    const manifest = cloud.file('assets/task_1.json')
+    const localManifest = JSON.stringify({ ...JSON.parse(manifest!), 'manual.png': { artifact: 'art_2', version: 1 } })
+    fs.writeFileSync(path.join(board(), CARD), BODY + retirement)
+    fs.writeFileSync(path.join(board(), archived), archivedDraft)
+    fs.writeFileSync(path.join(board(), 'todo/hero.png'), 'unsent attachment')
+    fs.writeFileSync(path.join(board(), 'assets/task_1.json'), localManifest)
+
+    const own = await runTask('j1')
+    assert.equal(own.outcome, 'failed')
+    assert.match(own.reason!, /#1 todo\/1-task-1.md:7:1.*Role sections are retired.*Use a closed Preview block/)
+    assert.doesNotMatch(own.reason!, /3-old/)
+    const first = await runTask('j2', `
+      const fs = require('fs')
+      fs.writeFileSync('todo/2-task-2.md', '# Other task\\n')
+    `, { task: 'task_2', number: 2 })
+    assert.equal(first.outcome, 'done', first.reason)
+    assert.equal(cloud.file('todo/2-task-2.md'), '# Other task\n')
+
+    // A pending archive move must keep the existing Cloud card and its status.
+    fs.renameSync(path.join(board(), CARD), path.join(board(), moved))
+    fs.renameSync(path.join(board(), 'todo/hero.png'), path.join(board(), '.archive/hero.png'))
+    const remoteArchive = oldArchive.replace('# Archived result', '# Updated archive')
+    cloud.put({ [archived]: remoteArchive })
+    const continued = await runTask('j3', `
+      const fs = require('fs')
+      fs.writeFileSync('todo/result.png', 'result')
+      fs.appendFileSync('todo/2-task-2.md', '\\n<Asset src="result.png" />\\n')
+    `, { task: 'task_2', number: 2 })
+    assert.equal(continued.outcome, 'done', continued.reason)
+    const ref = JSON.parse(cloud.file('assets/task_2.json')!)['result.png']
+    assert.equal(cloud.task.artifacts.get(ref.artifact)![ref.version - 1]!.toString(), 'result')
+    assert.equal(read(moved), BODY + retirement)
+    assert.equal(read(archived), archivedDraft)
+    assert.equal(read('.archive/hero.png'), 'unsent attachment')
+    assert.equal(read('assets/task_1.json'), localManifest)
+    assert.equal(cloud.file('assets/task_1.json'), manifest)
+    assert.equal(cloud.file(CARD), BODY)
+    assert.equal(cloud.file(moved), null)
+    assert.equal(cloud.file(archived), remoteArchive)
+    assert.ok(unsent(cached()))
+
+    fs.writeFileSync(path.join(board(), moved), (BODY + retirement).replace('## By `ui-designer` agent', '<Preview id="ui-design">') + '</Preview>\n')
+    fs.writeFileSync(path.join(board(), archived), archivedDraft.replace('## By `prompt-writer` agent', '<Preview id="prompts">') + '</Preview>\n')
+    const repaired = await pushBoard(keptBoard(cached())!, MACHINE, [moved, archived])
+    assert.ok(repaired.ok, JSON.stringify(repaired))
+    assert.equal(cloud.file(CARD), null)
+    assert.match(cloud.file(moved)!, /Local Preview draft/)
+    assert.match(cloud.file(archived)!, /Updated archive[\s\S]*Unsent archive edit/)
+    const repairedPin = JSON.parse(cloud.file('assets/task_1.json')!)['hero.png']
+    assert.equal(cloud.task.artifacts.get(repairedPin.artifact)![repairedPin.version - 1]!.toString(), 'unsent attachment')
+    assert.equal(unsent(cached()), false)
+  })
+
   it('syncs only card assets and their declared dependencies, including multipart recovery', async () => {
     await prepareBoard()
     cloud.multipartSize = 200
@@ -2314,19 +2726,21 @@ describe('a task’s folder (#2037)', () => {
       assert.equal(readHead(keptBoard(cached())!), cloud.head)
     })
 
-    it('writes only the files left as last read, deletions too, and merges one changed here', async () => {
+    it('saves incremental conflicts without refreshing local work or launching an idle agent (#806)', async () => {
       await prepareBoard()
       watch = watchBoards(MACHINE, 60_000, 60_000, 50)
-      fs.writeFileSync(path.join(board(), 'memory', 'readme.md'), 'mine')
-      cloud.put({ 'memory/readme.md': 'theirs', [CARD]: null, 'todo/2-new.md': '---\ntitle: New\n---\n' })
+      fs.writeFileSync(path.join(board(), 'memory/readme.md'), 'mine')
+      cloud.put({ 'memory/readme.md': 'theirs' })
       watch.hint('prj_1', cloud.head)
-      await until(() => fs.existsSync(path.join(board(), 'todo', '2-new.md')))
-      assert.ok(!fs.existsSync(path.join(board(), CARD)), 'a card deleted on Cloud stayed')
-      assert.match(read('todo/README.md'), /#2 New/)
-      const sent = await pushBoard(keptBoard(cached())!, MACHINE)
-      assert.ok(sent.ok, 'the file changed here held the board back')
-      await until(() => read('memory/readme.md') === 'mine\ntheirs')
-      assert.equal(cloud.file('memory/readme.md'), 'mine\ntheirs')
+      await until(() => conflictList(board()).length === 1)
+      const id = conflictList(board())[0]!.id
+      assert.equal((await pushBoard(keptBoard(cached())!, MACHINE)).ok, false)
+      assert.equal((await pullChanges(keptBoard(cached())!)).ok, false)
+      assert.equal(conflictList(board())[0]!.id, id)
+      assert.equal(read('memory/readme.md'), 'mine')
+      assert.equal(cloud.file('memory/readme.md'), 'theirs')
+      assert.equal(planned.length, 0)
+      assert.ok(unsent(cached()))
     })
 
     it('reads a folder a job holds once the job is over', async () => {
@@ -2894,10 +3308,10 @@ describe('a task’s folder (#2037)', () => {
 
   it('lands two computers’ changes to different files without merging anything', async () => {
     cloud.beforeNextCommit = () => cloud.put({ 'memory/readme.md': 'Shipped, from the other computer' })
-    const job = await runTask('j1', `require('fs').writeFileSync('memory/agents/planner/a.md', 'mine')`)
+    const job = await runTask('j1', `require('fs').writeFileSync('rules/proposer.md', 'mine')`)
     assert.equal(job.outcome, 'done', job.reason)
     assert.equal(commits().length, 1, 'a write to another file was merged')
-    assert.equal(cloud.file('memory/agents/planner/a.md'), 'mine')
+    assert.equal(cloud.file('rules/proposer.md'), 'mine')
     assert.equal(cloud.file('memory/readme.md'), 'Shipped, from the other computer')
   })
 
@@ -2910,18 +3324,23 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(read(CARD), cloud.file(CARD))
   })
 
-  it('keeps both sides when the same lines changed, and an edit against a delete', async () => {
+  it('preserves opposite requirements and the rejected atomic batch when the agent cannot resolve (#806)', async () => {
     cloud.beforeNextCommit = () => cloud.put({ [CARD]: BODY.replace('Tiers.', 'Tiers, monthly first.') })
     const job = await runTask('j1', `
       require('fs').writeFileSync('${CARD}', require('fs').readFileSync('${CARD}', 'utf8').replace('Tiers.', 'Tiers, yearly first.'))
       require('fs').writeFileSync('memory/readme.md', 'Mine')`)
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(cloud.file(CARD), BODY.replace('Tiers.', 'Tiers, yearly first.\nTiers, monthly first.'))
-    assert.equal(cloud.file('memory/readme.md'), 'Mine')
-
-    cloud.beforeNextCommit = () => cloud.put({ 'memory/readme.md': 'Edited elsewhere' })
-    assert.equal((await runTask('j2', `require('fs').rmSync('memory/readme.md')`)).outcome, 'done')
-    assert.equal(cloud.file('memory/readme.md'), 'Edited elsewhere')
+    assert.equal(job.outcome, 'failed')
+    assert.match(job.reason!, /unresolved/)
+    assert.equal(cloud.file(CARD), BODY.replace('Tiers.', 'Tiers, monthly first.'))
+    assert.equal(cloud.file('memory/readme.md'), 'Shipped')
+    const conflict = conflictShow(board(), conflictList(board())[0]!.id)
+    assert.equal(conflict.files.find(f => f.path === CARD)!.base.content, BODY)
+    assert.equal(conflict.files.find(f => f.path === CARD)!.local.content, BODY.replace('Tiers.', 'Tiers, yearly first.'))
+    assert.equal(conflict.files.find(f => f.path === 'memory/readme.md')!.conflicted, false)
+    assert.equal(read(CARD), BODY.replace('Tiers.', 'Tiers, yearly first.'))
+    assert.equal(planned.length, 2)
+    assert.equal(planned[1]!.resume, 'fresh-session')
+    assert.match(planned[1]!.prompt, /resolve-conflict/)
   })
 
   it('merges one-sided changes to repetitive files without expensive diffing', () => {
@@ -2931,13 +3350,94 @@ describe('a task’s folder (#2037)', () => {
     assert.deepEqual(mergeFile(base, base, changed), { content: changed })
     assert.deepEqual(mergeFile(base, changed, base), { content: changed })
     assert.ok(performance.now() - started < 1000, 'one-sided changes entered the expensive diff')
-    assert.deepEqual(mergeFile(base, base, null), { content: base })
-    assert.deepEqual(mergeFile(base, null, base), { content: base })
+    assert.deepEqual(mergeFile(base, base, null), { content: null })
+    assert.deepEqual(mergeFile(base, null, base), { content: null })
   })
 
-  it('merges front matter both sides changed without a key twice', () => {
+  it('preserves metadata conflicts for an explicit decision (#806)', () => {
     const card = (status: string) => `---\ntitle: A\nstatus: ${status}\n---\n\nBody\n`
-    assert.deepEqual(mergeFile(card('ready'), card('planning'), card('done')), { content: card('done') })
+    assert.deepEqual(mergeFile(card('ready'), card('planning'), card('done')), { content: card('planning'), conflict: true })
+  })
+
+  const resolveScript = `
+    const fs = require('fs'), cp = require('child_process'), path = require('path');
+    const cli = ${JSON.stringify(path.join(process.env.RUNNER_DIST ?? '', 'akb/bin/ai4kanban.mjs'))};
+    const command = (...args) => {
+      const ran = cp.spawnSync(process.execPath, [cli, '--board', process.env.AI4KANBAN_BOARD, 'raw', 'conflict', ...args, '--json'], { encoding: 'utf8' });
+      if (ran.status !== 0) throw Error(ran.stdout + ran.stderr);
+      return JSON.parse(ran.stdout);
+    };
+    for (const c of command('list').conflicts) {
+      const shown = command('show', c.id).conflict;
+      const file = path.join(process.env.AI4KANBAN_BOARD, '.sync/resolution.json');
+      fs.writeFileSync(file, JSON.stringify({ files: shown.files.filter(f => f.conflicted).map(f => ({ path: f.path, content: 'Settled cadence' })) }));
+      command('resolve', c.id, '--expect', shown.revision, '--file', file);
+    }
+  `
+  for (const when of ['preflight', 'running', 'submission']) it(`resolves ${when} conflicts inside the same task and continues automatically (#806)`, async () => {
+    cloud.put({ 'config.md': '# Board\n' })
+    await prepareBoard()
+    const original = `const fs = require('fs'); fs.appendFileSync('original-work.txt', 'once\\n'); fs.writeFileSync('.akb/kanban/memory/readme.md', 'yearly first');`
+    if (when === 'preflight') {
+      fs.writeFileSync(path.join(board(), 'memory/readme.md'), 'yearly first')
+      cloud.put({ 'memory/readme.md': 'monthly first' })
+    }
+    if (when === 'submission') cloud.beforeNextCommit = () => cloud.put({ 'memory/readme.md': 'monthly first' })
+    const gated = gatedScript(original)
+    start('', { plan: (r, prompt, cwd, resume) => {
+      const resolving = prompt.includes('resolve-conflict')
+      const closing = prompt.includes('return the saved result')
+      return fakeRuntime(resolving ? resolveScript + (closing ? '' : `; require('fs').appendFileSync('original-work.txt', 'once\\n')`)
+        : when === 'running' ? gated.script : original)(r, prompt, cwd, resume)
+    } })
+    const job = cloud.dispatch({ id: crypto.randomUUID(), task: 'task_1', project: 'prj_1', number: 1, studio: 'wf_own' })
+    if (when === 'running') {
+      await until(() => fs.existsSync(path.join(cached(), 'original-work.txt')))
+      cloud.put({ 'memory/readme.md': 'monthly first' })
+      assert.equal((await pushBoard(keptBoard(cached())!, MACHINE)).ok, false)
+      assert.equal(job.state, 'claimed')
+      assert.equal(pendingConflicts(board()).length, 1)
+      gated.release()
+    }
+    await until(() => job.state === 'finished', 10_000)
+    assert.equal(job.outcome, 'done', job.reason + '\n' + job.events.map(e => e.text).join(''))
+    assert.equal(fs.readFileSync(path.join(cached(), 'original-work.txt'), 'utf8'), 'once\n')
+    assert.equal(cloud.file('memory/readme.md'), 'Settled cadence')
+    assert.equal(pendingConflicts(board()).length, 0)
+    assert.equal(planned.length, when === 'preflight' ? 1 : 2)
+    if (planned.length === 2) assert.equal(planned[1]!.resume, planned[0]!.resume ?? 'fresh-session')
+    assert.ok(!cloud.log.some(l => l.includes('finish') && l.includes('conflict')))
+  })
+
+  it('keeps task preparation private while allowing the agent to take the sync lock (#806)', async () => {
+    await prepareBoard()
+    const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cached())
+    await withBoard(ws, async () => {
+      fs.writeFileSync(path.join(ws.board, 'memory/readme.md'), 'temporary context')
+      assert.equal((await pushBoard(ws, MACHINE)).ok, false)
+      assert.equal(cloud.file('memory/readme.md'), 'Shipped')
+      assert.equal(await withSyncLock(ws.board, async () => 'available to the agent'), 'available to the agent')
+      fs.writeFileSync(path.join(ws.board, 'memory/readme.md'), 'final context')
+    })
+    assert.ok((await pushBoard(ws, MACHINE)).ok)
+    assert.equal(cloud.file('memory/readme.md'), 'final context')
+  })
+
+  it('honors a user stop while a running task has an unresolved conflict (#806)', async () => {
+    await prepareBoard()
+    const gate = gatedScript(`require('fs').writeFileSync('.akb/kanban/memory/readme.md', 'local cadence')`)
+    start('', { plan: fakeRuntime(gate.script) })
+    const job = cloud.dispatch({ id: 'stop-conflict', task: 'task_1', project: 'prj_1', number: 1, studio: 'wf_own' })
+    await until(() => read('memory/readme.md') === 'local cadence')
+    cloud.put({ 'memory/readme.md': 'remote cadence' })
+    assert.equal((await pushBoard(keptBoard(cached())!, MACHINE)).ok, false)
+    job.stop = true
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'stopped', job.reason)
+    assert.equal(planned.length, 1)
+    assert.equal(pendingConflicts(board()).length, 1)
+    assert.equal(read('memory/readme.md'), 'local cadence')
+    assert.equal(cloud.file('memory/readme.md'), 'remote cadence')
   })
 
   it('writes nothing once the job moved to another computer', async () => {
@@ -2980,92 +3480,54 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(job.state, 'claimed')
   })
 
-  it('gives the task the workspace memory its agents share, written back in the same commit as its card (#2093, #2114)', async () => {
-    cloud.putShared({ 'memory/agents/copywriting/style.md': 'Shared', 'memory/agents/copywriting/notes.md': 'Not declared',
-      'memory/studios/video-clone/motions/pan.md': 'Pan' })
-    cloud.put({ 'memory/agents/copywriting/draft.md': 'Old draft' })
-    const job = await runTask('j1', [
-      `require('fs').appendFileSync('memory/agents/copywriting/style.md', ' + edit')`,
-      `require('fs').mkdirSync('memory/studios/carousel-post', { recursive: true })`,
-      `require('fs').writeFileSync('memory/studios/carousel-post/format-reel.md', 'Reel')`,
-      `require('fs').writeFileSync('memory/agents/copywriting/draft.md', 'Draft')`,
-      `require('fs').rmSync('memory/studios/video-clone/motions/pan.md')`,
-      `require('fs').appendFileSync('${CARD}', 'Done.')`,
-    ].join('; '))
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(commits().length, 1, 'the card and the shared memory went up apart')
-    assert.ok(!fs.existsSync(path.join(board(), 'memory', 'agents', 'copywriting', 'notes.md')), 'an undeclared workspace file reached the task')
-    assert.equal(cloud.shared('memory/agents/copywriting/style.md'), 'Shared + edit')
-    assert.equal(cloud.shared('memory/studios/carousel-post/format-reel.md'), 'Reel')
-    assert.equal(cloud.shared('memory/studios/video-clone/motions/pan.md'), null)
-    assert.equal(cloud.shared('memory/agents/copywriting/notes.md'), 'Not declared')
-    assert.equal(cloud.file('memory/studios/carousel-post/format-reel.md'), null, 'shared memory reached the project')
-    assert.equal(cloud.file('memory/agents/copywriting/draft.md'), 'Draft')
-    assert.match(cloud.file(CARD)!, /Done\.$/)
+  it('uses current Studio Notes in task replies and recovery, scoped to its board and pinned Studio (#859)', async () => {
+    const note = 'Only during Coding task discussion: titles in English, rest in Chinese.'
+    cloud.put({ 'rules/studios/wf-own.md': note, 'rules/studios/coding.md': 'Other Studio note' })
+    assert.equal((await runTask('notes-1')).outcome, 'done')
+    assert.ok(planned.at(-1)!.prompt.includes(`<rules>\n${note}\n</rules>`))
+    assert.ok(!planned.at(-1)!.prompt.includes('Other Studio note'))
+    cloud.put({ 'rules/studios/wf-own.md': 'Revised note' })
+    assert.equal((await runTask('notes-2', '', { resume: 'saved-session' })).outcome, 'done')
+    assert.ok(planned.at(-1)!.prompt.includes('Revised note'))
+    assert.ok(!planned.at(-1)!.prompt.includes(note))
+    const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1'))
+    assert.ok(!taskStudioContext({ ...ws, board: path.join(cached(), 'other-board') }).includes('Revised note'))
+    cloud.put({ 'rules/studios/wf-own.md': null })
+    assert.equal((await runTask('notes-3')).outcome, 'done')
+    assert.ok(!planned.at(-1)!.prompt.includes('Revised note'))
   })
 
-  it('reads shared memory another project’s job wrote since, and nothing of that project', async () => {
-    cloud.putShared({ 'memory/agents/copywriting/style.md': 'Shared' })
-    await runTask('j1')
-    cloud.putShared({ 'memory/agents/copywriting/style.md': 'Shared, from prj_2' })
-    cloud.put({ 'todo/2-task-2.md': 'Theirs' }, 'projects/prj_2/')
-    await runTask('j2')
-    assert.equal(read('memory/agents/copywriting/style.md'), 'Shared, from prj_2')
-    assert.ok(!fs.existsSync(path.join(board(), 'todo', '2-task-2.md')), 'another project’s card reached the board')
-    assert.ok(!fs.existsSync(path.join(board(), 'projects')), 'a workspace path reached the board')
-  })
-
-  it('merges shared memory another job changed meanwhile, on other lines (#2065)', async () => {
-    const STYLE = 'memory/agents/copywriting/style.md'
-    cloud.putShared({ [STYLE]: 'Tone: plain\nVoice: you\nLength: short\n' })
-    cloud.beforeNextCommit = () => cloud.putShared({ [STYLE]: 'Tone: plain, warm\nVoice: you\nLength: short\n' })
-    const job = await runTask('j1', `require('fs').writeFileSync('${STYLE}', 'Tone: plain\\nVoice: you\\nLength: short, one screen\\n')`)
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(commits().length, 2)
-    assert.equal(cloud.shared(STYLE), 'Tone: plain, warm\nVoice: you\nLength: short, one screen\n')
-    assert.equal(read(STYLE), cloud.shared(STYLE))
-  })
-
-  it('keeps both sides when another job changed the same line of shared memory (#2065)', async () => {
-    const STYLE = 'memory/agents/copywriting/style.md'
-    cloud.putShared({ [STYLE]: 'Tone: plain\n' })
-    cloud.beforeNextCommit = () => cloud.putShared({ [STYLE]: 'Tone: warm\n' })
-    const job = await runTask('j1', `require('fs').writeFileSync('${STYLE}', 'Tone: dry\\n'); require('fs').appendFileSync('${CARD}', 'Done.')`)
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(cloud.shared(STYLE), 'Tone: dry\nTone: warm\n')
-    assert.equal(cloud.file(CARD), `${BODY}Done.`)
-  })
-
-  it('merges a shared file another job made meanwhile under the same name (#2065)', async () => {
-    const STYLE = 'memory/agents/copywriting/style.md'
-    cloud.beforeNextCommit = () => cloud.putShared({ [STYLE]: 'Same\n' })
-    const job = await runTask('j1', `require('fs').mkdirSync('memory/agents/copywriting', { recursive: true }); require('fs').writeFileSync('${STYLE}', 'Same\\n')`)
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(cloud.shared(STYLE), 'Same\n')
-  })
-
-  it('moves a project’s copy of shared memory to the workspace, and a deleted one stays deleted (#2099)', async () => {
-    const STYLE = 'memory/agents/copywriting/style.md'
-    cloud.put({ [STYLE]: 'Project copy' })
-    assert.equal((await runTask('j1')).outcome, 'done')
-    assert.equal(cloud.shared(STYLE), 'Project copy')
-    assert.equal(cloud.file(STYLE), null)
-
-    assert.equal((await runTask('j2', `require('fs').rmSync('${STYLE}')`)).outcome, 'done')
-    assert.equal(cloud.shared(STYLE), null)
-    assert.equal((await runTask('j3')).outcome, 'done')
-    assert.ok(!fs.existsSync(path.join(board(), STYLE)), 'a deleted shared file came back')
-    assert.equal(cloud.shared(STYLE), null, 'a deleted shared file was made again')
-  })
-
-  it('drops a project’s copy of shared memory without touching the workspace’s (#2099)', async () => {
-    const STYLE = 'memory/agents/copywriting/style.md'
-    cloud.putShared({ [STYLE]: 'Shared' })
-    cloud.put({ [STYLE]: 'Project copy' })
-    assert.equal((await runTask('j1')).outcome, 'done')
-    assert.equal(cloud.file(STYLE), null)
-    assert.equal(cloud.shared(STYLE), 'Shared')
-    assert.equal(read(STYLE), 'Shared')
+  it('round-trips Preview scopes and reads them again in a recovered task (#842)', async () => {
+    const own = 'memory/previews/coding/prompts/project/style.md'
+    const shared = 'memory/previews/coding/prompts/workspace/style.md'
+    cloud.put({ [own]: 'Project preference', [shared]: 'Stale project copy', 'memory/agents/planner/skill/decisions.md': 'Module decision' })
+    cloud.putShared({ [shared]: 'Workspace preference', 'memory/previews/wf-mine/draft/workspace/rules.md': 'User Studio rule' })
+    const first = await runTask('preview-memory-1', `
+      const fs = require('fs'), assert = require('assert/strict')
+      assert.equal(fs.readFileSync('${own}', 'utf8'), 'Project preference')
+      assert.equal(fs.readFileSync('${shared}', 'utf8'), 'Workspace preference')
+      assert.equal(fs.readFileSync('memory/agents/planner/skill/decisions.md', 'utf8'), 'Module decision')
+    `)
+    assert.equal(first.outcome, 'done', first.reason)
+    const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1'))
+    const hints = taskStudioContext(ws)
+    assert.match(hints, /memory\/previews\/coding\/prompts\/project\//)
+    assert.match(hints, /memory\/previews\/coding\/prompts\/workspace\//)
+    assert.doesNotMatch(hints, /Project preference|Workspace preference|style.md/)
+    fs.writeFileSync(path.join(board(), own), 'Revised project preference')
+    fs.writeFileSync(path.join(board(), shared), 'Confirmed cross-project preference')
+    assert.equal((await pushBoard(ws, MACHINE)).ok, true)
+    assert.equal(cloud.file(own), 'Revised project preference')
+    assert.equal(cloud.shared(shared), 'Confirmed cross-project preference')
+    assert.equal(cloud.file(shared), null)
+    fs.rmSync(path.join(board(), 'memory'), { recursive: true })
+    fs.rmSync(path.join(cached(), '.akb', 'base.json'))
+    const next = await runTask('preview-memory-2', `
+      const fs = require('fs'), assert = require('assert/strict')
+      assert.equal(fs.readFileSync('${own}', 'utf8'), 'Revised project preference')
+      assert.equal(fs.readFileSync('${shared}', 'utf8'), 'Confirmed cross-project preference')
+    `)
+    assert.equal(next.outcome, 'done', next.reason)
   })
 
   it('keeps a project’s copy of shared memory edited elsewhere, and writes back the rest (#2099)', async () => {
@@ -3105,24 +3567,6 @@ describe('a task’s folder (#2037)', () => {
 })
 
 describe('the workspace’s memory files (#2093)', () => {
-  it('reads each agent’s `memoryFiles`: folders, `*` within one name, and none from a refused agent', () => {
-    const board = fs.mkdtempSync(path.join(os.tmpdir(), 'board-'))
-    const agent = (name: string, files: string) => {
-      fs.mkdirSync(path.join(board, 'agents', name), { recursive: true })
-      fs.writeFileSync(path.join(board, 'agents', name, 'AGENT.md'),
-        `---\nname: ${name}\ndescription: Helps.\nakb:\n  when: A card needs it.\n  memoryFiles:\n    ${files}\n---\n\nHelp.\n`)
-    }
-    agent('notes-keeper', 'workspace: [notes/, tone.md]')
-    agent('broken', 'shared: [tone.md]')
-    const shared = sharedMemory(board)
-    assert.ok(shared('agents/notes-keeper/notes/a/b.md'))
-    assert.ok(shared('agents/notes-keeper/tone.md'))
-    assert.ok(!shared('agents/notes-keeper/other.md'))
-    assert.ok(!shared('agents/broken/tone.md'))
-    assert.ok(shared('studios/carousel-post/format-reel.md'))
-    assert.ok(!shared('studios/carousel-post/format-x/reel.md'))
-    assert.ok(!shared('readme.md'))
-  })
 })
 
 function flowReport(job: FakeJob) {
@@ -3147,6 +3591,158 @@ describe('flow jobs (#2020)', () => {
 
   beforeEach(() => {
     cloud.task = { artifacts: new Map(), title: 'Pricing page', request: 'Two tiers, monthly and yearly.' }
+  })
+
+  it('enters the original refine despite a preflight conflict and continues after explicit synchronization (#806)', async () => {
+    cloud.put({ 'config.md': '# Board\n', 'todo/2-pricing.md': '---\ntitle: Pricing\nstudio: coding\nquestions: []\n---\n', 'memory/readme.md': 'base' })
+    const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 2, studio: 'wf_builtin_coding' }, cached())
+    assert.ok((await pull(ws, MACHINE)).ok)
+    fs.writeFileSync(path.join(ws.board, 'memory/readme.md'), 'local cadence')
+    cloud.put({ 'memory/readme.md': 'remote cadence' })
+    const gate = path.join(runnerHome(), 'refine-conflict-gate')
+    process.env.FAKE_AKB = JSON.stringify({ refine: { gates: [gate], result: 'Original refine completed.' } })
+    const job = cloud.dispatch({ id: crypto.randomUUID(), task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb: 'refine' } })
+    start()
+    await until(() => fs.existsSync(path.join(ws.board, '.fake/agent-board')))
+    assert.equal(job.state, 'claimed')
+    assert.equal(cardCalls().filter(c => c.startsWith('card refine')).length, 1)
+    const id = conflictList(ws.board)[0]!.id
+    const shown = conflictShow(ws.board, id)
+    const file = path.join(runnerHome(), 'refine-resolution.json')
+    fs.writeFileSync(file, JSON.stringify({ files: [{ path: 'memory/readme.md', content: 'Settled cadence' }] }))
+    const cli = { command: process.execPath, args: [path.join(process.env.RUNNER_DIST!, 'akb/bin/ai4kanban.mjs')], version: 'test', shim: path.join(runnerHome(), 'real-shim') }
+    const resolved = await runAkb(cli, ['--board', ws.board, 'raw', 'conflict', 'resolve', id, '--expect', shown.revision, '--file', file, '--json'], {
+      cwd: ws.cwd, board: ws.board, task: ws.task, env: { AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: MACHINE }) },
+    })
+    assert.equal(resolved.code, 0, resolved.out)
+    fs.writeFileSync(gate, '')
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(job.report?.reply, 'Original refine completed.')
+    assert.equal(cardCalls().filter(c => c.startsWith('card refine')).length, 1)
+    assert.equal(cloud.file('memory/readme.md'), 'Settled cadence')
+  })
+
+  const savedConflict = async () => {
+    cloud.put({ 'config.md': '# Board\n', 'memory/readme.md': 'base' })
+    const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 2, studio: 'wf_builtin_coding' }, cached())
+    assert.ok((await pull(ws, MACHINE)).ok)
+    fs.writeFileSync(path.join(ws.board, 'memory/readme.md'), 'local cadence')
+    cloud.put({ 'memory/readme.md': 'remote cadence' })
+    assert.equal((await pushBoard(keptBoard(cached())!, MACHINE)).ok, false)
+    fs.mkdirSync(path.join(ws.board, 'todo'), { recursive: true })
+    fs.mkdirSync(path.join(ws.board, '.archive'), { recursive: true })
+    const saved = conflictList(ws.board)[0]!.id
+    return { ws, saved }
+  }
+
+  for (const action of ['create', 'refine', 'implement'] as const) it(`starts ${action} with saved conflicts and a missing local card (#846)`, async () => {
+    const verb = action === 'implement' ? 'create' : action
+    const command = action === 'implement' ? 'implement' : 'refine'
+    const { ws, saved } = await savedConflict()
+    const original = '---\ntitle: Cloud pricing\nstudio: coding\nstatus: implementing\npreview_approved: true\nquestions: []\n---\n\nActual saved request.\n\n- [x] Shipped work\n'
+    const baseBefore = JSON.parse(fs.readFileSync(path.join(cached(), '.akb/base.json'), 'utf8'))
+    cloud.put({ 'memory/not-for-this-task.md': 'New remote context' })
+    if (verb === 'refine') {
+      cloud.put({ 'todo/2-cloud-pricing.md': original, 'assets/task_1.json': JSON.stringify({ '.assets/2/request.txt': { artifact: 'request', version: 1 } }) })
+      cloud.task.artifacts.set('request', [Buffer.from('Actual attachment')])
+    }
+    const gate = path.join(runnerHome(), 'new-task-conflict-gate')
+    process.env.FAKE_AKB = JSON.stringify({ [command]: { gates: [gate], status: 'ready', result: 'Original request completed.', landed: 'Original request completed.' } })
+    const job = cloud.dispatch({ id: crypto.randomUUID(), task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb, skip_plan: action === 'implement' } })
+    start()
+    await until(() => job.state === 'finished' || fs.existsSync(path.join(ws.board, '.fake/runs.json')))
+    assert.equal(job.state, 'claimed', job.reason)
+    assert.equal(cardCalls().filter(c => c.startsWith(`card ${command}`)).length, 1)
+    const file = path.join(ws.board, 'todo', verb === 'create' ? '2-pricing-page.md' : '2-cloud-pricing.md')
+    assert.match(fs.readFileSync(file, 'utf8'), verb === 'create' ? /Two tiers, monthly and yearly/ : /Actual saved request.[\s\S]*- \[x\] Shipped work/)
+    assert.equal(conflictList(ws.board)[0]!.id, saved)
+    assert.equal(readHead(ws), baseBefore.head_seq)
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(cached(), '.akb/base.json'), 'utf8')).files['projects/prj_1/memory/readme.md'], baseBefore.files['projects/prj_1/memory/readme.md'])
+    assert.equal(fs.existsSync(path.join(ws.board, 'memory/not-for-this-task.md')), false)
+    if (verb === 'refine') assert.equal(fs.readFileSync(path.join(projectStateDir(ws.board), 'assets/2/request.txt'), 'utf8'), 'Actual attachment')
+    const shown = conflictShow(ws.board, saved)
+    assert.equal(shown.files.find(f => f.path === 'memory/readme.md')!.local.content, 'local cadence')
+    assert.equal(shown.files.find(f => f.path === 'memory/readme.md')!.remote.content, 'remote cadence')
+    const resolution = path.join(runnerHome(), 'new-task-resolution.json')
+    fs.writeFileSync(resolution, JSON.stringify({ files: [{ path: 'memory/readme.md', content: 'Settled cadence' }] }))
+    const cli = { command: process.execPath, args: [path.join(process.env.RUNNER_DIST!, 'akb/bin/ai4kanban.mjs')], version: 'test', shim: path.join(runnerHome(), 'real-shim') }
+    const resolved = await runAkb(cli, ['--board', ws.board, 'raw', 'conflict', 'resolve', saved, '--expect', shown.revision, '--file', resolution, '--json'], {
+      cwd: ws.cwd, board: ws.board, task: ws.task, env: { AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: MACHINE }) },
+    })
+    assert.equal(resolved.code, 0, resolved.out)
+    if (verb === 'create') {
+      assert.equal((await pushBoard(keptBoard(cached())!, MACHINE)).ok, false, 'preparation must remain private after resolution')
+      assert.equal((await push({ ...ws, task: 'other', cloudTask: 'other', number: 3 }, { id: 'other', machineId: MACHINE })).ok, false)
+      await assert.rejects(withBoard(ws, async send => send({ id: 'other', machineId: MACHINE })), /preparing task content/)
+      assert.equal(cloud.file('todo/2-pricing-page.md'), null)
+    }
+    assert.equal(await withSyncLock(ws.board, async () => 'available'), 'available')
+    fs.writeFileSync(gate, '')
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(job.report?.reply, 'Original request completed.')
+    assert.equal(cardCalls().filter(c => c.startsWith(`card ${command}`)).length, 1)
+    assert.equal(calls().filter(c => c[0] === 'raw' && c[1] === 'create').length, verb === 'create' ? 1 : 0)
+    assert.equal(cloud.file('memory/readme.md'), 'Settled cadence')
+    assert.equal(pendingConflicts(ws.board).length, 0)
+    if (verb === 'refine') assert.match(cloud.file('todo/2-cloud-pricing.md')!, /preview_approved: true[\s\S]*- \[x\] Shipped work/)
+    const resumed = await flowJob('resume-saved', { verb, resume: true, skip_plan: action === 'implement' })
+    assert.equal(resumed.outcome, 'done', resumed.reason)
+    assert.equal(cardCalls().filter(c => c.startsWith(`card ${command}`)).length, 1)
+    assert.equal(calls().filter(c => c[0] === 'raw' && c[1] === 'create').length, verb === 'create' ? 1 : 0)
+  })
+
+  it('refuses unavailable or ended tasks without preparing or launching a repair (#846)', async () => {
+    const { ws, saved } = await savedConflict()
+    cloud.put({ 'todo/2-cloud-pricing.md': '---\ntitle: Real request\n---\nSaved work' })
+    const base = fs.readFileSync(path.join(cached(), '.akb/base.json'), 'utf8')
+    for (const status of ['gone', 'down', 'unauthenticated', 'forbidden', 'done', 'cancelled', 'wrong-project', 'offline']) {
+      cloud.taskStatus.task_1 = status
+      cloud.task.project = status === 'wrong-project' ? 'prj_other' : 'prj_1'
+      cloud.offline = status === 'offline'
+      const result = await pull(ws, MACHINE)
+      assert.equal(result.ok, false, status)
+      assert.notEqual(!result.ok && result.code, 'board_content_conflict', status)
+      assert.equal(fs.existsSync(path.join(ws.board, 'todo/2-cloud-pricing.md')), false, status)
+      assert.equal(fs.readFileSync(path.join(cached(), '.akb/base.json'), 'utf8'), base)
+    }
+    cloud.offline = false
+    assert.equal(conflictList(ws.board)[0]!.id, saved)
+    assert.equal(planned.length, 0)
+    assert.equal(cloud.jobs.size, 0)
+  })
+
+  for (const stop of [false, true]) it(`preserves a new task when its conflict is ${stop ? 'stopped' : 'unresolved'} (#846)`, async () => {
+    const { ws, saved } = await savedConflict()
+    const gate = path.join(runnerHome(), 'unfinished-conflict-gate')
+    process.env.FAKE_AKB = JSON.stringify({ refine: { ...(stop ? { gates: [gate] } : {}), result: 'Saved draft.' } })
+    const job = cloud.dispatch({ id: 'unfinished-new-task', task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb: 'create' } })
+    start()
+    if (stop) {
+      await until(() => fs.existsSync(path.join(ws.board, '.fake/runs.json')))
+      job.stop = true
+    }
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, stop ? 'stopped' : 'failed', job.reason)
+    if (!stop) assert.match(job.reason!, /conflict.*preserved|unresolved/i)
+    assert.match(fs.readFileSync(path.join(ws.board, 'todo/2-pricing-page.md'), 'utf8'), /Two tiers, monthly and yearly/)
+    assert.equal(conflictList(ws.board)[0]!.id, saved)
+    assert.equal(fs.readFileSync(path.join(ws.board, 'memory/readme.md'), 'utf8'), 'local cadence')
+    assert.equal(cloud.file('memory/readme.md'), 'remote cadence')
+    assert.equal(cloud.file('todo/2-pricing-page.md'), null)
+    assert.equal(calls().filter(c => c[0] === 'raw' && c[1] === 'create').length, 1)
+    assert.equal(cardCalls().filter(c => c.startsWith('card refine')).length, 1)
+  })
+
+  it('replans a reopened completed task in a new session without replaying its delivery (#807)', async () => {
+    cloud.put({ 'todo/2-pricing.md': '---\ntitle: Pricing\nstatus: todo\nquestions: []\nrestored: 2026-11-17T01:00:00Z\n---\n\n- [x] Saved work\n' })
+    const job = await flowJob('reopen', { verb: 'revise', card: 2, text: 'Prepare a new plan for review.', replan: true }, { resume: 'old-build-session' })
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.ok(cardCalls().some(c => c.startsWith('card revise 2 ') && c.includes('--new-session')))
+    assert.ok(!cardCalls().some(c => c.includes('--session old-build-session') || c.startsWith('card implement')))
+    assert.ok(!calls().some(c => c[0] === 'delivery' && c[1] === 'resume'))
+    assert.match(cloud.file('todo/2-pricing.md')!, /- \[x\] Saved work/)
   })
 
   it('运行时跨机续跑不检查摘要，保留目录并使用目标工具', async () => {
@@ -3208,15 +3804,62 @@ describe('flow jobs (#2020)', () => {
     assert.match(cloud.file('todo/2-pricing-page.md') ?? '', /^---\ntitle: Pricing page\n/)
   })
 
-  it('技能缺失且属于用户目录时拒绝启动任务', async () => {
+  it('cleans managed skills before runs without requiring a replacement', async () => {
     await flowJob('j1', { verb: 'create' })
-    const skill = path.join(cached(), '.claude/skills/kanban/SKILL.md')
-    fs.rmSync(skill)
-    const before = cardCalls().length
+    const dir = path.join(cached(), '.claude/skills/kanban')
+    assert.equal(fs.existsSync(dir), false)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), '<!-- ai4kanban managed -->\nOld skill')
     const job = await flowJob('j2', { verb: 'refine' })
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(fs.existsSync(dir), false)
+    assert.equal((await flowJob('j3', { verb: 'refine' })).outcome, 'done')
+    assert.equal(fs.existsSync(dir), false)
+  })
+
+  it('starts tasks with empty or dangling legacy skills and when cleanup is denied', async () => {
+    await flowJob('j1', { verb: 'create' })
+    const dir = path.join(cached(), '.claude/skills/kanban')
+    fs.mkdirSync(dir, { recursive: true })
+    assert.equal((await flowJob('j2', { verb: 'refine' })).outcome, 'done')
+    fs.rmdirSync(dir)
+    fs.symlinkSync(path.join(cached(), 'missing-skill'), dir)
+    assert.equal((await flowJob('j3', { verb: 'refine' })).outcome, 'done')
+    assert.ok(fs.lstatSync(dir).isSymbolicLink())
+    fs.unlinkSync(dir)
+    fs.mkdirSync(dir)
+    const file = path.join(dir, 'SKILL.md')
+    fs.writeFileSync(file, '<!-- ai4kanban managed -->')
+    const unlink = fs.unlinkSync
+    const denied = mock.method(fs, 'unlinkSync', (target: fs.PathLike) => {
+      if (target === file) throw Object.assign(new Error('denied'), { code: 'EACCES' })
+      unlink(target)
+    })
+    try {
+      const job = await flowJob('j4', { verb: 'refine' })
+      assert.equal(job.outcome, 'done', job.reason)
+      assert.ok(fs.existsSync(file))
+    } finally { denied.mock.restore() }
+  })
+
+  it('implements an explicit empty review plan once and reports delivery (#818)', async () => {
+    const taskReview = { plan: [], stages: [], pending_plan: null, revision: 0 }
+    cloud.task.review = taskReview
+    const job = await flowJob('j818', { verb: 'create', review_stages: [] }, { taskReview })
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(job.report?.deliveryCompleted, true)
+    assert.deepEqual(cardCalls(), [`card implement 2 --follow --events --json --board ${board()}`])
+  })
+
+  it('refuses execution when its assigned review stage became locked (#818)', async () => {
+    const taskReview = { plan: [{ id: 'a', title: 'A', after: [], previews: [] }], stages: [{ id: 'a', status: 'available' as const, revision: 0, snapshot: null }], pending_plan: null, revision: 0 }
+    cloud.task.review = { ...taskReview, stages: [{ ...taskReview.stages[0]!, status: 'blocked' }] }
+    const job = await flowJob('j818', { verb: 'create', review_stages: ['a'] }, { taskReview })
     assert.equal(job.outcome, 'failed')
-    assert.match(job.reason ?? '', /无法准备.*缺少可读/)
-    assert.equal(cardCalls().length, before)
+    assert.match(job.reason ?? '', /authorization changed/)
+    assert.equal(job.report?.processesStopped, true)
+    assert.equal(job.finishedLogEnded, true)
+    assert.deepEqual(cardCalls(), [])
   })
 
   it('builds a card made unplanned straight after writing it (#2139)', async () => {
@@ -3277,39 +3920,6 @@ describe('flow jobs (#2020)', () => {
     process.env.FAKE_AKB = JSON.stringify({ implement: { spent: { context: { used: 120000 } } } })
     await new Promise((r) => setTimeout(r, 5))
     assert.equal((await flowJob('j2', { verb: 'implement', card: 2 })).report?.context, undefined)
-  })
-
-  it('learns the workspace\'s rejections before planning, and marks them learned once sent back (#2067)', async () => {
-    const at = '2026-10-20T09:00:00.000Z'
-    cloud.rejections = {
-      tasks: [{ id: 'task_9', number: 9, title: 'Mobile app', request: 'An iOS app.', reason: 'we never build mobile', cancelled_at: at }],
-      triage: [
-        { id: 'tri_5', project: 'prj_2', title: 'SSO', text: 'For teams.', source_task: null, state: 'dismissed', dismissed_reason: 'not for teams', dismissed_at: at, created_at: at },
-        { id: 'tri_6', project: 'prj_2', title: 'Dark mode', text: 'Night.', source_task: null, state: 'open', dismissed_reason: null, dismissed_at: null, created_at: at },
-      ],
-    }
-    const synced = { 'triage/dismissed/learned.md': '---\ntitle: Learned\nreviewed_at: "2026-10-19 09:00"\n---\n\nOld.\n', 'triage/archived/made.md': '---\ntitle: Made\n---\n\nDone.\n' }
-    cloud.put(synced)
-    const spent = { usage: { input: 1, cacheCreation: 0, cacheRead: 0, output: 1 }, costUsd: 0.1 }
-    process.env.FAKE_AKB = JSON.stringify({ 'review-dismissals': { spent }, refine: { spent } })
-    const job = await flowJob('j1', { verb: 'create' })
-    assert.equal(job.outcome, 'done', job.reason)
-    const order = calls().map((c) => c[0] === 'raw' ? `raw ${c[1]}` : c[0]).filter((c) => c === 'review-dismissals' || c === 'raw create')
-    assert.deepEqual(order, ['review-dismissals', 'raw create'])
-    const learned = JSON.parse(fs.readFileSync(path.join(board(), '.fake', 'learned'), 'utf8'))
-    assert.deepEqual(learned.args.slice(0, 2), ['review-dismissals', '--follow'])
-    assert.deepEqual(Object.keys(learned.seen).sort(), ['.archive/.sync/9-mobile-app.md', 'triage/archived/dark-mode.md', 'triage/dismissed/sso.md'])
-    assert.match(learned.seen['.archive/.sync/9-mobile-app.md'], /rejected: true\nrejected_reason: we never build mobile\nrejected_at: 2026-10-20 \d\d:00\nrejected_by: user/)
-    assert.match(learned.seen['triage/dismissed/sso.md'], /dismissed_by: user\ndismissed_reason: not for teams/)
-    assert.deepEqual(cloud.reviewed, [{ tasks: ['task_9'], triage: ['tri_5', 'tri_6'] }])
-    assert.equal(cloud.file('memory/agents/planner/rejected.md'), '- **No mobile app**: we never build one (#9)\n')
-    assert.ok(!fs.existsSync(path.join(board(), '.archive', '.sync')) && !fs.existsSync(path.join(board(), 'triage', 'dismissed', 'sso.md')), 'what the review read was left behind')
-    for (const [p, content] of Object.entries(synced)) {
-      assert.equal(fs.readFileSync(path.join(board(), p), 'utf8'), content, `${p} was not put back`)
-      assert.equal(cloud.file(p), content, `${p} went up as deleted`)
-    }
-    assert.ok(![...cloud.board.keys()].some((p) => p.startsWith('projects/prj_1/.archive/') || p === 'projects/prj_1/triage/dismissed/sso.md'))
-    assert.equal(job.report?.costUsd, 0.2)
   })
 
   it('plans anyway when the review fails, leaving the rejections to learn (#2067)', async () => {
@@ -3699,7 +4309,8 @@ describe('flow jobs (#2020)', () => {
       process.env.FAKE_AKB = '{}'
       await builds('j3')
       priorBuild({ resumeId: undefined })
-      await builds('j4')
+      const missing = await flowJob('j4', { verb: 'implement', card: 2, resume: true })
+      assert.equal(missing.outcome, 'failed')
     })
 
     it('says in a sentence why a resume cannot go on, and reports a finished card as done (#419)', async () => {
@@ -3918,7 +4529,7 @@ describe('flow jobs (#2020)', () => {
     assert.equal(job.outcome, 'done', job.reason)
     assert.ok(fs.existsSync(path.join(project, '.akb', 'kanban', 'todo', '2-pricing-page.md')))
     assert.ok(!fs.existsSync(cached()))
-    assert.ok(fs.existsSync(path.join(project, '.claude', 'skills', 'kanban', 'SKILL.md')), 'the kanban skill was not installed')
+    assert.equal(fs.existsSync(path.join(project, '.claude', 'skills', 'kanban')), false)
     assert.equal(spawnSync('git', ['-C', project, 'status', '--porcelain'], { encoding: 'utf8' }).stdout, '', 'the skill or board reached git')
   })
 
@@ -4098,49 +4709,6 @@ describe('chat memory reviewed on the Runner (#2065)', () => {
     assert.ok(!fs.existsSync(record('task_2')))
   })
 
-  it('reviews once a day the archived chats it answered last, writing each memory to its own layer', async () => {
-    said('task_1', ['msg_1', 'Always plain words.'], ['j1', 'Noted.'])
-    said('task_9', ['msg_9', 'Answered here, not ours any more.'], ['j9', 'Ok.'])
-    cloud.chats = [{ task: 'task_1', project: 'prj_1', number: 1, archivedAt: ARCHIVED }]
-    start()
-    await until(() => [...cloud.jobs.values()].some((j) => j.review && j.state === 'finished'))
-    const job = [...cloud.jobs.values()].find((j) => j.review)!
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.deepEqual(cloud.reviews, [{ project: 'prj_1', tasks: ['task_1'], runtime: 'codex', model: 'gpt-5' }])
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(board(), '.fake', 'reviewed'), 'utf8')), ['task_1:1'])
-    assert.equal(cloud.shared('memory/agents/copywriting/style.md'), 'Style: Always plain words. / Noted.\n')
-    assert.equal(cloud.file('memory/agents/copywriting/style.md'), null, 'workspace memory reached the project')
-    assert.equal(cloud.file('memory/agents/copywriting/writing.md'), 'Writing: Always plain words. / Noted.\n')
-    await until(() => reviewed().tasks?.task_1?.message === 'j1')
-
-    // Not again the same day, and the next day only once something new was said.
-    await new Promise((r) => setTimeout(r, 300))
-    assert.equal(cloud.reviews.length, 1)
-    fs.writeFileSync(path.join(runnerHome(), 'chats', 'reviewed.json'), JSON.stringify({ ...reviewed(), checkedAt: 0 }))
-    await until(() => reviewed().checkedAt > 0)
-    assert.equal(cloud.reviews.length, 1)
-    said('task_1', ['msg_2', 'And short.'], ['j2', 'Noted.'])
-    fs.writeFileSync(path.join(runnerHome(), 'chats', 'reviewed.json'), JSON.stringify({ ...reviewed(), checkedAt: 0 }))
-    await until(() => reviewed().tasks?.task_1?.message === 'j2')
-    assert.equal(cloud.reviews.length, 2)
-  })
-
-  it('reviews the chat as Cloud keeps it, with what another computer answered (#2110)', async () => {
-    said('task_1', ['msg_2', 'And short.'], ['j2', 'Noted.'])
-    cloud.taskChats = { task_1: [
-      { id: 'msg_1', role: 'user', body: 'Always plain words.', created_at: new Date().toISOString() },
-      { id: 'msg_a1', role: 'agent', body: 'Noted there.', created_at: new Date().toISOString() },
-      { id: 'msg_2', role: 'user', body: 'And short.', created_at: new Date().toISOString() },
-      { id: 'msg_a2', role: 'agent', body: 'Noted.', created_at: new Date().toISOString() },
-    ] }
-    cloud.chats = [{ task: 'task_1', project: 'prj_1', number: 1, archivedAt: ARCHIVED }]
-    start()
-    await until(() => [...cloud.jobs.values()].some((j) => j.review && j.state === 'finished'))
-    assert.equal([...cloud.jobs.values()].find((j) => j.review)!.outcome, 'done')
-    assert.equal(cloud.file('memory/agents/copywriting/writing.md'), 'Writing: Always plain words. / Noted there. / And short. / Noted.\n')
-    await until(() => reviewed().tasks?.task_1?.message === 'msg_a2')
-  })
-
   const reviewOf = async () => {
     cloud.chats = [{ task: 'task_1', project: 'prj_1', number: 1, archivedAt: ARCHIVED }]
     start()
@@ -4149,95 +4717,39 @@ describe('chat memory reviewed on the Runner (#2065)', () => {
     assert.equal(job.outcome, 'done', job.reason)
     await until(() => reviewed().tasks?.task_1?.archivedAt === ARCHIVED)
   }
+  for (const failure of ['conversation', 'decisions']) it(`leaves memory review retryable after ${failure} failure (#842)`, async () => {
+    cloud.chats = [{ task: 'task_1', project: 'prj_1', number: 1, archivedAt: ARCHIVED }]
+    cloud.taskChats.task_1 = [{ id: 'msg_1', role: 'user', body: 'Always use plain labels.', created_at: ARCHIVED }]
+    const readChat = async () => ({ ok: false as const, error: 'Unavailable' })
+    start('', { api: { ...api,
+      ...(failure === 'conversation' ? { readChat } : {}),
+      ...(failure === 'decisions' ? { readDecisions: async () => ({ ok: false as const, error: 'Unavailable' }) } : {}),
+    } })
+    await until(() => [...cloud.jobs.values()].some(j => j.review && j.state === 'finished'))
+    const job = [...cloud.jobs.values()].find(j => j.review)!
+    assert.equal(job.outcome, 'failed')
+    const file = path.join(runnerHome(), 'chats', 'reviewed.json')
+    assert.equal(fs.existsSync(file) ? reviewed().tasks.task_1 : undefined, undefined)
+  })
+  it('marks a review only after Preview memory is synchronized (#842)', async () => {
+    await reviewOf()
+    assert.match(cloud.shared('memory/previews/coding/prompts/workspace/style.md')!, /Style:/)
+    assert.match(cloud.file('memory/previews/coding/prompts/project/rules.md')!, /Writing:/)
+  })
+
+  it('does not mark a review whose shared memory has an unresolved conflict (#842)', async () => {
+    const shared = 'memory/previews/coding/prompts/workspace/style.md'
+    cloud.beforeNextCommit = () => cloud.putShared({ [shared]: 'Changed elsewhere' })
+    cloud.chats = [{ task: 'task_1', project: 'prj_1', number: 1, archivedAt: ARCHIVED }]
+    start()
+    await until(() => [...cloud.jobs.values()].some(j => j.review && j.state === 'finished'))
+    const job = [...cloud.jobs.values()].find(j => j.review)!
+    assert.equal(job.outcome, 'failed')
+    assert.equal(cloud.shared(shared), 'Changed elsewhere')
+    const file = path.join(runnerHome(), 'chats', 'reviewed.json')
+    assert.equal(fs.existsSync(file) ? reviewed().tasks.task_1 : undefined, undefined)
+  })
   const hour = (h: number) => `2026-10-30T0${h}:00:00.000Z`
-
-  it('reviews the comments left on a task among its chat, by when they were said, across pages (#212)', async () => {
-    cloud.taskChats = { task_1: [
-      { id: 'msg_1', role: 'user', body: 'Why tiers?', created_at: hour(1) },
-      { id: 'msg_a1', role: 'agent', body: 'Two kinds of buyer.', created_at: hour(3) },
-    ] }
-    cloud.taskDecisions = { task_1: [
-      { id: 'dec_1', comment: 'Drop the free tier.', created_at: hour(2) },
-      { id: 'dec_2', comment: '  ', created_at: hour(4) },
-      { id: 'dec_3', comment: 'Good now.', created_at: hour(5) },
-    ] }
-    await reviewOf()
-    assert.deepEqual(lines().map((l) => [l.id, l.role, l.text]), [
-      ['msg_1', 'user', 'Why tiers?'],
-      ['dec_1', 'user', 'Drop the free tier.'],
-      ['msg_a1', 'agent', 'Two kinds of buyer.'],
-      ['dec_3', 'user', 'Good now.'],
-    ])
-    assert.equal(reviewed().tasks.task_1.message, 'dec_3')
-  })
-
-  it('keeps the comments of a task with no chat (#212)', async () => {
-    cloud.taskChats = { task_1: [] }
-    cloud.taskDecisions = { task_1: [{ id: 'dec_1', comment: 'Drop the free tier.', created_at: hour(2) }] }
-    await reviewOf()
-    assert.deepEqual(lines().map((l) => [l.id, l.role, l.text]), [['dec_1', 'user', 'Drop the free tier.']])
-  })
-
-  it('reviews on what it holds when the comments cannot be read (#212)', async () => {
-    cloud.taskChats = { task_1: [{ id: 'msg_1', role: 'user', body: 'Why tiers?', created_at: hour(1) }] }
-    cloud.failDecisions = true
-    await reviewOf()
-    assert.deepEqual(lines().map((l) => l.id), ['msg_1'])
-  })
-
-  it('reviews an archived task with no chat once, and again only if it is archived anew (#165)', async () => {
-    cloud.chats = [{ task: 'task_1', project: 'prj_1', number: 1, archivedAt: ARCHIVED }]
-    start()
-    await until(() => [...cloud.jobs.values()].some((j) => j.review && j.state === 'finished'))
-    await until(() => reviewed().tasks?.task_1?.archivedAt === ARCHIVED)
-    const job = [...cloud.jobs.values()].find((j) => j.review)!
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(board(), '.fake', 'reviewed'), 'utf8')), ['task_1:1'])
-    assert.deepEqual(reviewed().tasks.task_1, { archivedAt: ARCHIVED })
-
-    const again = () => fs.writeFileSync(path.join(runnerHome(), 'chats', 'reviewed.json'), JSON.stringify({ ...reviewed(), checkedAt: 0 }))
-    again()
-    await until(() => reviewed().checkedAt > 0)
-    assert.equal(cloud.reviews.length, 1)
-    const later = '2026-10-31T09:00:00.000Z'
-    cloud.chats = [{ ...cloud.chats[0]!, archivedAt: later }]
-    again()
-    await until(() => reviewed().tasks?.task_1?.archivedAt === later)
-    assert.equal(cloud.reviews.length, 2)
-  })
-
-  it('marks a batch with nothing to read reviewed, with no reply and no spend, and leaves it the next day (#185)', async () => {
-    process.env.FAKE_AKB = JSON.stringify({ 'review-memory': { empty: true } })
-    cloud.chats = [{ task: 'task_1', project: 'prj_1', number: 1, archivedAt: ARCHIVED }]
-    start()
-    await until(() => [...cloud.jobs.values()].some((j) => j.review && j.state === 'finished'))
-    await until(() => reviewed().tasks?.task_1?.archivedAt === ARCHIVED)
-    const job = [...cloud.jobs.values()].find((j) => j.review)!
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(job.report?.reply, undefined)
-    assert.equal(job.report?.usage, undefined)
-    assert.equal(job.report?.costUsd, undefined)
-    assert.ok(!fs.existsSync(path.join(board(), '.fake', 'reviewed')))
-
-    fs.writeFileSync(path.join(runnerHome(), 'chats', 'reviewed.json'), JSON.stringify({ ...reviewed(), checkedAt: 0 }))
-    await until(() => reviewed().checkedAt > 0)
-    assert.equal(cloud.reviews.length, 1)
-  })
-
-  it('forgets what it reviewed of a task Cloud stops listing', async () => {
-    fs.mkdirSync(path.dirname(record()), { recursive: true })
-    fs.writeFileSync(path.join(runnerHome(), 'chats', 'reviewed.json'), JSON.stringify({ checkedAt: 0, tasks: { task_old: { archivedAt: ARCHIVED } } }))
-    start()
-    await until(() => reviewed().checkedAt > 0)
-    assert.deepEqual(reviewed().tasks, {})
-  })
-
-  it('reviews nothing Cloud says another computer answered last', async () => {
-    said('task_1', ['msg_1', 'Mine?'], ['j1', 'Yes.'])
-    start()
-    await until(() => fs.existsSync(path.join(runnerHome(), 'chats', 'reviewed.json')) && reviewed().checkedAt > 0)
-    assert.deepEqual(cloud.reviews, [])
-  })
 })
 
 describe('connection tests (#2074)', () => {
@@ -4376,7 +4888,10 @@ describe('the real runtimes', () => {
     assert.deepEqual(claudeModels(path.join(dir, 'missing')), [])
   })
 
-  it('reads the cached model lists again on every heartbeat, keeping the sign-in (#86)', async () => {
+  it('refreshes model lists in the background, keeping the sign-in (#86, #791)', async (t) => {
+    const now = Date.now.bind(Date)
+    let elapsed = 0
+    t.mock.method(Date, 'now', () => now() + elapsed)
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-config-'))
     const was = process.env.CLAUDE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = dir
@@ -4391,6 +4906,7 @@ describe('the real runtimes', () => {
         fetchedAt: 1,
         catalog: { surface: 'cc', config: { models: [{ id: 'claude-new-1', short_name: 'New', section: 'main' }] } },
       }))
+      elapsed = 31_000
       await until(() => claude()?.models?.[0]?.id === 'claude-new-1')
       assert.equal(claude()!.loggedIn, true)
       assert.deepEqual(report('cursor')!.models, [{ id: 'c1', name: 'C1' }])
@@ -4768,7 +5284,7 @@ it('旧尝试的进度拒绝迟到时不停止新的执行尝试 (#722)', async 
       return { ...fakeRuntime('setInterval(() => {}, 1000)')(runtime, prompt, cwd, resume),
         converse: async (_child, event) => {
           event({ kind: 'phase', data: { phase: 'preparing', at: new Date().toISOString() } })
-          if (attempt === 1) { await until(() => firstPending); return { ok: false, error: 'initialize timed out' } }
+          if (attempt === 1) { await until(() => firstPending); return { ok: false, error: disconnect.reason, failure: disconnect } }
           secondStarted = true
           await until(() => oldReturned)
           await new Promise(resolve => setImmediate(resolve))

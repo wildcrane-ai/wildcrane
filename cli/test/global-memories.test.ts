@@ -77,19 +77,6 @@ describe('the catalog', () => {
 })
 
 describe('what a run is told', () => {
-  it('lists each memory it keeps, and skips a name no memory has', () => {
-    agent('researcher', ['  when: A card needs it.', '  memory: [competitors, pricing]'])
-    const ask = buildAsk({ action: 'spec', id: card, title: 'Compare boards', specAgent: 'researcher' })
-    assert.match(ask, /——— global memories ———/)
-    assert.match(ask, /- `competitors` — What competing products offer[^\n]*competitor: `[^`]*memory\/competitors\/`; rules: `[^`]*raw memory-file competitors/)
-    assert.doesNotMatch(ask, /pricing/)
-    assert.doesNotMatch(ask, /last_read/)
-  })
-
-  it('says nothing when the agent keeps none', () => {
-    agent('plain', ['  when: A card needs it.'])
-    assert.doesNotMatch(buildAsk({ action: 'spec', id: card, title: 'Compare boards', specAgent: 'plain' }), /global memories/)
-  })
 })
 
 describe('`akb raw memory-file`', () => {

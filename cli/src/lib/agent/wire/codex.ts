@@ -1,7 +1,7 @@
+import type { ExecutionFailure } from '../retry'
+import { codexFailure, executionFailure } from './failures'
 import { bounded, CONVERSATION_MS } from '../../shared/conversation'
 import type { RunClient, ClientTurn, TurnEnd } from './client'
-import { BACKGROUND_WAIT } from '../settings'
-import { createBackgroundWait, backgroundWaitMessage } from './background'
 import { randomUUID } from 'node:crypto'
 import { batch, CODEX_SETTLE_MS, settlementPrompt, type Cleanup, type ManagedWork } from './codex-background'
 import { codexWork } from './codex-work'
@@ -123,18 +123,16 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
   let provider: string | undefined
   let resolve!: (end: TurnEnd) => void
   const done = new Promise<TurnEnd>(r => { resolve = r })
-  const deadline = createBackgroundWait(BACKGROUND_WAIT.minutes * 60_000, () => { note('Necessary background work exceeded its waiting limit.'); end(backgroundWaitMessage(BACKGROUND_WAIT.minutes)) })
   const emit = (type: string, extra: Json = {}) => {
     io.log(renderer.push(JSON.stringify({ type, ...extra }) + '\n'))
     for (const event of renderer.events?.() ?? []) io.event?.(event)
   }
-  const end = (error?: string) => {
+  const end = (error?: string, classified?: ExecutionFailure) => {
     if (ended) return
     ended = true
     clearTimeout(timer)
     clearTimeout(startupTimer)
     clearTimeout(settleTimer)
-    deadline.close()
     io.signal?.removeEventListener('abort', cancelled)
     count(0)
     io.stdout.off('close', closed)
@@ -149,10 +147,17 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     const costUsd = cost === undefined ? child.costUsd : cost + (child.costUsd ?? 0)
     const failure = error || (cleanup.status === 'unconfirmed' ? cleanup.detail : undefined) || work.work().filter(w => !w.intentionalStop && ['failed', 'interrupted'].includes(w.status)).map(w => w.result || `Background work ${w.id} ${w.status}.`).join('\n') || undefined
     if (failure) io.event?.({ kind: 'error', data: { text: failure } })
-    resolve({ ok: !failure, error: failure, cleanup, result: renderer.result(), replyParts: renderer.replyParts?.(), usage: combinedUsage, context, costUsd, costIncomplete: child.costIncomplete || (cost === undefined && child.costUsd !== undefined) || undefined })
+    resolve({ ok: !failure, error: failure, failure: failure ? classified ?? { code: 'execution_failed', level: 3, reason: failure } : undefined, cleanup, result: renderer.result(), replyParts: renderer.replyParts?.(), usage: combinedUsage, context, costUsd, costIncomplete: child.costIncomplete || (cost === undefined && child.costUsd !== undefined) || undefined })
   }
-  const closed = () => { note('Connection lost; managed cleanup is unconfirmed.'); end('Codex connection closed before all work and results finished.') }
-  const inputFailed = (e: Error) => { note('Connection input failed; managed cleanup is unconfirmed.'); end(e.message) }
+  const closed = () => {
+    const reason = 'Codex connection closed before all work and results finished.'
+    if (work.work().some(w => ['running', 'unknown'].includes(w.status))) note('Connection lost; managed cleanup is unconfirmed.')
+    end(reason, { code: 'connection_lost', level: 2, reason })
+  }
+  const inputFailed = (e: Error) => {
+    if (work.work().some(w => ['running', 'unknown'].includes(w.status))) note('Connection input failed; managed cleanup is unconfirmed.')
+    end(e.message, executionFailure(e))
+  }
   io.stdout.once('close', closed)
   io.stdin.once('error', inputFailed)
   const note = (detail: string) => {
@@ -243,7 +248,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     const pending = settlement
     if (!pending || ended) return
     const necessary = pending.work.some(w => work.entries.get(w.id)?.status === 'running' && (w.kind === 'agent' || pending.polled.has(w.id)))
-    if (necessary) { clearTimeout(settleTimer); settleTimer = undefined; deadline.pending(); return }
+    if (necessary) { clearTimeout(settleTimer); settleTimer = undefined; return }
     if (settleTimer) return
     settleTimer = setTimeout(() => {
       if (ended) return
@@ -291,7 +296,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
         return
       }
       const awaited = work.work().filter(w => w.status === 'running' && w.disposition !== 'keep')
-      if (awaited.length) { count(awaited.length); deadline.pending(); schedule(); return }
+      if (awaited.length) { count(awaited.length); schedule(); return }
       count(0)
       await finishManaged(Date.now() + CODEX_SETTLE_MS.verify)
     } catch (e) {
@@ -330,6 +335,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       if (msg.method === 'turn/completed') { work.observeTurn(source, obj(p.turn)); armCleanup() }
       childUpdates(); return
     }
+    if (submitted && /\/delta$/.test(msg.method ?? '') && str(p.delta)) io.activity?.()
     const turnId = str(p.turnId) || str(obj(p.turn).id)
     if (historicalTurns.has(turnId) || currentTurn && turnId && currentTurn !== turnId) return
     if (msg.method === 'turn/started') { if (!submitted || completedTurns.has(turnId)) return; currentTurn = turnId; active = true; began(); return }
@@ -354,14 +360,22 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       context = { used: (Number(last.inputTokens) || 0) + (Number(last.outputTokens) || 0), ...(Number(token.modelContextWindow) > 0 ? { limit: Number(token.modelContextWindow) } : {}) }
       io.gotContext?.(context)
     }
-    if (msg.method === 'error' && p.willRetry !== true) end(str(obj(p.error).message) || 'Codex failed.')
+    if (msg.method === 'error' && p.willRetry !== true) {
+      const failure = codexFailure(p.error, 'Codex failed.')
+      end(failure.reason, failure)
+    }
     if (msg.method === 'turn/completed') {
       const turn = obj(p.turn)
       const id = str(turn.id)
       if (completedTurns.has(id)) return
       completedTurns.add(id)
       for (const raw of list(turn.items)) { work.observe(threadId, raw); item(raw, true) }
-      if (turn.status !== 'completed') { end(str(obj(turn.error).message) || `Codex turn ${str(turn.status)}.`); return }
+      if (turn.status !== 'completed') {
+        const reason = str(obj(turn.error).message) || `Codex turn ${str(turn.status)}.`
+        const failure = turn.status === 'failed' ? codexFailure(turn.error, reason) : { code: 'turn_stopped', level: 3 as const, reason }
+        end(reason, failure)
+        return
+      }
       active = false
       clearTimeout(settleTimer)
       settleTimer = undefined
@@ -380,13 +394,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     phase('initialized')
     rpc.notify('initialized')
     const mode = options.mode ?? (io.resumeId ? 'resume' : undefined)
-    let response: Json
-    try {
-      response = await bounded(rpc.call(`thread/${mode ?? 'start'}`, { cwd: options.cwd ?? io.cwd, ...(mode ? { threadId: options.threadId ?? io.resumeId } : {}) }), preparingUntil - Date.now(), `Codex thread/${mode ?? 'start'} timed out.`)
-    } catch (e) {
-      if (mode && e instanceof RpcError && /no rollout found for thread id/i.test(e.message)) throw Error(`Thread not found: ${e.message}`)
-      throw e
-    }
+    const response = await bounded(rpc.call(`thread/${mode ?? 'start'}`, { cwd: options.cwd ?? io.cwd, ...(mode ? { threadId: options.threadId ?? io.resumeId } : {}) }), preparingUntil - Date.now(), `Codex thread/${mode ?? 'start'} timed out.`)
     const thread = obj(response.thread)
     for (const turn of list(thread.turns)) historicalTurns.add(str(turn.id))
     threadId = str(thread.id)
@@ -403,6 +411,9 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     if (Date.now() >= preparingUntil) throw Error('Codex preparation timed out.')
     phase('ready')
     await start(io.prompt, options.images)
-  } catch (e) { end(e instanceof Error ? e.message : String(e)) }
+  } catch (e) {
+    const failure = e instanceof RpcError ? codexFailure(e.data, e.message) : executionFailure(e)
+    end(failure.reason, failure)
+  }
   return done
 }

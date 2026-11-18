@@ -92,7 +92,8 @@ describe("a run's cost", () => {
   }
 
   async function resumed(prev: RunRecord, usd: number): Promise<RunRecord> {
-    const opened = await openResume(prev.sessionId)
+    let opened = await openResume(prev.sessionId)
+    if ('error' in opened && opened.reason === 'runNoSession') opened = await openResume(prev.sessionId, { fresh: true })
     if ('error' in opened) throw new Error(opened.error)
     return watch(opened.run, usd)
   }

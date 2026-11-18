@@ -100,57 +100,6 @@ describe('the pick reaching the run', () => {
     )
   })
 
-  it('keeps task instructions and guides without a board skill on any runtime (#771)', () => {
-    config({
-      ...BOARD,
-      runtimes: [...BOARD.runtimes, ...HARNESSES.map((h) => runtime(h.name, h.name, {}))],
-    })
-    fs.mkdirSync(path.join(root, 'docs', 'kanban', 'todo'), { recursive: true })
-    const requests: [AgentRequest, RegExp][] = [
-      [{ action: 'implement', id: 1, studio: 'coding' }, /Implement task 1.*guide implement/],
-      [{ action: 'implement', description: 'Ship the change.' }, /Build this: "Ship the change\.".*guide implement/],
-      [{ action: 'implement', plan: 'plan.md' }, /Build the approved plan at `plan\.md`.*guide implement/],
-      [{ action: 'archive', id: 1 }, /Archive task 1.*guide archive/],
-      [{ action: 'edit', id: 1, notes: 'Use tabs.' }, /Revise task 1.*Use tabs\..*guide revise/],
-      [{ action: 'clarify', id: 1 }, /Plan task 1.*guide refine/],
-      [{ action: 'prune-memory' }, /Prune this board's memory.*guide prune-memory/],
-      [{ action: 'review-memory' }, /Review what this board's conversations settled.*guide review-memory/],
-      [{ action: 'review-dismissals' }, /Learn what the user does not want.*guide review-rejections/],
-      [{ action: 'describe-project' }, /Describe this project.*guide describe-project/],
-      [{ action: 'reflect', cards: [1] }, /These tasks have just been completed.*guide reflect/],
-      [{ action: 'spec', id: 1, specAgent: 'tech-stack-advisor' }, /preview agent on task 1.*guide preview-agent/],
-      [{ action: 'approve', id: 1 }, /Task 1.*has been approved: write the previews/],
-      [{ action: 'resolve', id: 1 }, /Apply my answers.*task 1.*guide resolve/],
-    ]
-    const picks = [undefined, ...BOARD.runtimes.map((r) => r.id), ...HARNESSES.map((h) => h.name)]
-    for (const picked of picks) {
-      for (const [req, expected] of requests) {
-        const ask = { ...req, runtime: picked }
-        for (const prompt of [buildAsk(ask), buildPrompt(ask), restartPrompt(ask)].filter((p) => p !== undefined)) {
-          assert.doesNotMatch(prompt, /(?:^|\s)(?:\$kanban|\/(?:skill:)?kanban)\b|Use the kanban skill/i, `${picked}: ${req.action}`)
-          assert.match(prompt, expected, `${picked}: ${req.action}`)
-        }
-      }
-    }
-    for (const folder of ['.agents', '.claude']) {
-      assert.equal(fs.existsSync(path.join(root, folder, 'skills', 'kanban')), false)
-    }
-  })
-
-  it('is what the pictures follow too — the CLI spawned decides where they go (#517)', () => {
-    // The builder runs Codex, which takes a flag per file, so its own prompt says nothing
-    // about them; picked onto a Claude Code row the same run must NAME them, or the pictures
-    // reach neither the words nor the command line.
-    const build: AgentRequest = { action: 'implement', id: 1, title: 'card 1', studio: 'coding', pictures: ['/a.png'] }
-    assert.doesNotMatch(buildPrompt(build), /picture came/)
-    assert.match(buildPrompt({ ...build, runtime: 'strong' }), /A picture came with this[\s\S]*\/a\.png/)
-    // And the other way: a Claude Code run reads a path out of the words, and one picked onto
-    // Codex leaves them to the command line.
-    const card: AgentRequest = { action: 'prune-memory', pictures: ['/a.png'] }
-    assert.match(buildPrompt(card), /A picture came with this/)
-    assert.doesNotMatch(buildPrompt({ ...card, runtime: 'cheap' }), /picture came/)
-  })
-
   it('refuses a runtime this board does not have rather than quietly running another', () => {
     const opened = create('nonesuch')
     assert.ok('error' in opened && /no runtime called "nonesuch"/.test(opened.error))

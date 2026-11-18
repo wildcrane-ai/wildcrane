@@ -18,11 +18,13 @@
 import type { LocalReplyPart } from '../../shared/reply-parts'
 import type { Readable, Writable } from 'node:stream'
 
+import type { ExecutionFailure } from '../retry'
 import type { RunEvent } from './events'
 import type { ContextWindow, TokenUsage } from '../types'
 
 /** One turn, from the pipes it is held over to the things it reports back. */
 export interface ClientTurn {
+  activity?: () => void
   signal?: AbortSignal
   /** The command's own streams. The client owns the conversation on both: this stdout is a
    *  protocol, not a log, and nothing else reads it for meaning. The runner listens to it
@@ -68,6 +70,7 @@ export interface TurnEnd {
   result?: string
   /** Why it stopped, in the agent's own words. Never our guess at one. */
   error?: string
+  failure?: ExecutionFailure
   /** What the turn consumed, when the agent counted it. */
   usage?: TokenUsage
   /** How full the context window was when the turn ended (#675) — the prompt the last

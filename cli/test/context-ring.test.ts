@@ -92,6 +92,12 @@ describe('the window a model runs in', () => {
     assert.equal(contextLimit('kimi', 'kimi-k2-thinking'), 262_144)
   })
 
+  it('does not borrow another provider’s window for AGy aliases (#824)', () => {
+    for (const model of ['claude-opus-4-5-20251101', 'anthropic/claude-opus-4-5', 'kimi-k2-thinking']) {
+      assert.equal(contextLimit('antigravity', model), undefined)
+    }
+  })
+
   it('answers nothing for a model the catalogue has never heard of', () => {
     assert.equal(contextLimit('claude-code', 'claude-something-unreleased'), undefined)
     assert.equal(contextLimit('claude-code', ''), undefined)

@@ -7,7 +7,7 @@
 // dependency-free ESM file at `cli/dist/kanban.mjs`: what `akb` runs, what the npm tarball
 // carries, and what the Runner carries a copy of.
 //
-// 构建产物不入库；薄技能由 Runner 和插件同源携带。
+// 构建产物不入库。
 
 import fs from 'node:fs'
 import path from 'node:path'

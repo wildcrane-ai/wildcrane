@@ -56,25 +56,6 @@ export interface LoginProbe {
  *  wrong `args` fails the run on an unexpected argument. */
 export type ImageInput = { as: 'message' } | { as: 'args'; args(file: string): string[] }
 
-/** What a run's failure looked like, in the signals the board holds when one closes (#525).
- *
- *  `failure` is what this connector's own stream said went wrong (`StreamRenderer.failure`);
- *  `result` is the last thing the agent said before it stopped; `offStream` is the last line
- *  the CLI itself printed outside its event stream. A run can end with none of the three. */
-export interface RunFailure {
-  failure?: string
-  result?: string
-  offStream?: string
-}
-
-/** A provider failure that will pass on its own, as a harness recognised it (#525). */
-export interface TransientFailure {
-  /** What went wrong, in the provider's own words — one line, shown while the run waits. */
-  reason: string
-  /** How long the provider asked to be left alone, in ms, where it said so. */
-  retryAfterMs?: number
-}
-
 export interface Harness
   extends Omit<HarnessOption, 'binary' | 'installed' | 'version' | 'gaps' | 'runs' | 'values' | 'secretsSet' | 'ignored'> {
   /** The flags to append to the configured argv. `argv` is what the user's command
@@ -192,20 +173,8 @@ export interface Harness
    *  own prompt, which is what the context ring is drawn from. A connector that counts only
    *  a running total does NOT report context: a total is not what the model is holding. */
   reports: ('cost' | 'tokens' | 'model' | 'context')[]
-  /** True when a rate limit ends the run instead of waiting it out. A CLI that retries a 429
-   *  by default holds its card for as long as it retries, which on a weekly limit is most of
-   *  an hour — so a connector with a switch for it turns retries off in `env()` and says so
-   *  here. False is not a fault: most of these CLIs have no such switch. */
+  /** True when CLI configuration or the renderer’s rateLimit signal ends a limited run. */
   stopsOnRateLimit: boolean
-  /** Reads this connector's own failure output and says whether the provider merely
-   *  stumbled (#525). Undefined is the answer for everything it does not recognise, and a
-   *  connector that declares nothing here never retries — its runs end exactly as they do
-   *  today.
-   *
-   *  Written from failure output this board CAPTURED, never from a guess at a format: the
-   *  fixtures are in cli/test/agent-retry.test.ts, and a CLI that changes its wording is
-   *  caught there rather than on a user's run. */
-  transient?(failure: RunFailure): TransientFailure | undefined
   /** How this connector's CLI is asked whether it is logged in, and the command that logs
    *  the user back in (#392). Left out by a connector whose runs don't use a CLI login —
    *  then nothing is probed for it and no warning about it ever appears. */

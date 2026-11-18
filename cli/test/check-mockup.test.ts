@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url'
 import { test } from 'node:test'
 
 const cli = process.cwd()
-const shipped = path.resolve(cli, '../official/agents/ui-designer/scripts/check-mockup.mjs')
+const shipped = path.resolve(cli, '../official/studios/coding/scripts/check-mockup.mjs')
 
 test('the standalone checker freezes the current preview renderer and dependency lock', async () => {
   const generator = pathToFileURL(path.join(cli, 'scripts/build-mockup-check.mjs')).href

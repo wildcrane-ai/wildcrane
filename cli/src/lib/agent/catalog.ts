@@ -143,6 +143,8 @@ function spellings(model: string): string[] {
  *  never been pulled or has never heard of it. `harness` is which connector named the model,
  *  and picks the providers its ids belong to. */
 export function contextLimit(harness: string, model: string | undefined): number | undefined {
+  // agy model aliases do not establish the serving model or its window.
+  if (harness === 'antigravity') return undefined
   if (!model?.trim()) return undefined
   const limits = readCache()?.limits
   if (!limits) return undefined

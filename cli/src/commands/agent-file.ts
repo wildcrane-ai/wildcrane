@@ -1,4 +1,3 @@
-import { frozenPreviewFile } from '../lib/agent/preview-progress'
 // ---- agent-file ------------------------------------------------------------
 //
 // Print one file from an agent's own folder (#860), its AGENT.md included (#1308). A built-in
@@ -31,7 +30,7 @@ export function cmdAgentFile(askedName: string, askedFile: string): MoveResult {
     })
   }
   // A project agent still on the old name keeps its rules in SKILL.md.
-  const text = frozenPreviewFile(agent.name, file) ?? agent.file(file) ?? (file === AGENT_FILE ? agent.file('SKILL.md') : null)
+  const text = agent.file(file) ?? (file === AGENT_FILE ? agent.file('SKILL.md') : null)
   if (text === null) die(`can't read \`${file}\` from the \`${agent.name}\` agent`, { kind: 'no-such-agent-file', agent: agent.name, file })
   say(text)
   return { agent: agent.name, file, text }

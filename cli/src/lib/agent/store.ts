@@ -1,3 +1,4 @@
+import { readFailure, readRetryPlan } from './retry'
 
 import { executionOf } from '../cloud/execution'
 import fs from 'node:fs'
@@ -146,6 +147,9 @@ function parseStore(): Store {
       ok: typeof entry.ok === 'boolean' ? entry.ok : undefined,
       code: entry.code ?? null,
       error: typeof entry.error === 'string' ? entry.error : undefined,
+      failure: readFailure(entry.failure),
+      validationFailure: readFailure(entry.validationFailure),
+      retryPause: entry.retryPause,
       blocker: readBlocker(entry.blocker),
       // A run that never reported a cost shows none, rather than a zero it didn't earn.
       costUsd: typeof entry.costUsd === 'number' && entry.costUsd >= 0 ? entry.costUsd : undefined,
@@ -244,9 +248,6 @@ function readReasons(raw: unknown): RunReason[] | undefined {
   return reasons.length ? reasons : undefined
 }
 
-// The retry a run is part of (#525). All four numbers or nothing: a half-written one would
-// let a chain count attempts against a window it never had, which is a card held for
-// longer than the policy allows.
 function readRetry(raw: unknown): RunRetry | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const r = raw as Partial<RunRetry>
@@ -256,7 +257,7 @@ function readRetry(raw: unknown): RunRetry | undefined {
     typeof r.reason === 'string' && !!r.reason &&
     typeof r.at === 'number' && typeof r.since === 'number'
   return whole
-    ? { attempt: r.attempt as number, of: r.of as number, reason: r.reason as string, at: r.at as number, since: r.since as number }
+    ? { attempt: r.attempt as number, of: r.of as number, reason: r.reason as string, at: r.at as number, since: r.since as number, pending: readRetryPlan(r.pending, r.attempt as number), launching: r.launching === true || undefined }
     : undefined
 }
 
@@ -398,26 +399,11 @@ function readStudio(raw: unknown): FrozenStudio | undefined {
   const box = raw as Record<string, unknown>
   const id = text(box.id)
   if (!id) return undefined
-  const rows = (value: unknown): { agent: string; extra: string }[] =>
-    (Array.isArray(value) ? value : []).flatMap((one) => {
-      if (!one || typeof one !== 'object' || Array.isArray(one)) return []
-      const row = one as Record<string, unknown>
-      const agent = text(row.agent)
-      return agent ? [{ agent, extra: typeof row.extra === 'string' ? row.extra : '' }] : []
-    })
-  // A delivery frozen before #2152 kept `stages`: its plan hooks are its previews, and its
-  // execute lead what lands it. One frozen under #2152 kept its previews in rounds.
-  const stages = box.stages && typeof box.stages === 'object' ? (box.stages as Record<string, Record<string, unknown> | undefined>) : {}
-  const lead = text(stages.execute?.lead)
-  const previews = Array.isArray(box.previews) ? rows(box.previews.flat()) : stages.plan ? rows(stages.plan.helpers) : []
-  const land = Array.isArray(box.land) ? rows(box.land) : lead ? [{ agent: lead, extra: '' }] : []
-  return {
-    id,
-    name: typeof box.name === 'string' ? box.name : '',
-    ...(box.needsArtifact === true ? { needsArtifact: true } : {}),
-    previews,
-    land,
-  }
+  const previews = (Array.isArray(box.previews) ? box.previews : []).flatMap(one => {
+    const p = one as Record<string, unknown>
+    return typeof p?.id === 'string' && typeof p.instructions === 'string' ? [{ id: p.id, instructions: p.instructions }] : []
+  })
+  return { id, name: typeof box.name === 'string' ? box.name : '', needsArtifact: box.needsArtifact === true, previews, rules: typeof box.rules === 'string' ? box.rules : '' }
 }
 
 const text = (value: unknown): string | undefined =>

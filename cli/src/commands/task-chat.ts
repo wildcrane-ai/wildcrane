@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises'
-import { cloud, taskRef, taskUrl } from './task'
+import { cloud, taskRef, taskUrl, type TaskLocation } from './task'
 import { answer } from '../lib/board-cli'
 import { BoardError, CommandExit, say } from '../lib/io'
 import { readLanguage } from '../lib/machine/settings'
@@ -24,7 +24,7 @@ interface Task { key: string; status: string }
 interface Job { id: string; state: string; outcome: string | null; reason?: string | null; reply?: string | null; finishedAt?: string | null }
 interface Reply { id: string | null; state: string; failure: string | null; execution: Chat['execution'] }
 interface Snapshot { task: Task; reply: Reply; messages: Message[]; total: number; truncated: boolean }
-export interface ChatOptions { limit?: number; all?: boolean; follow?: boolean; stop?: boolean; json?: boolean }
+export interface ChatOptions extends TaskLocation { limit?: number; all?: boolean; follow?: boolean; stop?: boolean; json?: boolean }
 
 const text = (en: string, zh: string) => readLanguage() === 'zh' ? zh : en
 const states: Record<string, [string, string]> = {
@@ -80,7 +80,7 @@ function showSnapshot(value: Snapshot): void {
 }
 
 async function read(id: string, opts: ChatOptions, signal?: AbortSignal): Promise<{ route: string; chat: Chat; value: Snapshot }> {
-  const route = `/v1/tasks/${encodeURIComponent(await taskRef(id))}`
+  const route = `/v1/tasks/${encodeURIComponent(await taskRef(id, opts))}`
   const [task, chat] = await Promise.all([cloud<Task>('GET', route, undefined, signal), cloud<Chat>('GET', `${route}/chat`, undefined, signal)])
   return { route, chat, value: snapshot(task, chat, opts) }
 }

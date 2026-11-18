@@ -164,11 +164,11 @@ describe('the card format contract', () => {
       const old = valid.replace('## Scope', `## ${title}\nOld text.\n\n## Scope`)
       assert.ok(validateSpec(file, old).some((e) => e.rule === 'section-name'), title)
     }
-    const preview = '## By `ui-designer` agent\n\n'
+    const preview = '<Preview id="ui-design">\nSaved output.\n</Preview>\n\n'
     const human = valid.replace('<!-- agent -->', '## Worth noting after implementation\n\n' + preview + '<!-- agent -->')
     assert.deepEqual(validateSpec(file, human), [])
     assert.ok(validateSpec(file, valid.replace('## Todo', preview + '## Todo')).some((e) => e.rule === 'section-half'))
-    assert.ok(validateSpec(file, human.replace('## Worth noting after implementation', '## Worth noting after implementation\n\n' + preview)).some((e) => e.rule === 'duplicate-section'))
+    assert.ok(validateSpec(file, human.replace('## Worth noting after implementation', '## Worth noting after implementation\n\n' + preview)).some((e) => e.rule === 'preview-id'))
   })
 
   it('allows one optional acceptance subsection inside Scope', () => {
@@ -304,7 +304,7 @@ describe('the card format contract', () => {
   })
 
   it('validates specialist sections while ignoring examples inside code fences', () => {
-    const example = '\n## By `ui-designer` agent\n\n### Layout\n\n````md\n```\n## Scope\n<!-- agent -->\n<Mockup broken>\n```\n````\n'
+    const example = '\n<Preview id="ui-design">\n\n### Layout\n\n````md\n```\n## Scope\n<!-- agent -->\n<Mockup broken>\n```\n````\n</Preview>\n'
     assert.deepEqual(validateSpec(file, valid.replace('<!-- agent -->', example + '\n<!-- agent -->')), [])
     assert.ok(validateSpec(file, valid + '\n```md\ntext').some((e) => e.rule === 'code-fence'))
   })

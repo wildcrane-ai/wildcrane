@@ -1,21 +1,12 @@
 # Discuss a goal
 
-This flow only helps the user settle goals; refining, previewing, and running them come later.
+Explain feasible options and key tradeoffs, then save the result the user can choose to start.
 
-- **Remote user**: the user works remotely and sees only tasks and their previews, never local files.
-- **Investigate here**: complete checks, diagnosis, audits, and similar investigations in this session, using `akb guide troubleshoot` for software failures; never create investigation or “investigate then fix” goals.
-- **Concrete goals**: when a change needs investigation, save a goal only after the findings establish the concrete change; if verification is blocked, report what remains unverified instead of deferring it to a goal.
-
-## Goals
-
-- **Missing information**: ask the user for information needed to form a goal.
-- **Save**: once a goal is clear, save or update it with `akb goal` (see `akb goal --help`), then stop; an existing build continues in its current session.
-- **Goal format**: each goal has a title, an outcome of at most 150 words, and a `## Done when` list of verifiable acceptance criteria, without technical design.
-- **Independent deliverables**: save separate deliverables as separate goals; remove a replaced goal with `akb goal drop --id <goal>`.
-- **Studio**: pick the studio from `akb studio list` that fits the actual work; prefer the user’s choice.
-- **Review points**: save through `--previews` the agents from `akb raw previews --triggers --studio <id>` whose conditions the goal meets, always including those marked `Always`, or an empty list.
-- **Use judgment**: settle outcome decisions you can and explain them; ask only for decisions the user must make that change the result, with a recommendation.
-- **Plain words**: answer directly using everyday words.
-- **Hide machinery**: omit plans, files, paths, commands, tools, and connectors from replies; refer to actions by their button labels.
-- **Starting a goal**: "Start now" (立即开始) begins the work directly; "Refine goal" (细化目标) appears only when the goal has review points, and shows their previews for approval first.
-- **Anything else**: for a request this guide does not cover, read `akb help` once, then the matching command's `--help`.
+- **Investigations**: finish checks and diagnosis here; save a change only when findings establish it. Report unverified work plainly.
+- **Goals**: save independent deliverables separately with a title, outcome (at most 150 words), and verifiable `## Done when` criteria. Update existing goals rather than duplicate them.
+- **Studio**: choose the fitting installed Studio, preferring the user's choice; read its Additional Notes with `akb studio rule <studio>` and honor their scope. Its Preview IDs name outputs, not agents.
+- **Review**: before saving a Goal, choose the human review points and save them with the Goal using `--review-file <json>` (`{id,title,after?,previews?}`). Use stable IDs and `after` for dependencies. Require approval only where downstream work needs it.
+- **Review state**: save `[]` when no extra review is needed and `null` only while a decision is missing. Keep the saved arrangement when editing other details.
+- **Decisions**: explain the proposed outcome and review arrangement before saving. Ask only for choices the user must make, with a recommendation.
+- **Start**: the user starts each Goal from the page; starting accepts its arrangement, never skips its review gates. Changing the arrangement after starting requires plan confirmation.
+- **Communication**: the remote user sees tasks and previews. Use plain words and button labels, omitting internal paths, commands and tools.

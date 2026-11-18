@@ -107,8 +107,8 @@ export async function queryPreviews(studio: string, workspace?: string) {
   const list = await studios(workspace)
   const flow = list.find((w) => w.id === studio || shortStudioId(w.id) === studio)
   if (!flow) die(`No studio \`${studio}\` here.`)
-  if (!flow.previews) die('Preview agents are unavailable; update Runner and try again.')
-  const agents = flow.previews.map((p) => ({ name: p.agent, when: p.when || null }))
-  say(agents.length ? agents.map((p) => `${p.name}\n  ${p.when ?? 'Always'}`).join('\n') : 'This studio has no preview agent. Ask for none.')
-  return { agents, problems: [] }
+  if (!flow.previews) die('Preview outputs are unavailable; update Runner and try again.')
+  const previews = flow.previews.map(({ id, instructions }) => ({ id, instructions }))
+  say(previews.map(p => `${p.id}\n  ${p.instructions}`).join('\n'))
+  return { previews, problems: [] }
 }

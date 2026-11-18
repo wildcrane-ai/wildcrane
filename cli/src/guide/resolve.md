@@ -30,7 +30,7 @@ again, keep or `--update` the question instead of dropping it. Once no question 
 that agent, request each matching agent listed below it whose section is missing or says it
 is waiting.
 
-When an answer selects one of several options in a preview agent's section, remove the rejected
+When an answer selects one of several options in a Preview block, remove the rejected
 options and their spec-tmp files.
 
 ## Say what the answers did to a build in flight

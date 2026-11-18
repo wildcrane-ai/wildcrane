@@ -69,10 +69,6 @@ it('requires ownership and paired full software results', async () => {
   process.env[RUN_ENV] = 'first'
   await refuses(root, ['archive', '1'], /delivery complete/)
 })
-it('asks a merged commit only of a land agent declaring akb.merges', () => {
-  patch((d) => { d.base = sha; d.studio!.land = [{ agent: 'blog-writer', extra: '' }] })
-  assert.equal(completeDelivery(deliveryId).finished, true)
-})
 it('lets the builder finish without a commit outside git', () => {
   assert.equal(findDelivery(deliveryId)?.base, undefined)
   assert.equal(completeDelivery(deliveryId).finished, true)
@@ -96,24 +92,14 @@ it('records explicit completion with open questions', async () => {
     '--recommended-option', 'Grant this account access', '--option', 'Use another account'])
   assert.equal(completeDelivery(deliveryId, { commit: sha, branch: 'main' }).finished, true)
 })
-it('records studio steps in order and retains the earlier code result', async () => {
-  patch((d) => { d.studio!.land = [{ agent: 'builder', extra: '' }, { agent: 'blog-writer', extra: '' }]; d.rules = { builder: 'Builder rule', 'blog-writer': 'Writer rule' } })
-  assert.equal(completeDelivery(deliveryId, { commit: sha, branch: 'main' }).finished, false)
-  assert.ok(fs.existsSync(card))
-  assert.equal(completeDelivery(deliveryId, { commit: sha, branch: 'main' }).finished, false)
+it('completes the ordinary task once without a Studio land role', async () => {
+  assert.equal(agentForRun({ action: 'implement', id: 1 }), undefined)
+  assert.equal(completeDelivery(deliveryId, { commit: sha, branch: 'main' }).finished, true)
   await closeRun('first', { status: 'done' })
-  const next = nextDeliveryRun(deliveryId)!
-  assert.equal(next.deliveryId, deliveryId)
-  assert.equal(agentForRun(next), 'blog-writer')
-  assert.equal(ruleFor(next, findDelivery(deliveryId)!.rules), 'Writer rule')
-  assert.doesNotMatch(buildPrompt(next), /you, the `builder` agent/)
-  open('second')
-  process.env[RUN_ENV] = 'second'
-  assert.equal(completeDelivery(deliveryId).finished, true)
-  assert.equal(findDelivery(deliveryId)?.landing?.commit, sha)
+  assert.equal(nextDeliveryRun(deliveryId), undefined)
 })
 it('records explicit completion without Todo or Output prerequisites', () => {
-  patch((d) => { d.studio!.needsArtifact = true; d.studio!.land = [{ agent: 'blog-writer', extra: '' }] })
+  patch((d) => { d.studio!.needsArtifact = true })
   fs.appendFileSync(card, '\n- [ ] Verify output\n- [x] Output: `missing/article.md`\n')
   assert.equal(completeDelivery(deliveryId).finished, true)
 })
@@ -239,4 +225,10 @@ it('replays the durable completion receipt when a legacy writer drops live recei
   patch((d) => { delete d.completions })
   assert.deepEqual(completeDelivery(deliveryId, { commit: sha, branch: 'main' }), result)
   assert.equal(findDelivery(deliveryId)?.completions?.length, 1)
+})
+
+it('refuses a late completion against a restored card', () => {
+  fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replace('status: todo', `status: todo\nrestored: ${new Date(Date.now() + 1000).toISOString()}`))
+  assert.throws(() => completeDelivery(deliveryId, { commit: sha, branch: 'main' }), /predates task restoration/)
+  assert.ok(fs.existsSync(card))
 })

@@ -22,12 +22,12 @@ import type { HarnessSetting } from '../../cli/src/lib/agent/types'
 import type { RunEvent, StreamRenderer, TurnEnd } from '../../cli/src/lib/agent/wire'
 import { obj, str } from '../../cli/src/lib/agent/wire/json'
 import { connect } from '../../cli/src/lib/agent/wire/rpc'
+import { ModelLists, type Model, type ModelSource } from './model-list'
 import { RUNTIMES, type Job, type RuntimeReport, type SettingDecl } from './api'
 
 const HARNESSES = Object.fromEntries(RUNTIMES.map((name) => [name, ALL.find((h) => h.name === name)!])) as Record<Job['runtime'], Harness>
 
 const LOGIN_PROBE_MS = 5_000
-const MODELS_MS = 30_000
 
 /** What one job spawns. */
 export interface Plan {
@@ -42,7 +42,8 @@ export interface Plan {
   renderer?: StreamRenderer
   /** The one turn, held over the child's pipes. The turn's end is the job's: the child is a
    *  server and is ended after it. */
-  converse?: (child: ChildProcess, event: (e: RunEvent) => void, restart?: boolean, prepareUntil?: number, signal?: AbortSignal) => Promise<TurnEnd>
+  background?: () => number | undefined
+  converse?: (child: ChildProcess, event: (e: RunEvent) => void, restart?: boolean, prepareUntil?: number, signal?: AbortSignal, activity?: () => void) => Promise<TurnEnd>
   /** True for stderr lines the runtime prints on every run and that say nothing. */
   quiet(line: string): boolean
   /** The id a later job resumes this session by, once known. */
@@ -115,13 +116,15 @@ export function plan(runtime: Job['runtime'], prompt: string, cwd: string, resum
     let named: string | undefined
     return {
       managedProcess: client.managedProcess,
+      background: client.background,
       startNote: note,
       command: started[0]!,
       args: started.slice(1),
       env,
-      converse: (child, event, restart = true, prepareUntil, signal) =>
+      converse: (child, event, restart = true, prepareUntil, signal, activity) =>
         client.turn({
           signal,
+          activity,
           stdout: child.stdout!,
           stdin: child.stdin!,
           prompt,
@@ -170,8 +173,7 @@ export function declOf(setting: HarnessSetting): SettingDecl {
   }
 }
 
-/** Whether each runtime is installed here and, where its CLI says, logged in. `quick` leaves out
- *  the model lists that take a CLI's own start-up to read (OpenCode, Cursor). */
+/** Quick detection starts model discovery in the background. */
 export async function detectRuntimes(quick = false, only?: Job['runtime']): Promise<RuntimeReport[]> {
   return Promise.all(
     (Object.keys(HARNESSES) as Job['runtime'][]).filter((name) => !only || name === only).map(async (name) => {
@@ -181,48 +183,36 @@ export async function detectRuntimes(quick = false, only?: Job['runtime']): Prom
       const copy = locate(harness)
       if (!copy) return { name, installed: false, settings }
       const loggedIn = harness.login ? await probeLogin(spawnName(copy, splitCommand(harness.command)[0]!), harness) : undefined
-      const models = loggedIn === false || (quick && SLOW.has(name)) ? [] : await readModels(name)
+      const models = await modelLists.read(name, name === 'claude-code' ? CLAUDE_DEFAULTS : [], !quick)
       return { name, installed: true, ...(copy.version ? { version: copy.version } : {}), ...(loggedIn === undefined ? {} : { loggedIn }), ...(models.length ? { models } : {}), settings }
     }),
   )
 }
 
-/** The reports with the model lists read without starting a CLI read again; sign-in and the
- *  slow lists stay as the last full look found them (#86). */
+/** Refresh every source without waiting for a CLI or discarding a successful list. */
 export function refreshModels(found: RuntimeReport[]): Promise<RuntimeReport[]> {
-  return Promise.all(
-    found.map(async (report) => {
-      if (!report.installed || report.loggedIn === false || SLOW.has(report.name)) return report
-      const { models: _, settings, ...rest } = report
-      const models = await readModels(report.name)
-      return { ...rest, ...(models.length ? { models } : {}), ...(settings ? { settings } : {}) }
-    }),
-  )
+  return Promise.all(found.map(async (report) => {
+    if (!report.installed) return report
+    const models = await modelLists.read(report.name, report.models ?? (report.name === 'claude-code' ? CLAUDE_DEFAULTS : []))
+    return { ...report, ...(models.length ? { models } : {}) }
+  }))
 }
 
-type Model = { id: string; name: string }
+const CLAUDE_DEFAULTS = ['opus', 'sonnet', 'haiku'].map(id => ({ id, name: id[0]!.toUpperCase() + id.slice(1) }))
 
-const SLOW = new Set<Job['runtime']>(['opencode', 'cursor', 'antigravity'])
-
-/** The ids a CLI caches for its own picker (harness `models()`), for the ones read no other way. */
-const listed = (harness: Harness) => async (): Promise<Model[]> => (harness.models?.() ?? []).map((id) => ({ id, name: id }))
-
-const readModels = (name: Job['runtime']) => (MODELS[name] ?? listed(HARNESSES[name]))().catch((): Model[] => [])
-
-const MODELS: Partial<Record<Job['runtime'], () => Promise<Model[]>>> = {
-  'claude-code': async () => {
-    const cached = claudeModels(path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'cache', 'model-catalog'))
-    return cached.length ? cached : [
-      { id: 'opus', name: 'Opus' },
-      { id: 'sonnet', name: 'Sonnet' },
-      { id: 'haiku', name: 'Haiku' },
-    ]
-  },
-  codex: async () => codexModels(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'models_cache.json')),
-  opencode: async () => opencodeModels(await output(commandOf(HARNESSES.opencode)[0], ['models'])),
-  cursor: () => cursorModels(),
-  antigravity: async () => antigravityModels(await output(commandOf(HARNESSES.antigravity)[0], ['models'])),
-}
+const sources: Partial<Record<Job['runtime'], ModelSource>> = Object.fromEntries(
+  Object.entries(HARNESSES).filter(([, harness]) => harness.models).map(([name, harness]) => [
+    name, () => (harness.models?.() ?? []).map((id) => ({ id, name: id })),
+  ]),
+)
+Object.assign(sources, {
+  'claude-code': () => claudeModels(path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'cache', 'model-catalog')),
+  codex: () => codexModels(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'models_cache.json')),
+  opencode: async (signal: AbortSignal) => opencodeModels(await output(commandOf(HARNESSES.opencode)[0], ['models'], signal)),
+  cursor: (signal: AbortSignal) => cursorModels(signal),
+  antigravity: async (signal: AbortSignal) => antigravityModels(await output(commandOf(HARNESSES.antigravity)[0], ['models'], signal)),
+})
+export const modelLists = new ModelLists(sources)
 
 /** `opencode models`: one `provider/model` id a line, the same ids its ACP session takes. */
 export function opencodeModels(out: string): Model[] {
@@ -232,8 +222,7 @@ export function opencodeModels(out: string): Model[] {
 /** Cursor's ACP ids carry their parameters and are not the ones `cursor-agent models` prints, so
  *  they are read off a session opened for the purpose and closed without a prompt. Auto is the
  *  menu's own default and is left out. */
-function cursorModels(): Promise<Model[]> {
-  const argv = commandOf(HARNESSES.cursor)
+export function cursorModels(signal: AbortSignal, argv = commandOf(HARNESSES.cursor)): Promise<Model[]> {
   return new Promise((resolve) => {
     let child: ChildProcess
     try {
@@ -242,13 +231,19 @@ function cursorModels(): Promise<Model[]> {
     } catch {
       return resolve([])
     }
+    let finished = false
     const done = (models: Model[]) => {
-      clearTimeout(timer)
+      if (finished) return
+      finished = true
+      signal.removeEventListener('abort', aborted)
       child.kill()
       resolve(models)
     }
-    const timer = setTimeout(() => done([]), MODELS_MS)
+    const aborted = () => done([])
+    signal.addEventListener('abort', aborted, { once: true })
+    if (signal.aborted) return done([])
     child.on('error', () => done([]))
+    child.on('close', () => done([]))
     const rpc = connect(child.stdout!, child.stdin!, (msg) => msg.id !== undefined && rpc.refuse(msg.id, 'no'), { jsonrpc: true })
     rpc
       .call('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } })
@@ -268,7 +263,7 @@ export function acpModels(opened: Record<string, unknown>): Model[] {
 }
 
 /** What a command prints, or nothing when it fails or takes too long. */
-function output(command: string, args: string[]): Promise<string> {
+export function output(command: string, args: string[], signal: AbortSignal): Promise<string> {
   return new Promise((resolve) => {
     let out = ''
     let child: ChildProcess
@@ -278,13 +273,20 @@ function output(command: string, args: string[]): Promise<string> {
     } catch {
       return resolve('')
     }
-    const timer = setTimeout(() => { child.kill(); resolve('') }, MODELS_MS)
+    let finished = false
+    const done = (value: string) => {
+      if (finished) return
+      finished = true
+      signal.removeEventListener('abort', aborted)
+      child.kill()
+      resolve(value)
+    }
+    const aborted = () => done('')
+    signal.addEventListener('abort', aborted, { once: true })
+    if (signal.aborted) return done('')
     child.stdout?.on('data', (d) => (out += d))
-    child.on('error', () => resolve(''))
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      resolve(code === 0 ? out : '')
-    })
+    child.on('error', () => done(''))
+    child.on('close', (code) => done(code === 0 ? out : ''))
   })
 }
 

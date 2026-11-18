@@ -1,9 +1,4 @@
-// The recorder `hyperframes-editor` ships (#993). A video task writes its environment and its
-// per-shot actions; connecting, sampling, encoding, checking and remembering what is already
-// recorded are this one file's, so no second task writes them again.
-//
-// The end-to-end part drives a real headless Chrome through ffmpeg and is skipped where either
-// is missing — the rest of the file still covers the contract around it.
+// The bundled recorder uses real Chrome and ffmpeg when available.
 
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
@@ -13,7 +8,7 @@ import path from 'node:path'
 import { after, before, describe, it } from 'node:test'
 
 
-const agentFile = (file: string): string => fs.readFileSync(new URL(`../agents/${file}`, import.meta.url), 'utf8')
+const resourceFile = (file: string): string => fs.readFileSync(new URL(`../studios/hyperframes-video/references/${file}`, import.meta.url), 'utf8')
 
 let project = ''
 let recorder = ''
@@ -34,7 +29,7 @@ const ledger = (): Record<string, { status: string; output?: string; sampledFps?
 before(() => {
   project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'akb-record-')))
   recorder = path.join(project, 'record.mjs')
-  fs.writeFileSync(recorder, agentFile('hyperframes-editor/record.mjs'))
+  fs.writeFileSync(recorder, resourceFile('hyperframes-editor/record.mjs'))
 })
 
 after(() => {
@@ -45,9 +40,9 @@ after(() => {
   }
 })
 
-describe('the agent ships it', () => {
+describe('the studio ships it', () => {
   it('is a runnable script, not a description of one', () => {
-    const text = agentFile('hyperframes-editor/record.mjs')
+    const text = resourceFile('hyperframes-editor/record.mjs')
     assert.match(text, /^#!\/usr\/bin\/env node/)
     assert.match(text, /record\.config\.mjs/)
     assert.match(text, /shots\/<id>\.mjs/)

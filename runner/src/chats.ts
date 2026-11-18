@@ -67,25 +67,25 @@ export function keepCloudChat(task: string, messages: { id: string; role: 'user'
   fs.writeFileSync(file, lines.map((l) => `${JSON.stringify(l)}\n`).join(''))
 }
 
-/** What the user wrote on a task's reviews, among its chat by when it was said (#212). Not
- *  reached, the review goes on what is kept. */
-export async function keepDecisions(task: string, read: typeof api.readDecisions): Promise<void> {
+/** Keep review comments with the conversation; unread pages leave the review retryable. */
+export async function keepDecisions(task: string, read: typeof api.readDecisions): Promise<boolean> {
   const comments: TaskChatLine[] = []
   let after: string | null = null
   do {
     const page = await read(task, after)
-    if (!page.ok) return
+    if (!page.ok) return false
     for (const d of page.value.data) {
       if (d.comment.trim()) comments.push({ id: d.id, role: 'user', text: d.comment, at: Date.parse(d.created_at) || Date.now() })
     }
     after = page.value.next
   } while (after)
-  if (!comments.length) return
+  if (!comments.length) return true
   const ids = new Set(comments.map((c) => c.id))
   const lines = [...readTaskChat(task, home()).filter((l) => !ids.has(l.id)), ...comments].sort((a, b) => a.at - b.at)
   const file = taskChatFile(task, home())
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, lines.map((l) => `${JSON.stringify(l)}\n`).join(''))
+  return true
 }
 
 const tasksKept = (): string[] => {

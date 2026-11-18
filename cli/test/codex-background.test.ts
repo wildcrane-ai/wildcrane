@@ -123,7 +123,7 @@ for (const mode of ['resume', 'fork'] as const) {
     }, { mode, threadId: 'missing', images: [] })
     const end = await s.end
     assert.equal(end.ok, false)
-    assert.match(end.error!, /Thread not found: no rollout found/)
+    assert.match(end.error!, /no rollout found/)
     assert.equal(s.calls.some(c => c.method === 'turn/start'), false)
   })
 }
@@ -392,11 +392,13 @@ it('bounds silent cleanup and state queries independently of the background wait
   }
 })
 
-it('never extends the necessary background deadline while polling', async () => {
+it('does not end genuine background work at the old deadline', async () => {
   BACKGROUND_WAIT.minutes = 0.002
   const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : method === 'thread/backgroundTerminals/list' ? { data: [terminal] } : {})
   await tick(); s.reply('Waiting', 'answer'); s.complete(); await tick(); poll(s); finish(s)
-  assert.match((await s.end).error!, /background tasks did not finish/)
+  await new Promise(resolve => setTimeout(resolve, 180))
+  s.stdout.destroy()
+  assert.doesNotMatch((await s.end).error ?? '', /background tasks did not finish/)
 })
 
 it('batches complete identifiers at the snapshot limit', () => {

@@ -42,7 +42,7 @@ it('splits the outcome from what counts as done', () => {
 
 it('drafts, saves, drops and starts ideas in the file the Runner reads back', () => {
   cmdIdea(['new'], { title: 'Pricing page', bodyFile: draft('Prices.\n\n## Done when\n- shown') })
-  assert.deepEqual(read().ideas[1], { id: 'new_1', title: 'Pricing page', outcome: 'Prices.', acceptance: ['shown'], studio: 'wf_builtin_coding', previews: [], task: null })
+  assert.deepEqual(read().ideas[1], { id: 'new_1', title: 'Pricing page', outcome: 'Prices.', acceptance: ['shown'], studio: 'wf_builtin_coding', review_plan: null, task: null })
   cmdIdea(['save'], { id: 'new_1', studio: 'slide-deck' })
   assert.equal(read().ideas[1].studio, 'wf_builtin_slide_deck')
   cmdIdea(['new'], { title: 'Blog', bodyFile: draft('A post.') })
@@ -99,30 +99,30 @@ it('新旧命令拒绝缺失、无效或不一致的目标数组', () => {
   }
 })
 
-it('保存独立审阅选择，按工作台去重；省略保留，清空与切换工作台不互相污染', () => {
+it('审核安排区分未定与空安排，保留依赖并拒绝静默删除 Preview', () => {
   const held = read()
-  held.studios[0].previews = [{ agent: 'ui-designer', when: 'UI' }, { agent: 'api-designer', when: 'API' }]
+  held.studios[0].previews = [{ id: 'ui-design', instructions: 'UI' }]
   held.studios[1].previews = []
   fs.writeFileSync(file, JSON.stringify(held))
-  cmdGoal(['new'], { title: 'Review', bodyFile: draft('Deliver.'), previews: 'api-designer,ui-designer,api-designer' })
-  assert.deepEqual(read().ideas[1].previews, ['ui-designer', 'api-designer'])
+  const plan = [{ id: 'ui', title: 'UI', after: [], previews: ['ui-design'] }]
+  const reviewFile = path.join(dir, 'review.json'); fs.writeFileSync(reviewFile, JSON.stringify(plan))
+  cmdGoal(['new'], { title: 'Review', bodyFile: draft('Deliver.'), reviewFile })
+  assert.deepEqual(read().ideas[1].review_plan, plan)
   cmdGoal(['new'], { title: 'Other', bodyFile: draft('Other.') })
+  assert.equal(read().ideas[2].review_plan, null)
   cmdGoal(['save'], { id: 'new_1', title: 'Changed' })
-  assert.deepEqual(read().ideas.map((i: { previews?: string[] }) => i.previews), [undefined, ['ui-designer', 'api-designer'], []])
+  assert.deepEqual(read().ideas[1].review_plan, plan)
   const before = fs.readFileSync(file, 'utf8')
-  assert.throws(() => cmdGoal(['save'], { id: 'new_1', title: 'Invalid', studio: 'slide-deck', previews: 'ui-designer' }), /Preview agent ui-designer is not enabled/)
+  assert.throws(() => cmdGoal(['save'], { id: 'new_1', studio: 'slide-deck' }), /Preview ui-design is not defined/)
   assert.equal(fs.readFileSync(file, 'utf8'), before)
-  cmdGoal(['save'], { id: 'new_1', previews: '' })
-  assert.deepEqual(read().ideas[1].previews, [])
-  cmdGoal(['save'], { id: 'new_1', previews: 'api-designer' })
-  cmdGoal(['save'], { id: 'new_1', studio: 'slide-deck' })
-  assert.deepEqual(read().ideas[1].previews, [])
+  cmdGoal(['save'], { id: 'new_1', reviewFile: draft('[]') })
+  assert.deepEqual(read().ideas[1].review_plan, [])
 })
 
 it('查询使用当前工作台的完整触发条件，旧 Runner 缺少目录时明确拒绝', () => {
-  assert.throws(() => cmdGoalPreviews('coding'), /Preview agents are unavailable/)
+  assert.throws(() => cmdGoalPreviews('coding'), /Preview outputs are unavailable/)
   const held = read()
-  held.studios.push({ id: 'wf_custom', name: 'Custom', previews: [{ agent: 'custom', when: 'First.\nExcept second.' }] })
+  held.studios.push({ id: 'wf_custom', name: 'Custom', previews: [{ id: 'custom', instructions: 'First.\nExcept second.' }] })
   fs.writeFileSync(file, JSON.stringify(held))
-  assert.deepEqual(cmdGoalPreviews('wf_custom').agents, [{ name: 'custom', when: 'First.\nExcept second.' }])
+  assert.deepEqual(cmdGoalPreviews('wf_custom').previews, [{ id: 'custom', instructions: 'First.\nExcept second.' }])
 })

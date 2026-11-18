@@ -35,6 +35,7 @@ import reviewRejections from '../guide/review-rejections.md'
 import refine from '../guide/refine.md'
 import reflect from '../guide/reflect.md'
 import resolve from '../guide/resolve.md'
+import resolveConflict from '../guide/resolve-conflict.md'
 import revise from '../guide/revise.md'
 import previewAgent from '../guide/preview-agent.md'
 import updateQuestions from '../guide/update-questions.md'
@@ -68,6 +69,7 @@ export const GUIDES: Guide[] = [
   { name: 'update-questions', when: 'decide what to ask the user, and write the question', text: updateQuestions },
   { name: 'refine', when: 'plan one card until it can be built', text: refine },
   { name: 'revise', when: 'make the one change to a card the user asked for', text: revise },
+  { name: 'resolve-conflict', when: 'read and explicitly resolve saved board content conflicts', text: resolveConflict },
   { name: 'resolve', when: "apply the user's answers to a card's open questions", text: resolve },
   { name: 'prune-memory', when: 'compress the memory set back to what helps planning', text: pruneMemory },
   { name: 'review-memory', when: 'read what the conversations settled, and write it into memory', text: reviewMemory },

@@ -206,7 +206,7 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
         if (owned(thread)) writeLease(backend, thread, previous)
         threads.delete(thread)
       }
-      if (id !== undefined) send({ id, error: { code: error instanceof RpcError ? error.code : -32000, message: error instanceof Error ? error.message : String(error) } })
+      if (id !== undefined) send({ id, error: { code: error instanceof RpcError ? error.code : -32000, message: error instanceof Error ? error.message : String(error), ...(error instanceof RpcError ? { data: error.data } : {}) } })
     } finally {
       releaseSource?.()
     }

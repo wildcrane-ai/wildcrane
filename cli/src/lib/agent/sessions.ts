@@ -1,7 +1,8 @@
-import { stopConnection } from './connection-process'
+import { connectionStopped, stopConnection } from './connection-process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { pauseLine } from './retry'
 import { executionHeld, executionOf } from '../cloud/execution'
 
 import { boardCardIds, locate, locateArchived } from '../cards'
@@ -39,7 +40,7 @@ import { adoptsSessionId, harnessLabel, onOwnEndpoint, planFork, planResume, pla
 import { moveRunPictures } from './pictures'
 import { buildRun, restartPrompt, restartable, resumePrompt } from './prompts'
 import { agentForRun } from './runner'
-import { killMarked, killTreeOnWindows, killUnderOnWindows, runMark } from './stop'
+import { killMarked, killTreeOnWindows, killUnderOnWindows, processesStopped, runMark } from './stop'
 import { readRuntimes, runtimeById } from './runtimes'
 import { dropReflected, stampMemoryPrune, stampMemoryReview, stampProjectDescription } from './settings'
 import { scheduledAgent, stampScheduledRun, studioById } from './studios'
@@ -165,7 +166,12 @@ function reap(runs: RunRecord[], reaped: RunRecord[] = [], restore: RunRecord[] 
     // hasn't spawned the watcher. Past that, nothing is ever going to report on it.
     if (r.status !== 'running' || runIsLive(r)) continue
     r.status = r.stopping ? 'stopped' : 'interrupted'
-    r.code = null // we saw no exit
+    r.code = null
+    if (r.status === 'stopped' && r.retry) delete r.retry.pending
+    if (r.retry?.launching) {
+      r.retryPause = 'unsafe'
+      r.error = [r.retry.reason, pauseLine('unsafe')].filter(Boolean).join('\n')
+    }
     // Its watcher is gone, so nothing else will end what its agent started (#1302).
     if (r.managedProcess) void stopConnection(r.agentPid ? { pid: r.agentPid, identity: r.agentIdentity } : undefined, 12_000)
     else if (r.pid) killMarked(runMark(r.sessionId), r.agentPid && r.agentStartedAt ? { pid: r.agentPid, since: r.agentStartedAt } : undefined)
@@ -180,7 +186,7 @@ function reap(runs: RunRecord[], reaped: RunRecord[] = [], restore: RunRecord[] 
     // off leaves the delivery ACTIVE and unfinished, and a review cut off stops and asks
     // (#302).
     if (r.deliveryId && r.action !== 'sub') reaped.push({ ...r })
-    dropSpec(r.sessionId)
+    if (r.harness !== 'antigravity') dropSpec(r.sessionId)
     changed = true
   }
   return changed
@@ -867,7 +873,9 @@ interface FreshStart {
   retry?: boolean
 }
 
-export async function openResume(id: string, options?: boolean | { deliveryId?: string; notes?: string; fresh?: boolean }): Promise<{ run: RunRecord; spec: RunSpec } | RunRefusal> {
+export interface ResumeOptions { deliveryId?: string; notes?: string; fresh?: boolean; automatic?: boolean }
+
+export async function openResume(id: string, options?: boolean | ResumeOptions): Promise<{ run: RunRecord; spec: RunSpec } | RunRefusal> {
   const build = typeof options === 'object' && options.deliveryId ? { deliveryId: options.deliveryId, notes: options.notes } : undefined
   const forced = typeof options === 'object' && options.fresh
   const restore: RunRecord[] = []
@@ -890,6 +898,16 @@ export async function openResume(id: string, options?: boolean | { deliveryId?: 
   }
   const ended = endedDeliveryRefusal(prev)
   if (ended) return ended
+  const automatic = typeof options === 'object' && options.automatic === true
+  const pending = !forced && prev.status !== 'stopped' ? prev.retry?.pending : undefined
+  if (automatic && !pending) return refusal('runContinued', 'The automatic retry is no longer pending.')
+  if (pending) {
+    const root = prev.agentPid ? { pid: prev.agentPid, since: prev.agentStartedAt ?? prev.startedAt, identity: prev.agentIdentity } : undefined
+    const stopped = prev.managedProcess ? connectionStopped(root) : processesStopped(runMark(prev.sessionId, prev.agentStartedAt), root)
+    if (!stopped || !resumeSessionId(prev)) return retryRefusal(prev, 'unsafe')
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, pending.at - Date.now())))
+    if (!await executionHeld(executionOf())) return retryRefusal(prev, 'authorization')
+  }
   // Resumed where the run it continues worked: a delivery's own worktree, or the project
   // itself.
   const resuming = prev.deliveryId ? findDelivery(prev.deliveryId) : undefined
@@ -898,6 +916,10 @@ export async function openResume(id: string, options?: boolean | { deliveryId?: 
   let plan: RunPlan | null
   let fresh: FreshStart | undefined
   const session = forced ? undefined : resumeSessionId(prev)
+  if (!forced && prev.harness === 'antigravity' && !session && !neverStarted(prev)) {
+    return refusal('runNoSession', 'Antigravity did not record a conversation ID before interruption. The original session cannot be resumed.')
+  }
+  if (!session && !forced && prev.cardId !== null && !neverStarted(prev)) return refusal('runNoSession', 'The original session is unavailable. Explicitly take over the saved task in a new session.')
   if (session) {
     plan = planResume({ harness: prev.harness, resumeId: session, cwd }, prev.agent, prev.runtime ? { pin: prev.runtime } : {})
   } else {
@@ -916,7 +938,7 @@ export async function openResume(id: string, options?: boolean | { deliveryId?: 
 
   // Read before the resumed run joins the delivery, which clears its stop.
   const buildResume = prev.action === 'implement' && prev.deliveryId ? resumePrompt(prev.deliveryId, prev.action) : undefined
-  const opened = await resumeHeld(prev, plan, sessionId, resuming, fresh)
+  const opened = await resumeHeld(prev, plan, sessionId, resuming, fresh, !!pending)
   if ('error' in opened) return opened
   if (!opened.spec.prompt && buildResume) opened.spec.prompt = buildResume
   if (build?.notes?.trim()) opened.spec.prompt = [opened.spec.prompt || resumePrompt(prev.deliveryId, prev.action), build.notes.trim()].join('\n\n')
@@ -941,12 +963,23 @@ async function planRetry(
   return { plan, fresh: { prompt, notes: note ? [...notes, note] : notes, retry: true } }
 }
 
+function retryRefusal(prev: RunRecord, pause: 'unsafe' | 'authorization'): RunRefusal {
+  const reason = pauseLine(pause)
+  patch(prev.sessionId, run => {
+    if (run.retry) delete run.retry.pending
+    run.retryPause = pause
+    run.error = [run.error ?? run.retry?.reason, reason].filter(Boolean).join('\n')
+  })
+  return refusal('runContinued', reason)
+}
+
 async function resumeHeld(
   prev: RunRecord,
   plan: RunPlan,
   sessionId: string,
   resuming: DeliveryRecord | undefined,
   fresh?: FreshStart,
+  automatic = false,
 ): Promise<{ run: RunRecord; spec: RunSpec } | RunRefusal> {
   const retry = fresh?.retry === true
   const record: RunRecord = {
@@ -977,10 +1010,10 @@ async function resumeHeld(
           resumedFrom: prev.sessionId,
           // Taken now: the run being continued is dropped once this one starts (#1483).
           sessionCostFrom: reportsSessionTotal(prev.harness) ? prev.sessionCostUsd ?? prev.sessionCostFrom : undefined,
-          // The retry chain carries on rather than starting over (#525): this run IS the attempt
-          // the failed one scheduled, so its count and its window come with it.
-          retry: prev.retry,
+          ...(prev.retry && prev.result ? { result: prev.result } : {}),
         }),
+    failure: automatic ? prev.retry?.pending?.failure : undefined,
+    retry: prev.retry ? { ...prev.retry, pending: undefined, launching: automatic ? true : undefined } : undefined,
     logPath: logPathOf(sessionId),
     specAgent: prev.specAgent,
     ...(prev.action === 'scheduled' ? { studio: prev.studio } : {}),
@@ -994,6 +1027,9 @@ async function resumeHeld(
     const all = store.runs
     const latest = all.find((r) => r.sessionId === prev.sessionId)
     if (!latest) return refusal('runContinued', 'that run has already been continued')
+    if (automatic && (latest.stopping || latest.status === 'stopped' || !latest.retry?.pending)) {
+      return refusal('runContinued', 'The automatic retry is no longer pending.')
+    }
     if (latest.discardedCards?.some((c) => c.pending || locate(c.id))) {
       return refusal('discardUnfinished', 'A card discard did not finish. Retry discarding it before resuming creation.')
     }
@@ -1029,8 +1065,11 @@ async function resumeHeld(
       r.pictures = record.pictures
     })
   }
-  const spec: RunSpec = { sessionId, plan, prompt: fresh?.prompt ?? '', ...(fresh?.notes.length ? { notes: fresh.notes } : {}) }
+  // AGy can persist an empty conversation before saving its first prompt.
+  const prompt = fresh?.prompt ?? (prev.harness === 'antigravity' ? readSpec(prev.sessionId)?.prompt : undefined) ?? ''
+  const spec: RunSpec = { sessionId, plan, prompt, ...(fresh?.notes.length ? { notes: fresh.notes } : {}) }
   writeSpec(spec)
+  if (prev.harness === 'antigravity') dropSpec(prev.sessionId)
   // A resume spawns a process and works like any other run, so it counts as one — and
   // started stays ahead of finished plus failed (#295).
   reportRun('started', record.harness, isCustomAgent(record.agent))
@@ -1175,6 +1214,8 @@ export async function closeRun(
     ok?: boolean
     code?: number | null
     error?: string
+    failure?: RunRecord['failure']
+    retryPause?: RunRecord['retryPause']
     note?: string
     errorWhy?: RunReason[]
     noteWhy?: RunReason[]
@@ -1188,6 +1229,12 @@ export async function closeRun(
     if (res.ok !== undefined) run.ok = res.ok
     run.code = res.code ?? null
     if (res.error) run.error = res.error
+    run.failure = res.failure
+    run.retryPause = res.retryPause
+    if (run.retry) {
+      delete run.retry.launching
+      if (res.status === 'stopped') delete run.retry.pending
+    }
     if (res.note) run.note = res.note
     if (res.errorWhy?.length) run.errorWhy = res.errorWhy
     if (res.noteWhy?.length) run.noteWhy = res.noteWhy
@@ -1213,7 +1260,7 @@ export async function closeRun(
   recordReflection(closed)
   recordProjectDescription(closed)
   recordScheduledRun(closed)
-  dropSpec(sessionId)
+  if (closed.harness !== 'antigravity' || closed.status === 'done') dropSpec(sessionId)
   pruneLogs()
 }
 

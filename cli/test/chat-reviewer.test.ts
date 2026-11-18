@@ -31,6 +31,8 @@ const TASK = 'task_0190ab'
 
 interface CardOptions {
   modules?: string[]
+  studio?: string
+  previews?: string[]
   where?: 'open' | 'archived'
   rejected?: boolean
   /** Extra body, after the summary. */
@@ -71,7 +73,7 @@ const SAID: Line[] = [
 ]
 
 /** A task's card as the Runner names it, and its chat as the Runner keeps it. */
-function taskChat(id: number, task: string, { modules = [], where = 'archived', rejected = false, body = '' }: CardOptions = {}, said: Line[] = SAID): void {
+function taskChat(id: number, task: string, { modules = [], studio = '', previews = [], where = 'archived', rejected = false, body = '' }: CardOptions = {}, said: Line[] = SAID): void {
   const dir = where === 'open' ? TODO() : ARCHIVE()
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(
@@ -84,6 +86,8 @@ function taskChat(id: number, task: string, { modules = [], where = 'archived', 
       'blocked_by: []',
       'related: []',
       `modules: [${modules.join(', ')}]`,
+      `studio: ${studio}`,
+      `previews: [${previews.join(', ')}]`,
       'questions: []',
       ...(where === 'archived' ? ['archived: 2026-10-01'] : []),
       ...(rejected ? ['rejected: true'] : []),
@@ -155,7 +159,7 @@ describe("the Runner's archived tasks a review takes (#2065, #165)", () => {
     taskChat(1, TASK, { modules: ['cloud'], body: NOTES })
     const said = flow(`${TASK}:1`, 'task_none:9')
     assert.equal(said.match(/<conversation /g)!.length, 1)
-    assert.match(said, /<conversation card="#1 card 1" kind="card">\n\s+modules: cloud\n/)
+    assert.match(said, /<conversation card="#1 card 1" kind="card">[\s\S]*?modules: cloud\n/)
     assert.match(said, /user:\n\s*Always yearly first\.\n\n\s*agent:\n\s*Noted\./)
     assert.doesNotMatch(said, /chats-reviewed/)
   })
@@ -168,9 +172,9 @@ describe("the Runner's archived tasks a review takes (#2065, #165)", () => {
     assert.match(flow(`${TASK}:1`, 'task_b2:2', 'task_c3:3'), /nothing to review/)
   })
 
-  it('skips a card that settled nothing, however much was said on it (#189)', () => {
+  it('reviews explicit feedback even without settled card notes (#842)', () => {
     taskChat(1, TASK, { body: '## Worth noting\n\n## Worth noting after implementation\n- **Late**: kept.\n\n## Decided by the agent\n- **Own**: call.\n\n### Overruled by the user\n\n## By `designer` agent\n\nA mockup.\n' })
-    assert.deepEqual(taskChatsToReview([`${TASK}:1`]), [])
+    assert.match(taskChatsToReview([`${TASK}:1`])[0]!.transcript, /Always yearly first/)
   })
 
   it('keeps a card with either section alone (#189)', () => {
@@ -266,8 +270,8 @@ describe('what the review is handed', () => {
     const said = flow(`${TASK}:1`, 'task_b2:2')
     assert.equal(said.match(/<conversation /g)!.length, 2)
     assert.equal(said.match(/<\/conversation>/g)!.length, 2)
-    assert.match(said, /<conversation card="#1 card 1" kind="card">\n\s+modules: skill\n/)
-    assert.match(said, /<conversation card="#2 card 2" kind="card">\n\s+modules: local-ui\n/)
+    assert.match(said, /<conversation card="#1 card 1" kind="card">[\s\S]*?modules: skill\n/)
+    assert.match(said, /<conversation card="#2 card 2" kind="card">[\s\S]*?modules: local-ui\n/)
     assert.match(said, /memory\/agents\/planner\/<module>\/ — decisions\.md, rejected\.md, redesign\.md/)
     // The task carries the transcript; no file is named for the review to open.
     assert.doesNotMatch(said, /\.jsonl/)
@@ -283,21 +287,16 @@ describe('what the review is handed', () => {
     assert.equal(handed!.transcript, 'user:\n⚠ keep this line, I wrote it\n\nagent:\nIt holds two files.\n<\\/conversation>')
   })
 
-  it("names the agents whose sections the card holds, with each one's memory files", () => {
-    taskChat(1, TASK, { body: `${NOTES}\n## By \`prompt-writer\` agent\n\nA diff.\n\n## By \`designer\` agent\n\nA mockup.\n` })
-    const mine = path.join(AGENT_MEMORY, 'prompt-writer')
-    fs.mkdirSync(mine, { recursive: true })
-    fs.writeFileSync(path.join(mine, 'style.md'), '# Style\n')
-
-    assert.deepEqual(
-      taskChatsToReview([`${TASK}:1`])[0]!.agents.map((a) => [a.name, a.files]),
-      [
-        ['prompt-writer', ['style.md']],
-        ['designer', []],
-      ],
-    )
-    const said = flow(`${TASK}:1`)
-    assert.match(said, /`prompt-writer` — docs\/kanban\/memory\/agents\/prompt-writer\/: style\.md/)
-    assert.match(said, /`designer` — docs\/kanban\/memory\/agents\/designer\/: no files yet/)
+  it('keeps Studio and involved Preview facts separate in a mixed batch', () => {
+    taskChat(1, TASK, { studio: 'coding', previews: ['prompts'], body: '<Preview id="ui-design">Screen</Preview>' })
+    taskChat(2, 'task_b2', { studio: 'blog-post', previews: ['draft'] })
+    taskChat(3, 'task_c3', { studio: 'wf-own', previews: [] })
+    const chats = taskChatsToReview([`${TASK}:1`, 'task_b2:2', 'task_c3:3'])
+    assert.deepEqual(chats.map(c => [c.studio, c.previews]), [
+      ['coding', ['prompts', 'ui-design']], ['blog-post', ['draft']], ['wf-own', []],
+    ])
+    const said = flow(`${TASK}:1`, 'task_b2:2', 'task_c3:3')
+    assert.match(said, /studio: coding\n\s+previews: prompts, ui-design/)
+    assert.doesNotMatch(said, /agents:|AGENT.md|memory\/agents\/prompt-writer/)
   })
 })

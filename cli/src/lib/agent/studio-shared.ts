@@ -47,20 +47,11 @@ const fileLine = (studio: string, file: string) => `- \`${file}\` — \`${rawMov
 
 /** The prompt sections a run on `studio` gets: its rules, its files (with `agent`'s own when it
  *  is one of the studio's agents), and, with `memory`, what it remembers. */
-export function studioSections(studio: string | undefined, opts: { agent?: string; memory?: boolean } = {}): string[] {
+export function studioSections(studio: string | undefined, _opts: { agent?: string; memory?: boolean } = {}): string[] {
   const files = studio ? studioFiles(studio) : null
   if (!studio || !files) return []
   const rules = files[RULES_FILE]?.trim()
-  const own = opts.agent ? Object.keys(files).filter((f) => f.startsWith(`agents/${opts.agent}/`) && f !== `agents/${opts.agent}/AGENT.md`).sort() : []
-  const listed = [...sharedFiles(files), ...own]
-  const remembered = opts.memory ? readStudioMemory(studio) : []
-  return [
-    rules ? `——— your studio's rules ———\n\n${rules}` : '',
-    listed.length ? `——— your studio's files ———\n\nRead one only when the work calls for it:\n\n${listed.map((f) => fileLine(studio, f)).join('\n')}` : '',
-    remembered.length
-      ? `——— what your studio remembers ———\n\nFrom \`${rel(studioMemoryDir(studio))}/\`:\n\n${remembered.map((m) => `### \`${m.name}\`\n\n${m.text || '_(empty)_'}`).join('\n\n')}`
-      : '',
-  ].filter(Boolean)
+  return rules ? [`——— Studio rules ———\n\n${rules}`] : []
 }
 
 /** Whether `studio`'s files list `agent`'s own, so `studioSections` names them. */

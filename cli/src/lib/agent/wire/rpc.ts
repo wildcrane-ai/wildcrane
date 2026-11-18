@@ -15,6 +15,7 @@
 
 import type { Readable, Writable } from 'node:stream'
 
+import { ExecutionError, executionFailure } from './failures'
 import { obj, str, type Json } from './json'
 
 export interface Message {
@@ -32,6 +33,7 @@ export class RpcError extends Error {
   constructor(
     message: string,
     readonly code: number | undefined,
+    readonly data?: unknown,
   ) {
     super(message)
     this.name = 'RpcError'
@@ -50,7 +52,7 @@ export type Rpc = ReturnType<typeof connect>
 export function connect(stdout: Readable, stdin: Writable, onCall: (msg: Message) => void, dialect: RpcDialect = {}) {
   let buf = ''
   let nextId = 1
-  let gone: string | undefined
+  let gone: Error | undefined
   const waiting = new Map<string, { ok: (result: Json) => void; fail: (err: Error) => void }>()
 
   const send = (msg: Json) => {
@@ -62,10 +64,10 @@ export function connect(stdout: Readable, stdin: Writable, onCall: (msg: Message
     }
   }
 
-  const closed = (why: string) => {
+  const closed = (why: Error) => {
     if (gone) return
     gone = why
-    for (const { fail } of waiting.values()) fail(new Error(why))
+    for (const { fail } of waiting.values()) fail(why)
     waiting.clear()
   }
 
@@ -95,18 +97,18 @@ export function connect(stdout: Readable, stdin: Writable, onCall: (msg: Message
       if (msg.error) {
         // Cursor says only "Invalid params" there and puts what was wrong under `data`.
         const said = [str(msg.error.message), str(obj(msg.error.data).message)].filter(Boolean).join(': ')
-        pending.fail(new RpcError(said || `the agent refused (${msg.error.code ?? 'no code'})`, msg.error.code))
+        pending.fail(new RpcError(said || `the agent refused (${msg.error.code ?? 'no code'})`, msg.error.code, msg.error.data))
       } else pending.ok(obj(msg.result))
     }
   })
-  stdout.on('close', () => closed('the agent closed the connection'))
-  stdout.on('error', (err: Error) => closed(String(err)))
-  stdin.on('error', (err: Error) => closed(String(err)))
+  stdout.on('close', () => closed(new ExecutionError({ code: 'connection_lost', level: 2, reason: 'The agent closed the connection.' })))
+  stdout.on('error', (err: Error) => closed(new ExecutionError(executionFailure(err))))
+  stdin.on('error', (err: Error) => closed(new ExecutionError(executionFailure(err))))
 
   return {
     /** Ask the agent something. Rejects with the agent's own words when it says no. */
     call(method: string, params: Json): Promise<Json> {
-      if (gone) return Promise.reject(new Error(gone))
+      if (gone) return Promise.reject(gone)
       const id: number | string = dialect.stringIds ? String(nextId++) : nextId++
       return new Promise<Json>((ok, fail) => {
         waiting.set(String(id), { ok, fail })

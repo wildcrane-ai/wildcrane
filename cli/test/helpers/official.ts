@@ -15,7 +15,7 @@ let copy = ''
 export function editableOfficial(): string {
   if (!copy) {
     copy = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-official-'))
-    for (const dir of ['studios', 'agents']) fs.cpSync(path.join(ORIGINAL, dir), path.join(copy, dir), { recursive: true })
+    fs.cpSync(path.join(ORIGINAL, 'studios'), path.join(copy, 'studios'), { recursive: true })
     process.env.AI4KANBAN_STUDIOS = copy
   }
   return copy
@@ -43,10 +43,8 @@ export function editStudio(studio: string, change: (def: StudioDef) => void): vo
  *  previews. */
 export function switchAgent(studio: string, agent: string, on: boolean): { ok: true } {
   editStudio(studio, (def) => {
-    const one = [...def.previews, ...def.land].find((h) => h.agent === agent)
-    if (!one) def.previews.push({ agent, extra: '', ...(on ? {} : { off: true }) })
-    else if (on) delete one.off
-    else one.off = true
+    if (!on) def.previews = def.previews.filter(p => p.id !== agent)
+    else if (!def.previews.some(p => p.id === agent)) def.previews.push({ id: agent, instructions: 'Prepare the requested output.' })
   })
   return { ok: true }
 }

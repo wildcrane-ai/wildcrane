@@ -179,16 +179,6 @@ export async function createProjectTask(project: string, said: NewTask, key: str
 
 /** The web's Approve on card `number` of `project`: Cloud moves the task on and sends its next
  *  step to the Runner. */
-export async function approveTask(project: string, number: number): Promise<CloudCall<{ key: string }>> {
-  const held = await call<{ prefix: string }>('GET', `/v1/projects/${encodeURIComponent(project)}`)
-  if (!held.ok) return held
-  const key = `${held.value.prefix}-${number}`
-  const task = await call<{ review?: { revision?: number } | null }>('GET', `/v1/tasks/${encodeURIComponent(key)}`)
-  if (!task.ok) return task
-  const revision = task.value.review?.revision
-  const decided = await call('POST', `/v1/tasks/${encodeURIComponent(key)}/decisions`, {
-    decision: 'approve',
-    ...(revision !== undefined ? { review_revision: revision } : {}),
-  })
-  return decided.ok ? { ok: true, value: { key } } : decided
+export async function approveTask(_project: string, _number: number): Promise<CloudCall<{ key: string }>> {
+  return { ok: false, code: 'refused', error: 'Use akb task approve with the --revision you reviewed.' }
 }

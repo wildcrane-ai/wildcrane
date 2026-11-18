@@ -13,7 +13,7 @@ let goals: Record<string, unknown>[]
 let version: number
 let conflict: boolean
 let calls: { url: URL; method: string; body: Record<string, unknown> }[]
-const catalog = [{ agent: 'ui-designer', title: { en: 'UI design' }, when: 'A full condition.\nWith exceptions.' }, { agent: 'api-designer', title: {}, when: '' }]
+const catalog = [{ id: 'ui-design', title: { en: 'UI design' }, instructions: 'A full condition.\nWith exceptions.' }, { id: 'api-docs', title: {}, instructions: '' }]
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-cloud-'))
   process.env.AI4KANBAN_HOME = root
@@ -53,13 +53,14 @@ afterEach(() => {
 })
 it('外部会话按会话与项目保存，返回 Cloud 目标 id；后续编辑与开始使用同一讨论', async () => {
   const body = path.join(root, 'body.md'); fs.writeFileSync(body, 'Deliver.\n\n## Done when\n- Done')
-  const created = await cloudGoal(['new'], { title: 'Goal', bodyFile: body, studio: 'coding', previews: 'api-designer,ui-designer,ui-designer' })
+  const reviewFile = path.join(root, 'review.json'); fs.writeFileSync(reviewFile, JSON.stringify([{ id: 'design', title: 'Design', after: [], previews: ['ui-design', 'api-docs'] }]))
+  const created = await cloudGoal(['new'], { title: 'Goal', bodyFile: body, studio: 'coding', reviewFile })
   assert.equal(created.id, 'idea_1')
   assert.equal(created.url, 'https://app.wildcrane.ai/discussions/dsc_test')
-  assert.deepEqual(goals[0].previews, ['ui-designer', 'api-designer'])
+  assert.deepEqual(goals[0].review_plan, [{ id: 'design', title: 'Design', after: [], previews: ['ui-design', 'api-docs'] }])
   assert.deepEqual(calls.find((c) => c.url.pathname.endsWith('/external'))?.body, { requestId: 'test-thread', host: 'codex', project: 'prj_test' })
   await cloudGoal(['save'], { id: String(created.id), title: 'Updated' })
-  assert.deepEqual(goals[0].previews, ['ui-designer', 'api-designer'])
+  assert.deepEqual(goals[0].review_plan, [{ id: 'design', title: 'Design', after: [], previews: ['ui-design', 'api-docs'] }])
   await cloudGoal(['start'], { id: String(created.id) })
   assert.equal(calls.at(-1)?.url.pathname, '/v1/discussions/dsc_test/goals/idea_1/start')
   assert.equal(calls.at(-1)?.body.expectedVersion, version)
@@ -67,7 +68,7 @@ it('外部会话按会话与项目保存，返回 Cloud 目标 id；后续编辑
 })
 it('外部查询包含完整触发条件，错误不继续写入，支持 Claude Code 的同一入口', async () => {
   assert.equal((await cloudGoalStudios()).discussion, 'dsc_test')
-  assert.deepEqual((await queryPreviews('coding', 'ws_test')).agents, [{ name: 'ui-designer', when: catalog[0].when }, { name: 'api-designer', when: null }])
+  assert.deepEqual((await queryPreviews('coding', 'ws_test')).previews, [{ id: 'ui-design', instructions: catalog[0].instructions }, { id: 'api-docs', instructions: '' }])
   await assert.rejects(queryPreviews('coding', 'missing'), /No workspace/)
   process.env.CLAUDE_CODE_SESSION_ID = 'test-claude'
   await cloudGoalStudios()

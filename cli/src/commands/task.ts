@@ -1,7 +1,6 @@
 import { insideRun } from '../lib/agent/env'
 import { REPLY_APPROVAL_ENV } from '../lib/cloud/reply-approval'
-import { PREVIEW_BRIDGE_ENV } from '../lib/cloud/preview'
-import { previewConfirmation, type PreviewConfirmOptions } from './preview-confirm'
+import { parseReviewPlan, type TaskReview } from '../lib/shared/review-plan'
 // `akb task`, `workspace`, `project`, `runner` (#550): the signed-in account's WildCrane tasks, read
 // and changed in Cloud from any chat. Nothing here reads or writes a board.
 
@@ -14,7 +13,7 @@ import { cloudEndpoints } from '../lib/cloud/config'
 import { accessToken } from '../lib/cloud/session'
 import { cloudStudio, linkedProject } from '../lib/cloud/tasks'
 import { say } from '../lib/io'
-import { die } from '../lib/paths'
+import { die, projectRootOf } from '../lib/paths'
 import { parseFrontmatter } from '../lib/frontmatter'
 import { readQuestionOps } from '../lib/questions'
 import { applyQuestionOps, questionPositions, QuestionOpError } from '../lib/question-ops'
@@ -39,7 +38,7 @@ export async function cloud<T>(method: string, route: string, body?: unknown, si
     try {
       response = await fetch(`${cloudEndpoints().api}${route}`, {
         method,
-        headers: { authorization: `Bearer ${token.token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+        headers: { authorization: `Bearer ${token.token}`, ...(process.env.AI4KANBAN_EXECUTION ? { 'x-wildcrane-execution': process.env.AI4KANBAN_EXECUTION } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: request.signal,
       })
@@ -69,8 +68,8 @@ interface Task {
   title: string
   status: string
   studio: { id: string; name: string } | null
-  previewReviewRevision?: number
-  review?: { status: string | null; revision: number } | null
+  failure?: string | null
+  review?: TaskReview | null
 }
 
 async function all<T>(route: string): Promise<T[]> {
@@ -84,9 +83,17 @@ async function all<T>(route: string): Promise<T[]> {
   return rows
 }
 
-/** The project `.akb/base.json` links the nearest folder at or above this one to; null when none. */
-function linked(): string | null {
-  for (let dir = process.cwd(); ; dir = path.dirname(dir)) {
+export interface TaskLocation { board?: string | null; dir?: string | null; cwd?: string }
+
+/** Read the selected board's project, or walk upward from the selected directory. */
+function linked(location: TaskLocation): string | null {
+  const cwd = location.cwd ?? process.cwd()
+  const board = location.board ?? (process.env.AI4KANBAN_BOARD?.trim() || null)
+  if (board) {
+    const link = linkedProject('', projectRootOf(path.resolve(cwd, board)))
+    return link.ok ? link.value : null
+  }
+  for (let dir = path.resolve(cwd, location.dir ?? '.'); ; dir = path.dirname(dir)) {
     if (fs.existsSync(path.join(dir, '.akb', 'base.json'))) {
       const link = linkedProject('', dir)
       return link.ok ? link.value : null
@@ -97,38 +104,38 @@ function linked(): string | null {
 
 const projectLine = (p: Project) => `${p.id}  ${p.prefix}  ${p.name}`
 
-async function project(asked?: string): Promise<string> {
-  const id = asked ?? linked()
+async function project(asked: string | undefined, location: TaskLocation): Promise<string> {
+  const id = asked ?? linked(location)
   if (id) return id
   const rows = await all<Project>('/v1/projects')
   return refuse(`Pick a project with --project: ${rows.map(projectLine).join(', ') || 'none yet'}`, 'no_project')
 }
 
-async function workspace(asked?: string): Promise<string> {
+async function workspace(asked: string | undefined, location: TaskLocation): Promise<string> {
   if (asked) return asked
-  const prj = linked()
+  const prj = linked(location)
   if (prj) return (await cloud<Project>('GET', `/v1/projects/${enc(prj)}`)).workspace
   const rows = await all<Workspace>('/v1/workspaces')
   return refuse(`Pick a workspace with --workspace: ${rows.map((w) => `${w.id}  ${w.name}`).join(', ')}`, 'no_project')
 }
 
 /** `WC-12` and `task_…` as given; a bare `12` in the linked project's numbering. */
-export async function taskRef(asked: string): Promise<string> {
+export async function taskRef(asked: string, location: TaskLocation = {}): Promise<string> {
   if (!/^\d+$/.test(asked.trim())) return asked.trim()
-  const prj = linked()
+  const prj = linked(location)
   if (!prj) refuse('Write the full task key, like WC-12, or run this in a linked folder.', 'no_project')
   return `${(await cloud<Project>('GET', `/v1/projects/${enc(prj!)}`)).prefix}-${asked.trim()}`
 }
 
-export async function taskList(opts: { project?: string; workspace?: string; status?: string }): Promise<MoveResult> {
-  const scope = opts.project || !opts.workspace ? `project=${enc(await project(opts.project))}` : `workspace=${enc(opts.workspace)}`
-  const page = await cloud<Page<Task>>('GET', `/v1/tasks?${scope}&limit=100${opts.status ? `&status=${enc(opts.status)}` : ''}`)
-  for (const t of page.data) say(`${t.key}  ${t.status}  ${t.title}`)
-  return { ...page }
+export async function taskList(opts: { project?: string; workspace?: string; status?: string }, location: TaskLocation = {}): Promise<MoveResult> {
+  const scope = opts.project || !opts.workspace ? `project=${enc(await project(opts.project, location))}` : `workspace=${enc(opts.workspace)}`
+  const data = await all<Task>(`/v1/tasks?${scope}${opts.status ? `&status=${enc(opts.status)}` : ''}`)
+  for (const t of data) say(`${t.key}  ${t.status}  ${t.title}`)
+  return { data, next: null }
 }
 
-export async function taskShow(id: string): Promise<MoveResult> {
-  const task = await cloud<Task>('GET', `/v1/tasks/${enc(await taskRef(id))}`)
+export async function taskShow(id: string, location: TaskLocation = {}): Promise<MoveResult> {
+  const task = await cloud<Task>('GET', `/v1/tasks/${enc(await taskRef(id, location))}`)
   const card = task.studio ? await cloud<{ body: string }>('GET', `/v1/tasks/${enc(task.id)}/card`).catch(() => null) : null
   say(`${task.key}  ${task.title}`)
   say(`${task.status}${task.studio ? `  ${task.studio.name}` : ''}  ${taskUrl(task.key)}`)
@@ -136,47 +143,76 @@ export async function taskShow(id: string): Promise<MoveResult> {
   return { ...task, card }
 }
 
-export async function taskCreate(request: string, opts: { project?: string; studio?: string }): Promise<MoveResult> {
+export async function taskCreate(request: string, opts: { project?: string; studio?: string }, location: TaskLocation = {}): Promise<MoveResult> {
   const text = request.trim()
   if (!text) die('Say what the task is.', { kind: 'bad-args', exitCode: 2 })
   const line = text.split('\n')[0]!.trim()
   const title = line.length > 80 ? `${line.slice(0, 79)}…` : line
+  const target = await project(opts.project, location)
+  if (!opts.studio?.trim()) return refuse('Choose --studio from akb studio list.', 'no_studio')
   const task = await cloud<Task>('POST', '/v1/tasks', {
     title,
     request: text,
-    project: await project(opts.project),
-    ...(opts.studio ? { studio: cloudStudio(opts.studio) } : {}),
+    project: target,
+    studio: cloudStudio(opts.studio),
     source: 'api',
+    run: true,
   })
   say(`Created ${task.key}: ${task.title}  ${taskUrl(task.key)}`)
+  say(`Status: ${task.status}${task.failure ? ` — ${task.failure}` : ''}`)
   return { ...task }
 }
 
 /** The step names a task; each says what it did in one line. */
-async function act(id: string, route: string, body: unknown, done: (key: string) => string): Promise<MoveResult> {
-  const ref = await taskRef(id)
+async function act(id: string, route: string, body: unknown, done: (key: string) => string, location: TaskLocation = {}): Promise<MoveResult> {
+  const ref = await taskRef(id, location)
   const value = await cloud<Record<string, unknown>>('POST', `/v1/tasks/${enc(ref)}/${route}`, body)
   say(done(ref))
   return value
 }
 
-export async function taskApprove(id: string, comment?: string, opts: PreviewConfirmOptions = {}): Promise<MoveResult> {
-  const preview = opts.preview || opts.previewStage || opts.previewVersion || opts.definitionRevision ? previewConfirmation(opts) : null
-  if (preview && (insideRun() || process.env[REPLY_APPROVAL_ENV] || process.env[PREVIEW_BRIDGE_ENV])) return refuse('Only the user confirms a preview stage.', 'preview_refused')
-  const deferred = preview ? null : await approveAfterReply(id, comment)
+export interface ReviewOptions { stage?: string; revision?: string; file?: string; status?: string; reviseFrom?: string }
+
+function reviewRevision(value?: string): number {
+  if (value === undefined || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) die('--revision must name the version you read.')
+  return Number(value)
+}
+
+export async function taskReview(id: string, opts: ReviewOptions = {}, location: TaskLocation = {}): Promise<MoveResult> {
+  const ref = await taskRef(id, location)
+  const count = [opts.file, opts.status, opts.reviseFrom].filter(v => v !== undefined).length
+  if (count > 1 || opts.stage && !opts.status) die('Use one of --file, --stage with --status, or --revise-from.')
+  let task: Task
+  if (!count) task = await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`)
+  else {
+    const review_revision = reviewRevision(opts.revision)
+    let fields: Record<string, unknown>
+    if (opts.file) fields = { operation: 'plan', review_plan: parseReviewPlan(JSON.parse(fs.readFileSync(opts.file, 'utf8'))) }
+    else if (opts.reviseFrom) fields = { operation: 'revise', stage: opts.reviseFrom }
+    else {
+      if (!opts.stage || !['running', 'done'].includes(opts.status!)) die('--stage and --status running|done are required.')
+      fields = { operation: 'status', stage: opts.stage, status: opts.status }
+    }
+    task = await cloud<Task>('POST', `/v1/tasks/${enc(ref)}/review`, { ...fields, review_revision })
+  }
+  say(JSON.stringify(task.review, null, 2))
+  return { review: task.review }
+}
+
+export async function taskApprove(id: string, comment?: string, opts: ReviewOptions = {}, location: TaskLocation = {}): Promise<MoveResult> {
+  const review_revision = reviewRevision(opts.revision)
+  if (insideRun() && !process.env[REPLY_APPROVAL_ENV]) return refuse('Only the user approves a review.', 'review_refused')
+  const ref = process.env[REPLY_APPROVAL_ENV] && !linked(location) ? id.trim() : await taskRef(id, location)
+  const deferred = await approveAfterReply(ref, comment, { stage: opts.stage, review_revision })
   if (deferred) return deferred
-  const task = await cloud<Task>('GET', `/v1/tasks/${enc(await taskRef(id))}`)
-  return act(task.key, 'decisions', {
-    ...(preview ?? { decision: 'approve' }),
-    ...(comment?.trim() ? { comment: comment.trim() } : {}),
-    ...(preview ? { review_revision: task.previewReviewRevision ?? task.review?.revision ?? 0 } : task.review ? { review_revision: task.review.revision } : {}),
-  }, (k) => `Approved ${k}.`)
+  return act(ref, 'decisions', { decision: 'approve', review_revision, ...(opts.stage ? { stage: opts.stage } : {}),
+    ...(comment?.trim() ? { comment: comment.trim() } : {}) }, k => `Approved ${k}.`, location)
 }
 
 /** `raw update-questions` on a Cloud task's card (#620), checked here first against the card read. */
-export async function taskUpdateQuestions(id: string, typed: Typed[]): Promise<MoveResult> {
+export async function taskUpdateQuestions(id: string, typed: Typed[], location: TaskLocation = {}): Promise<MoveResult> {
   const ops = readQuestionOps(typed)
-  const ref = await taskRef(id)
+  const ref = await taskRef(id, location)
   const card = await cloud<{ version: number; body: string }>('GET', `/v1/tasks/${enc(ref)}/card`)
   const questions = parseFrontmatter(card.body).meta?.questions ?? []
   let changes: string[]
@@ -202,12 +238,17 @@ export async function taskUpdateQuestions(id: string, typed: Typed[]): Promise<M
   return { ...task, changes, open }
 }
 
-export const taskChat = (id: string, message: string) => act(id, 'chat', { body: message }, (k) => `Sent to ${k}.`)
-export const taskRemove = (id: string, reason: string) =>
-  act(id, 'cancel', reason.trim() ? { reason: reason.trim() } : undefined, (k) => `Removed ${k}. Restore it on the web.`)
-export const taskResume = (id: string) => act(id, 'resume', undefined, (k) => `Resumed ${k}.`)
-export const taskStop = (id: string) => act(id, 'stop', undefined, (k) => `Stopped ${k}.`)
-export const taskComment = (id: string, text: string) => act(id, 'comments', { body: text }, (k) => `Commented on ${k}.`)
+export const taskChat = (id: string, message: string, location: TaskLocation = {}) => act(id, 'chat', { body: message }, (k) => `Sent to ${k}.`, location)
+export const taskRemove = (id: string, reason: string, location: TaskLocation = {}) =>
+  act(id, 'cancel', reason.trim() ? { reason: reason.trim() } : undefined, (k) => `Removed ${k}. Restore it with akb task restore ${k}.`, location)
+export async function taskRestore(id: string, location: TaskLocation = {}): Promise<MoveResult> {
+  const task = await cloud<Task>('POST', `/v1/tasks/${enc(await taskRef(id, location))}/restore`)
+  say(`Restored ${task.key}. Status: ${task.status}.`)
+  return { ...task }
+}
+export const taskResume = (id: string, location: TaskLocation = {}) => act(id, 'resume', undefined, (k) => `Resumed ${k}.`, location)
+export const taskStop = (id: string, location: TaskLocation = {}) => act(id, 'stop', undefined, (k) => `Stopped ${k}.`, location)
+export const taskComment = (id: string, text: string, location: TaskLocation = {}) => act(id, 'comments', { body: text }, (k) => `Commented on ${k}.`, location)
 
 export async function workspaceList(): Promise<MoveResult> {
   const data = await all<Workspace>('/v1/workspaces')
@@ -221,8 +262,8 @@ export async function projectList(opts: { workspace?: string }): Promise<MoveRes
   return { data }
 }
 
-export async function runnerList(opts: { workspace?: string }): Promise<MoveResult> {
-  const held = await cloud<{ runners: { name: string; connected: boolean }[] }>('GET', `/v1/workspaces/${enc(await workspace(opts.workspace))}/runners`)
+export async function runnerList(opts: { workspace?: string }, location: TaskLocation = {}): Promise<MoveResult> {
+  const held = await cloud<{ runners: { name: string; connected: boolean }[] }>('GET', `/v1/workspaces/${enc(await workspace(opts.workspace, location))}/runners`)
   for (const r of held.runners) say(`${r.name}  ${r.connected ? 'online' : 'offline'}`)
   return held
 }

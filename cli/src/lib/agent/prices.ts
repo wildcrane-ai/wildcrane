@@ -51,6 +51,19 @@ const OPENAI: Record<string, Price> = {
   'gpt-5-pro': { input: 15, cachedInput: 15, output: 120 },
 }
 
+// Global standard API-equivalent rates, not Antigravity subscription/credit charges.
+// https://cloud.google.com/model-garden/pricing (2026-11-17); output includes thinking.
+function antigravityPrices(at: number): Record<string, Price> {
+  const pro = at < Date.parse('2026-12-01T00:00:00Z') ? 2 : 4
+  const flash = at < Date.parse('2027-01-01T00:00:00Z') ? 0.75 : 1.5
+  return {
+    'gemini-4-carbon': { input: pro, cachedInput: pro / 20, output: pro * 5 },
+    'gemini-4-argon': { input: pro, cachedInput: pro / 20, output: pro * 5 },
+    'gemini-4-hydrogen': { input: 1.5, cachedInput: 0.075, output: 7.5 },
+    'gemini-3.8-flash': { input: flash, cachedInput: flash / 10, output: flash * 5 },
+  }
+}
+
 // One table per provider, because a model id only means a price alongside the provider that
 // served it: a gateway can answer to `gpt-5.6-sol` at its own rates, and an id nobody
 // publishes rates for belongs to no table at all.
@@ -76,10 +89,12 @@ export function priceUsd(
   provider: string | undefined,
   model: string | undefined,
   usage: TokenUsage | undefined,
+  at = Date.now(),
 ): number | undefined {
   if (!provider || !model || !usage) return undefined
-  const table = PRICES[provider.trim().toLowerCase()]
-  const price = table && lookUp(table, model)
+  const agy = provider.trim().toLowerCase() === 'antigravity'
+  const table = agy ? antigravityPrices(at) : PRICES[provider.trim().toLowerCase()]
+  const price = table && (agy ? table[model.trim().toLowerCase().replace(/-(?:low|medium|high|xhigh|max)$/, '')] : lookUp(table, model))
   if (!price) return undefined
   const usd =
     ((usage.input + usage.cacheCreation) * price.input +

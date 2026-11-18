@@ -67,14 +67,14 @@ afterEach(async () => {
   await cloud.stop()
 })
 
-for (const verb of ['create', 'refine', 'implement', 'preview']) for (const signal of ['SIGTERM', 'SIGKILL', 'update'] as const) {
+for (const verb of ['create', 'refine', 'implement']) for (const signal of ['SIGTERM', 'SIGKILL', 'update'] as const) {
   it(`${verb} survives Runner ${signal} without a second execution (#693)`, async () => {
     const action = verb === 'create' ? 'refine' : verb
     if (verb === 'create') cloud.put({ 'todo/2-test.md': null })
     process.env.FAKE_AKB = JSON.stringify({ [action]: { gates: [gate(1), gate(2)], result: 'Original result',
       spent: { costUsd: 0.25, usage: { input: 10, output: 2 } }, ...(verb === 'refine' ? { status: 'planned' } : {}) } })
     const job = cloud.dispatch({ id: 'job', task: 'task_1', project: 'prj_1', projectDir: folder(), number: 2,
-      runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb, ...(verb === 'preview' ? { text: 'designer' } : {}) } })
+      runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb,  } })
     launch()
     await until(() => commands(action).length === 1, 15_000)
     const record = path.join(runnerHome(), 'flow-workers/job.json')

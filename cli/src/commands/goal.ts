@@ -1,6 +1,7 @@
 // 目标草稿沿用 KANBAN_IDEAS 和 ideas 文件字段，兼容旧 Runner。
 
 import fs from 'node:fs'
+import { parseReviewPlan, type ReviewPlan } from '../lib/shared/review-plan'
 
 import { say } from '../lib/io'
 import { die } from '../lib/paths'
@@ -12,11 +13,11 @@ export interface GoalOptions {
   title?: string
   bodyFile?: string
   studio?: string
-  previews?: string
+  reviewFile?: string
 }
 
 export interface GoalStudio {
-  previews?: { agent: string; title?: { en?: string; zh?: string }; when: string }[]
+  previews?: import("../lib/agent/studio-def").StudioPreview[]
   id: string
   name: string
   description?: string
@@ -28,7 +29,7 @@ export interface Goal {
   title: string
   outcome: string
   acceptance: string[]
-  previews?: string[]
+  review_plan?: ReviewPlan
   studio: string
   task?: string | null
   start?: boolean
@@ -112,27 +113,27 @@ export function cmdGoal(args: string[], opts: GoalOptions): MoveResult {
     const body = readBody(opts.bodyFile)
     const studio = opts.studio ? studioOf(held, opts.studio) : fallbackStudio(held)
     const id = `new_${held.goals.filter((i) => i.id.startsWith('new_')).length + 1}`
-    const previews = goalPreviews(held, studio, opts.previews)
-    held.goals.push({ id, title, ...body, studio, previews, task: null })
+    const review_plan = goalReview(held, studio, opts.reviewFile)
+    held.goals.push({ id, title, ...body, studio, review_plan, task: null })
     write()
     say(`Saved goal ${id}: ${title} (${shortStudioId(studio)}).`)
-    return { id, title, studio, previews }
+    return { id, title, studio, review_plan }
   }
 
   const goal = named(held, opts.id)
   if (goal.task) die(`${goal.id} is already a task; it no longer changes here.`)
   if (sub === 'save') {
     const studio = opts.studio !== undefined ? studioOf(held, opts.studio) : goal.studio
-    const previews = opts.previews !== undefined ? goalPreviews(held, studio, opts.previews) : studio === goal.studio ? goal.previews ?? [] : []
+    const review_plan = opts.reviewFile !== undefined ? goalReview(held, studio, opts.reviewFile) : checkGoalReview(held, studio, goal.review_plan ?? null)
     if (opts.title !== undefined) {
       if (!opts.title.trim()) die('--title must not be empty')
       goal.title = opts.title.trim()
     }
     if (opts.bodyFile !== undefined) Object.assign(goal, readBody(opts.bodyFile))
-    Object.assign(goal, { studio, previews })
+    Object.assign(goal, { studio, review_plan })
     write()
     say(`Saved goal ${goal.id}: ${goal.title} (${shortStudioId(goal.studio)}).`)
-    return { id: goal.id, title: goal.title, studio: goal.studio, previews: goal.previews }
+    return { id: goal.id, title: goal.title, studio: goal.studio, review_plan: goal.review_plan }
   }
   if (sub === 'drop') {
     goal.dropped = true
@@ -161,22 +162,25 @@ export function cmdGoalStudios(): MoveResult {
 }
 
 
-export function goalPreviews(held: GoalsFile, studio: string, asked = ''): string[] {
-  if (!asked.trim()) return []
-  const catalog = held.studios.find((w) => w.id === studio)?.previews
-  if (!catalog) die('Preview agents are unavailable; update Runner and try again.')
-  const names = asked.split(',').map((p) => p.trim())
-  if (names.length > 50) die('previews must contain at most 50 agent names.')
-  for (const name of names) if (!catalog.some((p) => p.agent === name)) die(`Preview agent ${name} is not enabled in studio ${studio}.`)
-  return catalog.filter((p) => names.includes(p.agent)).map((p) => p.agent)
+export function checkGoalReview(held: GoalsFile, studio: string, value: unknown): ReviewPlan {
+  const catalog = held.studios.find(w => w.id === studio)?.previews
+  try {
+    const plan = parseReviewPlan(value)
+    if (plan?.some(n => n.previews.length) && !catalog) die('Preview outputs are unavailable; update Runner and try again.')
+    return parseReviewPlan(plan, catalog?.map(p => p.id))
+  } catch (e) { return die((e as Error).message) }
+}
+
+export function goalReview(held: GoalsFile, studio: string, file?: string): ReviewPlan {
+  return checkGoalReview(held, studio, file ? JSON.parse(fs.readFileSync(file, 'utf8')) : null)
 }
 
 export function cmdGoalPreviews(studio: string): MoveResult {
   const { held } = loadGoals()
   const id = studioOf(held, studio)
   const catalog = held.studios.find((w) => w.id === id)?.previews
-  if (!catalog) die('Preview agents are unavailable; update Runner and try again.')
-  const agents = catalog.map((p) => ({ name: p.agent, when: p.when || null }))
-  say(agents.length ? agents.map((p) => `${p.name}\n  ${p.when ?? 'Always'}`).join('\n') : 'This studio has no preview agent. Ask for none.')
-  return { agents, problems: [] }
+  if (!catalog) die('Preview outputs are unavailable; update Runner and try again.')
+  const previews = catalog.map(({ id, instructions }) => ({ id, instructions }))
+  say(previews.map(p => `${p.id}\n  ${p.instructions}`).join('\n'))
+  return { previews, problems: [] }
 }

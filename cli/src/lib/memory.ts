@@ -229,3 +229,22 @@ function readTopics(file: string): Topic[] {
   }
   return topics
 }
+
+/** Directory hints only; memory contents stay on disk for on-demand reads. */
+export function memoryDirectories(board?: string): string[] {
+  const root = board ? path.join(board, 'memory') : MEMORY
+  const walk = (dir: string, depth: number, scoped = true): string[] => {
+    let entries: fs.Dirent[]
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return [] }
+    return entries.filter(e => e.isDirectory() && !e.name.startsWith('.')).flatMap(e => {
+      const target = path.join(dir, e.name)
+      return depth === 1 ? (!scoped || ['project', 'workspace'].includes(e.name) ? [target] : []) : walk(target, depth - 1, scoped)
+    })
+  }
+  return [
+    root,
+    ...walk(path.join(root, 'previews'), 3),
+    ...walk(path.join(root, 'studios'), 1, false),
+    path.join(root, 'agents', PLANNER),
+  ].filter(dir => fs.existsSync(dir)).map(dir => `${dir}/`)
+}

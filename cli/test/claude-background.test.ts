@@ -110,14 +110,12 @@ describe('a run with a background task', () => {
     assert.equal(spawns(), 1)
   })
 
-  it('is ended with its reason once the background wait runs out', async () => {
-    board(fakeClaude(-1), 0.02)
-    BACKGROUND_WAIT.minutes = 0.03
-    const id = run(fakeClaude(-1))
+  it('keeps genuine background work running past the old background deadline', async () => {
+    board(fakeClaude(2000), 0.02)
+    BACKGROUND_WAIT.minutes = 0.001
+    const id = run(fakeClaude(2000))
     await watchRun(id, async () => ({ error: 'no resume' }))
-    const record = peekRun(id)!
-    assert.equal(record.status, 'error')
-    assert.match(record.error ?? '', /background tasks did not finish/)
-    assert.deepEqual(record.errorWhy?.map((w) => w.kind), ['backgroundSilent'])
+    assert.equal(peekRun(id)!.status, 'done')
+    assert.equal(spawns(), 1)
   })
 })

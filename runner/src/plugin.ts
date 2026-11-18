@@ -1,3 +1,4 @@
+import { reviewPlanSchema } from '../../cli/src/lib/shared/review-plan'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -98,14 +99,14 @@ const goalOf = (i: api.DraftGoal) => ({
   outcome: i.outcome,
   acceptance: i.acceptance,
   studio: i.studio,
-  previews: i.previews ?? [],
+  review_plan: i.review_plan ?? null,
   task: i.task ? { ...i.task, url: taskUrl(i.task.key || i.task.id) } : null,
 })
 
 async function studiosOf(workspace: string) {
   const list = await api.listStudios(workspace)
   if (!list.ok) return []
-  return list.value.data.map((w) => ({ id: w.id, name: w.name, names: w.names, description: w.description ?? '', when: w.when ?? '', previews: w.previews }))
+  return list.value.data.map((w) => ({ id: w.id, name: w.name, names: w.names, description: w.description ?? '', when: w.when ?? '', previews: w.previews?.map(({ id, instructions }) => ({ id, instructions })) }))
 }
 
 async function draftOf(id: string) {
@@ -379,7 +380,7 @@ const GoalInput = z.object({
   outcome: z.string().describe('What the user gets, in at most 150 words, in their language.'),
   acceptance: z.array(z.string()).describe('`Done when` checks a reviewer can verify.'),
   studio: z.string().describe('One of the studio ids wildcrane_draft_read lists.'),
-  previews: z.array(z.string()).max(50).optional(),
+  review_plan: reviewPlanSchema.optional(),
 })
 
 /** 已开始目标链接任务，其余链接讨论。 */

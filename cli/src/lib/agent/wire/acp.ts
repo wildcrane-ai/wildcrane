@@ -1,3 +1,4 @@
+import { ExecutionError, executionFailure, providerFailure } from './failures'
 import { acpCostFile, readAcpCost, saveAcpCost } from './acp-cost'
 import { bounded, CONVERSATION_MS } from '../../shared/conversation'
 // The board's side of the Agent Client Protocol (#225).
@@ -118,21 +119,6 @@ function usageOf(value: unknown, grossInput = false): TokenUsage | undefined {
   return sum > 0 ? counts : undefined
 }
 
-// ---- a session the agent no longer holds ------------------------------------
-//
-// Resuming asks for a session by id, and an agent that has forgotten it says so. `dsh-acp`
-// 0.4.14 answers `session/load` with `-32602` and `session not found: <id>`; the only other
-// `-32602` on that method is a relative `cwd`, which the board never sends, and a dead
-// pipe, a disposed bridge and a logged-out agent each answer differently. So this pair is
-// the one refusal that means "gone" rather than "broken", and everything else still fails
-// the run. Cursor says `Session "<id>" not found` — and says it for every chat its print mode
-// made, which it keeps apart from its ACP sessions.
-const INVALID_PARAMS = -32602
-
-function sessionGone(e: unknown): boolean {
-  return e instanceof RpcError && e.code === INVALID_PARAMS && /session\b.*\bnot found/i.test(e.message)
-}
-
 // What the log says when a resume turned into a restart, so the run reads as work started
 // again rather than work carried on.
 const RESTARTED = '[board] that conversation is gone — the task was restarted in a new session\n'
@@ -206,6 +192,8 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
   const emit = () => {
     for (const e of events.events()) io.event?.(e)
   }
+  const cancelled = () => { events.end(); emit() }
+  io.signal?.addEventListener('abort', cancelled, { once: true })
   // Nothing reaches the log until the prompt goes out. Opening a session is bookkeeping,
   // and re-opening one replays the whole earlier conversation — neither is this run's
   // work, and both would bury it.
@@ -225,6 +213,7 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
         }
         if (live && (!obj(msg.params).sessionId || obj(msg.params).sessionId === currentSession)) {
           const kind = str(obj(obj(msg.params).update).sessionUpdate)
+          if (['agent_message_chunk', 'agent_thought_chunk'].includes(kind)) io.activity?.()
           if (!started && ['agent_message_chunk', 'tool_call', 'plan'].includes(kind)) { started = true; phase('started') }
           if (kind === 'agent_message_chunk' && Date.now() - contentAt >= 1000) {
             contentAt = Date.now(); io.event?.({ kind: 'phase', data: { phase: 'started', at: new Date().toISOString(), contentAt: new Date(contentAt).toISOString() } })
@@ -282,7 +271,10 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
       try {
         opened = await bounded(rpc.call('session/load', { sessionId, cwd: io.cwd, mcpServers }), preparingUntil - Date.now(), 'ACP session/load timed out.')
       } catch (e) {
-        if (!sessionGone(e) || !io.restartPrompt) throw e
+        const reason = e instanceof Error ? e.message : String(e)
+        const failure = e instanceof RpcError ? providerFailure(e.data, reason) : executionFailure(e)
+        if (failure.code !== 'session_not_found') throw e
+        if (!io.restartPrompt) throw new ExecutionError(failure)
         const fresh = await bounded(newSession(rpc, io.cwd, mcpServers), preparingUntil - Date.now(), 'ACP session/new timed out.')
         opened = fresh.opened
         sessionId = fresh.sessionId
@@ -345,7 +337,7 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
       io.log(`[error] ${why}\n`)
       events.error(why)
       emit()
-      return { ok: false, result, error: why, usage, context, costUsd }
+      return { ok: false, result, error: why, failure: { code: stopReason, level: 3, reason: why }, usage, context, costUsd }
     }
     emit()
     return { ok: true, result, usage, context, costUsd }
@@ -356,10 +348,13 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
     const error = e instanceof Error ? e.message : String(e)
     const result = tail.end()
     io.log(`[error] ${error}\n`)
+    events.end()
     events.error(error)
     emit()
     if (currentSession) saveAcpCost(acpCostFile(options.tool ?? 'acp', io.cwd, currentSession), costUsd)
-    return { ok: false, result, error, usage: undefined, costUsd: costUsd === undefined || costBefore === undefined ? undefined : costUsd < costBefore ? costUsd : costUsd - costBefore }
+    return { ok: false, result, error, failure: e instanceof RpcError ? providerFailure(e.data, error) : executionFailure(e), usage: undefined, costUsd: costUsd === undefined || costBefore === undefined ? undefined : costUsd < costBefore ? costUsd : costUsd - costBefore }
+  } finally {
+    io.signal?.removeEventListener('abort', cancelled)
   }
 }
 

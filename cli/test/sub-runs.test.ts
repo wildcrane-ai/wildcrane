@@ -97,7 +97,7 @@ describe('starting a sub-run', () => {
     assert.equal(sub.input, 'Module docs: card #7')
     const { prompt } = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, `${sub.sessionId}.plan.json`), 'utf8'))
     assert.match(prompt, new RegExp(`^You are a sub-run: run \`${parent}\` started you`))
-    assert.match(prompt, /——— your task ———\n\nModule docs: card #7/)
+    assert.match(prompt, /Do only this task and report its result:\n\nModule docs: card #7/)
   })
 
   it("runs on the parent's runtime unless it names one, and refuses one the board lacks", () => {

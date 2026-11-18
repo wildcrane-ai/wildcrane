@@ -73,19 +73,6 @@ afterEach(() => {
 })
 
 describe("a project's own agents", () => {
-  it('counts the ones a studio runs, and never a shipped one', () => {
-    // Made in no studio, so off.
-    newAgent('outliner')
-    newAgent('checker')
-    assert.deepEqual(customAgentsOn(), [])
-
-    assert.equal(switchAgent('coding', 'outliner', true).ok, true)
-    assert.equal(switchAgent('coding', 'checker', true).ok, true)
-    assert.deepEqual(customAgentsOn().sort(), ['checker', 'outliner'])
-
-    assert.equal(switchAgent('coding', 'outliner', false).ok, true)
-    assert.deepEqual(customAgentsOn(), ['checker'])
-  })
 
   it("tells a project's agent from one the board ships", () => {
     newAgent('reviewer')

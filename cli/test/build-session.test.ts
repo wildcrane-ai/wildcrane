@@ -9,8 +9,6 @@ import { openResume, openRun, patch, readSpec, resumeDelivery } from '../src/lib
 import { endDelivery } from '../src/lib/agent/deliveries.ts'
 import { startRun } from '../src/lib/agent/start.ts'
 import { approvalRequest } from '../src/lib/agent/approve.ts'
-import { freezePreviewProgress, readPreviewProgress, updatePreviewProgress } from '../src/lib/agent/preview-progress.ts'
-import { selectPreviewStages } from '../src/lib/preview-stages.ts'
 import { cmdStartRun } from '../src/commands/run.ts'
 import { startCollecting, stopCollecting } from '../src/lib/io.ts'
 import { readStore, withStore } from '../src/lib/agent/store.ts'
@@ -55,31 +53,15 @@ function build(status: RunStatus = 'stopped', resumeId?: string): RunRecord {
 }
 
 describe('交付的构建会话续接（#368）', () => {
-  for (const status of ['absent', 'unselected', 'running', 'awaiting_confirmation', 'failed'] as const) {
-    it(`启动和续跑不要求预览完成：${status}（#721）`, async () => {
-      await move(root, ['update', '1', '--previews', 'ui-designer', '--status', 'ready'])
-      if (status !== 'absent') {
-        freezePreviewProgress(1, 'ui-designer')
-        if (status !== 'unselected') updatePreviewProgress(1, (all) => {
-          const progress = all['ui-designer']!
-          selectPreviewStages(progress, progress.definitions.map((stage) => stage.id))
-          progress.stages[0]!.status = status
-        })
-      }
-      const before = readPreviewProgress(1)
-      assert.equal((approvalRequest({ action: 'approve', id: 1 }) as { action: string }).action, 'implement')
-      startCollecting()
-      try {
-        assert.equal((await cmdStartRun('implement', [1], { print: true })).mode, 'print')
-      } finally { stopCollecting() }
-      const old = build()
-      const started = await startRun({ action: 'implement', id: 1 })
-      if ('error' in started) throw new Error(started.error)
-      assert.equal(started.run.resumedFrom, old.sessionId)
-      assert.equal(started.run.deliveryId, old.deliveryId)
-      assert.deepEqual(readPreviewProgress(1), before)
-    })
-  }
+  it('starts and resumes an ordinary task with no Preview role progress', async () => {
+    await move(root, ['update', '1', '--previews', 'ui-design', '--status', 'ready'])
+    assert.equal((approvalRequest({ action: 'approve', id: 1 }) as {action: string}).action, 'implement')
+    const old = build()
+    const next = await startRun({ action: 'implement', id: 1 })
+    assert.ok(!('error' in next))
+    assert.equal(next.run.resumedFrom, old.sessionId)
+    assert.equal(next.run.deliveryId, old.deliveryId)
+  })
 
   for (const harness of ['claude-code', 'codex', 'kimi', 'opencode', 'cursor', 'dsh', 'grok', 'zcode']) {
     it(`${harness} 使用原构建的真实会话，而非讨论会话或新运行 ID`, async () => {
@@ -132,7 +114,7 @@ describe('交付的构建会话续接（#368）', () => {
   it('缺失真实会话 ID 时在原交付目录接续', async () => {
     runtime('codex')
     const old = build()
-    const result = await openResume(old.sessionId, { deliveryId: old.deliveryId! })
+    const result = await openResume(old.sessionId, { deliveryId: old.deliveryId!, fresh: true })
     assert.ok(!('error' in result))
     assert.equal(result.run.deliveryId, old.deliveryId)
     assert.equal(result.run.cwd, old.cwd)
@@ -155,9 +137,9 @@ describe('交付的构建会话续接（#368）', () => {
     await watchRun(opened.run.sessionId, async () => ({ error: '不应启动新会话' }))
     const rows = readStore().runs
     assert.equal(rows.length, 1)
-    assert.notEqual(rows[0]!.sessionId, opened.run.sessionId)
+    assert.equal(rows[0]!.sessionId, opened.run.sessionId)
     assert.equal(rows[0]!.deliveryId, old.deliveryId)
-    assert.ok(!rows[0]!.argv?.includes('--resume'))
+    assert.ok(rows[0]!.argv?.includes('--resume'))
     const rebuilt = await openResume(rows[0]!.sessionId, { deliveryId: old.deliveryId!, fresh: true })
     assert.ok(!('error' in rebuilt))
     assert.match(rebuilt.spec.prompt, /raw card implement 1 --print/)
@@ -178,7 +160,52 @@ describe('交付的构建会话续接（#368）', () => {
     assert.equal(started.run.resumeId, old.sessionId)
   })
 
-  it('ACP 原会话丢失时用原任务开启新会话', async () => {
+  for (const scenario of ['repair', 'mixed', 'exhausted', 'unconfirmed', 'unknown']) {
+    it(`applies the shared retry policy to a task: ${scenario}`, async () => {
+      const agent = path.join(root, 'retry-agent.mjs')
+      const attempts = path.join(root, 'attempts.jsonl')
+      fs.writeFileSync(agent, `
+        import fs from 'node:fs';
+        const file = ${JSON.stringify(attempts)};
+        const count = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\\n').length : 0;
+        fs.appendFileSync(file, JSON.stringify(process.argv.slice(2)) + '\\n');
+        const mode = ${JSON.stringify(scenario)};
+        const send = frame => console.log(JSON.stringify(frame));
+        if (mode === 'unconfirmed') send({ type:'assistant',message:{content:[{ type:'tool_use',name:'Write',id:'write' }]} });
+        const error = mode === 'unknown' || mode === 'repair' || mode === 'mixed' && count > 0 ? undefined
+          : { type:'overloaded_error', headers:{ 'Retry-After':'0' } };
+        send({ type:'result', is_error:true, error,
+          subtype: mode === 'repair' || mode === 'mixed' && count > 0 ? 'error_max_structured_output_retries' : 'error_during_execution',
+          errors:['503 retry-after: 1'] });
+      `)
+      fs.writeFileSync(uiConfigOf(root, 'docs', 'kanban'), JSON.stringify({
+        runtimes: [{ id: 'global', name: 'Global', harness: 'claude-code', settings: { command: `node ${agent}` } }],
+      }))
+      const opened = openRun({ action: 'implement', id: 1 }, 'Complete the task.', [])
+      if ('error' in opened) throw Error(opened.error)
+      const total = scenario === 'exhausted' ? 4 : ['repair', 'mixed'].includes(scenario) ? 2 : 1
+      const resume: NonNullable<Parameters<typeof watchRun>[1]> = async (id, options) => {
+        const previous = readStore().runs.find(r => r.sessionId === id)!
+        assert.ok(previous.retry?.pending)
+        const next = await openResume(id, options)
+        if ('error' in next) return next
+        assert.equal(next.run.retry?.attempt, previous.retry.attempt)
+        assert.equal(next.run.retry?.launching, true)
+        patch(next.run.sessionId, r => { r.pid = process.pid })
+        await watchRun(next.run.sessionId, resume)
+        return { run: next.run, spawned: true }
+      }
+      patch(opened.run.sessionId, r => { r.pid = process.pid })
+      await watchRun(opened.run.sessionId, resume)
+      const saved = readStore().runs.find(r => r.deliveryId === opened.run.deliveryId)!
+      assert.equal((fs.readFileSync(attempts, 'utf8').trim().split('\n')).length, total)
+      assert.equal(saved.retry?.attempt ?? 1, total)
+      assert.equal(saved.retryPause, scenario === 'unconfirmed' ? 'unsafe' : scenario === 'unknown' ? 'needs-review' : 'limit')
+      assert.match(saved.error!, /503 retry-after: 1/)
+    })
+  }
+
+  it('ACP 原会话丢失时保留任务并等待明确接手', async () => {
     const agent = path.join(root, 'acp.mjs')
     const trace = path.join(root, 'methods.jsonl')
     fs.writeFileSync(agent, `import fs from 'node:fs';import readline from 'node:readline';
@@ -197,12 +224,12 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     patch(opened.run.sessionId, (r) => { r.pid = process.pid })
     await watchRun(opened.run.sessionId, async () => ({ error: '不应启动新会话' }))
     const calls = fs.readFileSync(trace, 'utf8').trim().split('\n').map((s) => JSON.parse(s))
-    assert.deepEqual(calls.map((m) => m.method), ['initialize', 'session/load', 'session/new', 'session/prompt'])
+    assert.deepEqual(calls.map((m) => m.method), ['initialize', 'session/load'])
     assert.equal(calls[1].params.sessionId, 'original')
     const rows = readStore().runs
     assert.equal(rows.length, 1)
-    assert.equal(rows[0]!.status, 'done')
-    assert.equal(rows[0]!.resumeId, 'new-session')
+    assert.equal(rows[0]!.status, 'error')
+    assert.equal(rows[0]!.resumeId, 'original')
   })
 
   it('同卡片的旧交付不会被新交付当作续跑来源', async () => {

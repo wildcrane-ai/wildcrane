@@ -74,6 +74,7 @@ const RUNTIME_OPTION: FlowOption = {
 
 // A Cloud task's session (#2146), over the card's own planning session.
 const CARRY_OPTIONS: FlowOption[] = [
+  { flags: '--new-session', description: 'start planning in a new session' },
   { flags: '--session <id>', description: "the agent session to carry on, over the card's own" },
   { flags: '--fork', description: 'with --session: start from a copy of it' },
   { flags: '--transcript <file>', description: 'the discussion the card came from, read when no session is carried on' },

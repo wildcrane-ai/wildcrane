@@ -3,16 +3,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { killMarked, processesStopped, type Mark } from '../../cli/src/lib/agent/stop'
-import { backoffMs } from '../../cli/src/lib/agent/retry'
+import { readFailure, readRetryPlan, type ExecutionFailure, type RetryPause, type RetryPlan } from '../../cli/src/lib/agent/retry'
 import type { RunEvent } from '../../cli/src/lib/agent/wire'
 import type { JobReport } from './api'
 import { runnerHome } from './home'
 
-export const PREPARE_REASON = 'Runner update prepare.'
-export const UPDATE_REASON = 'Runner update checkpoint.'
 export const UNCERTAIN = '更新中断时有操作结果尚未确认，请检查已有结果后再续跑。'
 
 export interface Checkpoint {
+  boardContinuation?: { report: JobReport; facts: string; prompt: string }
   approvalRequested?: boolean
   approvalCancelled?: boolean
   mark?: Mark
@@ -25,8 +24,12 @@ export interface Checkpoint {
   started?: boolean
   opaque?: boolean
   effects?: boolean
-  retry?: { since: number; attempt: number; at?: number }
+  retry?: { since: number; attempt: number; pending?: RetryPlan; at?: number }
+  failure?: ExecutionFailure
+  retryPause?: RetryPause
+  launching?: true
   attempts?: (Pick<JobReport, 'session' | 'usage' | 'costUsd' | 'costIncomplete'> & { resume?: string | null })[]
+  partialReply?: string
   pending: string[]
   completed?: { outcome: 'done' | 'failed'; reason?: string; report: JobReport }
 }
@@ -37,6 +40,12 @@ export function readCheckpoint(id: string): Checkpoint | null {
   try {
     const held = JSON.parse(fs.readFileSync(fileOf(id), 'utf8')) as Checkpoint
     if (!held || !Array.isArray(held.pending) || !held.pending.every((id) => typeof id === 'string')) throw new Error('进度格式错误')
+    held.failure = readFailure(held.failure)
+    if (held.retry?.pending) {
+      const pending = readRetryPlan(held.retry.pending, held.retry.attempt)
+      if (!pending) held.retry.at = held.retry.pending.at ?? 0
+      held.retry.pending = pending
+    }
     return held
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
@@ -84,22 +93,12 @@ export async function stopReply(id: string, timeout: number): Promise<boolean> {
   return true
 }
 
-export function replyRetry(checkpoint: Checkpoint, reason: string, now = Date.now(), backoff = backoffMs): number | null {
-  const retry = checkpoint.retry
-  if (!retry || retry.attempt >= 3) return null
-  if (retry.attempt === 1 && retry.at === undefined) retry.since = now
-  const seconds = /retry[-_\s]?after["':=\s]+(\d+)/i.exec(reason)?.[1]
-  const delay = seconds ? Number(seconds) * 1000 : backoff(retry.attempt + 1)
-  const at = now + delay
-  return at <= retry.since + 120_000 ? at : null
-}
-
 export function replayable(checkpoint: Checkpoint): boolean {
   return checkpoint.submitted !== true && (checkpoint.effects === false || checkpoint.started === false) && !checkpoint.pending.length && !checkpoint.opaque
 }
 
 export function resumable(checkpoint: Checkpoint): boolean {
-  return !!checkpoint.session && !checkpoint.pending.length && !checkpoint.opaque
+  return !!checkpoint.session && !checkpoint.pending.length && !checkpoint.opaque && checkpoint.cleanup?.status !== 'unconfirmed'
 }
 
 /** Tokens are per attempt; Claude's prices remain session totals for Cloud to subtract. */

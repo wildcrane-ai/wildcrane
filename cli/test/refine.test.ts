@@ -132,6 +132,42 @@ function writePiece(id: number, opts: { body?: string; blockedBy?: number[] } = 
 }
 
 describe('entering refinement', () => {
+  it('runs an assigned unlocked Cloud stage after the card became ready (#880)', () => {
+    writeCard({ status: 'ready' })
+    const previous = [process.env.AI4KANBAN_TASK_REVIEW, process.env.AI4KANBAN_REVIEW_STAGES]
+    const review = {
+      revision: 5, pending_plan: null,
+      plan: [{ id: 'design', title: 'Design', after: [], previews: [] }, { id: 'delivery', title: 'Delivery', after: ['design'], previews: [] }],
+      stages: [{ id: 'design', status: 'approved', revision: 4, snapshot: {} }, { id: 'delivery', status: 'available', revision: 5, snapshot: null }],
+    }
+    try {
+      process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify(review)
+      process.env.AI4KANBAN_REVIEW_STAGES = JSON.stringify(['delivery'])
+      assert.equal('error' in refinementRequest({ action: 'refine', id: 7 }), false)
+      for (const status of ['blocked', 'ready', 'approved']) {
+        review.stages[1]!.status = status
+        process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify(review)
+        assert.equal('error' in refinementRequest({ action: 'refine', id: 7 }), true)
+      }
+      review.stages[1]!.status = 'running'
+      process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify(review)
+      assert.equal('error' in refinementRequest({ action: 'refine', id: 7 }), false)
+      process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify({ ...review, pending_plan: { revision: 6, snapshot: { kind: 'plan', plan: review.plan } } })
+      assert.equal('error' in refinementRequest({ action: 'refine', id: 7 }), true)
+      process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify(review)
+      process.env.AI4KANBAN_REVIEW_STAGES = JSON.stringify(['design'])
+      assert.equal('error' in refinementRequest({ action: 'refine', id: 7 }), true)
+      process.env.AI4KANBAN_REVIEW_STAGES = JSON.stringify(['delivery'])
+      writeCard({ status: 'ready', questions: [asked('Which layout?')] })
+      assert.equal('error' in refinementRequest({ action: 'refine', id: 7 }), true)
+    } finally {
+      for (const [i, key] of ['AI4KANBAN_TASK_REVIEW', 'AI4KANBAN_REVIEW_STAGES'].entries()) {
+        if (previous[i] === undefined) delete process.env[key]
+        else process.env[key] = previous[i]
+      }
+    }
+  })
+
   it('starts with a question audit when the card has no questions', () => {
     writeCard()
     assert.deepEqual(refinementRequest({ action: 'refine', id: 7 }), {

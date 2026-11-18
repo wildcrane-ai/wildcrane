@@ -141,39 +141,12 @@ const agentsOf = (names: string[]): SpecAgent[] => {
 
 /** Whether one studio runs this agent as a preview — the one gate `akb raw previews`
  *  and every ask written mid-run are checked against (#749). */
-export const specAgentAssigned = (name: string, studio?: string): boolean => {
-  const flow = studioFor(studio)
-  return !!flow && previewAgents(flow).some((h) => h.agent === name)
-}
+export const specAgentAssigned = (_name: string, _studio?: string): boolean => false
 
-/** The previews a card may run (#2154): those of its current stage once it has chosen. A card
- *  with no `previews` has not chosen yet (#422), so planning chooses and writes them back first. */
 export function specAgentSelector(id: number | string, studio: string | undefined, meta: Pick<Meta, 'previews' | 'phase'> | null): string {
   const flow = studioFor(studio)
-  if (!flow || !previewAgents(flow).length) return ''
-  if (!meta?.previews) {
-    return [
-      '<preview-agents>',
-      "This card has not chosen its previews yet. Choose them first: the agents from",
-      `\`akb raw previews --triggers --studio ${flow.id}\` whose conditions the card meets, always including those marked \`Always\`. Save them with`,
-      `\`akb raw update ${id} --previews <agents>\` (\`""\` when that leaves none); its stages follow from them.`,
-      'Then run only the chosen agents whose `After` is empty — the first stage; the rest run after its approval.',
-      `Command: \`akb raw previews <agent> ${id} <short note>\` — choose \`--print\` for this session or omit it for a separate session.`,
-      '</preview-agents>',
-    ].join('\n')
-  }
-  const agents = agentsOf(cardStages(meta, flow)[cardStage(meta, flow) - 1]!)
-  if (!agents.length) return ''
-  return [
-    // Tagged, because this block is a list of other agents' work sitting under an
-    // instruction about the card. Without a boundary a run reads "ui-designer" as part of its
-    // own job.
-    '<preview-agents>',
-    "The preview agents of this card's current stage, each writing one part of the card.",
-    ...agents.map((a) => `- \`${a.name}\` — ${a.description}${a.session === 'new' ? ' · separate session recommended' : ''}`),
-    `Command: \`akb raw previews <agent> ${id} <short note>\` — choose \`--print\` for this session or omit it for a separate session.`,
-    '</preview-agents>',
-  ].join('\n')
+  if (process.env.AI4KANBAN_TASK_REVIEW || !flow || meta?.previews) return ''
+  return `Choose only the Preview IDs needed by the task and save them with akb raw update ${id} --previews <ids>. Prepare them in this task session.`
 }
 
 export const notAnAgent = (name: string): string => {

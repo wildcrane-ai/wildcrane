@@ -37,9 +37,9 @@ beforeEach(() => {
       return Response.json({})
     }
     if (route === '/v1/projects/prj_1') return Response.json({ id: 'prj_1', workspace: 'ws_1' })
-    if (route === '/v1/projects/prj_1/agents') return Response.json({ board: ['proposer', 'memory-pruner'] })
+    if (route === '/v1/projects/prj_1/agents') return Response.json({ board: ['proposer', 'memory-pruner'], data: [{ agent: 'proposer', rule: 'Propose less.' }, { agent: 'memory-pruner', rule: '' }] })
     if (route === '/v1/workspaces/ws_1/studio-rules') {
-      return Response.json({ studios: [{ id: 'wf_builtin_coding', rule: '- Titles in English.\n- Tests first.' }, { id: 'wf_01own' }], data: [{ agent: 'ui-designer' }, { agent: 'builder' }] })
+      return Response.json({ studios: [{ id: 'wf_builtin_coding', rule: '- Titles in English.\n- Tests first.' }, { id: 'wf_01own' }] })
     }
     return Response.json({ error: { code: 'not_found', message: 'Not found.' } }, { status: 404 })
   }) as typeof fetch
@@ -64,18 +64,21 @@ it('saves a studio rule from a file and clears it with empty text', async () => 
   ])
 })
 
-it("saves a studio agent's instructions on the workspace and a board agent's on the project", async () => {
-  await run(root, ['studio', 'instructions', 'builder', '--text', 'Install first.'])
+it('writes and clears only project background-task instructions', async () => {
   await run(root, ['studio', 'instructions', 'proposer', '--text', 'Propose less.'])
+  await run(root, ['studio', 'instructions', 'proposer', '--text', ''])
   assert.deepEqual(puts, [
-    { route: '/v1/workspaces/ws_1/agents/builder', rule: 'Install first.' },
     { route: '/v1/projects/prj_1/agents/proposer', rule: 'Propose less.' },
+    { route: '/v1/projects/prj_1/agents/proposer', rule: '' },
   ])
 })
 
 it('refuses an unknown name with the valid choices', async () => {
   await assert.rejects(() => run(root, ['studio', 'rule', 'blog', '--text', 'x']), /There are: coding, wf-01own\./)
-  await assert.rejects(() => run(root, ['studio', 'instructions', 'deployer', '--text', 'x']), /There are: ui-designer, builder, proposer, memory-pruner\./)
+  await assert.rejects(() => run(root, ['studio', 'instructions', 'deployer', '--text', 'x']), /There are: proposer, memory-pruner\./)
+  for (const name of ['builder', 'ui-designer', 'coding']) {
+    await assert.rejects(() => run(root, ['studio', 'instructions', name, '--text', 'x']), /There are: proposer, memory-pruner\./)
+  }
   assert.deepEqual(puts, [])
 })
 
@@ -86,10 +89,10 @@ it('prints the current rules without writing when no text is given', async () =>
   process.stdout.write = ((chunk: string) => (out.push(String(chunk)), true)) as typeof process.stdout.write
   try {
     await run(root, ['studio', 'rule', 'coding'])
-    await run(root, ['studio', 'instructions', 'builder'])
+    await run(root, ['studio', 'instructions', 'proposer'])
   } finally {
     process.stdout.write = write
   }
-  assert.match(out.join(''), /- Titles in English\.\n- Tests first\.[\s\S]*builder has no instructions/)
+  assert.match(out.join(''), /- Titles in English\.\n- Tests first\.[\s\S]*Propose less\./)
   assert.deepEqual(puts, [])
 })

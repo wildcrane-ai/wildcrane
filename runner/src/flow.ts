@@ -1,7 +1,4 @@
 import { connectionStopped } from '../../cli/src/lib/agent/connection-process'
-import { previewBridge } from './preview-bridge'
-import { previewOperation } from './api'
-import { push, replyAssetsSynced } from './task-folder'
 // A flow job (#2020): one board verb, run with the akb the Runner carries on the task's board
 // and followed to its end — for `implement`, until the delivery has landed. A periodic agent's
 // job (#2068) runs its own command the same way, on the project's board.
@@ -25,8 +22,9 @@ import { LABELS, providerKey, providerOf, secretKeys, settingKeys } from './runt
 import { secretsOf } from './secrets'
 import { akbCardOf, cardAssetsDir, cardFile, findCard, mcpServersOf, pull, resetSorted, withBoard, workspaceOf, type McpServers, type TaskFolder } from './task-folder'
 import { studioName } from '../../cli/src/lib/shared/board-files.ts'
+import { pendingConflicts } from '../../cli/src/lib/shared/board-conflicts'
 import { clearLaid, layOut } from './triage'
-import { prepareKanbanSkill } from './kanban-skill'
+import { removeLegacyKanbanSkill } from './kanban-skill'
 import { installCommitHook } from '../../cli/src/lib/skill/hook'
 
 /** Why the runtime a job names cannot run here; null when it can. */
@@ -281,22 +279,22 @@ function logLines(show: (text: string) => void, event: (event: RunEvent) => void
 /** akb, run on the task's board and followed to its end; with `task`, for that Cloud task. */
 function boardAkb(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo, task?: string) {
   return async (args: string[], show = false, env?: NodeJS.ProcessEnv) => {
+    const refused = (last: string): Ran => ({ code: 1, out: '', last })
+    if (show && job.taskReview && job.task && job.flow) {
+      const current = await deps.api.readTask(job.task)
+      if (!current.ok) return refused(current.error)
+      const review = current.value.review
+      if (!review || review.pending_plan || ['stopped', 'done', 'cancelled'].includes(current.value.status ?? '')) return refused('This execution no longer has review authorization.')
+      if (job.flow.review_stages?.some(id => !review.stages.some(s => s.id === id && ['available', 'running'].includes(s.status)))) return refused('Review authorization changed. Read the task again.')
+      if (args.includes('implement') && (review.plan === null || review.stages.some(s => s.status !== 'approved'))) return refused('Finish the agreed review stages before delivery.')
+      job.taskReview = review
+    }
     const at = args.includes('--') ? args.indexOf('--') : args.length
     const full = [...args.slice(0, at), '--board', ws.board, ...args.slice(at)]
     const log = show ? logLines(io.show, io.event) : undefined
-    const bridge = task ? await previewBridge(async (agent, fields) => {
-      {
-        const sent = await push(ws, { id: job.id, machineId: deps.machineId })
-        if (!sent.ok) return sent
-        if (!replyAssetsSynced(ws)) return { ok: false, error: 'Preview uploads are still pending.' }
-      }
-      return previewOperation(deps.machineId, job.id, agent, fields)
-    }, ws.number ?? undefined) : null
-    try {
-    const ran = await runAkb(deps.akb, full, { cwd: ws.cwd, board: ws.board, task, language: cloudLanguage(job), env: { ...env, ...(bridge ? { AI4KANBAN_PREVIEW_BRIDGE: bridge.env } : {}), AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId }) }, show: log?.push, track: io.track })
+    const ran = await runAkb(deps.akb, full, { cwd: ws.cwd, board: ws.board, task, language: cloudLanguage(job), env: { ...env, AI4KANBAN_REVIEW_STAGES: job.flow?.review_stages ? JSON.stringify(job.flow.review_stages) : undefined, AI4KANBAN_TASK_REVIEW: job.taskReview ? JSON.stringify(job.taskReview) : undefined, AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId }) }, show: log?.push, track: io.track })
     log?.end()
     return ran
-    } finally { bridge?.close() }
   }
 }
 
@@ -311,15 +309,11 @@ async function setUp(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Prom
     const init = await akb(['raw', 'init'])
     if (init.code !== 0) return refusal(init)
   }
-  try {
-    prepareKanbanSkill(ws.cwd)
-  } catch (e) {
-    return e instanceof Error ? e.message : String(e)
-  }
+  removeLegacyKanbanSkill(ws.cwd)
   const hook = installCommitHook(ws.cwd, ws.board)
   if (hook.note) io.show(`${hook.note}\n`)
   const pulled = await pull(ws, deps.machineId)
-  if (!pulled.ok) return pulled.error
+  if (!pulled.ok && pulled.code !== 'board_content_conflict') return pulled.error
   const used = await akb(['raw', 'agent', 'use', runtime])
   if (used.code !== 0) return refusal(used)
   // The runtime's settings on the board's Global default, each one set or cleared (#2135); the
@@ -351,7 +345,7 @@ async function setUp(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Prom
     const failed = await set(key, '')
     if (failed) return failed
   }
-  if (job.agentRuntimes) {
+  if (job.agentRuntimes && !job.task) {
     const reports = await deps.runtimes()
     const rows = Object.fromEntries(Object.entries(job.agentRuntimes).map(([agent, r]) => [agent, pickRow(job, r, deps.machineId, reports, servers, mcpFile)]))
     const picked = await akb(['raw', 'agent', 'picks', JSON.stringify(rows)])
@@ -539,36 +533,45 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     if (!ws.number) return fail('This task has no number yet.')
     fs.writeFileSync(body, `${said.request || title}\n${pictures(job, ws, ws.number)}`)
     // Publish the new card before another task can pull the board (#575).
-    const created = await withBoard(ws, async (push): Promise<api.Call<number>> => {
+    const created = await withBoard(ws, async (push): Promise<api.Call<number> & { ended?: FlowEnd }> => {
       const card = made(await akb(['raw', 'create', '--title', title, '--studio', studioName(flow.studio), '--body-file', body,
         '--id', String(ws.number), ...cardFlags(ws, flow.metadata), '--json']))
       fs.rmSync(body, { force: true })
       if (!card.ok) return card
       const sent = await push({ id: job.id, machineId: deps.machineId })
-      if (!sent.ok) return { ok: false, error: sent.error }
+      if (!sent.ok) {
+        if (sent.conflict && pendingConflicts(ws.board).length) return { ...card, ended: await onCard(card.value) }
+        return { ok: false, error: sent.error }
+      }
       return card
     })
     if (!created.ok) return fail(created.error)
+    if (created.ended) return created.ended
     id = created.value
 
   }
   if (!id) return fail('This task has no card on this computer.')
-  const card = id
-  // Held before the sweep, so a job here that starts meanwhile never sweeps this one's runs.
-  const key = workKey(ws, card)
-  const held = working.get(key) ?? 0
-  working.set(key, held + 1)
-  try {
-    if (!held && !await stopRuns(deps.akb, ws, card, 0, deps.stopMs)) {
-      return fail('未能停止上次运行，请等待其停止后续跑。')
+  return onCard(id)
+
+  async function onCard(card: number): Promise<FlowEnd> {
+    // Held before the sweep, so a job here that starts meanwhile never sweeps this one's runs.
+    const key = workKey(ws, card)
+    const held = working.get(key) ?? 0
+    working.set(key, held + 1)
+    try {
+      if (!held && !await stopRuns(deps.akb, ws, card, 0, deps.stopMs)) {
+        return fail('未能停止上次运行，请等待其停止后续跑。')
+      }
+      if (io.lost()) return fail('')
+      const ended = await workOn(card)
+      if (ended.ok && job.taskReview?.plan?.length === 0 && flow.verb === 'create' && !ended.report.review) ended.report.deliveryCompleted = true
+      return ended
+    } finally {
+      fs.rmSync(path.join(ws.board, '.sync', `${ws.task}.discussion`), { recursive: true, force: true })
+      const left = working.get(key)! - 1
+      if (left) working.set(key, left)
+      else working.delete(key)
     }
-    if (io.lost()) return fail('')
-    return await workOn(card)
-  } finally {
-    fs.rmSync(path.join(ws.board, '.sync', `${ws.task}.discussion`), { recursive: true, force: true })
-    const left = working.get(key)! - 1
-    if (left) working.set(key, left)
-    else working.delete(key)
   }
 
   async function workOn(id: number): Promise<FlowEnd> {
@@ -576,11 +579,11 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       if (!await stopRuns(deps.akb, ws, id, since, deps.stopMs)) throw new Error('未能确认原执行已停止。')
     })
 
-    const verb = flow.verb === 'create' ? (flow.skip_plan ? 'implement' : 'refine') : flow.verb
+    const verb = flow.verb === 'create' ? (job.taskReview ? job.taskReview.plan !== null && !job.taskReview.plan.length ? 'implement' : 'refine' : flow.skip_plan ? 'implement' : 'refine') : flow.verb
     const text = flow.verb === 'create' ? '' : (flow.text ?? '').trim()
     // A resume follows where the card actually is, not the step the last job was on.
     if (flow.resume && isArchived(ws, id)) return { ok: true, report: { card: id } }
-    if (flow.resume && verb === 'refine') {
+    if (flow.resume && verb === 'refine' && !job.taskReview) {
       const review = reviewOf(cardFile(ws))
       if (review) return { ok: true, report: { card: id, ...(review === true ? {} : { review }) } }
     }
@@ -629,12 +632,9 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     const fresh = () => {
       const carry = carryArgs(verb)
       const costFrom = carry.includes('--session') && typeof job.resumeCostUsd === 'number' ? { [SESSION_COST_ENV]: String(job.resumeCostUsd) } : undefined
-      if (verb === 'preview') return akb(['raw', 'previews', text, String(id), '--continue', '--follow', '--events', '--json', ...(flow.feedback ? ['--notes', flow.feedback] : [])], true)
       return akb(['raw', 'card', verb, String(id), '--follow', '--events', '--json', ...carry, ...(note ? ['--', note] : [])], true, costFrom)
     }
     ran ??= await (continuation ? akb([...continuation, '--follow', '--events', '--json'], true) : fresh())
-    // A conversation that cannot be picked up again: a fresh build run carries the delivery on.
-    if (continuation && ran.code !== 0 && answerOf<{ error?: { reason?: string } }>(ran)?.error?.reason === 'runNoSession') ran = await fresh()
     if (io.lost()) return fail('')
     type Ended = {
       ok?: boolean
@@ -685,6 +685,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
 
   /** Only planning carries the discussion's session and transcript. */
   function carryArgs(verb: string): string[] {
+    if (flow.replan) return ['--new-session']
     if (!['refine', 'resolve', 'revise'].includes(verb)) return []
     const transcript = writeTranscript(job, path.join(ws.board, '.sync', `${ws.task}.discussion`))
     return [

@@ -121,30 +121,10 @@ describe('declaring a scheduled agent', () => {
 })
 
 describe("a studio's scheduled agents", () => {
-  it('lists one no studio has taken under the first studio, off', () => {
-    const builtIn = new Set(agentRoster().filter((e) => e.builtIn).map((e) => e.name))
-    assert.deepEqual(
-      scheduledMembers(studioById(PASS.studio)!).filter((s) => !builtIn.has(s.agent)).map((s) => ({ agent: s.agent, off: s.off, cadence: s.cadence })),
-      [{ agent: PASS.agent, off: true, cadence: 'auto' }],
-    )
-  })
-
-  it('asks a pass for the extra requirements the board saved', () => {
-    enable(at('2026-10-01T09:00'), { cadence: '6h', extra: 'Only the docs.' })
-    const one = scheduledAgent(PASS.studio, PASS.agent)!
-    assert.deepEqual({ off: one.off, cadence: one.cadence, extra: one.extra }, { off: undefined, cadence: '6h', extra: 'Only the docs.' })
-    assert.match(buildPrompt(scheduledRequest(PASS)), /what this studio asks of you here ———\n\nOnly the docs\./)
-  })
 
 })
 
 describe('`studio list`', () => {
-  it('names only what STUDIO.md lists, whatever is saved here', () => {
-    enable(at('2026-10-01T09:00'), { cadence: '6h', lastRun: '2026-10-02 09:00' })
-    assert.deepEqual(listedScheduled(studioById('coding')!), [])
-    const { studios } = cmdStudioList() as { studios: { id: string; scheduled: unknown }[] }
-    assert.deepEqual(studios.find((w) => w.id === 'coding')!.scheduled, [])
-  })
 
   it('has no `studio schedule` to report changes from', async () => {
     assert.notEqual(await runAgent(['studio', 'schedule', 'coding', '--off', PASS.agent], { program: 'akb', cwd: root }), 0)
@@ -152,25 +132,9 @@ describe('`studio list`', () => {
 })
 
 describe('the prompt a pass is given', () => {
-  it('says who it is, where the board is and that nobody answers — and nothing about when', () => {
-    enable(at('2026-10-01T09:00'))
-    const prompt = buildPrompt(scheduledRequest(PASS))
-    assert.match(prompt, /^You are the `night-auditor` agent of the `Blog post` studio\./)
-    assert.ok(prompt.includes(`The board is at \`${kanban()}\`, in the project at \`${root}\`.`))
-    assert.match(prompt, /Nobody is watching: never ask\./)
-    assert.match(prompt, /You are night-auditor\./)
-    assert.doesNotMatch(prompt.split(root).join(''), /cadence|schedule|last run/i)
-  })
 })
 
 describe('what a pass sends to triage', () => {
-  it('claims what it sends to triage', async () => {
-    enable(new Date(Date.now() - 3 * 86_400_000))
-    process.env[RUN_ENV] = open()
-    await cmdTriageAdd({ title: 'A gap', text: 'Something to do.', studio: 'coding' })
-    delete process.env[RUN_ENV]
-    assert.equal(readInbox()[0]!.agent, PASS.agent)
-  })
 
   it('leaves an item added outside a run unclaimed', async () => {
     await cmdTriageAdd({ title: 'By hand', text: 'Typed in.', studio: 'coding' })
@@ -179,91 +143,10 @@ describe('what a pass sends to triage', () => {
 })
 
 describe('one pass', () => {
-  it('runs an agent that is switched off when started by hand, and leaves it off', async () => {
-    const session = open()
-    const [delivery] = listDeliveries()
-    assert.deepEqual(delivery!.scheduled, PASS)
-    assert.equal(scheduledAgent(PASS.studio, PASS.agent)!.off, true)
-    process.env[RUN_ENV] = session
-    completeDelivery(delivery!.deliveryId)
-    delete process.env[RUN_ENV]
-    await end(session)
-
-    const one = scheduledAgent(PASS.studio, PASS.agent)!
-    assert.equal(one.off, true)
-    assert.equal(one.lastRun, formatStamp(new Date(delivery!.startedAt)))
-  })
-
-  it('does not start a second pass while one is running', () => {
-    enable(new Date(Date.now() - 3 * 86_400_000))
-    assert.equal(scheduledBusy(PASS), null)
-    open()
-    assert.equal(scheduledBusy(PASS)?.reason, 'scheduledRunning')
-  })
-
-  it('still refuses a second pass of a switched-off agent while one is running', async () => {
-    open()
-    const again = await startRun(scheduledRequest(PASS))
-    assert.ok('error' in again)
-    assert.equal(again.reason, 'scheduledRunning')
-  })
-
-  it('records explicit completion and leaves Git changes with the agent', async () => {
-    enable(new Date(Date.now() - 3 * 86_400_000))
-    const session = open()
-    const [delivery] = listDeliveries()
-    assert.deepEqual(delivery!.scheduled, PASS)
-    assert.equal(delivery!.cardId, null)
-    fs.writeFileSync(path.join(root, 'shared.txt'), 'audited\n')
-    process.env[RUN_ENV] = session
-    completeDelivery(delivery!.deliveryId)
-    delete process.env[RUN_ENV]
-    await end(session)
-
-    assert.equal(fs.readFileSync(path.join(root, 'shared.txt'), 'utf8'), 'audited\n')
-    assert.equal(git(['log', '--format=%s', '-1']), 'start')
-    assert.equal(listDeliveries()[0]!.status, 'finished')
-    assert.equal(scheduledAgent(PASS.studio, PASS.agent)!.lastRun, formatStamp(new Date(delivery!.startedAt)))
-  })
-
-  it('commits nothing and lands nothing when it changed nothing', async () => {
-    enable(new Date(Date.now() - 3 * 86_400_000))
-    const head = git(['rev-parse', 'HEAD'])
-    const session = open()
-    process.env[RUN_ENV] = session
-    completeDelivery(listDeliveries()[0]!.deliveryId)
-    delete process.env[RUN_ENV]
-    await end(session)
-
-    assert.equal(git(['rev-parse', 'HEAD']), head)
-    assert.equal(listDeliveries()[0]!.status, 'finished')
-    assert.equal(listDeliveries()[0]!.landing?.commit, undefined)
-  })
-
-  it('leaves the last run where it was when it fails', async () => {
-    enable(new Date(Date.now() - 3 * 86_400_000))
-    await end(open(), 'error')
-    assert.equal(scheduledAgent(PASS.studio, PASS.agent)!.lastRun, '')
-  })
 })
 
 describe('`raw list --archived --since last-run`', () => {
   it('is refused outside a scheduled run', async () => {
     await refuses(root, ['list', '--archived', '--since', 'last-run'], /only works inside a scheduled agent's run/)
-  })
-
-  it('lists nothing on the first run', async () => {
-    enable(new Date(Date.now() - 3 * 86_400_000))
-    process.env[RUN_ENV] = open()
-    const out = await move(root, ['list', '--archived', '--since', 'last-run'])
-    assert.deepEqual({ cards: out.cards, firstRun: out.firstRun }, { cards: [], firstRun: true })
-  })
-
-  it('reads as when the last run that passed began', async () => {
-    enable(at('2026-09-01T09:00'))
-    stampScheduledRun(PASS.studio, PASS.agent, at('2026-09-20T08:30'))
-    process.env[RUN_ENV] = open()
-    const out = await move(root, ['list', '--archived', '--since', 'last-run'])
-    assert.equal(out.since, '2026-09-20 08:30')
   })
 })

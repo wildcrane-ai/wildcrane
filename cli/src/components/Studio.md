@@ -1,7 +1,8 @@
 # Studio
 
-Show a studio's diagram or file review with `<Studio src=".assets/<card id>/studio.json" label="..." />` alone in a paragraph. Inline and fenced examples remain text.
+Show STUDIO.md and its real differences with `<Studio src=".assets/<card id>/studio-review/review.json" />` alone in a paragraph. Inline and fenced examples remain text.
 
-- **Diagram**: `akb raw studio diagram <studio id> <card id>` writes the diagram and prints its tag.
-- **File review**: `akb raw studio preview <card id> --folder <draft> --base <baseline> [--results <manifest>]` freezes real files, differences and supplied results. Use `--base empty` only for a new Studio.
-- **Data**: use the generated JSON; rerun after changing inputs. Files precede supplied results; unavailable resources show their reason. See [the contract](https://github.com/wildcrane-ai/wildcrane/blob/main/docs/api/studio-review.md).
+- **Freeze**: `akb raw studio preview <card id> --folder <draft> --base <baseline>` freezes the complete draft and prints its Studio and attachment tags; use `--base empty` for a new Studio.
+- **Files**: put the attachment tags in the files Preview when present. Three or more changed files use a Set; paired file and diff Assets share a label.
+- **Results**: show trial results as ordinary Preview Components beside the Studio, without a separate manifest or Agent assignment.
+- **Refresh**: rerun after changing the draft; publish only the approved fingerprint. See [the contract](https://github.com/wildcrane-ai/wildcrane/blob/main/docs/api/studio-review.md).

@@ -71,7 +71,7 @@ export interface CreateOptions {
   bodyFile?: string
   /** `--studio`: which studio the card runs on (#715). Left off, the board's default. */
   studio?: string
-  /** `--previews`: the preview agents the card chose; `""` chooses none. */
+  /** `--previews`: the Preview IDs the card chose; `""` chooses none. */
   previews?: string[]
   /** `--triage`: the source id of the triage item this card is made of. */
   triage?: string
@@ -204,7 +204,7 @@ export interface UpdateOptions {
   source?: string[]
   addSource?: string[]
   phase?: string
-  /** `--previews`: the preview agents the card chose (#2154); `""` chooses none. */
+  /** `--previews`: the Preview IDs the card chose (#2154); `""` chooses none. */
   previews?: string[]
   /** `--studio`: move the card to another studio; `""` is the default (#1849). */
   studio?: string
@@ -242,9 +242,9 @@ function itemStudio(sourceId: string): string | undefined {
   return item?.studio && studioById(item.studio) ? item.studio : undefined
 }
 
-// `--previews`: the chosen preview agents, in their studio's order; `""` chooses none.
+// `--previews`: the chosen Preview IDs, in their Studio's order; `""` chooses none.
 function previewsFlag(said: string[], flow: ReturnType<typeof studioFor>): string[] {
-  const offered = flow ? previewAgents(flow).map((h) => h.agent) : []
+  const offered = flow ? previewAgents(flow).map((h) => h.id) : []
   const asked = new Set(said.map((name) => name.trim()).filter(Boolean))
   const unknown = [...asked].filter((name) => !offered.includes(name))
   if (unknown.length) {

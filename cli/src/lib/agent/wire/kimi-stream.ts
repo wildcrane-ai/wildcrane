@@ -107,6 +107,7 @@ export function createKimiStreamRenderer(cwd: string, resumeId?: string): Stream
     if (!row) return `${line}\n`
     switch (row.role) {
       case 'assistant': {
+        events.progress()
         const said = str(row.content).trim()
         // The last thing the agent said is the run's result. The UI leads with it and folds
         // the events away.
@@ -155,6 +156,7 @@ export function createKimiStreamRenderer(cwd: string, resumeId?: string): Stream
     },
     result: () => final,
     events: events.events,
+    activity: events.activity,
     usage: () => ownUsage(facts?.usage, before),
     context: () => {
       look(false)

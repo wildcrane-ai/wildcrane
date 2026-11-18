@@ -1,7 +1,3 @@
-// deck-builder's `scripts/pack-pptx.mjs` (#1743): a storyboard's rendered pages become a
-// .pptx holding one full-slide image per slide. Run the way a session runs it — saved out of
-// the studio and run with Node.
-
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -11,13 +7,13 @@ import zlib from 'node:zlib'
 import { after, describe, it } from 'node:test'
 
 
-const agentFile = (file: string): string => fs.readFileSync(new URL(`../agents/${file}`, import.meta.url), 'utf8')
+const studioFile = (file: string): string => fs.readFileSync(new URL(`../studios/slide-deck/references/${file}`, import.meta.url), 'utf8')
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-pack-pptx-'))
 after(() => fs.rmSync(scratch, { recursive: true, force: true }))
 
 const script = path.join(scratch, 'pack-pptx.mjs')
-fs.writeFileSync(script, agentFile('deck-builder/scripts/pack-pptx.mjs'))
+fs.writeFileSync(script, studioFile('deck-builder/scripts/pack-pptx.mjs'))
 
 const png = (tag: number) => Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, tag])
 
@@ -59,7 +55,7 @@ function pack(storyboard: unknown, files: Record<string, Buffer>) {
 const slide = (id: string, preview: string, notes?: string) => ({ id, title: id, copy: [], layout: 'x', assets: [], preview: { src: `.assets/969/${preview}`, alt: id }, ...(notes === undefined ? {} : { notes }) })
 const text = (zip: Map<string, Buffer>, name: string) => zip.get(name)!.toString('utf8')
 
-describe("deck-planner's pack-pptx script", () => {
+describe("Slide deck PowerPoint packer", () => {
   it('packs one full-slide image per slide, in page order, with the speaker notes', () => {
     const { res, zip } = pack(
       { version: 1, size: { width: 1920, height: 1080 }, slides: [slide('cover', 'pages/cover.html', 'Open with <one> & only one point.\nThen pause.'), slide('results', 'pages/results.tsx')] },

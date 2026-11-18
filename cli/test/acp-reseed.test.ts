@@ -1,11 +1,3 @@
-// Resuming a dsh session the agent no longer holds (#395). The whole reason for resuming is
-// to carry work on, so a `session/load` refused because the session is gone opens a fresh
-// one and restarts the task there. Everything else about a refused load still fails the run.
-//
-// The peer below is scripted rather than real: `dsh-acp` answers `session/load` for a
-// forgotten session with `-32602` and `session not found: <id>`, and that pair is what the
-// client keys on.
-
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -66,7 +58,7 @@ async function turn(io: { resumeId?: string; restartPrompt?: string }, reply: (m
   return { end, asked, log, ids }
 }
 
-const GONE: Answer = { error: { code: -32602, message: 'session not found: dead' } }
+const GONE: Answer = { error: { code: -32602, message: 'session not found: dead', data: { code: 'session_not_found' } } }
 const OK: Record<string, Answer> = {
   initialize: { result: { protocolVersion: 1 } },
   'session/new': { result: { sessionId: 'fresh' } },
@@ -90,13 +82,14 @@ describe('a resume against a session the agent no longer holds', () => {
     assert.equal(sent(t), 'do the task from the top')
   })
 
-  it("reads Cursor's way of saying it, with the detail under `data`", async () => {
+  it('pauses when a connector reports a missing session only in diagnostic text', async () => {
     const cursorGone = { error: { code: -32602, message: 'Invalid params', data: { message: 'Session "dead" not found' } } }
     const t = await turn({ resumeId: 'dead', restartPrompt: 'do the task from the top' }, (m) =>
       m === 'session/load' ? cursorGone : OK[m],
     )
-    assert.equal(t.end.ok, true)
-    assert.deepEqual(methods(t), ['initialize', 'session/load', 'session/new', 'session/prompt'])
+    assert.equal(t.end.ok, false)
+    assert.equal(t.end.failure?.level, 3)
+    assert.deepEqual(methods(t), ['initialize', 'session/load'])
   })
 
   it('writes the new id over the dead one', async () => {

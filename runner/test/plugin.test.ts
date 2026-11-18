@@ -342,11 +342,16 @@ describe('the plugin component', () => {
       const siteName = path.basename(fs.realpathSync(site))
       assert.deepEqual(await panel({ action: 'addFolder', cwd: site, project: 'prj_docs' }), { error: 'folder_taken', message: 'taken', name: siteName })
 
+      const legacy = path.join(docs, '.agents/skills/kanban')
+      fs.mkdirSync(legacy, { recursive: true })
+      fs.writeFileSync(path.join(legacy, 'SKILL.md'), '<!-- ai4kanban 0.1.0 -->')
       const bound = await panel({ action: 'addFolder', cwd: docs, project: 'prj_docs' })
       assert.equal(bound.project, 'prj_docs')
       for (const dir of [site, docs]) for (const folder of ['.claude', '.agents']) {
-        assert.match(fs.readFileSync(path.join(dir, folder, 'skills/kanban/SKILL.md'), 'utf8'), /name: kanban/)
+        assert.equal(fs.existsSync(path.join(dir, folder, 'skills/kanban')), false)
       }
+      assert.equal((await panel({ action: 'addFolder', cwd: docs, project: 'prj_docs' })).project, 'prj_docs')
+      assert.equal(fs.existsSync(legacy), false)
       const after = await panel({ action: 'state', cwd: docs })
       assert.equal((after.folder as { project: string }).project, 'prj_docs')
       assert.deepEqual(after.elsewhere, [])

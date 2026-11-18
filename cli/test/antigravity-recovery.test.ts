@@ -1,0 +1,107 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { it } from 'node:test'
+import { ANTIGRAVITY } from '../src/lib/agent/harnesses/antigravity'
+import { harnessGaps } from '../src/lib/agent/capabilities'
+import { startRun } from '../src/lib/agent/start'
+import { openResume, patch, readSpec } from '../src/lib/agent/sessions'
+import { readRuns } from '../src/lib/agent/store'
+import { watchRun } from '../src/lib/agent/watch'
+import { setBoardRoot } from '../src/lib/paths'
+import { forgetMachineState, move, uiConfigOf } from './helpers/board'
+
+for (const mode of ['init', 'work', 'no-session']) it(`AGy early-crash recovery after ${mode} (#830)`, { timeout: 20_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-early-'))
+  const oldHome = process.env.HOME
+  const session = '00000000-0000-4000-8000-000000000830'
+  let agentPid: number | undefined
+  try {
+    process.env.HOME = root
+    setBoardRoot(root)
+    fs.mkdirSync(path.join(root, 'docs/kanban/todo'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'docs/kanban/next-id'), '1\n')
+    await move(root, ['create', '--title', 'Preserve Cedar830'])
+    const db = path.join(root, '.gemini/antigravity-cli/conversations', `${session}.db`)
+    const output = path.join(root, 'completed.txt')
+    const script = path.join(root, 'agy.mjs')
+    fs.writeFileSync(script, `
+      import fs from 'node:fs';
+      const out = e => console.log(JSON.stringify(e));
+      const args = process.argv.slice(2);
+      if (args.includes('--conversation')) {
+        if (args[args.indexOf('--conversation') + 1] !== ${JSON.stringify(session)}) process.exit(2);
+        const prompt = args.at(-1);
+        if (!prompt.includes('Plan task 1') || !/verify.*do not repeat/i.test(prompt)) process.exit(3);
+        ${mode === 'work' ? `if (fs.readFileSync(${JSON.stringify(output)}, 'utf8') !== 'once') process.exit(4);` : ''}
+        out({event:'init', conversation_id:${JSON.stringify(session)}});
+        out({event:'result', result:{conversation_id:${JSON.stringify(session)}, status:'SUCCESS', response:'Cedar830 preserved.'}});
+      } else {
+        if (${JSON.stringify(mode)} === 'no-session') process.exit(1);
+        fs.mkdirSync(${JSON.stringify(path.dirname(db))}, {recursive:true});
+        fs.writeFileSync(${JSON.stringify(db)}, 'native session');
+        out({event:'init', conversation_id:${JSON.stringify(session)}});
+        ${mode === 'work' ? `fs.appendFileSync(${JSON.stringify(output)}, 'once');
+        out({event:'step_update', step_update:{conversation_id:${JSON.stringify(session)}, step_type:'tool', step_index:1, state:'DONE', tool_info:{name:'write_file', parameters:{Path:${JSON.stringify(output)}}}}});` : ''}
+        setInterval(() => {}, 1000);
+      }
+    `)
+    fs.writeFileSync(uiConfigOf(root, 'docs', 'kanban'), JSON.stringify({ runtimes: [{ id: 'global', name: 'Global', harness: 'antigravity', settings: { command: `node ${script}` } }] }))
+    const started = await startRun({ action: 'clarify', id: 1 })
+    if ('error' in started) throw Error(started.error)
+    const original = readSpec(started.run.sessionId)!.prompt
+    patch(started.run.sessionId, r => { r.pid = process.pid })
+    fs.writeFileSync(started.run.logPath, '')
+    const watching = watchRun(started.run.sessionId)
+    if (mode !== 'no-session') {
+      const until = Date.now() + 5000
+      while (true) {
+        const run = readRuns().find(r => r.sessionId === started.run.sessionId)!
+        agentPid = run.agentPid
+        if (run.resumeId === session && (mode !== 'work' || fs.existsSync(output))) break
+        assert.ok(Date.now() < until, 'session ID must be saved before any reply completes')
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+      process.kill(agentPid!, 'SIGKILL')
+    }
+    await watching
+    agentPid = undefined
+    const ended = readRuns().find(r => r.sessionId === started.run.sessionId)!
+    assert.equal(ended.status, 'error')
+    assert.equal(ended.result, undefined)
+    if (mode === 'no-session') {
+      const next = await openResume(ended.sessionId)
+      assert.ok('error' in next)
+      assert.equal(next.reason, 'runNoSession')
+      assert.match(next.error, /did not record.*cannot be resumed/)
+      assert.equal(readRuns().length, 1)
+      return
+    }
+    assert.equal(ended.resumeId, session)
+    if (mode === 'init') patch(ended.sessionId, r => { r.status = 'running'; r.pid = 2147483647 })
+    fs.renameSync(db, `${db}.saved`)
+    await assert.rejects(openResume(ended.sessionId), /session not found/)
+    assert.equal(readRuns()[0]!.sessionId, ended.sessionId)
+    fs.renameSync(`${db}.saved`, db)
+    const next = await openResume(ended.sessionId)
+    if ('error' in next) throw Error(next.error)
+    assert.equal(next.spec.plan.resumeId, session)
+    assert.equal(next.spec.prompt, original)
+    patch(next.run.sessionId, r => { r.pid = process.pid })
+    fs.writeFileSync(next.run.logPath, '')
+    await watchRun(next.run.sessionId)
+    const resumed = readRuns().find(r => r.sessionId === next.run.sessionId)!
+    assert.equal(resumed.ok, true)
+    assert.equal(resumed.result, 'Cedar830 preserved.')
+    if (mode === 'work') assert.equal(fs.readFileSync(output, 'utf8'), 'once')
+    assert.equal(ANTIGRAVITY.savesSessionAtOpen, true)
+    assert.ok(!harnessGaps(ANTIGRAVITY).some(g => g.id === 'early-resume'))
+  } finally {
+    if (agentPid) { try { process.kill(agentPid, 'SIGKILL') } catch {} }
+    if (oldHome === undefined) delete process.env.HOME
+    else process.env.HOME = oldHome
+    forgetMachineState(root)
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

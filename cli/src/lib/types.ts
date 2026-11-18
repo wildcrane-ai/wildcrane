@@ -54,6 +54,7 @@ export interface Meta {
   preview_approved: boolean
   /** The day this card was archived — `YYYY-MM-DD`, written by `board archive` on its way
    *  out. Empty on every open card, and on one archived before the board stamped a date. */
+  restored?: string
   archived: string
   /** The card was rejected or discarded rather than finished — `reject` writes it beside
    *  `archived`. Such a card is in the archive but was never shipped. */

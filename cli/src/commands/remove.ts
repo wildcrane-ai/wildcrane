@@ -352,12 +352,10 @@ function quoteLine(text: string, width = 96): string {
 
 function printHandoff(ids: number[], meta: Meta | null, mentions: Mention[]): { what: string; files: string[] } {
   const what = 'record the shipped work'
-  const target = memoryTarget('readme.md', meta?.modules[0])
   say(`\nnext — what the script can't do:\n`)
   say(`  1. ${what} — follow \`akb guide archive\``)
-  say(`       file    ${rel(target.file)}`)
 
-  const note = { what, files: [rel(target.file)] }
+  const note = { what, files: [] as string[] }
   const which = ids.map((x) => `#${x}`).join(' or ')
   if (!mentions.length) {
     say(`\n  2. nothing — no other card or note mentions ${which}, so there is nothing to rewrite`)

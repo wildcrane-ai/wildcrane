@@ -1,25 +1,12 @@
-// What the memory review is handed of each archived Cloud task (#748, #2065, #165, #188, #189):
-// the card's summary, what the user approved or reversed on it, the trimmed chat, its modules,
-// and the agents whose sections it holds with the memory files each keeps. A card that settled
-// nothing is left out.
+// Archived conversations and their Studio/Preview facts, without memory policy decisions.
 
 import fs from 'node:fs'
 import path from 'node:path'
 
 import { locateArchived } from '../cards'
 import { parseFrontmatter } from '../frontmatter'
-import { agentMemoryDir, memoryNamesOf } from '../memory'
-import { rel } from '../paths'
+import { parsePreviewBlocks } from '../shared/preview-blocks'
 import { readTaskChat } from './task-chats'
-
-/** An agent named on a conversation's card, and the memory it keeps. */
-export interface ReviewAgent {
-  name: string
-  /** Its memory folder, repo-relative. */
-  dir: string
-  /** The files in that folder today. */
-  files: string[]
-}
 
 /** One archived card the review is handed. */
 export interface ChatToReview {
@@ -29,7 +16,8 @@ export interface ChatToReview {
   card: { id: number; title: string }
   /** The card's own `modules:` — whose planning folder its notes go in. */
   modules: string[]
-  agents: ReviewAgent[]
+  studio: string
+  previews: string[]
   /** The card's opening, as written: background for the review, never a reason to run one. */
   summary: string
   /** `Worth noting` and `Overruled by the user`, as written. `Worth noting after implementation`
@@ -40,7 +28,7 @@ export interface ChatToReview {
 }
 
 /** These tasks, each `<task>:<card number>`: every one whose card is archived here, not rejected,
- *  and settled something — a chat alone is no reason to spend a run (#189). The Runner marks
+ *  with settled notes or a conversation to judge. The Runner marks
  *  them all reviewed. */
 export function taskChatsToReview(tasks: string[]): ChatToReview[] {
   const out: ChatToReview[] = []
@@ -56,7 +44,7 @@ export function taskChatsToReview(tasks: string[]): ChatToReview[] {
     }
     const messages = lines.map((l) => ({ role: l.role === 'user' ? ('you' as const) : ('agent' as const), text: l.text }))
     const review = handed(task!, messages, card)
-    if (review.settled) out.push(review)
+    if (review.settled || review.transcript) out.push(review)
   }
   return out
 }
@@ -72,6 +60,8 @@ interface ArchivedCard {
   id: number
   title: string
   modules: string[]
+  studio: string
+  previews: string[]
   rejected: boolean
   body: string
 }
@@ -83,7 +73,7 @@ function readArchived(id: number): ArchivedCard | null {
     const file = found.kind === 'group' ? path.join(found.target, 'root.md') : found.target
     const { meta, body } = parseFrontmatter(fs.readFileSync(file, 'utf8'))
     if (!meta) return null
-    return { id, title: meta.title, modules: meta.modules ?? [], rejected: meta.rejected, body }
+    return { id, title: meta.title, modules: meta.modules ?? [], studio: meta.studio ?? '', previews: meta.previews ?? [], rejected: meta.rejected, body }
   } catch {
     return null
   }
@@ -96,11 +86,8 @@ function handed(key: string, messages: ChatMessage[], card: ArchivedCard): ChatT
     key,
     card: { id: card.id, title: card.title },
     modules: [...new Set(card.modules)],
-    agents: [...new Set(agentsOn(card.body))].map((name) => ({
-      name,
-      dir: rel(agentMemoryDir(name)),
-      files: [...memoryNamesOf(name)],
-    })),
+    studio: card.studio,
+    previews: [...new Set([...card.previews, ...parsePreviewBlocks(card.body).blocks.map(p => p.id)])],
     summary: closed(summaryOf(card.body)),
     settled: closed(settledBy(card.body)),
     transcript: trimmed(messages),
@@ -132,11 +119,6 @@ function settledBy(body: string): string {
     .filter(([, text]) => text)
     .map(([heading, text]) => `## ${heading}\n${text}`)
     .join('\n\n')
-}
-
-// The agents whose `## By `<agent>` agent` sections a card holds, by the name each goes by now.
-function agentsOn(body: string): string[] {
-  return [...body.matchAll(/^##\s+By\s+`([^`]+)`\s+agent\s*$/gim)].map((m) => m[1]!)
 }
 
 // The user's messages whole; the agent's without the lines that echo a command (`⏺`) or

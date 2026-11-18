@@ -16,9 +16,9 @@ import { validateSpec } from '../src/lib/spec-contract'
 import { storyboardMarkers } from '../src/lib/storyboard'
 import { move } from './helpers/board'
 
-/** An agent's file, or with `studios/…` a studio's. */
+/** A file relative to official/studios/. */
 const agentFile = (file: string): string =>
-  fs.readFileSync(path.join(process.env.AI4KANBAN_STUDIOS!, file.startsWith('studios/') ? file : `agents/${file}`), 'utf8')
+  fs.readFileSync(path.join(process.env.AI4KANBAN_STUDIOS!, 'studios', file), 'utf8')
 
 /** The first 24 bytes of a PNG `width` pixels wide — all the validator reads. */
 function png(width: number): Uint8Array {
@@ -70,8 +70,8 @@ function runner(agent: string, card: number, files: Record<string, Uint8Array>) 
 const fieldsOf = (agent: string, name: string): string[] =>
   JSON.parse(new RegExp(`const ${name} = (\\[.*\\])`).exec(agentFile(`${agent}/scripts/validate-storyboard.mjs`))![1]!.replaceAll("'", '"'))
 
-const example = agentFile('scriptwriter/references/storyboard.example.json')
-const schema = JSON.parse(agentFile('scriptwriter/references/storyboard.schema.json'))
+const example = agentFile('hyperframes-video/references/scriptwriter/references/storyboard.example.json')
+const schema = JSON.parse(agentFile('hyperframes-video/references/scriptwriter/references/storyboard.schema.json'))
 
 /** The example with one change made to its parsed data. */
 function edit(change: (data: any) => void, source = example): string {
@@ -82,7 +82,7 @@ function edit(change: (data: any) => void, source = example): string {
 
 describe("scriptwriter's storyboard script", () => {
   const frames: Record<string, Uint8Array> = { 's1.png': png(1280), 's2.png': png(640) }
-  const { codes, check, exec, write } = runner('scriptwriter', 963, frames)
+  const { codes, check, exec, write } = runner('hyperframes-video/references/scriptwriter', 963, frames)
 
   it('accepts the shipped example, spoken and unvoiced shots alike', () => {
     assert.deepEqual(check(example), [])
@@ -92,9 +92,9 @@ describe("scriptwriter's storyboard script", () => {
   })
 
   it('keeps the schema to the fields the script enforces', () => {
-    assert.deepEqual(schema.required, fieldsOf('scriptwriter', 'ROOT_FIELDS'))
-    assert.deepEqual(schema.$defs.shot.required, fieldsOf('scriptwriter', 'SHOT_FIELDS'))
-    assert.deepEqual(schema.$defs.shot.properties.frames.items.required, fieldsOf('scriptwriter', 'FRAME_FIELDS'))
+    assert.deepEqual(schema.required, fieldsOf('hyperframes-video/references/scriptwriter', 'ROOT_FIELDS'))
+    assert.deepEqual(schema.$defs.shot.required, fieldsOf('hyperframes-video/references/scriptwriter', 'SHOT_FIELDS'))
+    assert.deepEqual(schema.$defs.shot.properties.frames.items.required, fieldsOf('hyperframes-video/references/scriptwriter', 'FRAME_FIELDS'))
   })
 
   it('names a missing voiceover or action instead of assuming silence', () => {
@@ -171,7 +171,7 @@ describe("scriptwriter's storyboard script", () => {
 })
 
 describe("slide-deck's storyboard script", () => {
-  const deck = 'studios/slide-deck/shared'
+  const deck = 'slide-deck/shared'
   const slidesExample = agentFile(`${deck}/references/slides.example.json`)
   const slidesSchema = JSON.parse(agentFile(`${deck}/references/slides.schema.json`))
   const files: Record<string, Uint8Array> = { 'pages/cover.html': new Uint8Array([60]), 'pages/results.tsx': new Uint8Array([60]) }
@@ -212,9 +212,9 @@ describe("slide-deck's storyboard script", () => {
   it('ships the same contract to carousel-renderer', () => {
     // Each copy names its own path in its comments and description.
     const code = (text: string) => text.split('\n').filter((l) => !l.startsWith('//')).join('\n')
-    const { description: _a, ...schema } = JSON.parse(agentFile('carousel-renderer/references/slides.schema.json'))
+    const { description: _a, ...schema } = JSON.parse(agentFile('carousel-post/references/carousel-renderer/references/slides.schema.json'))
     assert.deepEqual(schema, (({ description: _b, ...rest }) => rest)(slidesSchema))
-    assert.equal(code(agentFile('carousel-renderer/scripts/validate-storyboard.mjs')), code(agentFile(`${deck}/scripts/validate-storyboard.mjs`)))
+    assert.equal(code(agentFile('carousel-post/references/carousel-renderer/scripts/validate-storyboard.mjs')), code(agentFile(`${deck}/scripts/validate-storyboard.mjs`)))
   })
 
   it('refuses shot fields, bad IDs and a missing preview field', () => {
@@ -244,6 +244,7 @@ describe('a card that points at a storyboard', () => {
   let file: string
   const card = (tag: string) => `---
 title: A video
+studio: hyperframes-video
 priority: med
 status: todo
 blocked_by: []
@@ -256,13 +257,13 @@ The brief.
 
 ## Worth noting
 
-## By \`scriptwriter\` agent
+<Preview id="storyboard">
 
 - **Brief**: one line.
 
 ${tag}
 
-<!-- agent -->
+</Preview>\n\n<!-- agent -->
 
 ## Scope
 A requirement.

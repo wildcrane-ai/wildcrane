@@ -6,8 +6,7 @@ import path from 'node:path'
 import { it } from 'node:test'
 
 for (const [phase, status, expectedPhase, action] of [
-  [1, 'ready', 2, 'approve'],
-  [2, 'todo', 2, 'clarify'],
+  [1, 'ready', 1, 'implement'],
 ] as const) {
   it(`the packaged CLI handles ${action} at stage ${phase} without approving its active Cloud job again`, () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-approval-artifact-'))
@@ -16,7 +15,7 @@ for (const [phase, status, expectedPhase, action] of [
       fs.mkdirSync(path.join(board, 'todo'), { recursive: true })
       fs.writeFileSync(path.join(board, 'config.md'), '# Config\n')
       const file = path.join(board, 'todo', '3-pricing.md')
-      fs.writeFileSync(file, `---\ntitle: Pricing\nstudio: blog-post\npreviews: [blog-planner, blog-illustrator, blog-writer]\nphase: ${phase}\nstatus: ${status}\nquestions: []\n---\n\nPlan.\n`)
+      fs.writeFileSync(file, `---\ntitle: Pricing\nstudio: blog-post\npreviews: [blog]\nphase: ${phase}\nstatus: ${status}\nquestions: []\n---\n\nPlan.\n`)
       fs.writeFileSync(path.join(root, '.akb', 'base.json'), JSON.stringify({
         layout: 'workspace', head_seq: 1,
         files: { 'projects/prj_1/todo/3-pricing.md': { seq: 1, content: '' } },

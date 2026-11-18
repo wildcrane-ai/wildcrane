@@ -144,15 +144,13 @@ it('creates in an explicit workspace and reuses the same request after a lost re
   assert.equal(calls, 3)
 })
 
-it('validates and diagrams an unregistered local studio and detects a changed baseline or draft', async () => {
-  const { cmdStudioDiagram, cmdStudioValidate } = await import('../src/commands/studio')
+it('validates an unregistered local studio and detects a changed baseline or draft', async () => {
+  const { cmdStudioValidate } = await import('../src/commands/studio')
   const dir = pulled(3)
   fs.writeFileSync(path.join(root, 'docs/kanban/todo/7-draft.md'), '---\ntitle: Draft\nmodules: []\n---\n')
   fs.appendFileSync(path.join(dir, 'STUDIO.md'), '')
   const before = cmdStudioValidate(dir).fingerprint
   assert.match(String(before), /^[0-9a-f]{64}$/)
-  const result = cmdStudioDiagram('7', '7', dir)
-  assert.deepEqual(JSON.parse(fs.readFileSync(String(result.file), 'utf8')).rounds, [])
   fs.writeFileSync(path.join(dir, 'version.json'), JSON.stringify({ id: OWN, version: 4 }))
   assert.notEqual(cmdStudioValidate(dir).fingerprint, before)
   const baseline = cmdStudioValidate(dir).fingerprint

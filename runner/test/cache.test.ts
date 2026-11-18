@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { SESSIONS_FILE, projectStateDir } from '../../cli/src/lib/machine/project'
 import { savePin, saveVersion } from '../../cli/src/lib/agent/cloud-studios'
+import { captureConflict } from '../../cli/src/lib/shared/board-conflicts'
 import { IDLE_MS, cacheDir, clearAkb, hold, markUnsent, markUsed, removeLegacy, sweepCache, sweepStudios } from '../src/cache'
 import { keepOnly } from '../src/folders'
 import { runnerHome, useRunnerHome } from '../src/home'
@@ -57,6 +58,23 @@ afterEach(async () => {
 })
 
 describe('the cache (#2147)', () => {
+  it('retains unresolved and damaged conflict records even without the unsent marker (#806)', async () => {
+    for (const damaged of [false, true]) {
+      const dir = cached(damaged ? 'prj_damaged' : 'prj_conflicted', OLD)
+      const board = path.join(dir, '.akb/kanban')
+      captureConflict(board, 'prj_1', [{ path: 'memory/readme.md', remotePath: 'projects/prj_1/memory/readme.md',
+        conflicted: true, reason: 'both-modified', base: { content: 'base', seq: 1 }, local: { content: 'mine' }, remote: { content: 'theirs', seq: 2 } }])
+      if (damaged) {
+        const record = fs.readdirSync(path.join(projectStateDir(board), 'conflicts'))[0]!
+        fs.writeFileSync(path.join(projectStateDir(board), 'conflicts', record), '{')
+      }
+      markUnsent(dir, false)
+      assert.equal(clearAkb(dir), false)
+      assert.ok(!(await sweepCache(MACHINE, NOW)).includes(dir))
+      assert.ok(fs.existsSync(dir))
+    }
+  })
+
   it('drops a project unused for a week, keeps a recent one, and starts counting for one with no record', async () => {
     reach('prj_old', 'prj_new', 'prj_bare')
     cached('prj_old', OLD)

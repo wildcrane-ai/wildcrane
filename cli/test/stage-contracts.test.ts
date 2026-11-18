@@ -148,18 +148,6 @@ describe('the lead a contract names', () => {
     'describe-project': 'project-writer',
     reflect: 'proposer',
   }
-
-  it('is the agent that ran that flow before', () => {
-    for (const [flow, agent] of Object.entries(BOARD)) {
-      assert.equal(agentForFlow(flow, 'coding'), agent, flow)
-      assert.equal(roleForFlow(flow, 'coding')?.name, agent, flow)
-    }
-  })
-
-  it('is what a role reads its own flows back off', () => {
-    assert.deepEqual(flowsOfAgent('builder'), ['implement', 'run'])
-    assert.deepEqual(flowsOfAgent('proposer'), ['reflect'])
-  })
 })
 
 describe('a contract that names somebody the board has not', () => {
@@ -175,19 +163,6 @@ describe('a contract that names somebody the board has not', () => {
 describe('the completion check', () => {
   it('requires nothing but the lead on everything the command ships', () => {
     for (const contract of stageContracts()) assert.deepEqual(contract.requires, [], contract.stage)
-  })
-
-  it('holds the stage open while a required helper has written nothing', () => {
-    writeCard(1)
-    const card = findCard(1)!
-    const contract: StageContract = { ...stageContract('plan'), requires: ['ui-designer'] }
-    assert.deepEqual(missingRequired(contract, card), ['ui-designer'])
-    // Nothing has been asked yet, so the check asks — once.
-    const first = endOfStage(contract, card)
-    assert.ok('ask' in first)
-    assert.equal(first.ask.action, 'spec')
-    assert.equal(first.ask.specAgent, 'ui-designer')
-    assert.equal(first.ask.id, 1)
   })
 
   it('stops for the user once it has asked and the section is still not there', () => {
@@ -246,13 +221,4 @@ describe('the helpers, one at a time', () => {
 })
 
 describe('the rules a delivery freezes', () => {
-  it('keys frozen rules only by the agent', () => {
-    fs.mkdirSync(RULES, { recursive: true })
-    fs.writeFileSync(path.join(RULES, 'builder.md'), 'Install dependencies first.\n')
-    assert.deepEqual(deliveryRules('coding'), { builder: 'Install dependencies first.' })
-    // A delivery frozen before rules moved onto the agents holds them under the FLOW name,
-    // and that key is untouched by the contracts (#420, #714).
-    const frozen = { implement: 'The rule as it was frozen.' }
-    assert.equal(ruleFor({ action: 'implement', id: 1, studio: 'coding' }, frozen), '')
-  })
 })

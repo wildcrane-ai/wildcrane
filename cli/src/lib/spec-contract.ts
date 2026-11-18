@@ -1,3 +1,6 @@
+import { taskHistoricalPreviews } from './agent/cloud-studios'
+import { parsePreviewBlocks } from './shared/preview-blocks'
+import { studioFor } from './agent/studios'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -138,6 +141,18 @@ export function validateSpec(file: string, text: string, id?: number): ContractE
     }
   }
 
+  const preview = parsePreviewBlocks(text, file)
+  for (const p of preview.problems) add(p.line, p.code, `${p.message}. ${p.hint}`)
+  const allowedPreviews = studioFor(meta?.studio)?.previews.map(p => p.id).concat(taskHistoricalPreviews())
+  const inPreview = (line: number) => preview.blocks.some(b => {
+    const start = text.slice(0, b.start).split('\n').length
+    const end = text.slice(0, b.end).split('\n').length
+    return line > start && line < end
+  })
+  for (const p of preview.blocks) {
+    if (allowedPreviews && !allowedPreviews.includes(p.id)) add(text.slice(0, p.start).split('\n').length, 'preview-id', `Unknown Preview ${p.id}. Use an ID from the task Studio.`)
+    if (text.indexOf('<!-- agent -->') >= 0 && p.start > text.indexOf('<!-- agent -->')) add(text.slice(0, p.start).split('\n').length, 'section-half', 'Move Preview results above <!-- agent -->.')
+  }
   const headings: { title: string; line: number }[] = []
   const markers: number[] = []
   const { visible, fence, comment } = scanCardLines(lines, end + 1)
@@ -150,7 +165,7 @@ export function validateSpec(file: string, text: string, id?: number): ContractE
     if (done) acceptance.push({ line: i + 1, level: done[1]!.length })
     const heading = line.match(/^ {0,3}(#{1,2})\s+(.+?)\s*#*\s*$/)
     if (heading?.[1] === '#') add(i + 1, 'heading', 'Do not repeat the card title as an H1. Remove this heading or use ### inside your section.')
-    if (heading?.[1] === '##') headings.push({ title: heading[2]!, line: i + 1 })
+    if (heading?.[1] === '##' && !inPreview(i + 1)) headings.push({ title: heading[2]!, line: i + 1 })
     if (/^\s*<\/?Set\b/.test(line) && !sets.has(i)) {
       const close = /^\s*<Set\b/.test(line) ? setEnd(visible, i) : -1
       if (close < 0) add(i + 1, 'set-block', 'Write <Set label="..."> on its own line after a blank line, then one <Asset ... /> per line, then </Set> followed by a blank line.')
@@ -199,10 +214,10 @@ export function validateSpec(file: string, text: string, id?: number): ContractE
   const seen = new Set<string>()
   let lastOrder = -1
   for (const heading of headings) {
-    const specialist = /^By `[a-z0-9]+(?:-[a-z0-9]+)*` (agent|skill)$/.test(heading.title)
+    const specialist = false
     if (seen.has(heading.title)) add(heading.line, 'duplicate-section', `Duplicate ## ${heading.title}. Merge the content into one section.`)
     seen.add(heading.title)
-    if (!allowed.includes(heading.title) && !specialist) add(heading.line, 'section-name', `Unknown ## ${heading.title}. Use ${allowed.map((s) => `## ${s}`).join(', ')}, or ## By \`<agent-name>\` agent. Use ### for a subheading.`)
+    if (!allowed.includes(heading.title) && !specialist) add(heading.line, 'section-name', `Unknown ## ${heading.title}. Use ${allowed.map((s) => `## ${s}`).join(', ')}. Use Preview blocks for task outputs and ### for a subheading.`)
     if (markers.length === 1) {
       const before = heading.line < markers[0]!
       if (((human.includes(heading.title) || specialist) && !before) || (agent.includes(heading.title) && before)) add(heading.line, 'section-half', `Move ## ${heading.title} ${human.includes(heading.title) || specialist ? 'above' : 'below'} <!-- agent -->.`)

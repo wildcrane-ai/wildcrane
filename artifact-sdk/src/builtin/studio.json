@@ -2,7 +2,7 @@
   "name": "studio",
   "title": {
     "en": "Studio",
-    "zh": "工作台"
+    "zh": "\u5de5\u4f5c\u53f0"
   },
   "types": [
     "studio"
@@ -75,9 +75,7 @@
           "version",
           "base",
           "fingerprint",
-          "agents",
-          "files",
-          "results"
+          "files"
         ],
         "properties": {
           "version": {

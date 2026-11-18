@@ -38,6 +38,7 @@ export function serializeFrontmatter(m: Partial<Meta>): string {
   // The day the card was archived (`archive` stamps it on the way out). Written only when
   // the card carries one, so nothing on the board grows a field — and re-emitted whenever it
   // is there.
+  if (m.restored) out.push(`restored: ${yamlScalar(m.restored)}`)
   if (m.archived) out.push(`archived: ${yamlScalar(m.archived)}`)
   if (m.rejected) out.push('rejected: true')
   if (m.rejected_reason) out.push(`rejected_reason: ${yamlScalar(m.rejected_reason)}`)

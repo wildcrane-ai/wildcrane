@@ -1,5 +1,8 @@
 // Explicit step receipts. Pending final receipts keep the card held until archive succeeds.
 import { cmdRemove, recoveredArchiveHandoff } from '../../commands/remove'
+import fs from 'node:fs'
+import { parseFrontmatter } from '../frontmatter'
+import { cardFile } from '../board/revision'
 import { locate } from '../cards'
 import { quietly } from '../io'
 import { withBoardLock } from '../lock'
@@ -13,13 +16,6 @@ import { readStore, withStore } from './store'
 import { landAgents, noStudioMessage, studioFor } from './studios'
 import { specAgentCatalog } from '../agents/catalog'
 import type { DeliveryCompletion, DeliveryRecord } from './types'
-
-export function deliveryAgents(delivery: DeliveryRecord) {
-  if (delivery.studio?.land) return delivery.studio.land
-  const flow = studioFor(delivery.studio?.id)
-  if (!flow) throw new Error(noStudioMessage(delivery.studio?.id))
-  return landAgents(flow)
-}
 
 export function completeDelivery(named: string, result: { commit?: string; branch?: string } = {}): MoveResult & { deliveryId: string; finished: boolean } {
   const commit = result.commit?.toLowerCase()
@@ -43,6 +39,9 @@ export function completeDelivery(named: string, result: { commit?: string; branc
       const receipts = delivery.completions ??= []
       const run = store.runs.find((r) => r.sessionId === sessionId)
       const current = store.runs.filter((r) => r.deliveryId === delivery.deliveryId && ['implement', 'scheduled'].includes(r.action)).pop()
+      const liveCard = delivery.cardId === null ? null : cardFile(delivery.cardId)
+      const restored = liveCard && parseFrontmatter(fs.readFileSync(liveCard, 'utf8')).meta?.restored
+      if (restored && Date.parse(restored) > (run?.startedAt ?? 0)) throw new Error('This delivery predates task restoration.')
       if (!run || run.deliveryId !== delivery.deliveryId) throw new Error('This run does not own the delivery.')
       const pending = receipts[deliveryStep(delivery)]
       const previous = receipts.find((c) => c.sessionId === sessionId || c.resumedSessions?.includes(sessionId))
@@ -63,18 +62,16 @@ export function completeDelivery(named: string, result: { commit?: string; branc
         pending.resumedSessions = [...(pending.resumedSessions ?? []), sessionId]
         return { delivery, receipt: pending }
       }
-      const agent = delivery.scheduled?.agent ?? deliveryAgents(delivery)[deliveryStep(delivery)]?.agent
-      if (!agent) throw new Error('No studio step remains to complete.')
+      if (deliveryStep(delivery) > 0) throw new Error('The task already recorded completion.')
       if (delivery.cardId !== null && !locate(delivery.cardId)) throw new Error('The card is missing before completion.')
-      const merges = specAgentCatalog().agents.find((a) => a.name === agent)?.merges
-      if (merges && !commit && delivery.base) throw new Error(`\`${agent}\` must report its merged commit and target branch.`)
+      if (!commit && delivery.base && !delivery.scheduled) throw new Error('Report the merged commit and target branch.')
       const receipt: DeliveryCompletion = { sessionId, step: receipts.length, at: Date.now(), commit, branch, finished: false }
       receipts.push(receipt)
       return { delivery, receipt }
     })
     const { delivery, receipt } = prepared
     syncAudit(delivery.deliveryId)
-    const final = !!delivery.scheduled || receipt.step + 1 >= deliveryAgents(delivery).length
+    const final = true
     if (final && !receipt.finished) {
       let handoff = receipt.handoff
       if (delivery.cardId !== null) {

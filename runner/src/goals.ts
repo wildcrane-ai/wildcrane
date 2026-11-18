@@ -24,7 +24,7 @@ export async function writeGoals(job: Job & { discussion: NonNullable<Job['discu
   catch (e) { return { error: e instanceof Error ? e.message : String(e) } }
   const file = goalsFileOf(job)
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, `${JSON.stringify({ workspace: job.discussion.workspace, studios, ideas: goals }, null, 2)}\n`)
+  fs.writeFileSync(file, `${JSON.stringify({ workspace: job.discussion.workspace, studios: studios.map(w => ({ ...w, previews: w.previews?.map(({ id, instructions }) => ({ id, instructions })) })), ideas: goals }, null, 2)}\n`)
   return { file }
 }
 

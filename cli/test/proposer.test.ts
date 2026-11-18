@@ -287,30 +287,6 @@ describe('the flow', () => {
     assert.match(await reflect(), /git log --grep "\(#1\)"/)
   })
 
-  it('names the scheduled agents the Runner passes, or else every one the studios list', async () => {
-    open(1)
-    complete(1)
-    const home = path.join(kanban(), 'agents', 'night-auditor')
-    fs.mkdirSync(home, { recursive: true })
-    fs.writeFileSync(path.join(home, 'AGENT.md'), ['---', 'name: night-auditor', 'description: Audits the night.', 'akb:', '  reads: archived-cards', '---', '', 'You audit.', ''].join('\n'))
-    // A saved `off` plays no part in any of these.
-    editStudio('coding', (def) => { def.scheduled = [{ agent: 'night-auditor' }] })
-    saveScheduled(root, 'coding', [{ agent: 'night-auditor', extra: '', off: true }])
-    const scheduled = () => buildRun({ action: 'reflect', cards: [1] }).prompt
-    try {
-      delete process.env[SCHEDULED_AGENTS_ENV]
-      let printed = scheduled()
-      assert.match(printed, /<\/card>\n<scheduled-agents>\nnight-auditor — Audits the night\./)
-      assert.doesNotMatch(printed, /qa-manager/)
-      process.env[SCHEDULED_AGENTS_ENV] = 'night-auditor,gone'
-      printed = scheduled()
-      assert.match(printed, /<scheduled-agents>\nnight-auditor — Audits the night\.\n<\/scheduled-agents>/)
-      process.env[SCHEDULED_AGENTS_ENV] = ''
-      assert.doesNotMatch(scheduled(), /scheduled-agents/)
-    } finally {
-      delete process.env[SCHEDULED_AGENTS_ENV]
-    }
-  })
 
   it('names no misses file to the memory review or a reflection', async () => {
     open(1)

@@ -68,7 +68,8 @@ describe('a run the board ended', () => {
     await watchRun(opened.run.sessionId, async () => ({ error: 'no resume' }))
     const run = peekRun(opened.run.sessionId)!
     assert.equal(run.status, 'error')
-    assert.match(run.error ?? '', /^Failed to authenticate\. API Error: 403\nSign in[^\n]*$/)
+    assert.match(run.error ?? '', /^Failed to authenticate\. API Error: 403\nSign in/)
+    assert.equal(run.retryPause, 'needs-review')
   })
 
   it('keeps the kinds through a read of the record', () => {
@@ -126,7 +127,8 @@ describe('task recovery after a local Codex service exits (#724)', () => {
       const events = [
         { type: 'thread.started', thread_id: 'saved-task-thread' },
         ...(mode === 'pending operation' ? [{ type: 'item.started', item: { id: 'write', type: 'command_execution', command: 'publish', status: 'in_progress' } }] : []),
-        ...(mode === 'agent crash' ? [] : [{ type: 'turn.failed', error: { message: 'Codex connection closed before all work and results finished.' } }]),
+        ...(mode === 'agent crash' ? [] : [{ type: 'turn.failed', error: { message: 'Codex connection closed before all work and results finished.',
+          codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } }, headers: { 'Retry-After': '0' } } }]),
       ]
       fs.writeFileSync(agent, mode === 'agent crash'
         ? `process.stdout.write(${JSON.stringify(events.map(e => JSON.stringify(e)).join('\n') + '\n')},()=>process.kill(process.pid,'SIGKILL'))`
@@ -140,18 +142,19 @@ describe('task recovery after a local Codex service exits (#724)', () => {
       patch(opened.run.sessionId, r => {
         r.pid = process.pid
         r.startedAt = Date.now() - 3600_000
-        if (mode === 'exhausted') r.retry = { attempt: 3, of: 3, at: Date.now(), since: Date.now(), reason: 'previous crash' }
+        if (mode === 'exhausted') r.retry = { attempt: 4, of: 4, at: Date.now(), since: Date.now(), reason: 'previous crash' }
       })
       let resumed = 0
       await watchRun(opened.run.sessionId, async id => {
         resumed++
         assert.equal(id, opened.run.sessionId)
         assert.equal(peekRun(id)?.resumeId, 'saved-task-thread')
-        assert.equal(peekRun(id)?.retry?.attempt, 2)
+        assert.equal(peekRun(id)?.retry?.attempt, 1)
+        assert.ok(peekRun(id)?.retry?.pending)
         return { error: 'test stops after confirming automatic recovery' }
       })
-      assert.equal(resumed, mode === 'recover' || mode === 'agent crash' ? 1 : 0)
-      if (mode === 'pending operation') assert.match(peekRun(opened.run.sessionId)?.error ?? '', /Operation results are unconfirmed/)
+      assert.equal(resumed, mode === 'recover' ? 1 : 0)
+      if (mode === 'pending operation') assert.equal(peekRun(opened.run.sessionId)?.retryPause, 'unsafe')
       assert.equal(peekRun(opened.run.sessionId)?.status, 'error')
     })
   }

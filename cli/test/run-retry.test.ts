@@ -85,14 +85,14 @@ afterEach(() => {
 describe('requiring the original conversation', () => {
   it('continues a missing session with the original task', async () => {
     run({ sessionId: 'quiet', action: 'implement' })
-    const res = await openResume('quiet', true)
+    const res = await openResume('quiet', { fresh: true })
     assert.ok(!('error' in res))
     assert.equal(readStore().runs.length, 1)
   })
 
   it('continues an unsupported connector on a supported runtime', async () => {
     run({ sessionId: 'foreign', action: 'implement', harness: 'retired-cli', resumeId: 'old-thread' })
-    const res = await openResume('foreign', true)
+    const res = await openResume('foreign', { fresh: true })
     assert.ok(!('error' in res))
     assert.equal(readStore().runs.length, 1)
   })
@@ -160,7 +160,7 @@ describe('Retry is not offered', () => {
   it('on a run the user stopped', async () => {
     run({ sessionId: 'stopped', status: 'stopped', ok: undefined })
     assert.equal((await view('stopped')).canRetry, undefined)
-    const res = await openResume('stopped')
+    const res = await openResume('stopped', { fresh: true })
     assert.ok(!('error' in res))
   })
 
@@ -174,7 +174,7 @@ describe('Retry is not offered', () => {
   it('still has the original task context after the card left the board', async () => {
     run({ sessionId: 'gone', cardId: 99 })
     assert.equal((await view('gone')).canRetry, undefined)
-    const res = await openResume('gone')
+    const res = await openResume('gone', { fresh: true })
     assert.ok(!('error' in res))
   })
 
@@ -182,7 +182,7 @@ describe('Retry is not offered', () => {
     delivery('ended111', { status: 'cancelled', endedAt: 2 })
     run({ sessionId: 'cancelled', action: 'implement', deliveryId: 'ended111' })
     assert.equal((await view('cancelled')).canRetry, undefined)
-    const res = await openResume('cancelled')
+    const res = await openResume('cancelled', { fresh: true })
     assert.ok('error' in res)
     assert.match(res.error, /was cancelled/)
   })
@@ -191,7 +191,7 @@ describe('Retry is not offered', () => {
 describe('retrying', () => {
   it('starts the same ask again in a new session, in place of the failed run', async () => {
     run({ sessionId: 'quiet', input: 'mind the edge case', flowId: 'flow-1' })
-    const res = await openResume('quiet')
+    const res = await openResume('quiet', { fresh: true })
     assert.ok(!('error' in res), 'error' in res ? res.error : '')
     const { run: next } = res
     assert.equal(next.action, 'resolve')
@@ -210,7 +210,7 @@ describe('retrying', () => {
   // One that fails the same way is offered Retry again: nothing marks it a resume.
   it('can be retried again', async () => {
     run({ sessionId: 'quiet' })
-    const res = await openResume('quiet')
+    const res = await openResume('quiet', { fresh: true })
     assert.ok(!('error' in res))
     fs.writeFileSync(res.run.logPath, 'ran\n')
     withStore((store) => {
@@ -226,7 +226,7 @@ describe('retrying', () => {
     delivery('build111', { sessions: ['build'] })
     run({ sessionId: 'build', action: 'implement', deliveryId: 'build111', unspawned: true, harness: 'claude-code' })
     assert.equal((await view('build')).canRetry, true)
-    const res = await openResume('build')
+    const res = await openResume('build', { fresh: true })
     assert.ok(!('error' in res), 'error' in res ? res.error : '')
     assert.equal(res.run.deliveryId, 'build111')
     assert.equal(res.run.resumedFrom, undefined)
@@ -246,7 +246,7 @@ describe('a run whose connector this build no longer ships', () => {
     run({ sessionId: 'revise', action: 'edit', harness: 'retired-cli', resumeId: 'their-id' })
     assert.deepEqual([(await view('lost')).canResume, (await view('lost')).canRetry], [true, undefined])
     assert.equal((await view('revise')).canResume, false)
-    const res = await openResume('revise')
+    const res = await openResume('revise', { fresh: true })
     assert.ok(!('error' in res))
   })
 
@@ -255,11 +255,11 @@ describe('a run whose connector this build no longer ships', () => {
     fs.mkdirSync(worktree, { recursive: true })
     delivery('wt111111', { sessions: ['lost'], worktree, branch: 'card/7/wt111111' })
     lost({ deliveryId: 'wt111111' })
-    const res = await openResume('lost')
+    const res = await openResume('lost', { fresh: true })
     assert.ok(!('error' in res), 'error' in res ? res.error : '')
     assert.equal(res.run.cwd, worktree)
     assert.notEqual(res.run.harness, 'retired-cli')
-    assert.equal(res.run.resumedFrom, 'lost')
+    assert.equal(res.run.resumedFrom, undefined)
     assert.equal(res.run.deliveryId, 'wt111111')
     assert.match(readSpec(res.run.sessionId)?.prompt ?? '', /Continue delivery wt111111/)
   })
@@ -267,7 +267,7 @@ describe('a run whose connector this build no longer ships', () => {
   it('carries a delivery with no worktree on in the project', async () => {
     delivery('flat1111', { sessions: ['lost'] })
     lost({ deliveryId: 'flat1111' })
-    const res = await openResume('lost')
+    const res = await openResume('lost', { fresh: true })
     assert.ok(!('error' in res), 'error' in res ? res.error : '')
     assert.equal(fs.realpathSync(res.run.cwd!), fs.realpathSync(root))
     assert.equal(res.run.deliveryId, 'flat1111')
@@ -276,7 +276,7 @@ describe('a run whose connector this build no longer ships', () => {
 
   it('does a card run again from the top where there is no delivery', async () => {
     lost({ action: 'resolve' })
-    const res = await openResume('lost')
+    const res = await openResume('lost', { fresh: true })
     assert.ok(!('error' in res), 'error' in res ? res.error : '')
     const prompt = readSpec(res.run.sessionId)?.prompt ?? ''
     assert.match(prompt, /Continue work\./)

@@ -38,13 +38,6 @@ afterEach(() => {
 })
 
 describe('the roles', () => {
-  it('gives every flow the board can start exactly one agent', () => {
-    for (const flow of FLOWS) {
-      const owners = agentRoster().filter((agent) => agent.name === agentForFlow(flow.command, 'coding'))
-      const hidden = roleNamed(agentForFlow(flow.command, 'coding') ?? '') && !owners.length ? 1 : 0
-      assert.equal(owners.length + hidden, 1, `${flow.command} is run by ${owners.length} agents`)
-    }
-  })
 
   it("refuses a project agent that takes a role's name, so no two share a rule", () => {
     const home = path.join(kanban(), 'agents', 'proposer')
@@ -63,12 +56,4 @@ describe('the roles', () => {
 // The proposer and the chat reviewer used to have switches (#534, #748).
 describe('the board helpers are always on (#1208)', () => {
   const on = (name: string): boolean => agentRoster().some((a) => a.name === name)
-
-  it('reads a key an earlier release wrote to switch one off as on', () => {
-    fs.mkdirSync(path.dirname(UI_CONFIG), { recursive: true })
-    fs.writeFileSync(UI_CONFIG, JSON.stringify({ proposer: false, autoTriage: false, memoryReviewer: false }))
-    for (const name of ['proposer', 'chat-reviewer', 'discussion-helper', 'builder']) {
-      assert.equal(on(name), true, name)
-    }
-  })
 })

@@ -21,7 +21,7 @@ export async function buildMockupCheck() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const output = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../official/agents/ui-designer/scripts/check-mockup.mjs')
+  const output = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../official/studios/coding/scripts/check-mockup.mjs')
   fs.mkdirSync(path.dirname(output), { recursive: true })
   fs.writeFileSync(output, await buildMockupCheck())
   console.log(`Wrote ${output}`)

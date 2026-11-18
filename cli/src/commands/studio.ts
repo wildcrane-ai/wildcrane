@@ -11,7 +11,6 @@ import { findSpecAgent } from '../lib/agents'
 import { locate } from '../lib/cards'
 import { say } from '../lib/io'
 import { ASSETS, die } from '../lib/paths'
-import { studioDiagram } from '../lib/agent/studio-diagram'
 import { NEEDS_CLOUD, boardProject, cloudFlows, studiosOffline, studiosReachable, type StudioFiles } from '../lib/agent/cloud-studios'
 import {
   studioPurpose,
@@ -44,57 +43,15 @@ const found = (id: string) => {
   return flow!
 }
 
-const names = (rows: StudioHelper[]): string => rows.map((h) => `${h.agent}${h.off ? ' (off)' : ''}`).join(', ')
-
-// A preview with the approvals it waits on (#2154).
-const previewNames = (rows: StudioHelper[]): string =>
-  rows.map((h) => `${names([h])}${agentAfter(h.agent).length ? ` (after ${agentAfter(h.agent).join(', ')})` : ''}`).join(', ')
-
 export function cmdStudioList(): MoveResult {
   if (!studiosReachable().ok) die(NEEDS_CLOUD, 'needs-cloud')
-  const offline = studiosOffline()
   const rows = studios()
-  for (const flow of rows) {
-    const previews = previewNames(previewMembers(flow))
-    const land = names(flow.land)
-    const line = [flow.id, flow.name, ...(previews ? [`previews: ${previews}${land ? ` → land: ${land}` : ''}`] : land ? [`land: ${land}`] : [])]
-    say(`${line.join('  ')}${offline ? '  (offline)' : ''}`)
-    for (const agent of listedScheduled(flow)) say(`  scheduled: ${agent}`)
-    for (const problem of studioProblems(flow.id)) say(`  ! ${problem}`)
-  }
-  const fileProblems = studioFileProblems()
-  for (const problem of fileProblems) say(`! ${problem}`)
-  return {
-    studios: rows.map((flow) => ({
-      ...flow,
-      previews: previewMembers(flow).map((h) => ({ ...h, after: agentAfter(h.agent) })),
-      scheduled: listedScheduled(flow),
-      description: studioPurpose(flow),
-      when: studioWhen(flow),
-      problems: studioProblems(flow.id),
-    })),
-    problems: fileProblems,
-    ...(offline ? { offline } : {}),
-  }
+  for (const flow of rows) say(`${flow.id}  ${flow.name}  ${flow.previews.map(p => p.id).join(', ')}`)
+  return { studios: rows.map(({ id, name, names, icon, needsArtifact, previews, description, builtIn }) => ({ id, name, names, icon, needsArtifact, previews, description, builtIn })), problems: studioFileProblems(), ...(studiosOffline() ? { offline: true } : {}) }
 }
 
-export function cmdStudioDiagram(id: string, card: string, folder?: string): MoveResult {
-  const files = folder ? readStudioFolder(path.resolve(folder)) : null
-  const local = files ? parseStudioFile('studio', files[STUDIO_FILE] ?? '', STUDIO_FILE) : null
-  if (local && 'problem' in local) die(local.problem, 'bad-studio')
-  const flow = local && 'def' in local ? local.def : found(id)
-  const cardId = Number(card)
-  if (!Number.isInteger(cardId) || !locate(cardId)) die(`no card #${card} on this board`, 'no-such-card')
-  const diagram = files ? diagramFrom(files) : studioDiagram({ previews: previewMembers(found(id)), land: flow.land, scheduled: scheduledMembers(found(id)) }, (name) => {
-    const agent = findSpecAgent(name)
-    return agent ? { ...agent, after: agentAfter(name) } : null
-  })
-  const file = path.join(ASSETS, String(cardId), 'studio.json')
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, `${JSON.stringify(diagram, null, 2)}\n`)
-  const tag = `<Studio src=".assets/${cardId}/studio.json" label="${flow.name.replace(/"/g, '')}" />`
-  say(tag)
-  return { file, tag, diagram }
+export function cmdStudioDiagram(_id: string, _card: string, _folder?: string): MoveResult {
+  die('Studios have no agent graph. Read STUDIO.md for instructions and Preview outputs.', 'bad-args')
 }
 
 /** `akb raw studio validate <folder>` (#622): every problem in a studio folder, the agents it
@@ -103,21 +60,10 @@ export function cmdStudioValidate(folder: string): MoveResult {
   const dir = path.resolve(folder)
   if (!fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory()) die(`${folder} is not a folder`, 'bad-args')
   const files = readStudioFolder(dir)
-  const read = parseStudioFile('studio', files[STUDIO_FILE] ?? '', STUDIO_FILE)
-  const def = 'def' in read ? read.def : null
-  const named = def ? new Set([...def.previews, ...def.land, ...def.scheduled].map((h) => h.agent)) : []
-  for (const name of named) {
-    if (Object.keys(files).some((f) => f.startsWith(`agents/${name}/`))) continue
-    const agent = findSpecAgent(name)
-    for (const file of agent ? ['AGENT.md', ...agent.files] : []) {
-      const text = agent!.file(file)
-      if (text !== null) files[`agents/${name}/${file}`] = text
-    }
-  }
   let builtin = false
   try { builtin = JSON.parse(files[VERSION_FILE] ?? 'null')?.id?.startsWith('wf_builtin_') === true } catch {}
-  const problems = studioFilesProblems(files, builtin).map((p) => `${p.file} ${p.reason}`)
-  if (problems.length) die(problems.map((p) => `! ${p}`).join('\n'), { kind: 'studio-problems', bare: true, problems })
+  const problems = studioFilesProblems(files, builtin)
+  if (problems.length) die(problems.map((p) => `! ${p.file}:${p.line ?? 1}:${p.column ?? 1} ${p.path ?? ""} ${p.code ?? "studio-file"}: ${p.reason}. ${p.hint ?? ""}`).join('\n'), { kind: 'studio-problems', bare: true, problems })
   say(`${folder}: no problems`)
   const checked = checkStudioFiles(files, builtin)
   const fingerprint = checked.ok ? crypto.createHash('sha256').update(hashInput({ ...checked.files, ...(files[VERSION_FILE] ? { [VERSION_FILE]: files[VERSION_FILE] } : {}) })).digest('hex') : null
@@ -150,7 +96,7 @@ interface PublishOptions { dryRun?: boolean; requestId?: string; workspace?: str
 
 function publicationFiles(dir: string): StudioFiles {
   const checked = checkStudioFiles(readStudioFolder(dir))
-  if (!checked.ok) die(`${checked.file} ${checked.reason}`, 'bad-studio')
+  if (!checked.ok) die(`${checked.file} ${checked.reason}`, { kind: 'bad-studio', problems: checked.problems })
   return (checked as { files: StudioFiles }).files
 }
 
@@ -252,7 +198,6 @@ async function cloudScope(): Promise<{ project: string; workspace: string }> {
 
 interface WorkspaceRules {
   studios: { id: string; rule?: string }[]
-  data: { agent: string; rule?: string }[]
 }
 
 /** `akb studio rule <studio>`: the rules every card on it follows. */
@@ -277,32 +222,21 @@ export async function cmdStudioRule(name: string, opts: NoteOptions): Promise<Mo
   return { studio: name, rule }
 }
 
-/** `akb studio instructions <agent>`: a studio agent's are the workspace's, a board agent's this project's. */
+/** The current project's background-task instructions. */
 export async function cmdStudioInstructions(agent: string, opts: NoteOptions): Promise<MoveResult> {
   const rule = noteText(opts)
-  const { project, workspace } = await cloudScope()
-  const [shared, own] = await Promise.all([
-    call<WorkspaceRules>('GET', `/v1/workspaces/${enc(workspace)}/studio-rules`),
-    call<{ board: string[]; data: { agent: string; rule?: string }[] }>('GET', `/v1/projects/${enc(project)}/agents`),
-  ])
-  const sharedRows = cloudOk(shared).data
-  const ownRows = cloudOk(own)
-  const flowAgents = sharedRows.map((a) => a.agent)
-  const board = ownRows.board
-  const scope = board.includes(agent) ? 'project' : flowAgents.includes(agent) ? 'workspace' : null
-  if (!scope) {
-    die(`no agent called "${agent}" here. There are: ${[...new Set([...flowAgents, ...board])].join(', ')}.`, {
-      kind: 'no-such-agent',
-      agent,
-    })
+  const project = boardProject()
+  if (!project) die('This board is not linked to a Cloud project.', 'needs-cloud')
+  const own = cloudOk(await call<{ board: string[]; data: { agent: string; rule?: string }[] }>('GET', `/v1/projects/${enc(project)}/agents`))
+  if (!own.board.includes(agent)) {
+    die(`no agent called "${agent}" here. There are: ${own.board.join(', ')}.`, { kind: 'no-such-agent', agent })
   }
   if (rule === undefined) {
-    const now = (scope === 'project' ? ownRows.data : sharedRows).find((a) => a.agent === agent)?.rule ?? ''
+    const now = own.data.find((a) => a.agent === agent)?.rule ?? ''
     say(now || `${agent} has no instructions`)
-    return { agent, rule: now, scope }
+    return { agent, rule: now, scope: 'project' }
   }
-  const route = scope === 'project' ? `/v1/projects/${enc(project)}/agents/${enc(agent)}` : `/v1/workspaces/${enc(workspace)}/agents/${enc(agent)}`
-  cloudOk(await call('PUT', route, { rule }))
-  say(rule ? `saved ${agent}'s instructions (${scope === 'project' ? 'this project' : 'every project'})` : `cleared ${agent}'s instructions`)
-  return { agent, rule, scope }
+  cloudOk(await call('PUT', `/v1/projects/${enc(project)}/agents/${enc(agent)}`, { rule }))
+  say(rule ? `saved ${agent}'s instructions (this project)` : `cleared ${agent}'s instructions`)
+  return { agent, rule, scope: 'project' }
 }

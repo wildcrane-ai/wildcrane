@@ -37,11 +37,12 @@ export function agentComponents(
   return [...docs.values()]
 }
 
+export const allComponents = (): PreviewComponentDoc[] => Object.entries(DOCUMENTS).map(([name, text]) => ({ name, text: boardText(text) }))
+
 export function studioComponents(id: string): PreviewComponentDoc[] {
   const flow = studioById(id)
   if (!flow) throw new BoardError(`no studio called "${id}"`, { kind: 'unknown-studio', studio: id })
-  const members = [...previewMembers(flow), ...flow.land, ...scheduledMembers(flow)].map((row) => row.agent)
-  return agentComponents(members)
+  return allComponents()
 }
 
 export const componentDocsText = (docs: PreviewComponentDoc[]): string =>

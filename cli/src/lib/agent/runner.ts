@@ -51,12 +51,7 @@ export const studioForRun = (ask: RunAsk): string | undefined =>
 export function agentForRun(ask: RunAsk = {}): string | undefined {
   const { action, specAgent } = ask
   if (!action) return undefined
-  if (action === 'implement') {
-    const delivery = deliveryFor({ action, id: ask.id, deliveryId: ask.deliveryId })
-    const flow = delivery?.studio ? undefined : studioFor(studioForRun(ask))
-    const rows = delivery?.studio?.land ?? (flow ? landAgents(flow) : [])
-    return rows[delivery ? deliveryStep(delivery) : 0]?.agent
-  }
+  if (action === 'implement') return undefined
   // A specialist runs as itself, whichever hook it is on; a sub-run as its parent's agent.
   if (SPECIALIST_ACTIONS.has(action) || action === 'sub') return specAgent
   return roleForFlow(flowOf(ask, action), studioForRun(ask))?.name

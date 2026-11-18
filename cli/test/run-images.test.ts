@@ -17,6 +17,7 @@ import { buildPrompt } from '../src/lib/agent/prompts.ts'
 import { openRun } from '../src/lib/agent/sessions.ts'
 import { runAsk } from '../src/lib/agent/start.ts'
 import { readStore } from '../src/lib/agent/store.ts'
+import { agentImages } from '../src/lib/agent/resolve.ts'
 import { setBoardRoot, SESSIONS_DIR } from '../src/lib/paths.ts'
 import { uiConfigOf } from './helpers/board.ts'
 
@@ -89,7 +90,9 @@ describe('the box a run takes over', () => {
 })
 
 describe('what the run is told about them', () => {
-  it('names each file for a connector that reads a path out of the words', () => {
+  for (const harness of ['claude-code', 'cursor', 'opencode', 'antigravity']) it(`names each file for ${harness} through the shared picture input`, () => {
+    config(harness)
+    assert.equal(agentImages()?.as, 'message')
     const prompt = buildPrompt({ action: 'prune-memory', pictures: ['/a.png', '/b.png'] })
     assert.match(prompt, /2 pictures came with this/)
     assert.ok(prompt.includes('/a.png') && prompt.includes('/b.png'))

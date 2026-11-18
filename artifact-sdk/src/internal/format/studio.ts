@@ -13,9 +13,9 @@ export type StudioReview = {
   version: 2;
   base: { id: string; version: number; fingerprint: string } | null;
   fingerprint: string;
-  agents: StudioAgent[];
+  agents?: StudioAgent[];
   files: StudioFile[];
-  results: StudioResult[];
+  results?: StudioResult[];
 };
 const text = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 const source = (v: unknown): v is string => text(v) && !/^(?:[a-z][\w+.-]*:|\/|#)|\\|[\u0000-\u001f]/i.test(v);
@@ -47,9 +47,9 @@ export function reviewProblem(v: unknown): string | null {
   if (!isObject(v) || v.version !== 2) return '/version';
   if (!text(v.fingerprint)) return '/fingerprint';
   if (v.base !== null && !(isObject(v.base) && text(v.base.id) && Number.isInteger(v.base.version) && Number(v.base.version) > 0 && text(v.base.fingerprint))) return '/base';
-  if (!Array.isArray(v.agents) || v.agents.length > 500) return '/agents';
+  if (v.agents !== undefined && (!Array.isArray(v.agents) || v.agents.length > 500)) return '/agents';
   const agents = new Set<string>();
-  for (const a of v.agents) {
+  for (const a of (v.agents ?? []) as unknown[]) {
     if (!isObject(a) || !text(a.agent) || !/^[a-z][a-z0-9-]*$/.test(a.agent) || agents.has(a.agent) || !isObject(a.title) || !text(a.title.en) || !optionalText(a.title, ['zh']) || !icon(a.icon)) return '/agents';
     agents.add(a.agent);
   }
@@ -60,7 +60,7 @@ export function reviewProblem(v: unknown): string | null {
     if (f.path.startsWith('agents/') && !agents.has(f.path.split('/')[1]!)) return '/files';
     paths.add(f.path);
   }
-  return resultProblem(v.results, agents);
+  return v.results === undefined ? null : resultProblem(v.results, agents);
 }
 export const parseReview = (v: unknown): StudioReview | null => reviewProblem(v) ? null : v as StudioReview;
 export const isReview = (v: unknown): boolean => isObject(v) && v.version === 2;

@@ -1,3 +1,5 @@
+import type { ExecutionFailure } from '../retry'
+import { providerFailure } from './failures'
 // Turns `claude -p --output-format stream-json`'s NDJSON into a readable log (task #14).
 // Claude Code in its default text mode prints nothing until the session ends, so there is
 // no live tail to show; the spawn asks for the event stream (see harnesses/claude-code.ts)
@@ -110,7 +112,8 @@ export function createStreamRenderer(): StreamRenderer {
   let context: ContextWindow | undefined
   let limit: number | undefined
   let failure: string | undefined
-  let offStream: string | undefined
+  let apiFailure: ExecutionFailure | undefined
+  let classified: ExecutionFailure | undefined
   let background: number | undefined
   const turns: StreamTurn[] = []
   const backgrounded = new Set<string>()
@@ -128,21 +131,17 @@ export function createStreamRenderer(): StreamRenderer {
   const renderLine = (line: string): string => {
     if (!line.trim()) return ''
     const ev = frame(line)
-    if (!ev) {
-      // Not one of Claude Code's events: the CLI itself talking, straight onto stdout. Kept
-      // as the last such line, because a run the connection dropped under ends on one and
-      // reports nothing else at all (#525).
-      offStream = line.trim()
-      return `${line}\n`
-    }
+    if (!ev) return `${line}\n`
     // Which model is doing the work, taken from the run's own output as it goes.
     // First one wins, so this settles on the opening banner's id and never drifts
     // to whatever a later turn happens to say.
     if (model === undefined) model = eventModel(ev)
     // A subagent's own turns: neither the main agent's steps nor its context.
     if (str(ev.parent_tool_use_id)) return ''
+    if (ev.type === 'assistant' || (ev.type === 'stream_event' && obj(ev.event).type === 'content_block_delta')) events.progress()
     switch (ev.type) {
       case 'assistant': {
+        apiFailure = typeof ev.error === 'string' ? providerFailure({ type: ev.error }, 'Claude could not complete the request.') : undefined
         const msg = ev.message as { content?: unknown; usage?: unknown } | undefined
         // Every assistant turn carries the prompt it answered. The last one wins: that is
         // what the model is holding now, and a compaction takes it back down.
@@ -208,6 +207,12 @@ export function createStreamRenderer(): StreamRenderer {
         // for the same thing, which is why only this renderer reports one. The last turn's
         // verdict is the run's.
         failure = ev.is_error === true ? whyItFailed(ev) : undefined
+        classified = failure
+          ? ev.subtype === 'error_max_structured_output_retries'
+            ? { code: 'validation_failed', level: 1, reason: failure }
+            : { ...(apiFailure ?? providerFailure(ev.error, failure)), reason: failure }
+          : undefined
+        apiFailure = undefined
         if (failure) events.error(failure)
         turns.push({
           ...(typeof ev.result === 'string' ? { result: ev.result } : {}),
@@ -244,10 +249,11 @@ export function createStreamRenderer(): StreamRenderer {
     context: () => (context && limit ? { ...context, limit } : context),
     model: () => model,
     failure: () => failure,
-    offStream: () => offStream,
+    executionFailure: () => classified,
     background: () => background,
     turns: () => turns,
     events: events.events,
+    activity: events.activity,
   }
 }
 

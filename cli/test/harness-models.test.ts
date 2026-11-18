@@ -56,6 +56,20 @@ describe('the models a connector offers', () => {
     assert.deepEqual(models('codex'), [])
   })
 
+  it('keeps successful suggestions through missing, damaged and empty files (#791)', () => {
+    const file = '.grok/models_cache.json'
+    write(file, { models: { 'grok-saved': {} } })
+    assert.deepEqual(models('grok'), ['grok-saved'])
+    for (const value of ['{', { models: {} }]) {
+      write(file, value)
+      assert.deepEqual(models('grok'), ['grok-saved'])
+    }
+    fs.rmSync(path.join(home, file))
+    assert.deepEqual(models('grok'), ['grok-saved'])
+    write(file, { models: { 'grok-restored': {} } })
+    assert.deepEqual(models('grok'), ['grok-restored'])
+  })
+
   it('survives a file whose shape is nothing like the one expected', () => {
     write('.codex/models_cache.json', { models: 'gpt-5' })
     write('.grok/models_cache.json', [1, 2, 3])

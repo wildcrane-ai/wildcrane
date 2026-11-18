@@ -1,82 +1,68 @@
-// When a run that died on a provider failure tries again (#525).
-//
-// The recognition is each connector's (agent/harnesses/transient.ts) — this is the part
-// that is the same whoever failed: how long to wait, how many times, and when to stop
-// waiting and hand the card back.
-//
-// Capped exponential backoff with jitter. A blip clears in seconds, so the first wait is
-// short; a provider that is really down would otherwise be hammered by every board on it at
-// the same second, which is what the jitter is for. A retry time the provider asked for
-// wins outright — it knows when it will be back and we do not.
-//
-// Both bounds matter and they bound different things. THREE attempts is what stops a
-// failure that only looks transient from being paid for over and over. FIFTEEN MINUTES,
-// counted from the moment the first attempt STARTED, is what stops a card being held while
-// nothing happens — and it is also how a harness's own internal retries are accounted for:
-// the time one burned retrying inside an attempt is inside that window already, so those
-// attempts count against the same limit without the harness having to report them.
+import { translating } from './language'
 
-import type { TransientFailure } from './harnesses'
-import type { RunRetry } from './types'
+export interface ExecutionFailure {
+  code: string
+  level: 1 | 2 | 3
+  reason: string
+  retryAfterMs?: number
+}
 
-/** How many attempts one failure gets, the first included. */
-export const RETRY_ATTEMPTS = 3
+export interface RetryPlan {
+  at: number
+  of: number
+  failure: ExecutionFailure
+}
 
-/** And how long the whole chain gets, from the first attempt's start. */
-export const RETRY_WINDOW_MS = 15 * 60_000
+export type RetryPause = 'needs-review' | 'limit' | 'wait-too-long' | 'unsafe' | 'authorization'
 
-// The first wait, and the ceiling the doubling stops at.
 const BASE_MS = 15_000
 const CAP_MS = 120_000
 
-// How much of a wait is jittered away, at most: a wait lands somewhere in the last quarter
-// of its window, so two boards that failed together do not come back together.
-const JITTER = 0.25
-
-/** The wait before attempt `attempt`, in ms — `random` is the roll, injected so a test can
- *  hold it still.
- *
- *  Landing's own retries borrow this curve (#595): a fit onto the moved target keeps the
- *  attempt bound and drops the window; a target that keeps moving is waited out without
- *  either. */
+/** The original attempt is 1. The next three attempts use this same curve. */
 export function backoffMs(attempt: number, random: () => number = Math.random): number {
   const step = Math.min(CAP_MS, BASE_MS * 2 ** Math.max(0, attempt - 2))
-  return Math.round(step * (1 - JITTER * random()))
+  return Math.round(step * (1 - 0.25 * random()))
 }
 
-/** The retry this failure earns, or null when it has run out of attempts or out of time.
- *
- *  `prev` is what the failed run carried — nothing on the first failure of a chain. `now`
- *  and `random` are injected so the policy can be read at a fixed moment. */
-export function planRetry(
-  prev: RunRetry | undefined,
-  failure: TransientFailure,
-  startedAt: number,
-  now: number = Date.now(),
-  random: () => number = Math.random,
-  /** False for a run that went silent: its silence alone outlasts the window. */
-  windowed = true,
-): RunRetry | null {
-  const attempt = (prev?.attempt ?? 1) + 1
-  if (attempt > RETRY_ATTEMPTS) return null
-  // The chain's clock started with its first attempt, and a run that never retried before
-  // IS that first attempt.
-  const since = prev?.since ?? startedAt
-  const wait = failure.retryAfterMs ?? backoffMs(attempt, random)
-  const at = now + wait
-  // A wait that would leave the next attempt starting outside the window is not a wait
-  // worth holding a card through: the answer is the same either way, and this way the user
-  // gets it now.
-  if (windowed && at > since + RETRY_WINDOW_MS) return null
-  return { attempt, of: RETRY_ATTEMPTS, reason: failure.reason, at, since }
+export function planRetry(failure: ExecutionFailure, attempt: number, now = Date.now(), backoff = backoffMs):
+  { plan: RetryPlan } | { pause: RetryPause } {
+  if (!Number.isSafeInteger(attempt) || attempt < 1 || failure.level === 3) return { pause: 'needs-review' }
+  const of = failure.level === 1 ? 2 : 4
+  if (attempt >= of) return { pause: 'limit' }
+  const delay = failure.retryAfterMs
+  const valid = delay !== undefined && !Number.isNaN(delay) && delay >= 0
+  const wait = valid ? delay : failure.level === 1 ? 0 : backoff(attempt + 1)
+  if (wait > CAP_MS) return { pause: 'wait-too-long' }
+  return { plan: { at: now + wait, of, failure } }
 }
 
-/** What the log and the runs view say about a wait: the reason, the countdown, and which
- *  attempt is coming. One sentence, because it is read on one row. */
-export function retryLine(retry: RunRetry, now: number = Date.now()): string {
-  const seconds = Math.max(1, Math.round((retry.at - now) / 1_000))
-  return (
-    `${retry.reason} — this run tries again in ` +
-    `${seconds}s (attempt ${retry.attempt} of ${retry.of}).`
-  )
+export function readFailure(raw: unknown): ExecutionFailure | undefined {
+  if (!raw || typeof raw !== 'object') return
+  const { code, level, reason, retryAfterMs } = raw as Partial<ExecutionFailure>
+  if (typeof code !== 'string' || !code || typeof reason !== 'string' || (level !== 1 && level !== 2 && level !== 3)) return
+  return { code, level, reason, ...(typeof retryAfterMs === 'number' && retryAfterMs >= 0 ? { retryAfterMs } : {}) }
+}
+
+export function readRetryPlan(raw: unknown, attempt: number): RetryPlan | undefined {
+  if (!raw || typeof raw !== 'object') return
+  const { at, of, failure: rawFailure } = raw as Partial<RetryPlan>
+  const failure = readFailure(rawFailure)
+  if (!failure || typeof at !== 'number' || !Number.isFinite(at)) return
+  const decision = planRetry(failure, attempt)
+  if ('plan' in decision && of === decision.plan.of) return { at, of, failure }
+}
+
+export function pauseLine(pause: RetryPause, zh = translating()): string {
+  switch (pause) {
+    case 'needs-review': return zh ? '已暂停，请检查失败原因后续跑。' : 'Paused. Review the failure before resuming.'
+    case 'limit': return zh ? '已达到自动重试次数上限。' : 'The automatic retry limit was reached.'
+    case 'wait-too-long': return zh ? '所需等待时间超过两分钟，已暂停。' : 'Paused because the required wait exceeds two minutes.'
+    case 'unsafe': return zh ? '无法确认可以安全续跑，请先核对已有进度和操作结果。' : 'Check saved progress and operation results before resuming safely.'
+    case 'authorization': return zh ? '无法确认续跑授权，已暂停。' : 'Paused because authorization to resume could not be confirmed.'
+  }
+}
+
+export function retryLine(plan: RetryPlan, attempt: number, now = Date.now()): string {
+  const seconds = Math.max(0, Math.ceil((plan.at - now) / 1_000))
+  return `${plan.failure.reason} — retrying ${seconds ? `in ${seconds}s` : 'now'} (attempt ${attempt + 1} of ${plan.of}).`
 }

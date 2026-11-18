@@ -21,12 +21,13 @@ import { pruneChats, reviewChats } from './chats'
 import { watchBoards, type BoardWatch } from './board-watch'
 import { answerHint } from './diff'
 import { stopLeftBehind } from './flow'
-import { replySpent, readCheckpoint, saveCheckpoint, stopReply, PREPARE_REASON, UPDATE_REASON, UNCERTAIN } from './recovery'
+import { replySpent, readCheckpoint, replayable, saveCheckpoint, stopReply, UNCERTAIN } from './recovery'
 import { status, t } from './i18n'
 import { holdMachine, type Holder } from './lock'
 import { STOP_MS, defaultDeps, folderFor, runJob, type Deps } from './jobs'
 import { keepPresence, type Presence } from './presence'
-import { refreshModels } from './runtimes'
+import { modelLists, refreshModels } from './runtimes'
+import { MODEL_REFRESH_MS } from './model-list'
 import { codexServer } from './codex-server'
 import { akbCardOf, openTaskFolder } from './task-folder'
 import { logSync } from './sync-debug'
@@ -127,6 +128,28 @@ export function startRunner(options: Options): Runner {
     await register()
     return found
   }
+  let refreshingModels = false
+  let modelsAgain = false
+  const updateModels = async () => {
+    if (refreshingModels) { modelsAgain = true; return }
+    if (closed || !connected || !ownsExecution || !registration || !validAccount()) return
+    refreshingModels = true
+    try {
+      do {
+        modelsAgain = false
+        const was = registration!.runtimes
+        const found = await refreshModels(was)
+        if (registration!.runtimes !== was) modelsAgain = true
+        else await redetected(found)
+      } while (modelsAgain && !closed)
+    } catch (error) {
+      console.error('runner: model refresh failed:', error instanceof Error ? error.message : String(error))
+    } finally { refreshingModels = false }
+  }
+  const stopModels = modelLists.subscribe(() => { void updateModels() })
+  const modelsTimer = setInterval(() => { void updateModels() }, MODEL_REFRESH_MS)
+  modelsTimer.unref?.()
+
   const idle = () => (running.size ? t.running(running.size) : t.connected(registration!.machineName))
 
   const schedule = (ms: number) => {
@@ -223,12 +246,17 @@ export function startRunner(options: Options): Runner {
       })
       const { watchMs } = deps()
       if (watchMs !== null) boards ??= watchBoards(registration.machineId, watchMs)
-      // The registration skipped the slow model lists; the full look follows.
+      // Detection also refreshes install and login state.
       void deps().runtimes()
+    }
+    try {
+      await reviewChats(registration.machineId, registration.runtimes)
+    } catch (error) {
+      console.error('runner: conversation memory review could not be scheduled', error)
     }
     await readJobs()
     if (!live?.joined()) boards?.pullAll()
-    void reviewDue()
+
     schedule(live?.joined() ? options.heartbeatMs ?? HEARTBEAT_MS : Math.min(options.pollMs ?? POLL_MS, options.heartbeatMs ?? HEARTBEAT_MS))
   }
 
@@ -306,18 +334,32 @@ export function startRunner(options: Options): Runner {
           const reply = !job.flow && !!(job.chat || job.discussion)
           const processesStopped = reply ? await stopReply(job.id, deps().stopMs) : false
           const uncertain = !!checkpoint && (checkpoint.updating || reply) && !checkpoint.completed
-            && (checkpoint.pending.length > 0 || checkpoint.opaque || (!job.flow && checkpoint.started && !checkpoint.session))
+            && (checkpoint.launching || checkpoint.pending.length > 0 || checkpoint.opaque
+              || checkpoint.cleanup?.status === 'unconfirmed'
+              || (!job.flow && checkpoint.started && !checkpoint.session && !(reply && replayable(checkpoint))))
+          if (reply && checkpoint?.retry?.pending && !checkpoint.updating && processesStopped && !uncertain && !failure) {
+            const prepared = await api.finishJob(registration.machineId, job.id, 'update_prepare')
+            if (prepared.ok && prepared.value.prepared) {
+              checkpoint.updating = true
+              saveCheckpoint(job.id, checkpoint)
+            } else if (prepared.ok && prepared.value.finished) {
+              continue
+            }
+          }
           if (checkpoint?.updating) status(uncertain ? UNCERTAIN : '正在恢复更新前的任务…')
-          const reason = failure ?? (checkpoint?.updating ? uncertain ? UNCERTAIN : UPDATE_REASON : 'The Runner restarted while this job was running.')
+          const outcome = failure || uncertain ? 'failed' : checkpoint?.updating ? 'update_resume' : 'interrupted'
+          const canContinue = reply && processesStopped && !!checkpoint?.session && !checkpoint.opaque
+          const reason = failure ?? (uncertain ? canContinue ? 'operation_unconfirmed' : 'recovery_unsafe' : '')
           const report = { ...(checkpoint?.session ? { session: checkpoint.session } : {}),
-            ...(reply && checkpoint && reason === UNCERTAIN ? replySpent(checkpoint, job.runtime) : {}),
+            ...(reply && checkpoint && uncertain ? { ...replySpent(checkpoint, job.runtime), ...(checkpoint.partialReply ? { reply: checkpoint.partialReply } : {}),
+              recovery: { safe: false, stopped: processesStopped, resumable: canContinue } } : {}),
             ...(processesStopped ? { processesStopped: true } : {}) }
-          const recovered = await api.finishJob(registration.machineId, job.id, 'failed', reason, report)
-          if (checkpoint && reason === UNCERTAIN && recovered.ok && recovered.value.finished) {
+          const recovered = await api.finishJob(registration.machineId, job.id, outcome, reason, report)
+          if (checkpoint && uncertain && recovered.ok && recovered.value.finished) {
             checkpoint.completed = { outcome: 'failed', reason, report }
             saveCheckpoint(job.id, checkpoint)
           }
-          if (recovered.ok && (reason === UPDATE_REASON || processesStopped && recovered.value.finished)) readAgain = true
+          if (recovered.ok && (recovered.value.resumed || processesStopped && recovered.value.finished)) readAgain = true
           continue
         }
         // Cloud lists only the jobs the plan's running limit lets start (#2209).
@@ -349,18 +391,7 @@ export function startRunner(options: Options): Runner {
     }
   }
 
-  let reviewing = false
-  const reviewDue = async () => {
-    if (reviewing || closed || !registration) return
-    reviewing = true
-    try {
-      await reviewChats(registration.machineId, registration.runtimes)
-    } catch (e) {
-      console.error(`runner: the chats were not reviewed: ${e instanceof Error ? e.message : String(e)}`)
-    } finally {
-      reviewing = false
-    }
-  }
+
 
   const start = (id: string, reply = false) => {
     // 失去租约后的作业先停止进程，再申请一次带新身份的恢复。
@@ -425,7 +456,7 @@ export function startRunner(options: Options): Runner {
       // 先让云端保留作业，断网时不开始停机。
       for (const id of running.keys()) {
         if (workers.has(id)) continue
-        const prepared = await api.finishJob(registration!.machineId, id, 'failed', PREPARE_REASON)
+        const prepared = await api.finishJob(registration!.machineId, id, 'update_prepare')
         if (!prepared.ok || !prepared.value.prepared && !prepared.value.finished) {
           preparing = false
           void readJobs()
@@ -443,6 +474,8 @@ export function startRunner(options: Options): Runner {
     }
     if (timer) clearTimeout(timer)
     if (agentsTimer) clearTimeout(agentsTimer)
+    clearInterval(modelsTimer)
+    stopModels()
     clearInterval(sweepTimer)
     live?.close()
     presence?.close()

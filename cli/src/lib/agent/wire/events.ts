@@ -81,6 +81,7 @@ const targetIn = (u: Json): string | undefined => {
 export function createEventCollector() {
   let queue: RunEvent[] = []
   let said = ''
+  let activity = 0
   const todoCalls = new Set<string>()
   // A call whose input names nothing yet (OpenCode's, Cursor's edits), until its first update
   // says what it is on — OpenCode opens a command with only its working folder.
@@ -99,11 +100,15 @@ export function createEventCollector() {
   }
 
   return {
+    activity: () => activity,
+    progress: () => { activity++ },
     /** One ACP `session/update`'s `update`. Thoughts and housekeeping updates yield nothing. */
     update(raw: unknown): void {
       const u = obj(raw)
       if (u.sessionUpdate === 'agent_message_chunk') {
-        said += str(obj(u.content).text)
+        const chunk = str(obj(u.content).text)
+        if (chunk) activity++
+        said += chunk
         return
       }
       // A thought or a housekeeping update between two chunks doesn't end the message.
@@ -117,8 +122,9 @@ export function createEventCollector() {
             return
           }
           const target = targetIn(u)
-          const data = { toolCallId: id, title: str(u.title) || 'tool', kind: toolKind(u.kind), status: str(u.status) || 'pending', ...(target ? { target } : {}) }
-          if (u.rawInput !== undefined && !inputTarget(obj(u.rawInput))) held.set(id, data)
+          const subagent = /^(?:Task|Agent|delegate_task|spawn_agent)$/i.test(str(u.title)) || !!obj(u.rawInput).subagent_type
+          const data = { toolCallId: id, title: str(u.title) || 'tool', kind: toolKind(u.kind), status: str(u.status) || 'pending', ...(subagent ? { subagent: true as const } : {}), ...(target ? { target } : {}) }
+          if (data.kind !== 'execute' && !subagent && u.rawInput !== undefined && !inputTarget(obj(u.rawInput))) held.set(id, data)
           else queue.push({ kind: 'tool_call', data })
           return
         }

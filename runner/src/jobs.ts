@@ -1,11 +1,16 @@
+import { reviewBoundary } from '../../cli/src/lib/shared/review-plan'
+import { createHash } from 'node:crypto'
+import { conflictPrompt, pendingConflicts } from '../../cli/src/lib/shared/board-conflicts'
+import { createIdleWatchdog, IDLE_FAILURE } from '../../cli/src/lib/agent/idle'
+import { pauseLine, planRetry, type ExecutionFailure, type RetryPause } from '../../cli/src/lib/agent/retry'
+import { executionFailure } from '../../cli/src/lib/agent/wire/failures'
+import { taskStudioContext } from './task-folder'
 import { connectionIdentity, endConnection } from '../../cli/src/lib/agent/connection-process'
 import { conversationProgress } from './conversation-progress'
 import { readSession } from '../../cli/src/lib/cloud/session'
 import { accountGeneration } from './settings-control'
-import { previewBridge } from './preview-bridge'
 import { CONVERSATION_MS } from '../../cli/src/lib/shared/conversation'
-import { streamFinished, createBackgroundWait, backgroundWaitMessage } from '../../cli/src/lib/agent/wire/background'
-import { BACKGROUND_WAIT } from '../../cli/src/lib/agent/settings'
+import { streamFinished } from '../../cli/src/lib/agent/wire/background'
 import { saveReplyImages } from './reply-images'
 // 领取作业、运行并回写；断网只能运行到租约到期，失效后停止本地执行。
 
@@ -30,7 +35,7 @@ import { confirmFlowStopped, runAgent, runFlow, runReview, writeTranscript } fro
 import { hold } from './cache'
 import { allowedProjects } from './folders'
 import { readGoals, writeGoals } from './goals'
-import { replySpent, checkpointEvent, clearCheckpoint, readCheckpoint, saveCheckpoint, stopReply, replyRetry, replayable, resumable, type Checkpoint } from './recovery'
+import { replySpent, checkpointEvent, clearCheckpoint, readCheckpoint, saveCheckpoint, stopReply, replayable, resumable, type Checkpoint } from './recovery'
 import { runnerHome } from './home'
 import { trackSubagents } from './subagents'
 import { followProxy } from './proxy'
@@ -139,8 +144,8 @@ const attachmentsOf = (job: Pick<Job, 'id'>) => path.join(runnerHome(), 'attachm
 
 /** The attachments, written beside the Runner's files, and the lines that tell the agent. They
  *  go once the job ends. */
-function writeAttachments(job: Job): string {
-  if (!job.attachments.length) return ''
+function writeAttachments(job: Job): { text: string; files: string[] } {
+  if (!job.attachments.length) return { text: '', files: [] }
   const dir = attachmentsOf(job)
   fs.mkdirSync(dir, { recursive: true })
   const files = job.attachments.map((a) => {
@@ -148,7 +153,7 @@ function writeAttachments(job: Job): string {
     fs.writeFileSync(file, Buffer.from(a.content, 'base64'))
     return file
   })
-  return `\n\nAttached files:\n${files.map((f) => `- ${f}`).join('\n')}`
+  return { text: `\n\nAttached files:\n${files.map((f) => `- ${f}`).join('\n')}`, files }
 }
 
 const cut = (text: string) => (text.length > EVENT_CHARS ? text.slice(0, EVENT_CHARS) : text)
@@ -454,25 +459,39 @@ export async function runJob(id: string, deps: Deps, track: (stop: () => Promise
   }
 }
 
+interface JobScope {
+  bridge?: Awaited<ReturnType<typeof replyApprovalBridge>>
+  progress?: ReturnType<typeof conversationProgress>
+  waitingStream?: ReturnType<typeof streamOut>
+}
+
 /** `keep` keeps a project folder out of the cache's cleanup until the job ends. */
 async function runClaimed(job: Job, deps: StepDeps, track: (stop: () => Promise<void>) => void, keep: (dir: string) => void, lease: Lease, replyStream?: ReturnType<typeof streamOut>): Promise<void> {
-  const scope: { bridge?: Awaited<ReturnType<typeof replyApprovalBridge>>; preview?: Awaited<ReturnType<typeof previewBridge>>; progress?: ReturnType<typeof conversationProgress> } = {}
+  const scope: JobScope = {}
   try { await runClaimedStep(job, deps, track, keep, lease, scope, replyStream) }
-  finally { scope.progress?.cancel(); scope.bridge?.close(); scope.preview?.close() }
+  finally {
+    scope.progress?.cancel()
+    scope.bridge?.close()
+    await scope.waitingStream?.end()
+  }
 }
 
 async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Promise<void>) => void, keep: (dir: string) => void,
-  lease: Lease, scope: { bridge?: Awaited<ReturnType<typeof replyApprovalBridge>>; preview?: Awaited<ReturnType<typeof previewBridge>>; progress?: ReturnType<typeof conversationProgress> }, replyStream?: ReturnType<typeof streamOut>): Promise<void> {
+  lease: Lease, scope: JobScope, replyStream?: ReturnType<typeof streamOut>): Promise<void> {
   const id = job.id
   const local = readCheckpoint(id)
   const previous = local ?? (job.recoveryOf ? readCheckpoint(job.recoveryOf) : null)
   const checkpoint: Checkpoint = previous ?? { pending: [], started: false, effects: false }
+  if (checkpoint.boardContinuation) job = { ...job, flow: undefined, review: undefined, handoff: undefined, prompt: checkpoint.boardContinuation.prompt, resume: checkpoint.session, fork: false }
   const reply = !!(job.chat || job.discussion) && !job.flow
   const spent = (): JobReport | undefined => reply && checkpoint.attempts?.length && !(job.recoveryOf && !local && checkpoint.completed)
     ? { session: checkpoint.session, ...replySpent(checkpoint, job.runtime) } : undefined
   const finishClaimed = (outcome: Outcome, reason = '', said?: JobReport) => {
     const before = spent()
     let report = before ? { ...before, ...said } : said
+    if (reply && outcome === 'failed' && !report?.reply && checkpoint.partialReply) {
+      report = { ...report, reply: checkpoint.partialReply }
+    }
     if (reply && outcome === 'failed' && checkpoint.started === false && checkpoint.effects === false
         && !checkpoint.pending.length && !checkpoint.opaque
         && (!(job.recoveryOf || job.manualRecovery) || previous || job.retryReplay === true)) {
@@ -485,42 +504,71 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     }
     return finish(deps, id, lease, outcome, reason, report)
   }
-  const replay = (job.manualRecovery === true && !!previous && replayable(previous))
-    || (job.retryReplay === true && (!local || replayable(local)))
-    || (!!previous?.retry?.at && replayable(previous))
-  if (job.manualRecovery && !local) checkpoint.retry = undefined
-  if (reply) checkpoint.retry ??= { since: Date.now(), attempt: 1 }
-  const recovering = checkpoint.updating === true || !!job.recoveryOf
+  const manual = job.manualRecovery === true
+  const updating = checkpoint.updating === true
+  const recovering = updating || !!job.recoveryOf || !!checkpoint.retry?.pending
   const persist = () => {
     checkpoint.updating ||= readCheckpoint(id)?.updating
     saveCheckpoint(id, checkpoint)
   }
-  const manual = job.manualRecovery === true
   if (manual && !local && checkpoint.completed?.outcome === 'failed') {
     delete checkpoint.completed
     delete checkpoint.attempts
+    delete checkpoint.partialReply
   }
   checkpoint.session ??= job.resume ?? undefined
-  if (reply && previous?.started && checkpoint.completed?.outcome !== 'done' && !await stopReply(readCheckpoint(id) ? id : job.recoveryOf ?? id, deps.stopMs)) {
+  const pauseRecovery = (pause: RetryPause, stopped: boolean) => {
+    checkpoint.retryPause = pause
+    if (checkpoint.retry) delete checkpoint.retry.pending
+    persist()
+    const reason = [checkpoint.failure?.reason, pauseLine(pause, cloudLanguage(job) === 'zh')].filter(Boolean).join('\n')
+    return finishClaimed('failed', pause === 'unsafe' ? 'recovery_unsafe' : reason, {
+      recovery: { safe: replayable(checkpoint), stopped, resumable: resumable(checkpoint) },
+    })
+  }
+  if (reply) {
+    const hadRetryCount = !!checkpoint.retry
+    checkpoint.retry ??= { since: Date.now(), attempt: 1 }
+    if (!replyStream && previous?.started && checkpoint.completed?.outcome !== 'done'
+      && !await stopReply(local ? id : job.recoveryOf ?? id, deps.stopMs)) return pauseRecovery('unsafe', false)
+    if (!checkpoint.completed && (!manual || local)) {
+      if (!previous && job.recoveryOf) return pauseRecovery('unsafe', true)
+      const retry = checkpoint.retry
+      if (checkpoint.launching || retry.at !== undefined || !Number.isSafeInteger(retry.attempt) || retry.attempt < 1) return pauseRecovery('unsafe', true)
+      if (job.runtime === 'antigravity' && recovering && checkpoint.started && !checkpoint.session) {
+        return finishClaimed('failed', 'Antigravity did not record a conversation ID before interruption. The original session cannot be resumed.')
+      }
+      if (!replyStream && !retry.pending && previous?.started && (updating || job.recoveryOf)) {
+        if (!hadRetryCount) return pauseRecovery('unsafe', true)
+        const failure = checkpoint.failure ?? { code: 'runner_interrupted', level: 2 as const, reason: 'The Runner was interrupted.' }
+        checkpoint.failure = failure
+        const decision = planRetry(failure, retry.attempt, Date.now(), deps.replyBackoff)
+        if ('pause' in decision) return pauseRecovery(decision.pause, true)
+        retry.pending = decision.plan
+      } else if (!replyStream && !recovering && previous?.started && !checkpoint.boardContinuation) {
+        return pauseRecovery('unsafe', true)
+      }
+      if (retry.pending) {
+        checkpoint.failure = retry.pending.failure
+        if (!canRetryReply(checkpoint, retry.pending.failure, job.runtime)) return pauseRecovery('unsafe', true)
+      }
+    }
+  }
+  const pendingRetry = reply && checkpoint.retry?.pending || undefined
+  const replay = !(job.runtime === 'antigravity' && checkpoint.session) && (
+    (manual && !!previous && replayable(previous))
+    || (job.retryReplay === true && !local)
+    || (!!pendingRetry && pendingRetry.failure.level === 2 && replayable(checkpoint)
+      && (pendingRetry.failure.code !== 'runner_interrupted' || !checkpoint.session)))
+  if (recovering && checkpoint.session && !replay) job = { ...job, resume: checkpoint.session, fork: false }
+  if (replay) job = { ...job, resume: null, fork: false }
+  if (updating) {
+    delete checkpoint.updating
+    saveCheckpoint(id, checkpoint)
+  } else if (reply || !recovering) persist()
+  if (!reply && !job.flow && updating && checkpoint.started && !checkpoint.completed && !resumable(checkpoint)) {
     return finishClaimed('failed', 'recovery_unsafe')
   }
-  if (reply && recovering && !replyStream && previous?.started && !checkpoint.completed
-      && !checkpoint.retry?.at && !(manual && !local)) {
-    if (checkpoint.retry!.attempt === 1) checkpoint.retry!.since = Date.now()
-    if (checkpoint.retry!.attempt >= 3 || Date.now() > checkpoint.retry!.since + 120_000) {
-      return finishClaimed('failed', 'recovery_failed', {
-        recovery: { safe: replayable(checkpoint), stopped: true, resumable: resumable(checkpoint) },
-      })
-    }
-    checkpoint.retry!.attempt++
-    persist()
-  }
-  if (recovering && checkpoint.session && !replay) job = { ...job, resume: checkpoint.session, fork: false }
-  if (replay) {
-    job = { ...job, resume: null, fork: false }
-    checkpoint.session = undefined
-  }
-  if (!recovering) persist()
   if (job.handoff?.kind === 'execution') {
     if (recovering) job = { ...job, handoff: { ...job.handoff, recovering: true } }
     const handoff = job.handoff!
@@ -546,6 +594,35 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   if (job.test) return runTest(job, deps, lease)
   if (job.agent) return runAgentJob(job as Job & { agent: AgentJob }, deps, track, keep, lease, checkpoint, persist)
 
+  const waitingStream = pendingRetry ? replyStream ?? (scope.waitingStream = streamOut(deps, id, lease)) : undefined
+  if (pendingRetry && waitingStream) {
+    const stream = waitingStream
+    track(stream.stop)
+    stream.event({ kind: 'log', data: { text: '[chat-recovery] waiting' } })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([new Promise<void>(resolve => { timer = setTimeout(resolve, Math.max(0, pendingRetry.at - Date.now())) }), stream.whenAsked])
+    clearTimeout(timer)
+    const finishWait = async (pause: RetryPause) => {
+      await stream.end()
+      if (stream.lost()) return
+      if (stream.asked()) {
+        if (checkpoint.retry) delete checkpoint.retry.pending
+        persist()
+        return finishClaimed(job.runtime === 'antigravity' ? 'stopped' : 'done', '', {
+          session: checkpoint.session, ...(checkpoint.partialReply ? { reply: checkpoint.partialReply } : {}), stopped: true,
+        })
+      }
+      return pauseRecovery(pause, true)
+    }
+    if (stream.asked() || stream.lost()) return finishWait('authorization')
+    if (deps.authorize && !await deps.authorize(job)) return finishWait('authorization')
+    const requestedAt = leaseNow()
+    const renewed = await deps.api.renewJob(deps.machineId, id)
+    if (renewed.ok && renewed.value.stop) stream.requestStop()
+    if (!renewed.ok || !renewed.value.renewed || stream.asked() || stream.lost()) return finishWait('authorization')
+    Object.assign(lease, requestedAt)
+  }
+
   // A task, and a review in its first task's, runs only in the project's folder here (#516).
   const task = job.task ?? job.review?.tasks[0] ?? null
   const folder = task && !job.projectDir ? { refused: NO_FOLDER } : folderFor(job)
@@ -556,10 +633,40 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   let ws: TaskFolder | null = null
   let cwd = folder?.cwd ?? ''
   let run: Plan | null = null
-  let fresh: (() => Plan) | null = null
-  let missingSessionOnly = false
   let goalFile: string | null = null
   let discussed: string | undefined
+  const sendResult = (report: JobReport, landed = () => {}) => {
+    const prior = checkpoint.boardContinuation?.report
+    const sum = (key: keyof NonNullable<JobReport['usage']>) => (prior?.usage?.[key] ?? 0) + (report.usage?.[key] ?? 0)
+    const usage = prior?.usage && report.usage && !reply
+      ? { input: sum('input'), cacheCreation: sum('cacheCreation'), cacheRead: sum('cacheRead'), output: sum('output') } : report.usage ?? prior?.usage
+    const costUsd = prior?.costUsd !== undefined && report.costUsd !== undefined && !reply && job.runtime !== 'claude-code'
+      ? prior.costUsd + report.costUsd : report.costUsd ?? prior?.costUsd
+    const completed = prior ? { ...prior, session: report.session ?? prior.session, ...(usage ? { usage } : {}), ...(costUsd !== undefined ? { costUsd } : {}) } : report
+    return sendBack(deps, id, lease, ws!, completed, landed, async () => {
+      const records = pendingConflicts(ws!.board)
+      const facts = createHash('sha256').update(JSON.stringify(records.map(r => ({ id: r.id, state: r.state, files: r.files })))).digest('hex')
+      const original = completed
+      if (!records.length) return finishClaimed('failed', 'The board write was refused without recoverable conflict facts.', original)
+      if (checkpoint.boardContinuation?.facts === facts) return finishClaimed('failed', `Board content conflicts remain unresolved: ${records.map(r => r.id).join(', ')}. Contents and resolution drafts are preserved.`, original)
+      const session = report.session ?? checkpoint.session
+      if (!session) return finishClaimed('failed', 'Board content conflicts are preserved, but the task session could not be recovered.', original)
+      const requestedAt = leaseNow()
+      const renewed = await deps.api.renewJob(deps.machineId, id)
+      if (!renewed.ok || !renewed.value.renewed || !held(deps, lease)) return
+      if (renewed.value.stop) return finishClaimed('stopped', '', original)
+      Object.assign(lease, requestedAt)
+      if (deps.authorize && !await deps.authorize(job)) return finishClaimed('failed', 'Project authorization changed. Board conflict contents are preserved.', original)
+      const prompt = conflictPrompt(ws!.board, 'Resolve and confirm synchronization, preserve completed work, then return the saved result.')
+      checkpoint.boardContinuation = { report: original, facts, prompt }
+      checkpoint.session = session
+      delete checkpoint.completed
+      persist()
+      scope.progress?.cancel()
+      scope.bridge?.close()
+      await runClaimed({ ...job, flow: undefined, review: undefined, handoff: undefined, prompt, resume: session, fork: false }, deps, track, keep, lease)
+    })
+  }
   try {
     if (task) {
       ws = openTaskFolder({ ...job, task }, folder?.cwd ?? null)
@@ -568,18 +675,12 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       // A flow job, and a review, pulls once its board is there.
       if (!job.flow && !job.review) {
         const pulled = await pull(ws, deps.machineId)
-        if (!pulled.ok) throw new Error(pulled.error)
+        if (!pulled.ok && pulled.code !== 'board_content_conflict') throw new Error(pulled.error)
       }
     }
     if (ws && job.chat && !job.flow && !checkpoint.completed) {
       const folder = ws
-      scope.preview = await previewBridge((agent, fields) => withBoard(folder, async (send) => {
-        const sent = await send({ id, machineId: deps.machineId })
-        if (!sent.ok) return sent
-        if (!replyAssetsSynced(folder)) return { ok: false, error: 'Preview uploads are still pending.' }
-        return api.previewOperation(deps.machineId, id, agent, fields)
-      }), folder.number ?? undefined)
-      scope.bridge = await replyApprovalBridge(job.task!, job.number!, (comment, asked) => withBoard(folder, async (send) => {
+      scope.bridge = await replyApprovalBridge(job.task!, job.number!, (comment, asked, target) => withBoard(folder, async (send) => {
         if (checkpoint.approvalCancelled) return { ok: false, error: 'This reply failed before. Ask again in a new reply.' }
         const pushed = await send({ id, machineId: deps.machineId })
         if (!pushed.ok) return { ok: false, error: pushed.error }
@@ -591,13 +692,13 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
         if (!version || version !== task.value.card_version || !task.value.review) return { ok: false, error: 'The task changed or has no review. Review it again.' }
         checkpoint.approvalRequested = true
         persist()
-        return api.approveReply(deps.machineId, id, { card_version: version, review_revision: task.value.review.revision, comment })
+        return api.approveReply(deps.machineId, id, { card_version: version, review_revision: target.review_revision, stage: target.stage, comment })
       }))
     }
     if (checkpoint.completed) {
       const done = checkpoint.completed
       if (done.outcome === 'failed' || !ws) return finishClaimed(done.outcome, done.reason, done.report)
-      return sendBack(deps, id, lease, ws, done.report, () => keepChat(job, done.report.reply))
+      return sendResult(done.report, () => keepChat(job, done.report.reply))
     }
     if (job.flow && !ws) throw new Error('This job names no task.')
     // Discussions bind the local board; background synchronization owns its freshness.
@@ -614,28 +715,25 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     if (!job.flow && !job.review) {
       // Behind the reply: until it lands, the catalogue on disk names the window.
       void refreshCatalog()
-      const head = folderLines(ws) + writeAttachments(job)
+      const attachments = writeAttachments(job)
+      const head = (job.taskReview ? reviewBoundary(job.taskReview) + '\n\n' : '') + folderLines(ws) + (ws ? '\n\n' + conflictPrompt(ws.board) : '') + (ws ? "\n\n" + taskStudioContext(ws, !job.resume) : "") + attachments.text
       const file = writeTranscript(job, attachmentsOf(job))
       const transcript = file ? `\n\nThis task came out of a discussion. Read it for what the card leaves out: ${file}` : ''
       const promptOf = (said: string) => {
         const lines = (head + said).trim()
         const prompt = recovering && !replay && (checkpoint.started || job.recoveryOf)
-          ? '连接恢复后继续之前中断的回复。先核对已有进度和结果，保留完成的工作，不要重复已经执行的操作。'
+          ? [job.runtime === 'antigravity' ? job.prompt : '', '连接恢复后继续之前中断的回复。先核对已有进度和操作结果，保留完成的工作与用户决定，不要重复已经执行的操作；结果尚未确认时先检查实际状态。', pendingRetry ? `Previous execution failed: ${pendingRetry.failure.reason}` : ''].filter(Boolean).join('\n\n')
           : job.prompt
         return lines ? `${lines}\n\n---\n\n${prompt}` : prompt
       }
       const planned = (resume: string | null | undefined, fork: boolean, said = '') => {
         let p = deps.plan(job.runtime, promptOf(said), cwd, resume, job.model, settingsOf(job), fork, cloudLanguage(job))
+        p.renderer?.setRequiredImages?.(attachments.files)
         // A task's chat changes its card with the akb the Runner carries, on the task's board.
         if (ws) p = { ...p, env: akbEnv(deps.akb, ws.board, ws.task, cloudLanguage(job), p.env) }
-        if (scope.preview) p = { ...p, env: { ...p.env, AI4KANBAN_PREVIEW_BRIDGE: scope.preview.env } }
+        if (ws) p = { ...p, env: { ...p.env, AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId }) } }
         if (scope.bridge) p = { ...p, env: { ...p.env, AI4KANBAN_REPLY_APPROVAL: scope.bridge.env } }
         if (goalFile) p = { ...p, env: { ...akbEnv(deps.akb, discussed, undefined, cloudLanguage(job), p.env), KANBAN_GOALS: goalFile, KANBAN_IDEAS: goalFile } }
-        // A reply waits out a passing failure on the agent's own retries (#88).
-        if (job.chat || job.discussion) {
-          const { CLAUDE_CODE_MAX_RETRIES: _, ...env } = p.env
-          p = { ...p, env }
-        }
         p = { ...p, env: { ...p.env, AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId }), AI4KANBAN_TASK: job.task ?? '' } }
         return p
       }
@@ -643,17 +741,16 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       const carried = !!job.resume && (!job.fork || forks(job.runtime))
       run = carried ? planned(job.resume, !!job.fork) : planned(null, false, transcript)
       if (!carried) job = { ...job, resume: null, fork: false }
-      if (!recovering && carried && transcript) fresh = () => planned(null, false, transcript)
-      if (!recovering && carried && (job.chat || job.discussion)) {
-        fresh = () => planned(null, false, transcript)
-        missingSessionOnly = true
-      }
     }
   } catch (e) {
+    await waitingStream?.end()
     return finishClaimed('failed', e instanceof Error ? e.message : String(e))
   }
 
-  if (deps.authorize && !await deps.authorize(job)) return finishClaimed('failed', '项目目录授权已变化，请重新确认后重试。')
+  if (deps.authorize && !await deps.authorize(job)) {
+    await waitingStream?.end()
+    return pendingRetry ? pauseRecovery('authorization', true) : finishClaimed('failed', '项目目录授权已变化，请重新确认后重试。')
+  }
   if (!held(deps, lease)) return
   if (reply) {
     for (let check = 0; ; check++) {
@@ -668,10 +765,15 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       const wrote = await writeGoals({ ...job, discussion: job.discussion }, deps.api.listStudios, true)
       if ('error' in wrote) return finishClaimed('failed', wrote.error)
       goalFile = wrote.file
-      if (deps.authorize && !await deps.authorize(job)) return finishClaimed('failed', '项目目录授权已变化，请重新确认后重试。')
+      if (deps.authorize && !await deps.authorize(job)) {
+        return pendingRetry ? pauseRecovery('authorization', true) : finishClaimed('failed', '项目目录授权已变化，请重新确认后重试。')
+      }
     }
   }
-  const stream = replyStream ?? streamOut(deps, id, lease)
+  if (waitingStream?.lost()) return
+  if (waitingStream?.asked()) return finishClaimed('stopped', '', { stopped: true })
+  const stream = waitingStream ?? replyStream ?? streamOut(deps, id, lease)
+  if (pendingRetry) stream.event({ kind: 'log', data: { text: '[chat-recovery] running' } })
   if (run?.startNote) stream.out(`${run.startNote}\n`)
   let attempt: NonNullable<Checkpoint['attempts']>[number] | undefined
   const beginAttempt = () => {
@@ -688,10 +790,16 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     const { usage: _usage, costUsd: _cost, ...rest } = said
     return { ...rest, ...replySpent(checkpoint, job.runtime) }
   }
-  let replyProgress = false
+  const messages: string[] = []
+  const retainReply = (report: JobReport, failed: boolean): JobReport => {
+    if (!reply) return report
+    const text = report.reply?.trim() ? report.reply : messages.join('\n\n') || (failed ? checkpoint.partialReply : undefined)
+    if (text) { checkpoint.partialReply = text; persist() }
+    return text ? { ...report, reply: text } : report
+  }
   const account = readSession()?.subject
   const generation = accountGeneration()
-  const evidence = scope.progress = conversationProgress(checkpoint.retry?.attempt ?? 1, async progress => {
+  const evidence = scope.progress = conversationProgress((checkpoint.retry?.attempt ?? 1) + Number(!!pendingRetry), async progress => {
     const result = await deps.api.renewJob(deps.machineId, id, { ...progress, ...(job.claim ? { claim: job.claim } : {}) })
     if (!evidence.active()) return
     if (!result.ok) throw new Error(result.error)
@@ -700,50 +808,48 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   }, () => reply && progressValid(), () => stream.out('[chat-progress] Evidence was not confirmed.\n'))
   const progressValid = () => !stream.asked() && !stream.lost() && readSession()?.subject === account && accountGeneration() === generation
   const subagents = trackSubagents()
+  let idleWatch: ReturnType<typeof createIdleWatchdog> | undefined
   const remember = (event: RunEvent) => {
-    if (['message', 'tool_call', 'tool_call_update'].includes(event.kind)) replyProgress = true
+    idleWatch?.event(event)
     if (stream.lost()) return
     const at = new Date().toISOString()
     event = Object.assign({}, event, { data: { ...event.data, eventAt: at } })
     evidence.observe(event, at)
     subagents.event(event)
     checkpointEvent(checkpoint, event)
+    if (reply && event.kind === 'message' && event.data.text.trim()) {
+      messages.push(event.data.text)
+      checkpoint.partialReply = messages.join('\n\n')
+    }
     const session = run?.session()
     if (session) checkpoint.session = session
     if (attempt && !run?.converse) measure(report(job, run!))
     persist()
     stream.event(event)
   }
-  const retry = async (reason: string | undefined): Promise<boolean> => {
-    if (!reply || !reason || stream.asked() || stream.lost()) return false
-    if ((checkpoint.retry?.attempt ?? 1) >= 2 || !/timed out|ECONNRESET|ETIMEDOUT|temporar|overload|capacity|rate.limit|429|503|network|connection.*(reset|closed)/i.test(reason)) return false
-    if (/timed out|start_unconfirmed/i.test(reason) && (!/initialize|session\/(new|load)|thread\/(start|resume|fork)/i.test(reason) || Date.now() >= checkpoint.retry!.since + CONVERSATION_MS.prepare)) return false
+  const retry = async (failure: ExecutionFailure | undefined): Promise<boolean> => {
+    if (!reply || !failure || stream.asked() || stream.lost()) return false
+    checkpoint.failure = failure
+    const decision = planRetry(failure, checkpoint.retry!.attempt, Date.now(), deps.replyBackoff)
+    if ('pause' in decision) {
+      checkpoint.retryPause = decision.pause
+      persist()
+      return false
+    }
     checkpoint.approvalCancelled = true
     persist()
     if (job.chat && checkpoint.approvalRequested) await api.cancelReplyApproval(deps.machineId, id)
-    const safe = replayable(checkpoint)
-    if (checkpoint.pending.length || checkpoint.opaque || !safe && (!checkpoint.session || sessionMissing(reason))) return false
-    const at = replyRetry(checkpoint, reason, Date.now(), deps.replyBackoff)
-    if (at === null) return false
-    if (!await stopReply(id, deps.stopMs) || !await stream.confirmed()) return false
-    checkpoint.retry!.at = at
-    persist()
-    stream.event({ kind: 'log', data: { text: '[chat-recovery] waiting' } })
-    await Promise.race([wait(Math.max(0, at - Date.now())), stream.whenAsked])
+    if (!await stopReply(id, deps.stopMs) || !await stream.confirmed() || !canRetryReply(checkpoint, failure, job.runtime)) {
+      checkpoint.retryPause = 'unsafe'
+      persist()
+      return false
+    }
     if (stream.asked() || stream.lost()) return false
-    if (Date.now() > checkpoint.retry!.since + 120_000) return false
-    if (deps.authorize && !await deps.authorize(job)) return false
-    const requestedAt = leaseNow()
-    const renewed = await deps.api.renewJob(deps.machineId, id)
-    if (!renewed.ok || !renewed.value.renewed || renewed.value.stop || stream.asked() || stream.lost()) return false
-    Object.assign(lease, requestedAt)
-    checkpoint.retry!.attempt++
-    delete checkpoint.retry!.at
-    checkpoint.updating = true
+    checkpoint.retry!.pending = decision.plan
     persist()
-    stream.event({ kind: 'log', data: { text: '[chat-recovery] running' } })
     evidence.cancel()
-    await runClaimed({ ...job, manualRecovery: false, retryReplay: safe }, deps, track, keep, lease, stream)
+    scope.bridge?.close()
+    await runClaimed({ ...job, manualRecovery: false }, deps, track, keep, lease, stream)
     await stream.end()
     return true
   }
@@ -762,19 +868,6 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   }
   track(stream.stop)
 
-  if (reply && checkpoint.retry?.at) {
-    stream.event({ kind: 'log', data: { text: '[chat-recovery] waiting' } })
-    await Promise.race([wait(Math.max(0, checkpoint.retry.at - Date.now())), stream.whenAsked])
-    if (stream.asked() || stream.lost() || Date.now() > checkpoint.retry.since + 120_000) {
-      await stream.end()
-      if (stream.lost()) return
-      return finishClaimed(stream.asked() ? 'stopped' : 'failed', stream.asked() ? '' : 'recovery_failed')
-    }
-    checkpoint.retry.attempt++
-    delete checkpoint.retry.at
-    persist()
-    stream.event({ kind: 'log', data: { text: '[chat-recovery] running' } })
-  }
   const io = { show: stream.out, event: remember, track: stream.adopt, onStop: stream.onStop, lost: stream.lost }
   if (job.review) {
     checkpoint.started = true
@@ -782,8 +875,15 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     // What is reviewed is what was said by now; a later message waits for the next review.
     for (const task of job.review.tasks) {
       const chat = await deps.api.readChat(task)
+      if (!chat.ok && chat.code !== 'not_found') {
+        await stream.end()
+        return finishClaimed('failed', 'The complete conversation could not be read; memory review will retry.')
+      }
       if (chat.ok) keepCloudChat(task, chat.value.messages)
-      await keepDecisions(task, deps.api.readDecisions)
+      if (!await keepDecisions(task, deps.api.readDecisions)) {
+        await stream.end()
+        return finishClaimed('failed', 'Review decisions could not be read; memory review will retry.')
+      }
     }
     const listed = await deps.api.listChats(deps.machineId)
     if (!listed.ok) {
@@ -799,7 +899,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     await stream.end()
     if (stream.lost()) return
     if (!ended.ok) return finishClaimed('failed', ended.reason)
-    return sendBack(deps, id, lease, ws!, ended.report, () => markReviewed(marks))
+    return sendResult(ended.report, () => markReviewed(marks))
   }
   if (!run) {
     checkpoint.started = true
@@ -817,34 +917,59 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     if (ended.ok) complete('done', { ...ended.report, ...proof })
     if (stopped) return finishClaimed('stopped', '', proof)
     if (!ended.ok) return finishClaimed('failed', ended.reason, proof)
-    return sendBack(deps, id, lease, ws!, { ...ended.report, ...proof }, () => keepChat(job, ended.report.reply))
+    return sendResult({ ...ended.report, ...proof }, () => keepChat(job, ended.report.reply))
   }
 
-  checkpoint.managedProcess = run.managedProcess
-  checkpoint.mark = stopMark()
-  checkpoint.started = true
-  checkpoint.opaque = !run.converse && !run.renderer?.events
-  checkpoint.session = run.session() ?? checkpoint.session
-  persist()
-  if (run.converse) {
+  const launchAttempt = (plan: Plan) => {
+    checkpoint.managedProcess = plan.managedProcess
+    checkpoint.mark = stopMark()
+    checkpoint.started = true
+    checkpoint.opaque = !plan.converse && !plan.renderer?.events
+    checkpoint.session = plan.session() ?? (replay ? undefined : checkpoint.session)
+    checkpoint.launching = true
+    delete checkpoint.process
+    delete checkpoint.cleanup
+    persist()
+    const child = launch(plan.command, plan.args, { cwd, env: markEnv(plan.env, checkpoint.mark), detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
+    if (child.pid) {
+      checkpoint.process = { pid: child.pid, since: Date.now(), ...(plan.managedProcess ? { identity: connectionIdentity(child.pid) } : {}) }
+      if (pendingRetry) checkpoint.retry!.attempt++
+    }
+    if (checkpoint.retry) delete checkpoint.retry.pending
+    delete checkpoint.launching
+    delete checkpoint.failure
+    delete checkpoint.retryPause
     beginAttempt()
+    persist()
+    return child
+  }
+  if (run.converse) {
     const plan = run
     const converse = run.converse
-    const child = launch(plan.command, plan.args, { cwd, env: markEnv(plan.env, checkpoint.mark!), detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
-    if (child.pid) { checkpoint.process = { pid: child.pid, since: Date.now(), ...(plan.managedProcess ? { identity: connectionIdentity(child.pid) } : {}) }; persist() }
+    const child = launchAttempt(plan)
     stream.adopt(child, plan.managedProcess)
     child.stdin.on('error', () => {})
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => stream.out(quietLines(plan, chunk)))
-    const spawned = new Promise<string>((resolve) => child.on('error', (e) => resolve(e.message)))
+    const spawned = new Promise<ExecutionFailure>((resolve) => child.on('error', (e) => resolve(executionFailure(e))))
     const cancellation = new AbortController()
     void stream.whenAsked.then(() => cancellation.abort())
+    let timedOut!: (end: TurnEnd) => void
+    const timeout = new Promise<TurnEnd>(resolve => { timedOut = resolve })
+    idleWatch = createIdleWatchdog(() => {
+      timedOut({ ok: false, error: IDLE_FAILURE.reason, failure: IDLE_FAILURE,
+        ...(plan.managedProcess ? { cleanup: { status: 'unconfirmed', execution: id, kept: [] } } : {}) })
+      cancellation.abort()
+      stop(child, plan.managedProcess)
+    }, () => !!plan.background?.())
     const end = await Promise.race([
-      converse(child, remember, false, reply ? checkpoint.retry!.since + CONVERSATION_MS.prepare : undefined, cancellation.signal),
-      spawned.then((error): TurnEnd => ({ ok: false, error })),
+      timeout,
+      converse(child, remember, false, Date.now() + CONVERSATION_MS.prepare, cancellation.signal, () => idleWatch?.touch()),
+      spawned.then((failure): TurnEnd => ({ ok: false, error: failure.reason, failure })),
       // Killed, the turn ends with what it said so far; one that never does is not waited on.
       stream.whenAsked.then(() => wait(KILL_GRACE_MS * 2)).then((): TurnEnd => ({ ok: true })),
     ])
+    idleWatch.close()
     checkpoint.cleanup = end.cleanup
     persist()
     let measured = measure(report(job, plan, end))
@@ -857,26 +982,10 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       })
       if (parts) measured = { ...measured, parts, reply: parts.filter(p => p.type === 'text').map(p => p.text).join('') }
     }
-    if (!end.ok && !recovering && job.resume && (job.chat || job.discussion) && sessionMissing(end.error ?? '') && !replyProgress && !checkpoint.pending.length && (checkpoint.retry?.attempt ?? 1) < 3 && Date.now() <= (checkpoint.retry?.since ?? Date.now()) + 120_000 && !stream.asked() && !stream.lost()) {
-      stop(child, plan.managedProcess)
-      if (!await stopReply(id, deps.stopMs) || !await stream.confirmed()) {
-        await stream.end()
-        return finishClaimed('failed', 'recovery_failed')
-      }
-      checkpoint.session = undefined
-      checkpoint.started = false
-      if (checkpoint.retry) checkpoint.retry.attempt++
-      persist()
-      evidence.cancel()
-      await runClaimed({ ...job, resume: null, fork: false, sessionFallback: true }, deps, track, keep, lease, stream)
-      await stream.end()
-      return
-    }
-    if (!end.ok && sessionMissing(end.error ?? '') && !replayable(checkpoint)) {
-      checkpoint.session = undefined
-      persist()
-    }
-    if (await retry(end.ok ? undefined : end.error)) return
+    const rawFailure = end.ok ? undefined : end.failure ?? { code: 'execution_failed', level: 3 as const, reason: end.error ?? 'The agent did not complete the reply.' }
+    if (rawFailure?.code === 'session_not_found') checkpoint.session = undefined
+    measured = retainReply(measured, !end.ok)
+    if (await retry(rawFailure)) return
     await evidence.drain(deps.endMs)
     const stopped = await stopReply(id, deps.stopMs)
 
@@ -888,15 +997,16 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       ...told(stream.asked() ? cutShort(measured, stream.said()) : measured),
       ...(reply ? { recovery: { safe: replayable(checkpoint), stopped, resumable: resumable(checkpoint) } } : {}),
     }
-    if (!stream.asked()) complete(ok ? 'done' : 'failed', said, unsafe ? 'recovery_unsafe' : end.ok ? undefined : end.error)
+    const failure = replyReason(rawFailure, checkpoint.retryPause, job, unsafe)
+    if (!stream.asked()) complete(ok ? 'done' : 'failed', said, failure)
+    if (!ok && rawFailure && unsafe) stream.event({ kind: 'error', data: { text: rawFailure.reason } })
     await stream.end()
     if (stream.lost()) return
-    if (!ok || !ws) return finishClaimed(ok ? 'done' : 'failed', ok ? '' : unsafe ? 'recovery_unsafe' : replyReason(end.ok ? undefined : end.error, job), said)
-    return sendBack(deps, id, lease, ws, said, () => keepChat(job, said.reply))
+    if (!ok || !ws) return finishClaimed(ok ? 'done' : 'failed', ok ? '' : failure, said)
+    return sendResult(said, () => keepChat(job, said.reply))
   }
   const printed = async (plan: Plan) => {
-    const child = launch(plan.command, plan.args, { cwd, env: markEnv(plan.env, checkpoint.mark!), detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
-    if (child.pid) { checkpoint.process = { pid: child.pid, since: Date.now(), ...(plan.managedProcess ? { identity: connectionIdentity(child.pid) } : {}) }; persist() }
+    const child = launchAttempt(plan)
     stream.adopt(child, plan.managedProcess)
     child.stdin.on('error', () => {})
     const renderer = plan.renderer!
@@ -904,65 +1014,54 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     else child.stdin.end()
     child.stdout.setEncoding('utf8')
     const structured = !!renderer.events
-    let stderr = ''
-    let acted = false
-    let backgroundError: string | undefined
-    const backgroundWait = createBackgroundWait(BACKGROUND_WAIT.minutes * 60_000, () => {
-      backgroundError = backgroundWaitMessage(BACKGROUND_WAIT.minutes)
-      stop(child)
-    })
+    let backgroundFailure: ExecutionFailure | undefined
+    idleWatch = createIdleWatchdog(() => {
+      backgroundFailure = IDLE_FAILURE
+      stop(child, plan.managedProcess)
+    }, () => !!renderer.background?.())
+    let activityVersion = 0
     const fromAgent = (text: string) => {
+      const version = renderer.activity?.() ?? 0
+      if (version !== activityVersion) { activityVersion = version; idleWatch?.touch() }
+      const session = plan.session()
+      if (!stream.lost() && session && session !== checkpoint.session) {
+        checkpoint.session = session
+        persist()
+      }
       if (!structured) {
-        if (text.trim()) acted = true
         stream.out(text)
       }
       if (attempt) measure(report(job, plan))
       for (const e of renderer.events?.() ?? []) {
-        if (e.kind === 'message' || e.kind === 'tool_call' || e.kind === 'tool_call_update') acted = true
         remember(e)
       }
     }
     child.stdout.on('data', (chunk: string) => {
       fromAgent(renderer.push(chunk))
+      if (renderer.terminalFailure?.()) {
+        idleWatch?.close()
+        stop(child, plan.managedProcess)
+      }
       // A runtime reading turns from stdin keeps going until stdin closes.
-      if (renderer.background?.()) backgroundWait.pending()
-      if (plan.stdin && streamFinished(renderer) && !child.stdin.writableEnded) { backgroundWait.close(); child.stdin.end() }
+      if (plan.stdin && streamFinished(renderer) && !child.stdin.writableEnded) { idleWatch?.close(); child.stdin.end() }
     })
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => {
       renderer.stderr?.(chunk)
-      stderr = (stderr + chunk).slice(-EVENT_CHARS)
       stream.out(quietLines(plan, chunk))
     })
-    const ended = await new Promise<{ code: number | null; error?: string }>((resolve) => {
-      child.on('error', (e) => resolve({ code: null, error: e.message }))
+    const ended = await new Promise<{ code: number | null; failure?: ExecutionFailure }>((resolve) => {
+      child.on('error', (e) => resolve({ code: null, failure: executionFailure(e) }))
       child.on('close', (code) => resolve({ code }))
     })
-    backgroundWait.close()
+    idleWatch?.close()
     fromAgent(renderer.flush())
-    const pending = renderer.background?.() ? 'The agent exited with unfinished background tasks.' : undefined
-    return { ...ended, error: ended.error ?? backgroundError ?? pending, stderr, acted }
+    const pending = renderer.background?.() ? { code: 'background_unfinished', level: 3 as const, reason: 'The agent exited with unfinished background tasks.' } : undefined
+    return { ...ended, failure: ended.failure ?? backgroundFailure ?? pending }
   }
-  let plan = run
-  beginAttempt()
-  let ended = await printed(plan)
+  const plan = run
+  const ended = await printed(plan)
   let measured = measure(report(job, plan))
-  // A carried session that is not here, or not copied, leaves a new one reading the discussion.
-  if (fresh && job.runtime !== 'antigravity' && ended.code !== 0 && plan.renderer!.result() === undefined && !ended.acted
-      && (!missingSessionOnly || sessionMissing(`${ended.stderr}\n${plan.renderer!.failure?.() ?? ''}`))
-      && (checkpoint.retry?.attempt ?? 1) < 3 && Date.now() <= (checkpoint.retry?.since ?? Date.now()) + 120_000
-      && !checkpoint.pending.length && !checkpoint.effects && !stream.asked() && !stream.lost()
-      && await stopReply(id, deps.stopMs) && await stream.confirmed()) {
-    if (checkpoint.retry) checkpoint.retry.attempt++
-    checkpoint.session = undefined
-    persist()
-    plan = fresh()
-    job = { ...job, resume: null, fork: false, sessionFallback: missingSessionOnly }
-    run = plan
-    beginAttempt()
-    ended = await printed(plan)
-    measured = measure(report(job, plan))
-  }
   const renderer = plan.renderer!
   if (reply && job.runtime === 'codex') {
     const parts = await saveReplyImages(renderer.replyParts?.() ?? [{ type: 'text', text: measured.reply ?? '' }], cwd,
@@ -974,16 +1073,17 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       })
     if (parts) measured = { ...measured, parts, reply: parts.filter(p => p.type === 'text').map(p => p.text).join('') }
   }
-  const rawFailure = ended.error ?? renderer.failure?.() ?? (ended.code === 0 ? undefined : `Exited with code ${ended.code}.`)
-  if (job.runtime !== 'antigravity' && sessionMissing(rawFailure ?? '') && !replayable(checkpoint)) {
-    checkpoint.session = undefined
-    persist()
-  }
+  const diagnostic = renderer.failure?.() ?? (ended.code === 0 ? undefined : `Exited with code ${ended.code}.`)
+  const rawFailure = ended.failure ?? renderer.executionFailure?.()
+    ?? (diagnostic ? { code: 'execution_failed', level: 3 as const, reason: diagnostic } : undefined)
+  measured = retainReply(measured, !!rawFailure)
+  if (rawFailure?.code === 'session_not_found' || rawFailure?.code === 'session_mismatch') checkpoint.session = undefined
   if (await retry(rawFailure)) return
   const stopped = await stopReply(id, deps.stopMs)
   if (stream.asked() && (!stopped || !await stream.confirmed())) { await stream.end(); return }
   const unsafe = reply && !!rawFailure && (!stopped || !replayable(checkpoint) && !resumable(checkpoint))
-  const failure = stream.asked() ? undefined : unsafe ? 'recovery_unsafe' : replyReason(ended.error ?? renderer.failure?.() ?? (ended.code === 0 ? undefined : `Exited with code ${ended.code}.`), job)
+  const failure = stream.asked() ? undefined : replyReason(rawFailure, checkpoint.retryPause, job, unsafe)
+  if (rawFailure && unsafe) stream.event({ kind: 'error', data: { text: rawFailure.reason } })
   const said = {
     ...told(stream.asked() ? cutShort(measured, stream.said()) : measured),
     ...(reply ? { recovery: { safe: replayable(checkpoint), stopped, resumable: resumable(checkpoint) } } : {}),
@@ -993,7 +1093,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   if (stream.lost()) return
   if (stream.asked() && job.runtime === 'antigravity') return finishClaimed('stopped', '', said)
   if (failure || !ws) return finishClaimed(failure ? 'failed' : 'done', failure, said)
-  return await sendBack(deps, id, lease, ws, said, () => keepChat(job, said.reply))
+  return await sendResult(said, () => keepChat(job, said.reply))
 }
 
 /** A periodic agent, on the project's folder here; a job for a project with none here fails. */
@@ -1033,17 +1133,18 @@ async function runAgentJob(job: Job & { agent: AgentJob }, deps: StepDeps, track
 const quietLines = (plan: Plan, chunk: string) =>
   chunk.split('\n').filter((line) => line && !plan.quiet(line)).map((line) => `${line}\n`).join('')
 
-const replyReason = (reason: string | undefined, job: Job) => {
-  if (!reason) return reason
-  if (job.recoveryOf && !job.manualRecovery) return 'recovery_failed'
-  if (job.sessionFallback && !/auth|login|log.in|permission|directory|ENOENT|not installed|rate.limit|network|connect|登录|权限|目录/i.test(reason)) return 'session_unavailable'
-  return reason
+function canRetryReply(checkpoint: Checkpoint, failure: ExecutionFailure, runtime: string): boolean {
+  if (checkpoint.cleanup?.status === 'unconfirmed') return false
+  if (resumable(checkpoint)) return true
+  return failure.level === 2 && runtime !== 'antigravity' && replayable(checkpoint)
 }
 
-const sessionMissing = (text: string) =>
-  !/auth|unauthorized|forbidden|login|log.in|登录|权限/i.test(text) && (
-  /\b(?:session|conversation|thread)\b[^\n]*(?:\bnot found\b|\bdoes not exist\b)/i.test(text)
-  || /\bno (?:conversation|session|thread) found\b/i.test(text))
+function replyReason(failure: ExecutionFailure | undefined, pause: RetryPause | undefined, job: Job, unsafe: boolean): string | undefined {
+  if (!failure) return
+  if (unsafe || pause === 'unsafe') return 'recovery_unsafe'
+  if (failure.code === 'session_not_found' && job.sessionFallback) return 'session_unavailable'
+  return pause ? `${failure.reason}\n${pauseLine(pause, cloudLanguage(job) === 'zh')}` : failure.reason
+}
 
 /** A runtime's process, started the way Windows needs (agent/spawnable.ts). */
 function launch(command: string, args: string[], options: SpawnOptions): ChildProcessWithoutNullStreams {
@@ -1113,7 +1214,7 @@ async function finish(deps: Shared, id: string, lease: Lease, outcome: Outcome, 
 }
 
 /** What the job changed goes back, then how it ended; `landed` once both were taken. */
-async function sendBack(deps: StepDeps, id: string, lease: Lease, ws: TaskFolder, said: JobReport, landed = () => {}): Promise<void> {
+async function sendBack(deps: StepDeps, id: string, lease: Lease, ws: TaskFolder, said: JobReport, landed = () => {}, onConflict?: () => Promise<void>): Promise<void> {
   const report = said
   const pushed = await whileOffline<Pushed>(deps, id, lease, () => push(ws, { id, machineId: deps.machineId }))
   if (!pushed) return
@@ -1122,7 +1223,8 @@ async function sendBack(deps: StepDeps, id: string, lease: Lease, ws: TaskFolder
     return
   }
   if (pushed.offline) return
-  await finish(deps, id, lease, pushed.conflict ? 'conflict' : 'failed', pushed.error, report)
+  if (pushed.conflict && onConflict) return onConflict()
+  await finish(deps, id, lease, 'failed', pushed.error, report)
 }
 
 /** The runtime's settings and the keys this computer holds for it. */
@@ -1232,5 +1334,5 @@ const cutShort = (said: JobReport, text: string): JobReport => ({ ...said, reply
 function folderLines(ws: TaskFolder | null): string {
   if (!ws) return ''
   const undrawn = undrawnPreviews(ws)
-  return `\n\nTask card: ${cardFile(ws)}\nMemory: ${ws.board}/memory` + (undrawn.length ? `\nPreviews that cannot be drawn:\n${undrawn.map(l => `- ${l}`).join('\n')}` : '')
+  return `\n\nTask card: ${cardFile(ws)}` + (undrawn.length ? `\nPreviews that cannot be drawn:\n${undrawn.map(l => `- ${l}`).join('\n')}` : '')
 }

@@ -1,14 +1,4 @@
-// The model ids each agent's own CLI already knows, read off this machine.
-//
-// A list of models written into this build would be wrong the day a provider ships one, and
-// the Model box is free text for exactly that reason. But most of these CLIs already keep a
-// current list on disk — Codex and Grok cache one their server hands them, OpenCode caches
-// the models.dev catalogue, ZCode's config names the models of every provider it knows — and
-// reading that file is a list that stays right without anybody maintaining it.
-//
-// A suggestion is never a limit. Nothing is checked against what these return: an id typed
-// by hand runs exactly as it did before, because a list that hasn't heard of a model must
-// not be able to block it.
+// Suggestions follow local CLI data and never restrict manual model IDs.
 
 import { readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -40,10 +30,6 @@ export function uniqueIds(list: string[]): string[] {
   return [...new Set(list.map((id) => id.trim()).filter(Boolean))]
 }
 
-// Kept against the file's mtime and size. These are read on every read of the settings —
-// which is every time a screen asks what the agents are — and OpenCode's catalogue alone is
-// megabytes of JSON. A missing or unreadable file is no ids and never an error: the box it
-// would have filled works without it.
 const cached = new Map<string, { stamp: string; found: string[] }>()
 
 /** The ids `pick` finds in a JSON file. `salt` belongs to a read whose answer depends on
@@ -59,8 +45,7 @@ export function modelsIn(
     const stat = statSync(file)
     stamp = `${stat.mtimeMs}:${stat.size}:${salt}`
   } catch {
-    cached.delete(file)
-    return []
+    return cached.get(file)?.found ?? []
   }
   const hit = cached.get(file)
   if (hit?.stamp === stamp) return hit.found
@@ -70,6 +55,6 @@ export function modelsIn(
   } catch {
     found = []
   }
-  cached.set(file, { stamp, found })
-  return found
+  if (found.length) cached.set(file, { stamp, found })
+  return found.length ? found : hit?.found ?? []
 }

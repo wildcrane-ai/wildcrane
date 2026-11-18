@@ -190,25 +190,15 @@ export interface ExecutionBlocker {
   unblock: string
 }
 
-/** Where a run stands in an automatic retry after a passing provider failure (#525).
- *
- *  It rides on the run and is carried onto the one that continues it, so the three attempts
- *  and the fifteen minutes are counted across the whole chain rather than per session. */
 export interface RunRetry {
-  /** Attempts made so far, this one included. */
+  /** Started attempts, including the original. */
   attempt: number
-  /** And how many this chain gets in all. Kept with the run rather than read off the
-   *  policy, so a screen shows the limit this run was actually held to. */
   of: number
-  /** What the provider said, in its own words — one line. */
   reason: string
-  /** When the next attempt starts. In the past on a run that IS that attempt, so a reader
-   *  draws a countdown only while it is ahead. */
   at: number
-  /** When the FIRST attempt of this chain started. The fifteen minutes run from here, not
-   *  from its failure, so the time a harness spent retrying inside an attempt counts
-   *  against the same window. */
   since: number
+  pending?: import('./retry').RetryPlan
+  launching?: true
 }
 
 /** Why a run was refused before it started, where the board can name the kind (#706). A
@@ -372,6 +362,9 @@ export interface RunRecord {
   ok?: boolean
   code?: number | null
   error?: string
+  failure?: import('./retry').ExecutionFailure
+  retryPause?: import('./retry').RetryPause
+  validationFailure?: import('./retry').ExecutionFailure
   /** A concrete interruption that needs one action from the user before Resume. */
   blocker?: ExecutionBlocker
   /** What this run cost in US dollars, as its own output reported it at close. An
@@ -730,18 +723,11 @@ export interface ScheduledPass {
 
 /** A delivery's own copy of the studio it builds under (#715). */
 export interface FrozenStudio {
-  /** The studio's stable id — what the card carried when the delivery opened. */
   id: string
-  /** Its name at that moment, so a record still names its studio after a rename and after
-   *  the studio itself is gone. */
   name: string
-  /** Whether this delivery has to leave a file behind to count as finished — frozen with
-   *  the rest, so a studio retyped mid-flight cannot change what this build owes. */
   needsArtifact?: boolean
-  /** Its previews and land agents (#2152), with the extra requirements each assignment
-   *  carried. Absent on a record frozen before #2152. */
-  previews?: { agent: string; extra: string }[]
-  land?: { agent: string; extra: string }[]
+  previews?: import('./studio-def').StudioPreview[]
+  rules?: string
 }
 
 /** How a delivery commits its work (#303). */

@@ -37,10 +37,7 @@ import { machineFile, namesFlag, type Harness } from './types'
 // connector — spawn it from folder A with `cwd` set to B and ask it for `pwd`. An answer of A
 // means the folder has to be passed outright, the way OpenCode's `--dir` does.
 //
-// Nothing about skills: Kimi reads the project's `.agents/skills/` by itself, which is one
-// of the two folders an install writes (runner/src/kanban-skill.ts). `--skills-dir` is
-// deliberately not added — it REPLACES the directories Kimi discovers rather than adding to
-// them, so pointing it at the board's folder would turn off the user's own skills.
+// Kimi discovers `.agents/skills/`; --skills-dir would replace the user's directories.
 function kimiExtraArgs(argv: string[], before: string[] = []): string[] {
   const extra: string[] = []
   if (!namesFlag(argv, ['--output-format'])) extra.push('--output-format', 'stream-json')

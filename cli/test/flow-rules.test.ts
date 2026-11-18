@@ -13,7 +13,7 @@ import { cmdStartRun } from '../src/commands/run.ts'
 import { activeDelivery } from '../src/lib/agent/deliveries.ts'
 import { RUN_ENV } from '../src/lib/agent/env.ts'
 import { printFlow } from '../src/lib/agent/flow.ts'
-import { buildPrompt } from '../src/lib/agent/prompts.ts'
+import { studioRulesBlock, buildPrompt } from '../src/lib/agent/prompts.ts'
 import { openPlan, planRun } from '../src/lib/agent/resolve.ts'
 import { addRuntime, setAgentRuntime } from '../src/lib/agent/runtimes.ts'
 import { readRule, ruleFor } from '../src/lib/agent/rules.ts'
@@ -98,99 +98,13 @@ describe('in-session spec work', () => {
     const cardFile = path.join(root, 'docs/kanban/todo/features/1-card.md')
     fs.writeFileSync(cardFile, fs.readFileSync(cardFile, 'utf8').replace('questions: []', 'previews: [tech-stack-advisor]\nquestions: []'))
     const official = editableOfficial()
-    const file = path.join(official, 'agents/ui-designer/AGENT.md')
+    const file = path.join(official, 'studios/coding/agents/ui-designer/AGENT.md')
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/  stages:\n[\s\S]*?(?=  memoryFiles:)/, ''))
   })
   afterEach(() => resetOfficial())
-  it('prints specialist instructions and rules without starting a run', async () => {
-    setRule('tech-stack-advisor', 'Keep to the existing palette.')
-    const file = path.join(root, 'docs/kanban/todo/features/1-card.md')
-    const before = fs.readFileSync(file, 'utf8')
-    const sink = startCollecting()
-    try {
-      await akb(root, ['raw', 'previews', 'tech-stack-advisor', '1', 'Use scrolling tabs.', '--print'])
-    } finally {
-      stopCollecting()
-    }
-    const printed = sink.out.join('\n')
-    assert.match(printed, /printed, not started/)
-    assert.match(printed, /Use scrolling tabs/)
-    assert.match(printed, /guide preview-agent/)
-    assert.doesNotMatch(printed, /Be a preview agent/)
-    assert.match(printed, /continue it in this session/)
-    assert.ok(printed.trimEnd().endsWith('Keep to the existing palette.'))
-    assert.equal(readRuns().length, 0)
-    assert.equal(fs.readFileSync(file, 'utf8'), before)
-  })
-
-  it('prints inside a board run without queuing a specialist', async () => {
-    process.env[RUN_ENV] = run('clarify', 1)
-    const before = JSON.stringify(readRuns())
-    startCollecting()
-    try {
-      const result = await cmdSpec({ agent: 'tech-stack-advisor', id: 1, print: true })
-      assert.equal(result.mode, 'print')
-    } finally {
-      stopCollecting()
-    }
-    assert.equal(JSON.stringify(readRuns()), before)
-  })
-
-  it('prints even when the agent uses another runtime', async () => {
-    process.env[RUN_ENV] = run('clarify', 1)
-    setAgentRuntime('tech-stack-advisor', addRuntime('Other', 'codex').id!)
-    const sink = startCollecting()
-    try {
-      const result = await cmdSpec({ agent: 'tech-stack-advisor', id: 1, print: true })
-      assert.equal(result.mode, 'print')
-    } finally {
-      stopCollecting()
-    }
-    assert.match(sink.out.join('\n'), /printed, not started/)
-  })
-
-  it('prints staged agents requesting a new session without creating or queuing a run', async () => {
-    const official = editableOfficial()
-    const file = path.join(official, 'agents/tech-stack-advisor/AGENT.md')
-    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('akb:', 'akb:\n  session: new'))
-    process.env[RUN_ENV] = run('clarify', 1)
-    const before = JSON.stringify(readRuns())
-    startCollecting()
-    try { assert.equal((await cmdSpec({ agent: 'tech-stack-advisor', id: 1, print: true })).mode, 'print') }
-    finally { stopCollecting() }
-    assert.equal(JSON.stringify(readRuns()), before)
-  })
-
-  it('prints when the caller names no runtime', async () => {
-    setAgentRuntime('tech-stack-advisor', addRuntime('Other', 'codex').id!)
-    startCollecting()
-    try {
-      assert.equal((await cmdSpec({ agent: 'tech-stack-advisor', id: 1, print: true })).mode, 'print')
-    } finally {
-      stopCollecting()
-    }
-    assert.equal(readRuns().length, 0)
-  })
 })
 
 describe('the files', () => {
-  it('gives planning no rule of its own: what it is asked is its studio\'s (#2152)', async () => {
-    studioRule('Say what changed.')
-    for (const action of ['edit', 'resolve'] as const) {
-      assert.equal(ruleFor({ action, id: 1 }), '', action)
-      assert.match(buildPrompt({ action, id: 1 }), /<studio name="Coding">[\s\S]*Say what changed\./, action)
-    }
-  })
-
-  it("reads back each agent's rule, and nothing for the ones without one", async () => {
-    setRule('builder', 'Install first.')
-    assert.equal(readRule('builder'), 'Install first.')
-    assert.equal(readRule('ui-designer'), '')
-    // One rule, every flow that agent runs.
-    for (const action of ['implement'] as const) {
-      assert.equal(ruleFor({ action, id: 1 }), 'Install first.', action)
-    }
-  })
 })
 
 describe('the prompt', () => {
@@ -209,24 +123,6 @@ describe('the prompt', () => {
     await assert.rejects(() => akb(root, ['raw', 'card', 'refine', '1', '--effort', 'standard', '--print']))
   })
 
-  it('names the card’s module copy of a planner file, then the planner’s own (#1484)', () => {
-    const facts = (): string => {
-      const sink = startCollecting()
-      try {
-        printFlow({ action: 'edit', id: 1, notes: 'Use A.' })
-        return sink.out.join('\n').split('closing it')[0]!
-      } finally {
-        stopCollecting()
-      }
-    }
-    assert.match(facts(), /memory\/agents\/planner\/decisions\.md/)
-    assert.doesNotMatch(facts(), /planner\/\w+\/decisions\.md/)
-
-    const file = path.join(root, 'docs', 'kanban', 'todo', 'features', '1-card.md')
-    fs.writeFileSync(file, card(1, 'card one').replace('modules: []', 'modules: [skill]'))
-    assert.match(facts(), /planner\/skill\/decisions\.md — the card's module `skill`\n.*planner\/decisions\.md — what spans modules/)
-  })
-
   it('leaves planning memory out of a resolve: the memory review writes it (#212)', () => {
     const sink = startCollecting()
     try {
@@ -236,13 +132,6 @@ describe('the prompt', () => {
     } finally {
       stopCollecting()
     }
-  })
-
-  it('ends on the rule, after everything the board writes', async () => {
-    setRule('builder', 'Install dependencies first.')
-    const prompt = buildPrompt({ action: 'implement', id: 1, title: 'card one' })
-    assert.ok(prompt.trimEnd().endsWith('Install dependencies first.'))
-    assert.match(prompt, /`builder` agent carries one rule of its own\./)
   })
 
   it("reads only its own agent's rule", async () => {
@@ -264,36 +153,9 @@ describe('the prompt', () => {
       assert.doesNotMatch(prompt, /Install dependencies/, req.action)
     }
   })
-
-  it("puts a spec agent's own rule after its instructions, and no role's", async () => {
-    studioRule('Ask about the data model.')
-    setRule('ui-designer', 'Keep to the existing palette.')
-    const prompt = buildPrompt({ action: 'spec', id: 1, specAgent: 'ui-designer' })
-    assert.ok(prompt.trimEnd().endsWith('Keep to the existing palette.'))
-    assert.match(prompt, /`ui-designer` agent carries one rule of its own\./)
-    assert.doesNotMatch(prompt, /data model/)
-  })
 })
 
 describe('a delivery', () => {
-  it('freezes the rules of the agents it is built by, keyed by agent', async () => {
-    setRule('builder', 'Install dependencies first.')
-    studioRule('Stay small.')
-    const built = run('implement', 1)
-    const delivery = activeDelivery(1)!
-    assert.deepEqual(delivery.rules, { builder: 'Install dependencies first.' })
-    await end(built)
-  })
-
-  it('gives its later sessions the rules it started with, not the files as they read now', async () => {
-    setRule('builder', 'Run the smoke tests.')
-    const built = run('implement', 1)
-    setRule('builder', 'Something else entirely.')
-    const prompt = buildPrompt({ action: 'implement', id: 1, title: 'card one' })
-    assert.match(prompt, /smoke tests/)
-    assert.doesNotMatch(prompt, /Something else entirely/)
-    await end(built)
-  })
 
   it('does not read frozen rules under retired flow keys', async () => {
     const built = run('implement', 1)
@@ -344,4 +206,17 @@ describe("the board's language", () => {
     setLanguage('zh')
     assert.equal(openPlan(planRun('s1')).argv[1], '--append-system-prompt')
   })
+})
+
+// Studio Notes are read from the current board, never from another Studio or workspace.
+it('applies Studio Notes only to the current board and matching Studio (#859)', () => {
+  const note = 'Only when preparing prompts: guide,prompt,agent都需要用英文来写'
+  fs.mkdirSync(path.join(RULES, 'studios'), { recursive: true })
+  fs.writeFileSync(path.join(RULES, 'studios', 'coding.md'), note)
+  assert.ok(studioRulesBlock({ action: 'implement', id: 1 }).includes(note))
+  assert.ok(!studioRulesBlock({ action: 'resolve', studio: 'blog-post' }).includes(note))
+  const other = path.join(root, 'other')
+  fs.mkdirSync(path.join(other, 'docs', 'kanban'), { recursive: true })
+  setBoardRoot(other)
+  assert.ok(!studioRulesBlock({ action: 'resolve', studio: 'coding' }).includes(note))
 })

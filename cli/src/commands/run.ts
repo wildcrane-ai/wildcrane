@@ -1,4 +1,3 @@
-import { confirmLocalPreview, type PreviewConfirmOptions } from './preview-confirm'
 import { nextDeliveryRun } from '../lib/agent/progress'
 import { completeDelivery } from '../lib/agent/complete'
 // Starting a run, and everything you do to one afterwards: watch it, list them, stop one,
@@ -51,7 +50,7 @@ import path from 'node:path'
 import { say } from '../lib/io'
 import { pidAlive } from '../lib/lock'
 import { die, BOARD_FLAG, KANBAN } from '../lib/paths'
-import { approveAfterReply } from '../lib/cloud/reply-approval'
+import { REPLY_APPROVAL_ENV } from '../lib/cloud/reply-approval'
 import { approveTask, runnerProject, workspaceTask } from '../lib/cloud/tasks'
 import { findCard } from '../lib/view/read'
 import { awaitingApproval, creationRefusal } from '../lib/view/rules'
@@ -79,11 +78,9 @@ export async function cmdStartRun(
   opts: StartOptions,
   program = 'akb',
 ): Promise<MoveResult> {
-  if (action === 'approve' && (opts.preview || opts.previewStage || opts.previewVersion || opts.definitionRevision)) return confirmLocalPreview(Number(args[0]), opts)
   const { req, follow, print } = readRequest(action, args, opts)
   if (!print && (action === 'approve' || action === 'implement')) {
-    const deferred = await approveAfterReply(String(req.id), req.notes)
-    if (deferred) return deferred
+    if (process.env[REPLY_APPROVAL_ENV]) die('Use akb task approve with --stage and the --revision you reviewed.')
   }
   // A card its creator has not finished writing takes no flow (#564) — printed here, or
   // started below. `cardCreation` lets the creating run itself through, which is what keeps
@@ -100,11 +97,7 @@ export async function cmdStartRun(
   const project = action === 'approve' && !runnerApprove ? runnerProject(KANBAN) : null
   if (project) return await approveInCloud(project, req.id as number)
   if (action === 'approve') sayIfHeld(req, program)
-  const card = runnerApprove ? findCard(req.id as number) : null
-  // 中断的批准继续规划，即使有未答问题或最后阶段已就绪。
-  const runnable = card && !awaitingApproval(card)
-    ? { action: 'clarify' as const, id: card.id, title: card.title, notes: req.notes, refineRound: 1 }
-    : action === 'refine' ? refinementRequest(req) : action === 'approve' ? approvalRequest(req) : (req as AgentRequest)
+  const runnable = action === 'refine' ? refinementRequest(req) : action === 'approve' ? approvalRequest(req) : (req as AgentRequest)
   if ('error' in runnable) die(runnable.error, { kind: 'run-refused', action })
   // Refine is the one flow a run hands work to rather than does itself: a revise makes the
   // change asked for and passes the card on. So it is written down here and started by this
@@ -128,10 +121,6 @@ export async function cmdStartRun(
       } catch {
         // an unwritable record never costs the flow
       }
-    }
-    if (runnable.action === 'approve') {
-      const moved = advancePhase(runnable.id as number)
-      if (moved) die(moved.error, { kind: 'run-refused', action })
     }
     return printFlow(runnable, program)
   }
@@ -257,7 +246,7 @@ function sayBeforeStart(req: CommandRequest, program: string): void {
 
 /** Every flow's own options, as its command declares them (lib/agent/flows.ts). Each flow
  *  takes a few of these; none takes them all. */
-export interface StartOptions extends PreviewConfirmOptions {
+export interface StartOptions {
   print?: boolean
   follow?: boolean
   /** With `follow`: the events file rather than the log (#2059). */
@@ -270,6 +259,7 @@ export interface StartOptions extends PreviewConfirmOptions {
   cards?: string[]
   /** refine, resolve, revise: a Cloud task's session and discussion (#2146). */
   session?: string
+  newSession?: boolean
   fork?: boolean
   transcript?: string
 }
@@ -317,6 +307,7 @@ function readRequest(
   // The one run's own runtime (#518) — declared by `implement` alone among these, so
   // nothing else can be given one.
   if (action === 'implement') req.runtime = opts.runtime
+  if (opts.newSession) req.session = 'new'
   if (action !== 'implement' && (opts.session || opts.transcript)) {
     // Set by the Runner (#627): an env var, so an older akb ignores it.
     const costFrom = Number(process.env[SESSION_COST_ENV])
@@ -332,14 +323,14 @@ function readRequest(
 
 /** Send one more turn into a run that stopped short: same agent, same conversation, same
  *  card — and the prompt is just "carry on". */
-export async function cmdResume(id: string | undefined, opts: { follow?: boolean; events?: boolean; requireSession?: boolean }): Promise<MoveResult> {
+export async function cmdResume(id: string | undefined, opts: { follow?: boolean; events?: boolean; requireSession?: boolean; fresh?: boolean }): Promise<MoveResult> {
   const previous = await getRun(id ?? 'last')
   const completed = previous?.deliveryId ? findDelivery(previous.deliveryId) : undefined
   if (completed?.status === 'finished' && completed.completions?.some((receipt) => receipt.finished)) {
     say(`delivery ${completed.deliveryId} is complete.`)
     return { sessionId: previous!.sessionId, resumedFrom: previous!.resumedFrom, delivery: deliveryOutcome(completed.deliveryId) }
   }
-  const opened = await startResume(id ?? 'last', opts.requireSession)
+  const opened = await startResume(id ?? 'last', opts.fresh ? { fresh: true } : opts.requireSession)
   if ('error' in opened) die(opened.error, { kind: 'run-refused', ...('reason' in opened ? { reason: opened.reason } : {}) })
   const { run } = opened
   if (!opened.spawned) die(`couldn't start a process for run ${run.sessionId}`, { kind: 'spawn-failed' })
@@ -569,7 +560,16 @@ export async function followRun(sessionId: string, already = '', program = 'akb'
     seen.add(current.sessionId)
     printed = 0
     const deliveryId = first.deliveryId ?? last.deliveryId
-    const next = nextInFlow(first, current.sessionId, seen) ?? (deliveryId ? await moveDelivery(deliveryId, idle) : undefined)
+    let following = nextInFlow(first, current.sessionId, seen)
+    if (!following && last.retry?.pending) {
+      const resumed = await startResume(last.sessionId, { automatic: true })
+      if ('run' in resumed) following = resumed.run
+      else {
+        last = await getRun(last.sessionId) ?? last
+        following = nextInFlow(first, current.sessionId, seen)
+      }
+    }
+    const next = following ?? (deliveryId ? await moveDelivery(deliveryId, idle) : undefined)
     if (next === undefined) break
     if (next === null) {
       await pause(follow.pollMs)

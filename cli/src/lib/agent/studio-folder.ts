@@ -10,8 +10,9 @@ const MIME: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg'
 
 /** Every file under `dir`, as `/`-separated paths; dot files and folders are skipped. */
 export function filesOf(dir: string, base = dir): string[] {
-  return fs.readdirSync(dir, { withFileTypes: true }).filter((e) => !e.name.startsWith('.')).flatMap((e) => {
+  return fs.readdirSync(dir, { withFileTypes: true }).filter(e => !e.name.startsWith('.')).flatMap(e => {
     const full = path.join(dir, e.name)
+    if (e.isSymbolicLink()) throw new Error(`${full}: symbolic links are not allowed`)
     return e.isDirectory() ? filesOf(full, base) : [path.relative(base, full).split(path.sep).join('/')]
   })
 }

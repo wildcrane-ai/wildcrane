@@ -1,3 +1,4 @@
+import type { SourceProblem } from '../../cli/src/lib/shared/preview-blocks'
 import type { ReplyPart } from '../../cli/src/lib/shared/reply-parts'
 import { goalsOf } from './goals'
 // The Runner's calls to Cloud (cloud/src/runners.ts), over plain `fetch`.
@@ -16,6 +17,7 @@ export type Call<T> = { ok: true; value: T } | { ok: false; error: string; code?
 export const RUNTIMES = ['claude-code', 'codex', 'cursor', 'opencode', 'kimi', 'dsh', 'zcode', 'grok', 'antigravity'] as const
 
 export interface Job {
+  taskReview?: import("../../cli/src/lib/shared/review-plan").TaskReview
   handoff?: { kind: 'check' | 'execution'; action?: 'queue' | 'continue' | 'restart' | 'runtime'; started?: boolean; recovering?: boolean; isolation?: string; progressIsolation?: string | null; verb?: Flow['verb']; evidence?: string | null } | null
   id: string
   runtime: (typeof RUNTIMES)[number]
@@ -92,8 +94,10 @@ export interface AgentJob {
 }
 
 export interface Flow {
+  review_stages?: string[]
+  review_revision?: number
   feedback?: string
-  verb: 'create' | 'resolve' | 'revise' | 'approve' | 'implement' | 'refine' | 'discard' | 'preview'
+  verb: 'create' | 'resolve' | 'revise' | 'approve' | 'implement' | 'refine' | 'discard'
   /** The task's studio id, e.g. `wf_builtin_coding`. */
   studio: string
   /** The akb card id this Runner reported before. */
@@ -102,6 +106,7 @@ export interface Flow {
   title?: string
   /** Run again after a stop or a failure, carrying on the work kept here (#2128). */
   resume?: boolean
+  replan?: boolean
   /** On `create`: build the card straight after writing it, unplanned (#2139). */
   skip_plan?: boolean
   /** A first step's card fields; `related` and `blocked_by` as task keys. */
@@ -121,7 +126,7 @@ export interface Goal {
   title: string
   outcome: string
   acceptance: string[]
-  previews?: string[]
+  review_plan?: import("../../cli/src/lib/shared/review-plan").ReviewPlan
   studio: string
   task?: string | null
   start?: boolean
@@ -154,7 +159,7 @@ export interface SettingDecl {
 
 /** Raised by Cloud when it no longer takes this Runner's protocol. 9 keeps keys (#2135); 10 stops
  *  a flow job, pausing its board runs (#2128); 11 holds the computer's lock (#2161); 14 shares local settings and account revocation; 18 says Studio (#645). */
-export const PROTOCOL = 21
+export const PROTOCOL = 25
 
 const TIMEOUT_MS = 20_000
 
@@ -224,7 +229,7 @@ export async function upload<T>(route: string, bytes: Uint8Array, type: string):
 
 export async function uploadReplyImage(machine: string, job: string, key: string, bytes: Uint8Array, mime: string) {
   const route = `/v1/runner/jobs/${encodeURIComponent(job)}/images/${key}?machine=${encodeURIComponent(machine)}`
-  const sent = await send('PUT', route, bytes, true, 15_000, mime)
+  const sent = await send('PUT', route, bytes, true, 90_000, mime)
   return sent.ok ? answerOf<{ id?: string; status: 'saved' | 'not_saved' }>(sent.value) : sent
 }
 
@@ -302,6 +307,7 @@ export interface Subagents {
 }
 
 export interface JobReport {
+  deliveryCompleted?: boolean
   replyApprovalSynced?: boolean
   recovery?: { safe: boolean; stopped: boolean; resumable: boolean }
   processesStopped?: boolean
@@ -336,16 +342,16 @@ export interface JobReport {
 
 export const cancelReplyApproval = (machineId: string, job: string) => move(job, 'approve', { machineId, cancel: true })
 
-export const approveReply = (machineId: string, job: string, fields: { card_version: number; review_revision: number; comment?: string }) =>
+export const approveReply = (machineId: string, job: string, fields: { card_version: number; review_revision: number; stage?: string; comment?: string }) =>
   move<{ id: string; status: 'pending' | 'committed' | 'cancelled'; task: string; reason?: string }>(job, 'approve', { machineId, fields })
 
 export const finishJob = (
   machineId: string,
   job: string,
-  outcome: 'done' | 'failed' | 'conflict' | 'stopped',
+  outcome: 'done' | 'failed' | 'conflict' | 'stopped' | 'update_prepare' | 'update_resume' | 'interrupted',
   reason = '',
   report?: JobReport,
-) => move<{ finished: boolean; prepared?: boolean }>(job, 'finish', { machineId, outcome, reason, ...(report ? { report } : {}) })
+) => move<{ finished: boolean; prepared?: boolean; resumed?: boolean }>(job, 'finish', { machineId, outcome, reason, ...(report ? { report } : {}) })
 
 /** One file of a landed commit's diff (#2109); `patch` is its hunks, absent when too large. */
 export interface DiffFile {
@@ -480,18 +486,27 @@ export interface BoardWrite {
 export const readBoard = (project: string, since: number | null) =>
   request<{ head_seq: number; files: BoardFile[] }>('GET', `/v1/projects/${q(project)}/board${since === null ? '' : `?since=${since}`}`)
 
-/** Refused as `version_conflict`, `files` holds those that moved on, as they are now. */
+/** A refused commit is atomic. Preview diagnostics name board-relative card files. */
 export async function commitBoard(project: string, job: string | null, machine: string, files: BoardWrite[]):
-  Promise<Call<{ head_seq: number; files: { path: string; seq: number }[] }> & { files?: BoardFile[] }> {
+  Promise<Call<{ head_seq: number; files: { path: string; seq: number }[] }> & { files?: BoardFile[]; previewProblems?: SourceProblem[] }> {
   const sent = await send('POST', `/v1/projects/${q(project)}/board/commits`, { job, machine, files }, true, TIMEOUT_MS)
   if (!sent.ok) return sent
-  if (sent.value.status !== 409) return answerOf(sent.value)
-  const answer = (await sent.value.json().catch(() => null)) as { error?: { code?: string; message?: string }; files?: BoardFile[] } | null
-  return { ok: false, error: answer?.error?.message ?? 'Cloud answered 409', code: answer?.error?.code ?? 'refused', ...(answer?.files ? { files: answer.files } : {}) }
+  if (sent.value.status !== 409 && sent.value.status !== 400) return answerOf(sent.value)
+  const status = sent.value.status
+  const answer = (await sent.value.json().catch(() => null)) as {
+    error?: { code?: string; message?: string; details?: { problems?: SourceProblem[] } }; files?: BoardFile[]
+  } | null
+  const problems = answer?.error?.details?.problems
+  return {
+    ok: false, error: answer?.error?.message ?? `Cloud answered ${status}`, code: answer?.error?.code ?? 'refused',
+    ...(status === 409 && answer?.files ? { files: answer.files } : {}),
+    ...(status === 400 && Array.isArray(problems) ? { previewProblems: problems } : {}),
+  }
 }
 
 /** The studio version a task runs on: `STUDIO.md` and its agents' folders (#2040). */
 export interface TaskStudio {
+  historicalPreviews?: Record<string, unknown>
   studio: string
   version: number
   name?: string
@@ -513,7 +528,7 @@ export interface ConversationProgress {
 }
 
 export interface Studio {
-  previews?: { agent: string; title: { en?: string; zh?: string }; when: string }[]
+  previews?: import("../../cli/src/lib/agent/studio-def").StudioPreview[]
   id: string
   name: string
   names?: { en: string; zh: string }
@@ -526,7 +541,7 @@ export const listStudios = (workspace: string, after?: string | null) =>
 
 /** Read the current files of a workspace Studio. */
 export const readTask = (task: string) =>
-  request<{ key?: string; title: string; request: string; status?: string; card_version?: number; review?: { revision: number } | null; context?: { studio?: string } }>('GET', `/v1/tasks/${q(task)}`)
+  request<{ key?: string; project: string; title: string; request: string; status?: string; card_version?: number; review?: import("../../cli/src/lib/shared/review-plan").TaskReview | null; context?: { studio?: string } }>('GET', `/v1/tasks/${q(task)}`)
 
 export const readStudio = (id: string) => request<{ version: number; name?: string; files: Record<string, string> }>('GET', `/v1/studios/${q(id)}`)
 
@@ -589,7 +604,7 @@ export interface DraftGoal {
   title: string
   outcome: string
   acceptance: string[]
-  previews?: string[]
+  review_plan?: import("../../cli/src/lib/shared/review-plan").ReviewPlan
   studio: string
   task: { id: string; key: string } | null
 }
@@ -651,6 +666,3 @@ export type Idea = Goal
 export type DraftIdea = DraftGoal
 
 export { setGoalStudio as setIdeaStudio, dropGoal as dropIdea, startGoal as startIdea }
-
-export const previewOperation = (machineId: string, job: string, agent: string, fields: Record<string, unknown>) =>
-  request<{ progress: import('../../cli/src/lib/preview-stages').PreviewProgress | null; baseline?: import('../../cli/src/lib/preview-stages').PreviewBaseline | null }>('POST', `/v1/runner/jobs/${q(job)}/previews/${q(agent)}`, { ...fields, machineId })

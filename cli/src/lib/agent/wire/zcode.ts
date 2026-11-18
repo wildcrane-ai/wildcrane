@@ -1,3 +1,5 @@
+import { executionFailure, providerFailure } from './failures'
+import type { ExecutionFailure } from '../retry'
 import { ownUsage, ZERO_USAGE } from './usage'
 // The board's side of the ZCode Protocol (#258).
 //
@@ -23,6 +25,7 @@ import { ownUsage, ZERO_USAGE } from './usage'
 // the shape of a failed turn. The two releases stream a turn differently — see below.
 
 import path from 'node:path'
+import { createEventCollector } from './events'
 
 import { hint, num, obj, str, type Json } from './json'
 import { connect, type Rpc } from './rpc'
@@ -233,6 +236,7 @@ function stopped(io: ClientTurn, why: string): void {
 interface TurnStop {
   ok: boolean
   error?: string
+  failure?: ExecutionFailure
   /** The agent's closing message, as the ending event repeats it. */
   response?: string
   /** What this turn used, when the ending event counted it. */
@@ -242,6 +246,8 @@ interface TurnStop {
 async function oneTurn(io: ClientTurn, options: ZcodeOptions): Promise<TurnEnd> {
   const tail = createTail(io.log)
   const parts = createParts(tail)
+  const activityEvents = createEventCollector()
+  const activeCalls = new Set<string>()
   // Nothing reaches the log until the prompt goes out. Opening a session is bookkeeping,
   // and re-opening one replays the conversation it already holds — neither is this run's
   // work, and both would bury it.
@@ -251,6 +257,12 @@ async function oneTurn(io: ClientTurn, options: ZcodeOptions): Promise<TurnEnd> 
   const finished = new Promise<TurnStop>((resolve) => {
     ended = resolve
   })
+  const cancelled = () => {
+    const response = tail.end()
+    if (response) io.event?.({ kind: 'message', data: { text: response } })
+    ended?.({ ok: false, error: 'Execution stopped.', response })
+  }
+  io.signal?.addEventListener('abort', cancelled, { once: true })
 
   const rpc = connect(
     io.stdout,
@@ -258,7 +270,26 @@ async function oneTurn(io: ClientTurn, options: ZcodeOptions): Promise<TurnEnd> 
     (msg) => {
       if (msg.method === 'session/event') {
         const envelope = obj(msg.params)
-        if (str(envelope.sessionId) === sessionId) event(envelope, parts, tail, live, ended!)
+        if (str(envelope.sessionId) === sessionId) {
+          if (live) {
+            const payload = obj(envelope.payload)
+            const part = obj(payload.part)
+            const state = obj(part.state)
+            const type = str(envelope.type)
+            if (['part.delta', 'model.streaming'].includes(type) && str(payload.delta)) io.activity?.()
+            const id = str(payload.toolCallId) || str(part.callId) || str(part.partId)
+            const name = str(payload.toolName) || str(part.tool) || str(state.title)
+            if (id && name && !activeCalls.has(id)) {
+              activeCalls.add(id)
+              if (/^(?:Task|Agent|delegate_task|spawn_agent)$/i.test(name)) activityEvents.subagent(id, name)
+              else activityEvents.toolCall(id, name, /^(?:bash|shell|execute|run_command|terminal)$/i.test(name) ? 'execute' : 'other')
+            }
+            const status = str(state.status) || str(payload.kind)
+            if (id && ['completed', 'error', 'result'].includes(status)) activityEvents.toolResult(id, status === 'error' ? 'failed' : 'completed', '')
+            for (const e of activityEvents.events()) io.event?.(e)
+          }
+          event(envelope, parts, tail, live, ended!)
+        }
         return
       }
       if (msg.id === undefined) return // a notification we have nothing to do about
@@ -358,7 +389,7 @@ async function oneTurn(io: ClientTurn, options: ZcodeOptions): Promise<TurnEnd> 
     if (!done.ok) {
       const why = done.error ?? 'the agent stopped without saying why'
       stopped(io, why)
-      return { ok: false, result, error: why, usage, context }
+      return { ok: false, result, error: why, failure: done.failure, usage, context }
     }
     return { ok: true, result, usage, context }
   } catch (e) {
@@ -368,7 +399,9 @@ async function oneTurn(io: ClientTurn, options: ZcodeOptions): Promise<TurnEnd> 
     const error = e instanceof Error ? e.message : String(e)
     const result = tail.end()
     stopped(io, error)
-    return { ok: false, result, error }
+    return { ok: false, result, error, failure: executionFailure(e) }
+  } finally {
+    io.signal?.removeEventListener('abort', cancelled)
   }
 }
 
@@ -438,7 +471,8 @@ function event(
     }
     case 'turn.failed': {
       const error = obj(payload.error)
-      return ended({ ok: false, error: str(error.message) || 'the turn failed' })
+      const failure = providerFailure(error, str(error.message) || 'the turn failed')
+      return ended({ ok: false, error: failure.reason, failure })
     }
     case 'session.closed':
       return ended({ ok: false, error: str(payload.reason) || 'the agent closed the session' })

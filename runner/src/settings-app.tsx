@@ -2,9 +2,10 @@
 // /settings-client.js. Its controls are the web app's shadcn components.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { FiCheck, FiChevronDown, FiCopy, FiFolder, FiInfo, FiMonitor, FiRefreshCw } from 'react-icons/fi'
+import { FiChevronDown, FiFolder, FiInfo, FiMonitor, FiRefreshCw } from 'react-icons/fi'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogTitle, AlertDialogTrigger } from './ui/alert-dialog'
-import { Button } from './ui/button'
+import { Button, buttonVariants } from './ui/button'
+import { CopyButton } from './ui/copy'
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogTitle } from './ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from './ui/dropdown-menu'
 import { Input } from './ui/input'
@@ -76,7 +77,6 @@ function App() {
   const [state, setState] = useState<State>({})
   const [tools, setTools] = useState<Tool[] | null>(null)
   const [akb, setAkb] = useState('akb')
-  const [copied, setCopied] = useState('')
   const waits = useRef(new Map<string, ReturnType<typeof setInterval>>())
   const [disconnected, setDisconnected] = useState(false)
   const [pageError, setPageError] = useState('')
@@ -157,11 +157,8 @@ function App() {
   useEffect(() => { document.documentElement.lang = lang }, [lang])
   useEffect(() => () => { for (const timer of waits.current.values()) clearInterval(timer) }, [])
 
-  /** Copies the prompt, then checks that agent quietly until it is installed or the wait runs out. */
-  async function copyPrompt(tool: Tool) {
-    try { await navigator.clipboard.writeText(installPrompt(lang, tool, akb)) } catch { setPageError(t.errors.failed); return }
-    setCopied(tool.name)
-    setTimeout(() => setCopied((name) => (name === tool.name ? '' : name)), 2000)
+  /** Check the agent after its install prompt was copied. */
+  function promptCopied(tool: Tool) {
     if (waits.current.has(tool.name)) return
     const until = Date.now() + WAIT_FOR_MS
     const timer = setInterval(async () => {
@@ -313,7 +310,7 @@ function App() {
       {!state.projects?.length && <p className="py-4 text-nb-ink-soft">{t.empty}</p>}
       <div className="flex flex-col gap-2">
         {[...byWorkspace(state.projects).values()].flat().map((p) => (
-          <ProjectRow key={p.project} p={p} t={t} message={message} onOpenChange={opened} onRemoved={refresh} />
+          <ProjectRow key={p.project} p={p} t={t} lang={lang} message={message} onOpenChange={opened} onRemoved={refresh} />
         ))}
       </div>
     </section>
@@ -331,9 +328,7 @@ function App() {
             <span className="flex-1 text-[13px] font-[700]">{tool.label}</span>
             {tool.state !== 'notInstalled'
               ? <span className={cn('text-[12px]', tool.state === 'ready' ? 'text-nb-mint-ink' : 'text-nb-ink-soft')}>{(t as Record<string, unknown>)[tool.state] as string ?? tool.state}</span>
-              : copied === tool.name
-                ? <span role="status" className="inline-flex items-center gap-1 text-[12px] text-nb-mint-ink"><FiCheck size={12} /> {t.copied}</span>
-                : <Button variant="link" size="inline" className="text-[12.5px]" onClick={() => void copyPrompt(tool)}>{t.copyPrompt}</Button>}
+              : <CopyButton text={installPrompt(lang, tool, akb)} scope={state?.account?.id} lang={lang} label={t.copyPrompt} showLabel className={buttonVariants({ variant: 'link', size: 'inline', className: 'text-[12.5px]' })} onCopied={() => promptCopied(tool)} />}
           </div>
         ))}
       </div>
@@ -393,8 +388,7 @@ function SignOut({ t, state, message, onOpenChange, onDone }: { t: Words; state:
   )
 }
 
-function ProjectRow({ p, t, message, onOpenChange, onRemoved }: { p: Project; t: Words; message: (c?: string) => string; onOpenChange: (open: boolean) => void; onRemoved: () => Promise<void> }) {
-  const [copied, setCopied] = useState('')
+function ProjectRow({ p, t, lang, message, onOpenChange, onRemoved }: { p: Project; t: Words; lang: Lang; message: (c?: string) => string; onOpenChange: (open: boolean) => void; onRemoved: () => Promise<void> }) {
   const [error, setError] = useState('')
   return (
     <div className={cn(SECTION, 'flex items-center gap-3 p-4')}>
@@ -403,14 +397,7 @@ function ProjectRow({ p, t, message, onOpenChange, onRemoved }: { p: Project; t:
         <div className="flex items-baseline gap-2"><span className="text-[13px] font-[700]">{p.name}</span><span className="text-[12.5px] text-nb-ink-soft">{p.workspace_name}</span></div>
         <div className="mt-1 flex items-center gap-1.5 text-[12px] text-nb-ink-soft">
           <span className="break-all">{p.path}</span>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" aria-label={t.copy} onClick={async () => { try { await navigator.clipboard.writeText(p.path ?? ''); setCopied('✓') } catch { setCopied('!') } }}>
-                {copied || <FiCopy size={12} />}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{t.copy}</TooltipContent>
-          </Tooltip>
+          <CopyButton text={p.path} scope={p.project} lang={lang} label={t.copy} className={buttonVariants({ variant: 'ghost', size: 'icon' })} />
         </div>
         {p.missing && <p className={cn(ERROR, 'mt-1')}>{message('missing')}</p>}
       </div>

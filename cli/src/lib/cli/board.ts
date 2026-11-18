@@ -4,8 +4,7 @@
 // the help: `akb raw help` is the summaries, `akb raw help <move>` the whole of one.
 // Nothing is written twice, so a flag that is added is a flag the help already knows about.
 //
-// The two front doors — `akb raw <move>` and the `kanban.mjs` an installed skill folder
-// runs — are the same tree. They differ only in how they are spelled in a message.
+// `akb raw <move>` and direct `kanban.mjs` calls share this command tree.
 
 import { insideRun } from '../agent/env'
 import { recordCards } from '../agent/created-cards'
@@ -39,6 +38,8 @@ import path from 'node:path'
 import { creationProject, createProjectTask, linkedProject, createTask, workspaceTask } from '../cloud/tasks'
 import { validateCreate, type CreateOptions } from '../../commands/card'
 import { declareRaw } from './agent'
+import { conflictList, conflictShow } from '../shared/board-conflicts'
+import { submitConflict } from '../cloud/board-conflicts'
 
 /** What the door hands in — see `runBoard`. */
 export interface BoardCliOptions {
@@ -67,7 +68,26 @@ async function dispatch(
   // had open (#407).
   const data = await runAction(ctx, {}, async () => {
     const found = resolveBoard(move, { board: ctx.board, dir: ctx.dir, cwd: cli.cwd, installHint: cli.installHint })
-    useBoard(found, ctx.dir !== null, move === 'inspect')
+    const conflict = move.startsWith('conflict-')
+    useBoard(found, ctx.dir !== null, move === 'inspect' || conflict)
+    if (conflict) {
+      if (move === 'conflict-list') {
+        const conflicts = conflictList(found.board)
+        say(conflicts.map(r => `${r.id} ${r.state}: ${r.paths.join(', ')}`).join('\n') || 'No board content conflicts.')
+        return { board: found.board, conflicts }
+      }
+      if (move === 'conflict-show') {
+        const conflict = conflictShow(found.board, args[0]!)
+        if (!ctx.json) say(JSON.stringify(conflict, null, 2))
+        return { board: found.board, conflict }
+      }
+      let resolution: unknown
+      try { resolution = JSON.parse(fs.readFileSync(String(opts.file), 'utf8')) }
+      catch { throw new BoardError('Cannot read the UTF-8 JSON resolution file.', { kind: 'invalid-usage' }) }
+      const result = await submitConflict(found.board, args[0]!, String(opts.expect), resolution)
+      say(`Board conflict ${result.id}: ${result.state}.`)
+      return { board: found.board, ...result }
+    }
     if (move !== 'inspect') await syncStudios()
     const root = found.root
 
@@ -187,6 +207,16 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
 
   const move = (name: string) => withShared(program.command(name))
 
+  const conflict = move('conflict').summary('read and explicitly resolve saved board content conflicts')
+  withShared(conflict.command('list')).summary('list pending local conflicts without contacting Cloud')
+    .action(async function (this: Command) { await dispatch('conflict-list', this, [], this.opts(), cli) })
+  withShared(conflict.command('show <id>')).summary('read saved versions and a current read credential')
+    .action(async function (this: Command, id: string) { await dispatch('conflict-show', this, [id], this.opts(), cli) })
+  withShared(conflict.command('resolve <id>')).summary('submit explicit results for the entire original batch')
+    .requiredOption('--expect <revision>', 'the credential just returned by conflict show')
+    .requiredOption('--file <path>', 'UTF-8 JSON with each conflicting path and final content; null deletes')
+    .action(async function (this: Command, id: string) { await dispatch('conflict-resolve', this, [id], this.opts(), cli) })
+
   // ---- cards ---------------------------------------------------------------
 
   // `--question`, and the choices that qualify it, are read in the order they were typed:
@@ -225,7 +255,7 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
     .option('--body-file <path>', 'a short draft or full card body, written to a file first')
     .addOption(new Option('--cadence <cadence>').hideHelp())
     .option('--studio <id>', "the studio it runs through (`akb studio list`). Required when the board has more than one, except inside a task run, which uses the task's own")
-    .option('--previews <agents>', 'the preview agents it chose, from its studio\'s; "" chooses none', collectList)
+    .option('--previews <ids>', 'the Preview IDs chosen from its Studio; "" chooses none', collectList)
     .addOption(new Option('--id <n>', "the number Cloud gave this card's task; for the Runner").argParser(cardId).hideHelp())
     .option('--triage <source-id>', 'the triage item this card is made of, so the item is never carded twice')
     .option('--source <ref>', "where it came from: a plan's path, plan:<id>, #<id> or a URL. Repeatable", collect)
@@ -251,7 +281,7 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
     .option('--modules <names>', 'the parts of the project it touches', collectList)
     .option('--source <ref>', "where it came from: a plan's path, plan:<id>, #<id> or a URL. Repeatable; \"\" clears the list", collect)
     .option('--add-source <ref>', 'append one source, keeping the ones already there. Repeatable', collect)
-    .option('--previews <agents>', 'the preview agents it chose, from its studio\'s; "" chooses none', collectList)
+    .option('--previews <ids>', 'the Preview IDs chosen from its Studio; "" chooses none', collectList)
     .option('--phase <n>', 'the approval it is on, 1-based')
     .option('--slug <slug>', 'rename the file')
     .option('--studio <id>', 'the studio it runs through. The card goes back to todo and is re-planned')

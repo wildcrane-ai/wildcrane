@@ -1,3 +1,5 @@
+import type { ExecutionFailure } from '../retry'
+import { codexFailure } from './failures'
 // Codex JSONL becomes readable logs and structured events. The final message is the reply;
 // model, price and context facts come from the run's own rollout.
 
@@ -138,7 +140,7 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
   const pictures: LocalReplyPart[] = []
   let total: TokenUsage | undefined
   let threadId: string | undefined
-  let failure: string | undefined
+  let failure: ExecutionFailure | undefined
   let facts: CodexRunFacts | undefined
   let lookedAt = 0
   const events = createEventCollector()
@@ -247,14 +249,14 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
         return ''
       // 最终失败保留；连接提示只在没有后续成功完成时才作为失败。
       case 'turn.failed': {
-        const said = str(obj(ev.error).message) || failure || 'Codex 执行失败'
-        failure = said
+        const said = str(obj(ev.error).message) || failure?.reason || 'Codex execution failed.'
+        failure = codexFailure(ev.error, said)
         events.error(said)
         return `[error] ${said}\n`
       }
       case 'error': {
         const said = str(ev.message)
-        failure = said || failure
+        if (ev.willRetry !== true && ev.will_retry !== true && said) failure = codexFailure(ev.error ?? ev, said)
         events.log(`[Codex] ${said}\n`)
         return `[Codex] ${said}\n`
       }
@@ -303,8 +305,10 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
     },
     costIncomplete: () => childSpend(subagents, since).costIncomplete || (childSpend(subagents, since).costUsd !== undefined && priceUsd(facts?.provider, turn()?.model ?? facts?.model, own()) === undefined) || undefined,
     resumeId: () => threadId,
-    failure: () => failure ?? background.failure(),
+    failure: () => failure?.reason ?? background.failure(),
+    executionFailure: () => failure,
     background: () => subagents.size ? background.count() : undefined,
     events: events.events,
+    activity: events.activity,
   }
 }

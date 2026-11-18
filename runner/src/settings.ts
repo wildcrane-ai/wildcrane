@@ -5,7 +5,7 @@ import { clearSession, readSession } from '../../cli/src/lib/cloud/session'
 import * as api from './api'
 import { clearAkb, kept } from './cache'
 import { adoptLegacy, allow, disallow, refusal } from './folders'
-import { installKanbanSkill } from './kanban-skill'
+import { retireKanbanSkill } from './kanban-skill'
 import { runnerHome, machineId, machineName } from './home'
 import { LABELS, detectRuntimes, hints } from './runtimes'
 import { bundledAkb, shimDir } from './akb'
@@ -80,7 +80,7 @@ export async function addFolder(dir: string, bind?: string, strict = false) {
   }
   if (readSession()?.subject !== subject) return { error: 'signed_out' }
   try { allow(real) } catch { return { error: 'authorization_write', project } }
-  installKanbanSkill(real)
+  retireKanbanSkill(real)
   notify()
   return { added: true, project }
 }

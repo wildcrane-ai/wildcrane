@@ -56,3 +56,69 @@ describe('where a note goes', () => {
     assert.equal(memoryTarget('readme.md', 'skill').file, memory('readme.md'))
   })
 })
+
+import { codingMemoryMoves, memoryHash } from '../src/lib/shared/coding-memory-migration.ts'
+import { CODING_PREVIEWS } from '../src/lib/shared/coding-previews.ts'
+import { memoryDirectories } from '../src/lib/memory.ts'
+import { sharedMemory } from '../src/lib/agents/shared-memory.ts'
+
+describe('Coding Preview memory recovery (#842)', () => {
+  it('maps all seven IDs, retains both scopes, links and exact content, and retries without duplicates', () => {
+    const files = new Map<string, string>()
+    for (const role of Object.keys(CODING_PREVIEWS)) for (const prefix of ['', 'projects/p1/']) {
+      files.set(`${prefix}memory/agents/${role}/style.md`, `${prefix}# 原文\n[Details](nested/details.md)\n`)
+      files.set(`${prefix}memory/agents/${role}/nested/details.md`, 'Details\n')
+    }
+    files.set('projects/p2/memory/agents/ui-designer/style.md', 'Other project')
+    const moves = codingMemoryMoves(files, 'p1')
+    assert.equal(moves.length, 28)
+    const shared = sharedMemory(board())
+    for (const m of moves) {
+      assert.equal(shared(m.target.replace(/^projects\/p1\//, '').slice('memory/'.length)), m.scope === 'workspace')
+      files.set(m.target, files.get(m.source)!)
+      assert.equal(memoryHash(files.get(m.target)!), m.hash)
+    }
+    assert.ok(codingMemoryMoves(files, 'p1').every(m => m.status === 'existing'))
+    for (const m of moves) files.delete(m.source)
+    assert.deepEqual(codingMemoryMoves(files, 'p1'), [])
+    assert.equal(files.get('projects/p2/memory/agents/ui-designer/style.md'), 'Other project')
+    assert.deepEqual(codingMemoryMoves(new Map(), 'p1'), [])
+  })
+
+  it('preserves an entire conflicting source tree and relative links across interrupted cleanup', () => {
+    const from = 'projects/p1/memory/agents/prompt-writer/'
+    const to = 'projects/p1/memory/previews/coding/prompts/project/'
+    const files = new Map([[from + 'style.md', '[Rule](nested/rule.md)'], [from + 'nested/rule.md', 'Original'], [to + 'style.md', 'Current']])
+    const moves = codingMemoryMoves(files, 'p1')
+    assert.ok(moves.every(m => m.status === 'conflict'))
+    for (const m of moves) files.set(m.target, files.get(m.source)!)
+    files.delete(moves[0]!.source)
+    assert.equal(codingMemoryMoves(files, 'p1')[0]!.target, moves[1]!.target)
+    assert.equal(files.get(to + 'style.md'), 'Current')
+    files.set(moves[1]!.target, 'Changed by another writer')
+    assert.equal(codingMemoryMoves(files, 'p1')[0]!.status, 'blocked')
+  })
+
+  it('keeps distinct sources that converge on one Preview filename', () => {
+    const files = new Map([
+      ['projects/p1/memory/agents/competitor-research/README.md', 'Agent research'],
+      ['projects/p1/memory/competitors/README.md', 'Shared research index'],
+    ])
+    const moves = codingMemoryMoves(files, 'p1')
+    assert.equal(new Set(moves.map(m => m.target)).size, 2)
+    assert.equal(moves.filter(m => m.status === 'conflict').length, 1)
+    for (const m of moves) files.set(m.target, files.get(m.source)!)
+    assert.deepEqual(moves.map(m => files.get(m.target)), ['Agent research', 'Shared research index'])
+  })
+
+  it('lists directory hints without file names or bodies, including user Studios', () => {
+    write(memory('previews/coding/prompts/project/rules.md'), 'Private rule')
+    write(memory('previews/coding/prompts/workspace/style.md'), 'Shared rule')
+    write(memory('previews/wf-mine/draft/project/nested/file.md'), 'My rule')
+    const hints = memoryDirectories()
+    assert.ok(hints.includes(memory('previews/coding/prompts/project') + '/'))
+    assert.ok(hints.includes(memory('previews/coding/prompts/workspace') + '/'))
+    assert.ok(hints.includes(memory('previews/wf-mine/draft/project') + '/'))
+    assert.doesNotMatch(hints.join('\n'), /rules.md|style.md|nested|Private rule|Shared rule|My rule/)
+  })
+})

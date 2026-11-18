@@ -1,10 +1,3 @@
-## Memory
-
-The studio's memory is `docs/kanban/memory/studios/slide-deck/feedback.md`: one line per user
-correction or preference that changes the next deck, stated as what to do or avoid (see "What
-earns a note" in `akb guide board`). The current card wins. Merge duplicates and rewrite
-overturned lines in place.
-
 ## The source
 
 - **Narrative**: the deck reads as one argument, one message per slide with short copy; put

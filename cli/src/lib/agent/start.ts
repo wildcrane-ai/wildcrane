@@ -19,7 +19,7 @@ import { readRuns } from './store'
 import { buildRun } from './prompts'
 import { NEEDS_CLOUD, NOT_DOWNLOADED, pinMissing, studiosReachable } from './cloud-studios'
 import { archivesOnApproval, cardStudioId, noStudioMessage, studioFor } from './studios'
-import { cancelDelivery, carriedSession, closeRun, markSpawned, openResume, openRun, peekRun } from './sessions'
+import { cancelDelivery, carriedSession, closeRun, markSpawned, openResume, openRun, peekRun, type ResumeOptions } from './sessions'
 import { runtimeById } from './runtimes'
 import { scheduledBusy, stalePasses } from './scheduled'
 import { refusal, type AgentRequest, type RunRecord, type RunRefusal } from './types'
@@ -27,6 +27,7 @@ import { refusal, type AgentRequest, type RunRecord, type RunRefusal } from './t
 /** Open a run and spawn its watcher. `spawned` false means nothing is watching it — the
  *  record is there but no process will ever report on it, which is the caller's to raise. */
 export async function startRun(req: AgentRequest): Promise<{ run: RunRecord; spawned: boolean } | RunRefusal> {
+  if (req.action === 'spec') return refusal('agentNotListed', 'Prepare Preview outputs in the task session.')
   const sessionId = randomUUID()
   const cardId = Number.isInteger(req.id) ? (req.id as number) : null
   const short = studioRefusal(req) ?? (await scheduledRefusal(req))
@@ -40,8 +41,6 @@ export async function startRun(req: AgentRequest): Promise<{ run: RunRecord; spa
     if (previous && !delivery.completions?.some((c) => c.sessionId === previous.sessionId || c.resumedSessions?.includes(previous.sessionId))) return startResume(previous.sessionId, { deliveryId: delivery.deliveryId, notes: req.notes })
   }
   // Approve moves the card on only once its run is cleared to start (#1790).
-  const moved = req.action === 'approve' ? advancePhase(cardId!) : null
-  if (moved) return moved
   return open(req, sessionId)
 }
 
@@ -129,7 +128,7 @@ function open(req: AgentRequest, sessionId: string): { run: RunRecord; spawned: 
 }
 
 /** Continue the saved harness conversation through the same path as the Resume command. */
-export async function startResume(id: string, options?: boolean | { deliveryId?: string; notes?: string; fresh?: boolean }): Promise<{ run: RunRecord; spawned: boolean } | RunRefusal> {
+export async function startResume(id: string, options?: boolean | ResumeOptions): Promise<{ run: RunRecord; spawned: boolean } | RunRefusal> {
   const opened = await openResume(id, options)
   if ('error' in opened) return opened
   const pid = spawnWatcher(opened.run.sessionId)
