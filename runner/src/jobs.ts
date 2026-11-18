@@ -437,13 +437,14 @@ function streamOut(deps: Shared, id: string, lease: Lease) {
   }
 }
 
-/** Claim and run one job. Resolves once it has ended, or at once when it was not ours to run.
- *  `track` receives what stops it; a stopped job is left for Cloud to hand out again. */
-export async function runJob(id: string, deps: Deps, track: (stop: () => Promise<void>) => void = () => {}, stopped = () => false, reply = false): Promise<void> {
+/** Claim and run one job. Only a changed queue requires an immediate reread. */
+export async function runJob(id: string, deps: Deps, track: (stop: () => Promise<void>) => void = () => {}, stopped = () => false, reply = false): Promise<'changed' | 'unchanged' | 'retry'> {
   followProxy()
   const lease = leaseNow()
   const claim = await deps.api.claimJob(deps.machineId, id, reply)
-  if (!claim.ok || !claim.value.claimed || stopped() || !held(deps, lease)) return
+  if (!claim.ok) return api.temporaryCloudFailure(claim) ? 'retry' : 'unchanged'
+  if (!claim.value.claimed) return claim.value.retired ? 'changed' : 'unchanged'
+  if (stopped() || !held(deps, lease)) return 'changed'
   const job = claim.value.job
   if (job.chat || job.discussion) console.info('reply-dispatch', { event: 'claimed', job: id, at: new Date().toISOString() })
   const releases: (() => void)[] = []
@@ -456,6 +457,7 @@ export async function runJob(id: string, deps: Deps, track: (stop: () => Promise
     for (const release of releases) release()
     fs.rmSync(attachmentsOf(job), { recursive: true, force: true })
   }
+  return 'changed'
 }
 
 interface JobScope {

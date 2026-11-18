@@ -184,6 +184,25 @@ afterEach(async () => {
 })
 
 describe('the Runner', () => {
+  it('does not reread the queue in a loop when a waiting job is refused', async () => {
+    const stale = cloud.dispatch({ id: 'stale-authorization' })
+    let refused = 0
+    const connection = start(undefined, { api: { ...api, claimJob: async (...args) => {
+      if (args[1] !== stale.id) return api.claimJob(...args)
+      refused++
+      return { ok: false, status: 409, code: 'conflict', error: 'This execution no longer has review authorization.' }
+    } } }, MACHINE, (now) => now + 60_000, 60_000)
+    await until(() => refused > 0)
+    await new Promise(resolve => setTimeout(resolve, 150))
+    assert.equal(refused, 1)
+    assert.equal(cloud.jobReads, 1)
+
+    const next = cloud.dispatch({ id: 'next-job' })
+    connection.renew()
+    await until(() => next.state === 'finished')
+    assert.equal(next.outcome, 'done')
+  })
+
   for (const cancel of [false, true]) {
     it(`Codex 后台工作${cancel ? '可取消' : '完成后在原回复回传'} (#682)`, async () => {
       const gate = path.join(runnerHome(), 'background-done')

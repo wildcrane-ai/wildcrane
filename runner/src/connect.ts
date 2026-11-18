@@ -92,6 +92,8 @@ export function startRunner(options: Options): Runner {
   let presence: Presence | null = null
   let boards: BoardWatch | null = null
   let timer: ReturnType<typeof setTimeout> | null = null
+  let claimRetry: ReturnType<typeof setTimeout> | undefined
+  let claimAttempts = 0
   let reading = false
   let readAgain = false
   let readDone = Promise.resolve()
@@ -407,18 +409,31 @@ export function startRunner(options: Options): Runner {
     attempted.add(id)
     running.set(id, null)
     status(idle())
+    let result: Awaited<ReturnType<typeof runJob>> = 'changed'
     const job = runJob(id, deps(), (halt) => {
       running.set(id, halt)
       if (closed) void halt()
     }, () => closed, reply)
+      .then((outcome) => { result = outcome })
       .catch(() => {})
       .finally(() => {
         jobs.delete(job)
         running.delete(id)
         if (closed) return
-        boards?.look()
         status(idle())
-        void readJobs()
+        if (result === 'changed') {
+          claimAttempts = 0
+          boards?.look()
+          void readJobs()
+          return
+        }
+        attempted.delete(id)
+        if (result === 'retry' && !claimRetry) {
+          claimRetry = setTimeout(() => {
+            claimRetry = undefined
+            void readJobs()
+          }, BACKOFF_MS[Math.min(claimAttempts++, BACKOFF_MS.length - 1)])
+        }
       })
     jobs.add(job)
   }
@@ -486,6 +501,7 @@ export function startRunner(options: Options): Runner {
       }
     }
     if (timer) clearTimeout(timer)
+    clearTimeout(claimRetry)
     if (agentsTimer) clearTimeout(agentsTimer)
     clearInterval(modelsTimer)
     stopModels()

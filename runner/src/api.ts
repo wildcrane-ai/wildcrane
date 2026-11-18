@@ -273,7 +273,7 @@ const move = <T>(job: string, what: string, body: Record<string, unknown>) =>
   request<T>('POST', `/v1/runner/jobs/${encodeURIComponent(job)}/${what}`, body)
 
 export const claimJob = (machineId: string, job: string, reply = false) =>
-  move<{ claimed: true; job: Job } | { claimed: false; reason: string }>(job, 'claim', { machineId, ...(reply ? { reply: true } : {}) })
+  move<{ claimed: true; job: Job } | { claimed: false; reason: string; retired?: boolean }>(job, 'claim', { machineId, ...(reply ? { reply: true } : {}) })
 
 /** `stop`: the user stopped the chat reply this job writes (#2133). */
 export const renewJob = (machineId: string, job: string, progress?: ConversationProgress) => move<{ renewed: boolean; stop?: boolean; catalog?: StudioCatalog }>(job, 'renew', { machineId, ...(progress ? { progress } : {}) })
