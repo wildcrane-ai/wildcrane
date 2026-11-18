@@ -1,4 +1,4 @@
-// wildcrane-runner 0.6.92 — built by runner/scripts/build.mjs. Do not edit.
+// wildcrane-runner 0.6.93 — built by runner/scripts/build.mjs. Do not edit.
 import { createRequire as __ai4kanbanRequire } from 'node:module'
 const require = __ai4kanbanRequire(import.meta.url)
 var __create = Object.create;
@@ -63055,7 +63055,6 @@ function runOnce(candidate, options) {
     options.signal?.addEventListener("abort", onTerm, { once: true });
     if (options.signal?.aborted) onTerm();
     child.on("message", (message) => {
-      options.onMessage?.(message);
       if (message.type === "update-deferred") update = null;
       if (message.type === "reconnecting" && candidate.fresh && !connected && !timedOut) watchConnection();
       if (message.type === "waiting" && timer) {
@@ -63070,6 +63069,7 @@ function runOnce(candidate, options) {
         if (candidate.fresh || installed && !readState().good.includes(candidate.version)) markGood(candidate.version);
         if (candidate.fresh) status(t.updated(candidate.version));
       }
+      options.onMessage?.(message);
     });
     let spawnError;
     child.once("error", (error62) => {

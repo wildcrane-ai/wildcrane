@@ -211,7 +211,6 @@ function runOnce(candidate: Candidate, options: LaunchOptions): Promise<Outcome>
     if (options.signal?.aborted) onTerm()
 
     child.on('message', (message: { type?: string }) => {
-      options.onMessage?.(message)
       if (message.type === 'update-deferred') update = null
       if (message.type === 'reconnecting' && candidate.fresh && !connected && !timedOut) watchConnection()
       // Another Runner on this computer runs the jobs: this one is up, only not connected yet.
@@ -228,6 +227,7 @@ function runOnce(candidate: Candidate, options: LaunchOptions): Promise<Outcome>
         if (candidate.fresh || (installed && !readState().good.includes(candidate.version))) markGood(candidate.version)
         if (candidate.fresh) status(t.updated(candidate.version))
       }
+      options.onMessage?.(message)
     })
     let spawnError: Error | undefined
     child.once('error', (error) => { spawnError = error })

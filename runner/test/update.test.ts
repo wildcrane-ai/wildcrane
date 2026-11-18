@@ -13,7 +13,7 @@ import { akbVersionDir, currentAkb, followAkb, readAkbState, sweepAkb } from '..
 import { hold, IDLE_MS } from '../src/cache'
 import { runnerHome, useRunnerHome } from '../src/home'
 import { acceptAlphaUpdates, saveAlphaUpdates } from '../src/preferences'
-import { launch, pluginEntry, readState } from '../src/launcher'
+import { launch, pluginEntry, provenNewer, readState } from '../src/launcher'
 import { AKB_CONTRACT } from '../src/protocol'
 import { compare, extract, satisfies, versionDir, versionsDir } from '../src/update'
 
@@ -145,6 +145,18 @@ beforeEach(() => {
 const ran = () => fs.readFileSync(path.join(runnerHome(), 'ran'), 'utf8').trim().split('\n')
 
 describe('the launcher', () => {
+  it('makes the connected version available to the shim callback', async () => {
+    target = '1.1.0'
+    published['1.1.0'] = { script: CONNECTS }
+    let version: string | null | undefined
+    assert.equal(await launch(own, {
+      onMessage: message => {
+        if (message.type === 'connected') version = provenNewer(own.version)
+      },
+    }), 0)
+    assert.equal(version, '1.1.0')
+  })
+
   for (const kind of ['claude-code', 'codex', 'cursor', 'zcode', 'dsh', 'kimi', 'grok', 'terminal']) {
     for (const replace of [false, true]) {
       it(`${kind}: starts, updates and rolls back with a ${replace ? 'replaced' : 'deleted'} host cwd`, { skip: process.platform === 'win32' }, async () => {
