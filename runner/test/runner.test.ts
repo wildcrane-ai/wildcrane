@@ -1,6 +1,6 @@
 import { zipSync, strToU8 } from 'fflate'
 import { PDFDocument } from 'pdf-lib'
-import { documentPreviewKey } from '../../artifact-sdk/src/internal/document'
+import { documentPreviewKey, PDF } from '../../artifact-sdk/src/internal/document'
 import { numberOfCard } from '../../cli/src/lib/shared/board-files'
 import { taskPreviewProblems } from '../../cli/src/lib/shared/task-preview-validation'
 import { IDLE_TIMEOUT } from '../../cli/src/lib/agent/idle'
@@ -77,6 +77,18 @@ function fakeRuntime(script: string) {
       session: () => resume ?? 'fresh-session',
     }
   }
+}
+
+async function mockOffice(t: { after: (clean: () => void) => void }) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-office-test-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const pdf = await PDFDocument.create()
+  pdf.addPage()
+  fs.writeFileSync(path.join(dir, 'example.pdf'), await pdf.save())
+  fs.writeFileSync(path.join(dir, 'soffice'), '#!/bin/sh\nfor input do :; done\ncp "$(dirname "$0")/example.pdf" "${input%/*}/source.pdf"\n', { mode: 0o755 })
+  const previousPath = process.env.PATH
+  process.env.PATH = `${dir}${path.delimiter}${previousPath}`
+  t.after(() => { process.env.PATH = previousPath })
 }
 
 // 用文件放行真实子进程，避免用固定时长猜测中间状态。
@@ -1932,16 +1944,7 @@ describe('a task’s folder (#2037)', () => {
   }
 
   it('pairs Office previews with the uploaded source version and preserves failed originals (#907)', { skip: process.platform === 'win32' }, async (t) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-office-test-'))
-    t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
-    const pdf = await PDFDocument.create()
-    pdf.addPage()
-    fs.writeFileSync(path.join(dir, 'example.pdf'), await pdf.save())
-    fs.writeFileSync(path.join(dir, 'soffice'), '#!/bin/sh\nfor input do :; done\ncp "$(dirname "$0")/example.pdf" "${input%/*}/source.pdf"\n', { mode: 0o755 })
-    const previousPath = process.env.PATH
-    process.env.PATH = `${dir}${path.delimiter}${previousPath}`
-    t.after(() => { process.env.PATH = previousPath })
-
+    await mockOffice(t)
     const source = (text: string) => Buffer.from(zipSync({
       'word/document.xml': strToU8(text),
       '_rels/.rels': strToU8('<Relationships/>'),
@@ -1971,6 +1974,68 @@ describe('a task’s folder (#2037)', () => {
     assert.deepEqual(index()[file], { artifact: original.artifact, version: 3 })
     assert.equal(index()[secondKey], undefined)
     assert.deepEqual(cloud.task.artifacts.get(original.artifact)![2], broken)
+  })
+
+  it('publishes Office originals while PDF uploads return 503 and fills in previews on later syncs (#943)', { skip: process.platform === 'win32' }, async (t) => {
+    await mockOffice(t)
+    await prepareBoard()
+    const ws = keptBoard(cached())!
+    const files = { 'report.docx': 'word/document.xml', 'slides.pptx': 'ppt/presentation.xml' }
+    const source = (part: string, version: number) => Buffer.from(zipSync({
+      [part]: strToU8(`version ${version}`),
+      '_rels/.rels': strToU8('<Relationships/>'),
+    }, { mtime: new Date(2020, 0, 1) }))
+    const writeSources = (version: number) => {
+      for (const [name, part] of Object.entries(files)) fs.writeFileSync(path.join(board(), 'todo', name), source(part, version))
+    }
+    const body = BODY + Object.keys(files).map(name => `\n<Asset src="${name}" />\n`).join('')
+    fs.writeFileSync(path.join(board(), CARD), body)
+    writeSources(1)
+    cloud.unavailableUploadTypes.add(PDF)
+    assert.deepEqual(await pushBoard(ws, MACHINE), { ok: true, changed: true })
+    assert.equal(cloud.file(CARD), body)
+
+    const index = () => JSON.parse(cloud.file('assets/task_1.json')!) as api.Assets
+    const ids = Object.fromEntries(Object.keys(files).map(name => [name, index()[name]!.artifact]))
+    const expectPins = (version: number, hasPreview: boolean) => {
+      const refs = index()
+      for (const [name, part] of Object.entries(files)) {
+        const artifact = ids[name]!
+        const key = documentPreviewKey(artifact, version)
+        assert.deepEqual(refs[name], hasPreview ? { artifact, version, dependencies: [key] } : { artifact, version })
+        assert.deepEqual(cloud.task.artifacts.get(artifact), Array.from({ length: version }, (_, i) => source(part, i + 1)))
+        assert.equal(cloud.log.filter(line => line === `PUT /v1/uploads/upl_${artifact}`).length, version)
+        if (hasPreview) {
+          const pdf = refs[key]!
+          assert.equal(pdf.version, 1)
+          assert.match(cloud.task.artifacts.get(pdf.artifact)![0]!.toString(), /^%PDF-/)
+        } else {
+          assert.equal(refs[key], undefined)
+        }
+        if (version > 1) assert.equal(refs[documentPreviewKey(artifact, version - 1)], undefined)
+      }
+    }
+    expectPins(1, false)
+    assert.ok(unsent(cached()))
+    const puts = () => cloud.log.filter(line => line.startsWith('PUT /v1/uploads/')).length
+    const beforeRetry = puts()
+    assert.deepEqual(await pushBoard(ws, MACHINE, []), { ok: true, changed: false })
+    assert.equal(puts() - beforeRetry, Object.keys(files).length)
+    expectPins(1, false)
+    assert.ok(unsent(cached()))
+    cloud.unavailableUploadTypes.clear()
+    assert.deepEqual(await pushBoard(ws, MACHINE, []), { ok: true, changed: true })
+    expectPins(1, true)
+    assert.equal(unsent(cached()), false)
+
+    writeSources(2)
+    cloud.unavailableUploadTypes.add(PDF)
+    assert.deepEqual(await pushBoard(ws, MACHINE, Object.keys(files).map(name => `todo/${name}`)), { ok: true, changed: true })
+    expectPins(2, false)
+    cloud.unavailableUploadTypes.clear()
+    assert.deepEqual(await pushBoard(ws, MACHINE, []), { ok: true, changed: true })
+    expectPins(2, true)
+    assert.equal(unsent(cached()), false)
   })
 
   for (const copy of ['empty', 'existing']) {
@@ -4735,6 +4800,35 @@ describe('flow jobs (#2020)', () => {
     assert.match(cloud.file('.archive/2-pricing-page.md')!, /implement$/m, 'the archived card never reached Cloud')
     assert.equal(cloud.file('todo/2-pricing-page.md'), null, 'the card stayed in todo/ in Cloud')
     assert.equal(calls().filter((c) => c[1] === 'init').length, 1)
+  })
+
+  it('syncs Office originals before waiting to finish a delivery with a temporarily unavailable PDF (#943)', { skip: process.platform === 'win32' }, async (t) => {
+    await mockOffice(t)
+    assert.equal((await flowJob('plan-office', { verb: 'create' })).outcome, 'done')
+    const asset = '.assets/2/report.docx'
+    const target = path.join(projectStateDir(board(), cached()), 'assets/2/report.docx')
+    const original = Buffer.from(zipSync({ 'word/document.xml': strToU8('Report'), '_rels/.rels': strToU8('<Relationships/>') }))
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, original)
+    fs.appendFileSync(path.join(board(), 'todo/2-pricing-page.md'), '\n<Asset src=".assets/2/report.docx" />\n')
+    cloud.unavailableUploadTypes.add(PDF)
+    const id = 'finish-office'
+    const finished = flowJob(id, { verb: 'implement', card: 2 })
+    await until(() => cloud.jobs.get(id)?.state === 'finished' || readCheckpoint(id)?.syncRetry?.step === 'publish')
+    const index = () => JSON.parse(cloud.file('assets/task_1.json')!) as api.Assets
+    const pin = index()[asset]!
+    const key = documentPreviewKey(pin.artifact, pin.version!)
+    assert.match(cloud.file('.archive/2-pricing-page.md')!, /report\.docx/)
+    assert.deepEqual(cloud.task.artifacts.get(pin.artifact), [original])
+    assert.deepEqual(pin, { artifact: pin.artifact, version: 1 })
+    assert.equal(index()[key], undefined)
+    assert.equal(cloud.jobs.get(id)?.state, 'claimed')
+    cloud.unavailableUploadTypes.clear()
+    assert.equal((await finished).outcome, 'done')
+    assert.deepEqual(index()[asset], { ...pin, dependencies: [key] })
+    assert.equal(index()[key]?.version, 1)
+    assert.equal(cloud.log.filter(line => line === 'PUT /v1/uploads/upl_' + pin.artifact).length, 1)
+    assert.equal(cardCalls().filter(call => call.startsWith('card implement')).length, 1)
   })
 
   it('hands a discussion task\'s session and discussion to its planning, and reports the session it ended on (#2146)', async () => {

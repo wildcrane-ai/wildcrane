@@ -132,6 +132,7 @@ export class FakeCloud {
   refusedUploads = new Map<string, string>()
   unreachableArtifacts = new Set<string>()
   serviceUnavailableUploads = false
+  unavailableUploadTypes = new Set<string>()
   boardTimeouts = 0
   cancelTask?: (task: string, body: { reason?: string; discard: boolean }) => { status: number; value: unknown }
   taskCancelReasons: Record<string, string> = {}
@@ -326,6 +327,10 @@ export class FakeCloud {
     }
     const refuse = (status: number, code: string, message: string) => send(status, { error: { code, message } })
     const route = url.pathname
+    if (fileUpload && this.unavailableUploadTypes.has(req.headers['content-type'] ?? '')) {
+      this.log.push(`${req.method} ${route}`)
+      return refuse(503, 'service_unavailable', 'Upload temporarily unavailable.')
+    }
     if (this.service) {
       try {
         const result = await this.service(req.method!, url, body)

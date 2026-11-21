@@ -3,11 +3,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { PassThrough, Writable } from 'node:stream'
+import { setTimeout as delay } from 'node:timers/promises'
 import { Agent, WebSocket } from 'undici'
 import { bounded } from '../../cli/src/lib/shared/conversation'
 import { connectionIdentity, connectionStopped } from '../../cli/src/lib/agent/connection-process'
 import { connect, RpcError, type Message } from '../../cli/src/lib/agent/wire/rpc'
-import { obj, type Json } from '../../cli/src/lib/agent/wire/json'
+import { obj, str, type Json } from '../../cli/src/lib/agent/wire/json'
 import { runnerCwd } from './home'
 
 export const CODEX_PROTOCOL = 3
@@ -88,9 +89,17 @@ export async function nativeConnection(backend: NativeBackend, onMessage: (messa
       ws.addEventListener('error', () => reject(Error('Codex native listener did not answer.')), { once: true })
     }), CODEX_TIMEOUT, 'Codex native connection timed out.')
   } catch (error) { close(); throw error }
-  const rpc = connect(incoming, outgoing, onMessage)
-  return { rpc, incoming, close }
+  const unloads = new EventTarget()
+  const rpc = connect(incoming, outgoing, message => {
+    const params = obj(message.params), id = str(params.threadId)
+    if (id && message.id === undefined && (message.method === 'thread/closed'
+      || message.method === 'thread/status/changed' && obj(params.status).type === 'notLoaded')) unloads.dispatchEvent(new Event(id))
+    onMessage(message)
+  })
+  return { rpc, incoming, close, unloads }
 }
+
+type NativeConnection = Awaited<ReturnType<typeof nativeConnection>>
 
 export async function initializeNative(connection: Awaited<ReturnType<typeof nativeConnection>>) {
   const result = await bounded(connection.rpc.call('initialize', { clientInfo: { name: 'wildcrane', version: '1' }, capabilities: { experimentalApi: true } }), CODEX_TIMEOUT, 'Codex initialize timed out.')
@@ -98,43 +107,130 @@ export async function initializeNative(connection: Awaited<ReturnType<typeof nat
   return result
 }
 
-export async function backgroundTerminals(rpc: ReturnType<typeof connect>, threadId: string) {
-  const result: Json[] = [], seen = new Set<unknown>()
-  let cursor: unknown = null
+export async function backgroundTerminals(rpc: ReturnType<typeof connect>, threadId: string, deadline = Date.now() + CODEX_TIMEOUT) {
+  const result: Json[] = [], seen = new Set<string>()
+  let cursor: string | undefined
   do {
-    if (seen.has(cursor)) throw Error('Codex repeated a terminal cursor.')
-    seen.add(cursor)
-    const page = await rpc.call('thread/backgroundTerminals/list', { threadId, ...(cursor ? { cursor } : {}) })
+    if (cursor !== undefined) {
+      if (seen.has(cursor)) throw Error('Codex repeated a terminal cursor.')
+      seen.add(cursor)
+    }
+    const page = await beforeDeadline(deadline, 'background terminal verification', () => rpc.call('thread/backgroundTerminals/list', { threadId, ...(cursor === undefined ? {} : { cursor }) }))
     if (!Array.isArray(page.data) || page.nextCursor != null && typeof page.nextCursor !== 'string') throw Error('Codex background terminal state is unconfirmed.')
     for (const value of page.data) result.push({ ...obj(value), threadId })
-    cursor = page.nextCursor
-  } while (cursor)
+    cursor = typeof page.nextCursor === 'string' ? page.nextCursor : undefined
+  } while (cursor !== undefined)
   return result
 }
 
-export async function releaseNativeThread(connection: Awaited<ReturnType<typeof nativeConnection>>, threadId: string, turnId: string | undefined, stopWork: boolean, unloading: Map<string, () => void>) {
-  const missing = (error: unknown) => error instanceof RpcError && /thread not (?:found|loaded)/i.test(error.message)
+export function codexDiagnostic(error: unknown) {
+  return error instanceof RpcError ? `RPC ${error.code ?? 'unknown'}: ${error.message}`
+    : error instanceof Error ? error.message : String(error)
+}
+
+function beforeDeadline<T>(deadline: number, operation: string, run: () => Promise<T>) {
+  const timeout = `Codex ${operation} timed out.`
+  const remaining = deadline - Date.now()
+  if (remaining <= 0) throw Error(timeout)
+  return bounded(run(), remaining, timeout)
+}
+
+type ThreadEvidence = {
+  status: 'notLoaded' | 'idle' | 'active' | 'background-work' | 'unverified'
+  thread?: Json
+  diagnostic?: string
+}
+
+export async function inspectNativeThread(rpc: NativeConnection['rpc'], threadId: string, deadline = Date.now() + CODEX_TIMEOUT, checkBackground = true): Promise<ThreadEvidence> {
+  let diagnostic: string
   try {
-    await bounded((async () => {
-      if (stopWork) {
-        if (turnId) {
-          try { await connection.rpc.call('turn/interrupt', { threadId, turnId }) }
-          catch (error) { if (!missing(error)) throw error }
+    const reply = await beforeDeadline(deadline, 'thread/read', () => rpc.call('thread/read', { threadId }))
+    const thread = obj(reply.thread), status = obj(thread.status).type
+    if (thread.id !== threadId || status !== 'notLoaded' && status !== 'active' && status !== 'idle') {
+      throw Error('thread/read returned an unexpected thread or status.')
+    }
+    if (status === 'idle' && checkBackground) {
+      const work = await backgroundTerminals(rpc, threadId, deadline)
+      if (work.length) return { status: 'background-work', thread }
+    }
+    return { status, thread }
+  } catch (error) { diagnostic = codexDiagnostic(error) }
+
+  let cursor: string | undefined
+  const seen = new Set<string>()
+  try {
+    do {
+      const page = await beforeDeadline(deadline, 'thread/loaded/list', () => rpc.call('thread/loaded/list', cursor === undefined ? {} : { cursor }))
+      const next = page.nextCursor
+      if (!Array.isArray(page.data) || page.data.some(id => typeof id !== 'string' || !id.trim())
+        || next != null && typeof next !== 'string') throw Error('thread/loaded/list returned an invalid page.')
+      if (page.data.includes(threadId)) return { status: 'unverified', diagnostic: `${diagnostic} The thread is still loaded.` }
+      cursor = typeof next === 'string' ? next : undefined
+      if (cursor !== undefined) {
+        if (seen.has(cursor)) throw Error('thread/loaded/list repeated a cursor.')
+        seen.add(cursor)
+      }
+    } while (cursor !== undefined)
+    return { status: 'notLoaded', diagnostic }
+  } catch (error) {
+    return { status: 'unverified', diagnostic: `${diagnostic} ${codexDiagnostic(error)}` }
+  }
+}
+
+function releaseError(method: string, threadId: string, evidence: ThreadEvidence, error?: unknown) {
+  const diagnostic = [`${method} could not confirm Codex thread ${threadId}: ${evidence.status}.`, evidence.diagnostic].filter(Boolean).join(' ')
+  return error instanceof RpcError ? new RpcError(`${error.message} ${diagnostic}`, error.code, error.data)
+    : Error([error && codexDiagnostic(error), diagnostic].filter(Boolean).join(' '))
+}
+
+export async function interruptNativeThread(connection: NativeConnection, threadId: string, turnId: string, deadline: number) {
+  try { await beforeDeadline(deadline, 'turn/interrupt', () => connection.rpc.call('turn/interrupt', { threadId, turnId })) }
+  catch (error) {
+    const evidence = await inspectNativeThread(connection.rpc, threadId, deadline, false)
+    if (evidence.status !== 'idle' && evidence.status !== 'notLoaded') throw releaseError('turn/interrupt', threadId, evidence, error)
+    console.error(`Codex turn/interrupt: ${codexDiagnostic(error)} (${evidence.status}, ${threadId})`)
+  }
+}
+
+export async function releaseNativeThread(connection: NativeConnection, threadId: string, turnId: string | undefined, stopWork: boolean, deadline = Date.now() + CODEX_TIMEOUT) {
+  const { rpc, unloads } = connection
+  let closed = false
+  let observed!: () => void
+  const unloaded = new Promise<void>(resolve => { observed = () => { closed = true; resolve() } })
+  unloads.addEventListener(threadId, observed, { once: true })
+  const release = async () => {
+    if (stopWork && turnId) await interruptNativeThread(connection, threadId, turnId, deadline)
+    if (closed) return
+    if (stopWork) {
+      try { await beforeDeadline(deadline, 'thread/backgroundTerminals/clean', () => rpc.call('thread/backgroundTerminals/clean', { threadId })) }
+      catch (error) {
+        if (closed) return
+        if (!(error instanceof RpcError && error.code === -32601)) {
+          const evidence = await inspectNativeThread(rpc, threadId, deadline, false)
+          if (!closed && evidence.status !== 'notLoaded') throw releaseError('thread/backgroundTerminals/clean', threadId, evidence, error)
+          console.error(`Codex thread/backgroundTerminals/clean: ${codexDiagnostic(error)} (${threadId})`)
+          return
         }
-        try { await connection.rpc.call('thread/backgroundTerminals/clean', { threadId }) }
-        catch (error) { if (!(error instanceof RpcError) || error.code !== -32601 && !missing(error)) throw error }
       }
-      const unloaded = new Promise<void>(resolve => unloading.set(threadId, resolve))
-      let result
-      try { result = await connection.rpc.call('thread/unsubscribe', { threadId }) }
-      catch (error) { if (!missing(error)) throw error; result = { status: 'notLoaded' } }
-      if (result.status === 'unsubscribed') await unloaded
-      else if (result.status !== 'notLoaded') {
-        const snapshot = obj((await connection.rpc.call('thread/read', { threadId })).thread)
-        if (obj(snapshot.status).type !== 'notLoaded') throw Error('Codex thread unload is unconfirmed.')
+    }
+    if (closed) return
+    let status: unknown, failure: unknown
+    try { status = (await beforeDeadline(deadline, 'thread/unsubscribe', () => rpc.call('thread/unsubscribe', { threadId }))).status }
+    catch (error) { failure = error }
+    if (status === 'notLoaded') return
+    while (!closed) {
+      const evidence = await inspectNativeThread(rpc, threadId, deadline, false)
+      if (closed || evidence.status === 'notLoaded') {
+        if (failure) console.error(`Codex thread/unsubscribe: ${codexDiagnostic(failure)} (${threadId})`)
+        return
       }
-    })(), CODEX_TIMEOUT, 'Codex thread cleanup timed out; ownership remains unconfirmed.')
-  } finally { unloading.delete(threadId) }
+      if (status !== 'unsubscribed') throw releaseError('thread/unsubscribe', threadId, evidence, failure)
+      if (Date.now() >= deadline) throw releaseError('thread unload', threadId, evidence, Error('Codex thread cleanup timed out.'))
+      await delay(Math.min(50, deadline - Date.now()))
+    }
+  }
+  try { await Promise.race([release(), unloaded]) }
+  finally { unloads.removeEventListener(threadId, observed) }
 }
 
 export function stopNativeBackends() {

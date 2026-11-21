@@ -2,6 +2,10 @@
 
 Build the approved requirements without reopening settled decisions or unrelated questions; without a card, create none.
 
+Before implementing a Cloud task, read its recent chat with `akb task chat <task>`.
+Read older messages as needed. Use relevant clarifications within the scope of
+the current card and approved plan.
+
 For Git deliveries, adapt the approved work to the current target branch and preserve its
 behavior and removals unless the task's core intent requires changing them. Stop the
 affected work and use `akb guide update-questions` only if those changes conflict with the

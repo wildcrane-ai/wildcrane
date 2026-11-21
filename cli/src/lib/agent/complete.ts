@@ -15,6 +15,12 @@ import type { MoveResult } from '../types'
 import { readStore, withStore } from './store'
 import type { DeliveryCompletion, DeliveryRecord } from './types'
 
+function checkRecordedResult(receipt: DeliveryCompletion, commit?: string, branch?: string) {
+  if (receipt.commit === commit && receipt.branch === branch) return
+  const describe = (hash?: string, target?: string) => hash ? `${hash} on ${target}` : 'no Git result'
+  throw new Error(`This step already recorded a different result. Recorded: ${describe(receipt.commit, receipt.branch)}. Reported: ${describe(commit, branch)}.`)
+}
+
 export function completeDelivery(named: string, result: { commit?: string; branch?: string } = {}): MoveResult & { deliveryId: string; finished: boolean } {
   const commit = result.commit?.toLowerCase()
   const branch = result.branch
@@ -44,7 +50,7 @@ export function completeDelivery(named: string, result: { commit?: string; branc
       const pending = receipts[deliveryStep(delivery)]
       const previous = receipts.find((c) => c.sessionId === sessionId || c.resumedSessions?.includes(sessionId))
       if (previous) {
-        if (previous.commit !== commit || previous.branch !== branch) throw new Error('This step already recorded a different result.')
+        checkRecordedResult(previous, commit, branch)
         if (!previous.finished && previous.step === deliveryStep(delivery) &&
             (delivery.status !== 'active' || run !== current || run.status !== 'running')) {
           throw new Error('Only the current owning run can finish pending completion.')
@@ -56,7 +62,7 @@ export function completeDelivery(named: string, result: { commit?: string; branc
       }
       if (answerOutcome(delivery) === 'changed') throw new Error('The approved requirements were superseded. Continue with the updated delivery.')
       if (pending && run === current) {
-        if (pending.commit !== commit || pending.branch !== branch) throw new Error('This step already recorded a different result.')
+        checkRecordedResult(pending, commit, branch)
         pending.resumedSessions = [...(pending.resumedSessions ?? []), sessionId]
         return { delivery, receipt: pending }
       }

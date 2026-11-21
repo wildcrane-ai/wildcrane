@@ -627,9 +627,9 @@ async function prepareConflictTask(ws: TaskFolder): Promise<api.Call<void>> {
   return { ok: true, value: undefined }
 }
 
-/** The Cloud board version the folder last read up to; null when never read. */
-export const replyAssetsSynced = (ws: TaskFolder): boolean => !readBase(ws).pendingAssets?.includes(ws.task)
+export const taskAssetsSynced = (ws: TaskFolder): boolean => !readBase(ws).pendingAssets?.includes(ws.task)
 
+/** The Cloud card version the folder last synced. */
 export function syncedCardVersion(ws: TaskFolder): number | null {
   const base = readBase(ws)
   const card = Object.entries(base.files).find(([p]) => p.startsWith(rootOf(ws) + 'todo/') && numberOfCard(p.slice(rootOf(ws).length)) === ws.number)
@@ -1040,9 +1040,8 @@ async function pushDocumentPreview(ws: TaskFolder, record: Record_, key: string,
   return { ok: true, value: { artifact: pending.artifact, version: version.value } }
 }
 
-
-/** 每次成功上传即记账，失败重试可复用。任一预览处理失败都不阻塞推送：沿用旧版本或建空记录，并在清单里记下原因（#456, #457）。 */
-async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Promise<api.Call<Assets | undefined>> {
+/** Record each successful upload so later syncs can reuse it. */
+async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Promise<api.Call<{ refs: Assets; retryPreviews: boolean } | undefined>> {
   const started = performance.now()
   logSync('assets.start', { project: ws.project, task: ws.task, entries: Object.keys(record.assets).length })
   if (ws.cloudTask && ws.number && (record.task !== ws.cloudTask || record.number !== ws.number)) {
@@ -1052,6 +1051,8 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
   const body = readText(file)
   if (body === null) return { ok: true, value: undefined }
   const refs: Assets = {}
+  const currentDocumentPreviews = new Set<string>()
+  let retryPreviews = false
   const canonical = (target: string) => {
     // 本机已删除的文件按最近的现存上级解析符号链接，键与删除前一致。
     const real = (file: string): string => fs.existsSync(file) ? fs.realpathSync(file)
@@ -1145,6 +1146,7 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
           }
           for (const alias of node.aliases) refs[alias] = { artifact: old.artifact, version, ...(old.dependencies ? { dependencies: old.dependencies } : {}) }
           const previewKey = documentPreviewKey(old.artifact, version)
+          currentDocumentPreviews.add(previewKey)
           if (before[previewKey]) refs[previewKey] = before[previewKey]
         }
         continue
@@ -1209,8 +1211,13 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
       const office = out.kind === 'asset' && officeExtension(node.file)
       if (office && entry.version > 0) {
         const key = documentPreviewKey(entry.artifact, entry.version)
+        currentDocumentPreviews.add(key)
         const preview = before[key]?.version ? { ok: true as const, value: before[key] } : await pushDocumentPreview(ws, record, key, office, out.bytes)
-        if (!preview.ok) return { ...preview, error: `${node.key}: ${preview.error}` }
+        if (!preview.ok) {
+          retryPreviews ||= api.temporaryCloudFailure(preview)
+          logSync('assets.documentPreviewUnavailable', { project: ws.project, task: ws.task, reason: preview.error })
+          continue
+        }
         if (preview.value) {
           refs[key] = preview.value
           for (const alias of node.aliases) {
@@ -1223,11 +1230,14 @@ async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Prom
     for (const name of Object.keys(record.assets)) {
       if (isDocumentPreview(name) && !refs[name]) delete record.assets[name]
     }
+    for (const name of Object.keys(record.pendingVersions ?? {})) {
+      if (isDocumentPreview(name) && !currentDocumentPreviews.has(name)) delete record.pendingVersions![name]
+    }
   } catch (error) {
     return { ok: false, code: 'bad_request', error: error instanceof Error ? error.message : String(error) }
   }
   logSync('assets.end', { project: ws.project, task: ws.task, ms: Math.round(performance.now() - started) })
-  return { ok: true, value: refs }
+  return { ok: true, value: { refs, retryPreviews } }
 }
 
 /** Each item the job added to `triage/`, proposed from its task on its studio — the job's when
@@ -1497,18 +1507,21 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
       && readText(path.join(ws.board, listPath)) === (base.files[rootOf(ws) + listPath]?.content ?? null)
       && readText(path.join(ws.board, card)) === base.files[rootOf(ws) + card]?.content
       && !newer && clean()
+    retryAssets.delete(item.folder.task)
     if (!archived && !item.record.deleted) {
       // Cloud can advance an archived preview while its local source is unchanged.
       const refreshed = newer && clean() ? await pullAssets(item.folder, item.record, before, true) : { ok: true as const, value: undefined }
       const assets = refreshed.ok ? await pushAssets(item.folder, item.record, before) : refreshed
       if (assets.ok) {
+        if (assets.value?.retryPreviews) retryAssets.add(item.folder.task)
         writeRecord(item.folder, item.record)
         indexTask(item.folder, item.record)
         if (archive) archives.set(item.folder.task, card)
         const list = listPath
         const local = readText(path.join(ws.board, list))
-        if (assets.value && (local !== null || Object.keys(assets.value).length)) {
-          const content = isDeepStrictEqual(assetsOf(local), assets.value) && local !== null ? local : assetsText(assets.value)
+        const refs = assets.value?.refs
+        if (refs && (local !== null || Object.keys(refs).length)) {
+          const content = isDeepStrictEqual(assetsOf(local), refs) && local !== null ? local : assetsText(refs)
           assetLists.set(list, { local, content })
           for (const file of assetFiles(item.folder, content, path.join(ws.board, card))) generatedAssets.add(file)
         }
@@ -1518,6 +1531,7 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
       if (!boardSync && !assets.failure) return fail(assets.error, false, assets.code, assets.status)
       if (job.id && ws.cloudTask && assets.failure) return { ok: false, conflict: false, error: assets.error, failure: assets.failure }
       if (assets.code !== 'conflict' || !assets.error.endsWith(': This task has finished.')) {
+        retryAssets.add(item.folder.task)
         assetErrors[item.folder.task] = { error: assets.error, failure: assets.failure, code: assets.code, ...(api.temporaryCloudFailure(assets) ? { offline: true } : {}) }
       }
     }
@@ -1552,7 +1566,7 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
   const oversize = new Set<number>()
   const success = async (changed: boolean): Promise<Pushed> => {
     const refreshDeferred = deferred.size !== (base.deferred?.length ?? 0) || base.deferred?.some(p => !deferred.has(p))
-    const pendingAssets = [...new Set([...(base.pendingAssets ?? []).filter(task => !processed.has(task)), ...Object.keys(assetErrors)])]
+    const pendingAssets = [...retryAssets]
     const refreshPending = JSON.stringify(pendingAssets) !== JSON.stringify(base.pendingAssets ?? [])
     if (refreshDeferred) base.deferred = [...deferred]
     if (refreshPending) base.pendingAssets = pendingAssets

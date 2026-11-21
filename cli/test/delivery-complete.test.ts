@@ -15,7 +15,7 @@ import { deliveryStep, nextDeliveryRun } from '../src/lib/agent/progress.ts'
 import { ruleFor } from '../src/lib/agent/rules.ts'
 import { agentForRun } from '../src/lib/agent/runner.ts'
 import { buildPrompt } from '../src/lib/agent/prompts.ts'
-import { closeRun, cancelDelivery, openRun } from '../src/lib/agent/sessions.ts'
+import { closeRun, cancelDelivery, openRun, reconcileCardDelivery } from '../src/lib/agent/sessions.ts'
 import { logPathOf, readAction, withStore } from '../src/lib/agent/store.ts'
 import type { RunRecord } from '../src/lib/agent/types.ts'
 import { BoardError } from '../src/lib/io.ts'
@@ -217,9 +217,23 @@ it('delivers through the CLI after agent-owned conflict repair, checks and a new
   const commit = atTree('rev-parse', 'HEAD')
   git('merge', '--ff-only', 'card/1/builder')
   git('merge-base', '--is-ancestor', commit, 'main')
-  await run(root, ['raw', 'delivery', 'complete', '1', '--commit', commit, '--branch', 'main', '--json'])
-  assert.equal(findDelivery(deliveryId)?.status, 'finished')
-  assert.equal(findDelivery(deliveryId)?.landing?.commit, commit)
+  const candidate = fs.readFileSync(card, 'utf8').replace('<!-- agent -->', '## Worth noting after implementation\n\n- Preserved both edits.\n\n<!-- agent -->')
+  assert.match(candidate, /Worth noting after implementation/)
+  fs.writeFileSync(card, candidate)
+  const complete = ['raw', 'delivery', 'complete', deliveryId, '--commit', commit, '--branch', 'main', '--json']
+  const handoff = await run(root, complete)
+  await closeRun('git-resumed', { status: 'interrupted' })
+  const archived = path.join(path.dirname(card), '../.archive', path.basename(card))
+  const saved = fs.readFileSync(archived, 'utf8')
+  assert.match(saved, /Preserved both edits/)
+  const reconciled = await reconcileCardDelivery(1)
+  assert.deepEqual(reconciled, { kind: 'completed', deliveryId, sessionId: 'git-resumed', commit, branch: 'main' })
+  assert.deepEqual(await run(root, complete), handoff)
+  assert.throws(() => completeDelivery(deliveryId, { commit: base, branch: 'other' }),
+    new RegExp(`Recorded: ${commit} on main\\. Reported: ${base} on other`))
+  assert.equal(git('rev-parse', 'main'), commit)
+  assert.equal(findDelivery(deliveryId)?.completions?.length, 1)
+  assert.equal(fs.readFileSync(archived, 'utf8'), saved)
   assert.equal(fs.readFileSync(path.join(root, 'parallel.txt'), 'utf8'), 'another target update')
   assert.equal(fs.existsSync(tree), true)
 })
@@ -241,6 +255,8 @@ it('recovers an archive interrupted after the card moved and repairs its index',
   assert.equal(findDelivery(deliveryId)?.status, 'active')
   assert.equal(open('after-archive'), deliveryId)
   process.env[RUN_ENV] = 'after-archive'
+  assert.throws(() => completeDelivery(deliveryId, { commit: sha, branch: 'other' }),
+    new RegExp(`Recorded: ${sha} on main\\. Reported: ${sha} on other`))
   const result = completeDelivery(deliveryId, { commit: sha, branch: 'main' })
   assert.equal(result.finished, true)
   assert.doesNotMatch(fs.readFileSync(index, 'utf8'), /1-deliver-it/)

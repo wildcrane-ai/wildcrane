@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { initializeNative, leaseFile, nativeConnection, processIdentity, readPrivate, releaseNativeThread, writeLease, type NativeBackend, type ThreadLease } from './codex-native'
+import { codexDiagnostic, initializeNative, leaseFile, nativeConnection, processIdentity, readPrivate, releaseNativeThread, writeLease, type NativeBackend, type ThreadLease } from './codex-native'
 import { accountGeneration, executorRecord } from './settings-control'
 import { obj, str } from '../../cli/src/lib/agent/wire/json'
 
@@ -13,7 +13,7 @@ async function retain() {
   const release = executorRecord()
   const state = { ...initial, ...identity }
   let closing = false, transferred = false
-  const active = new Map<string, string>(), unloaded = new Map<string, () => void>()
+  const active = new Map<string, string>()
   let wake!: () => void
   const done = new Promise<void>(resolve => { wake = resolve })
   const connection = await nativeConnection(backend, message => {
@@ -21,7 +21,6 @@ async function retain() {
     if (message.id !== undefined) { connection.rpc.refuse(message.id, 'Retained services cannot request new interaction.'); return }
     if (message.method === 'turn/started') active.set(id, str(obj(params.turn).id))
     if (message.method === 'turn/completed') active.delete(id)
-    if (message.method === 'thread/closed') unloaded.get(id)?.()
     if (message.method === 'item/completed' && obj(params.item).type === 'commandExecution') {
       state.retained = { ...state.retained!, kept: state.retained!.kept.filter(item => item.threadId !== id || item.itemId !== obj(params.item).id) }
       for (const thread of initial.threads) {
@@ -49,7 +48,7 @@ async function retain() {
     if (transferred) return
     const results = await Promise.allSettled(initial.threads.map(async id => {
       if (readPrivate<ThreadLease>(leaseFile(backend, id))?.lease !== lease) return
-      await releaseNativeThread(connection, id, active.get(id), true, unloaded)
+      await releaseNativeThread(connection, id, active.get(id), true)
       if (readPrivate<ThreadLease>(leaseFile(backend, id))?.lease === lease) fs.rmSync(leaseFile(backend, id), { force: true })
     }))
     const failure = results.find(result => result.status === 'rejected')
@@ -57,6 +56,7 @@ async function retain() {
   } catch (error) {
     for (const id of initial.threads) if (readPrivate<ThreadLease>(leaseFile(backend, id))?.lease === lease) writeLease(backend, id, { ...state, retained: undefined, uncertain: true })
     if (!closing) throw error
+    console.error(codexDiagnostic(error))
   } finally { connection.close(); release() }
 }
 void retain().catch(error => { console.error(String(error)); process.exitCode = 1 })

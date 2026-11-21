@@ -26,7 +26,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 import { contextLimit, refreshCatalog } from '../../cli/src/lib/agent/catalog'
 import { replyApprovalBridge } from './reply-approval'
-import { syncedCardVersion, withBoard, replyAssetsSynced } from './task-folder'
+import { syncedCardVersion, withBoard, taskAssetsSynced } from './task-folder'
 import { akbEnv, type Akb } from './akb'
 import { currentAkb } from './akb-version'
 import type { RunEvent, TurnEnd } from '../../cli/src/lib/agent/wire'
@@ -892,7 +892,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
         if (checkpoint.approvalCancelled) return { ok: false, error: 'This reply failed before. Ask again in a new reply.' }
         const pushed = await send({ id, machineId: deps.machineId })
         if (!pushed.ok) return { ok: false, error: pushed.error }
-        if (!replyAssetsSynced(folder)) return { ok: false, error: 'Preview uploads are still pending. Try again after they finish.' }
+        if (!taskAssetsSynced(folder)) return { ok: false, error: 'Preview uploads are still pending. Try again after they finish.' }
         const version = syncedCardVersion(folder)
         const task = await deps.api.readTask(job.task!)
         if (!task.ok) return task
@@ -1494,8 +1494,12 @@ async function finish(deps: Shared, id: string, lease: Lease, outcome: Outcome, 
 /** What the job changed goes back, then how it ended; `landed` once both were taken. */
 async function sendBack(job: Job, deps: StepDeps, lease: Lease, ws: TaskFolder, report: JobReport, sync: Sync, stream: ReturnType<typeof streamOut>,
   landed: () => void, repair: (problem: Extract<Pushed, { ok: false }>) => Promise<void>, confirm: () => Promise<api.Call<unknown>>): Promise<void> {
+  const closesTask = job.flow && !report.review && (report.deliveryCompleted ??
+    (job.flow.verb === 'implement' || job.flow.verb === 'create' && job.flow.skip_plan))
   const result = await sync('publish', async () => {
     const pushed = await push(ws, { id: job.id, machineId: deps.machineId }, () => stream.asked() || stream.lost())
+    // A completed task can no longer publish a missing PDF.
+    if (pushed.ok && closesTask && !taskAssetsSynced(ws)) return { ok: false, code: 'service_unavailable', error: 'Office preview uploads are pending.' }
     if (!pushed.ok && job.flow && syncWaitCode(pushed)) return pushed
     return !pushed.ok && pushed.offline ? { ok: false, error: pushed.error } : { ok: true, value: pushed }
   })
@@ -1512,7 +1516,7 @@ async function sendBack(job: Job, deps: StepDeps, lease: Lease, ws: TaskFolder, 
     console.error('runner: task sync refused', { job: job.id, code: denied.code, error: denied.error })
     return finish(deps, job.id, lease, 'failed', syncRefusal(job, denied), report)
   }
-  if (await finishAndConfirm(deps, job.id, lease, 'done', '', { ...report, ...(readCheckpoint(job.id)?.approvalRequested ? { replyApprovalSynced: report.replyApprovalSynced !== false && replyAssetsSynced(ws) } : {}) })) landed()
+  if (await finishAndConfirm(deps, job.id, lease, 'done', '', { ...report, ...(readCheckpoint(job.id)?.approvalRequested ? { replyApprovalSynced: report.replyApprovalSynced !== false && taskAssetsSynced(ws) } : {}) })) landed()
 }
 
 /** The runtime's settings and the keys this computer holds for it. */

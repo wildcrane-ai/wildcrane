@@ -6,7 +6,7 @@ import path from 'node:path'
 import { after, afterEach, beforeEach, it } from 'node:test'
 import { once } from 'node:events'
 import { codexServer, threadConfig } from '../src/codex-server'
-import { initializeNative, leaseFile, nativeConnection, nativeDirectory, readPrivate, writePrivate, type NativeBackend } from '../src/codex-native'
+import { initializeNative, leaseFile, nativeConnection, nativeDirectory, readPrivate, releaseNativeThread, writePrivate, type NativeBackend } from '../src/codex-native'
 import { createCodexClient } from '../../cli/src/lib/agent/wire/codex'
 import { connect, RpcError } from '../../cli/src/lib/agent/wire/rpc'
 import { reconcileCodexLeases } from '../src/codex-ownership'
@@ -103,7 +103,7 @@ for (const stop of [false, true]) it(`holds a discussion fork before submission 
  } finally { controller.abort(); child.stdin.end(); await owner.close() }
 })
 
-for (const scenario of ['recover', 'restart', 'budget', 'unknown', 'live', 'stop']) {
+for (const scenario of ['recover', 'release-rpc', 'restart', 'budget', 'unknown', 'live', 'stop', 'stop-release']) {
  it(`recovers managed Codex idle after git worktree add (${scenario}, #882)`, { timeout: 25_000 }, async () => {
   const neighbour = await peer()
   const other = strThread(await neighbour.rpc.call('thread/start', {}))
@@ -118,8 +118,9 @@ for (const scenario of ['recover', 'restart', 'budget', 'unknown', 'live', 'stop
   const previousEnv = Object.fromEntries(Object.keys(manager.env).map(key => [key, process.env[key]]))
   Object.assign(process.env, manager.env)
   const oldIdle = IDLE_TIMEOUT.milliseconds
-  IDLE_TIMEOUT.milliseconds = 350
+  IDLE_TIMEOUT.milliseconds = 1500
   const request = `Idle regression ${scenario}`
+  const releaseGate = path.join(workspace, 'release-gate')
   const started = openRun({ action: 'prune-memory' }, request, [])
   if ('error' in started) throw Error(started.error)
   let latest = started.run.sessionId
@@ -144,7 +145,8 @@ for (const scenario of ['recover', 'restart', 'budget', 'unknown', 'live', 'stop
   patch(latest, run => { run.pid = process.pid })
   try {
     const watching = watchRun(latest, resume, backoff)
-    await until(() => read().slice(offset).some(call => call.method === 'turn/start'), 8000)
+    const submitted = () => read().slice(offset).some(call => call.method === 'turn/start')
+    await Promise.race([until(submitted, 8000), watching.then(() => assert.ok(submitted(), peekRun(latest)?.error))])
     if (scenario === 'restart') {
       const instance = backends()[0]!.instance
       await manager.close()
@@ -156,12 +158,24 @@ for (const scenario of ['recover', 'restart', 'budget', 'unknown', 'live', 'stop
       patch(latest, run => { run.stopping = true })
       process.emit('SIGTERM', 'SIGTERM')
     }
+    if (scenario === 'stop-release') {
+      await until(() => read().slice(offset).some(call => call.method === 'thread/unsubscribe'), 8000)
+      const backend = backends()[0]!
+      const thread = read().slice(offset).find(call => call.method === 'turn/start').params.threadId
+      const file = leaseFile(backend, thread)
+      const reaping = reconcileCodexLeases(backend)
+      patch(latest, run => { run.stopping = true })
+      process.emit('SIGTERM', 'SIGTERM')
+      await reaping
+      assert.ok(fs.existsSync(file))
+      fs.writeFileSync(releaseGate, '')
+    }
     await watching
     const record = peekRun(latest)!
     const trace = read().slice(offset)
     const starts = trace.filter(call => call.method === 'turn/start')
     const thread = starts[0]?.params.threadId
-    const expected = scenario === 'budget' ? 4 : ['recover', 'restart'].includes(scenario) ? 2 : 1
+    const expected = scenario === 'budget' ? 4 : ['recover', 'release-rpc', 'restart'].includes(scenario) ? 2 : 1
     assert.equal(starts.length, expected, record.error)
     assert.equal(starts.filter(call => call.params.input[0].text === request).length, 1)
     assert.ok(starts.every(call => call.params.threadId === thread))
@@ -176,6 +190,10 @@ for (const scenario of ['recover', 'restart', 'budget', 'unknown', 'live', 'stop
       const release = find('thread/unsubscribe')
       const resume = find('thread/resume')
       assert.ok(interrupt >= 0 && interrupt < confirmation && confirmation < release && release < resume)
+      if (scenario === 'release-rpc') {
+        const pages = trace.slice(release, resume).filter(call => call.method === 'thread/loaded/list')
+        assert.deepEqual(pages.map(call => call.params.cursor), [undefined, 'page-two'])
+      }
     }
     if (scenario === 'budget') {
       assert.equal(record.retry?.attempt, 4)
@@ -185,9 +203,10 @@ for (const scenario of ['recover', 'restart', 'budget', 'unknown', 'live', 'stop
       assert.equal(record.cleanup?.status, 'unconfirmed')
       assert.equal(record.failure?.code, 'idle_timeout')
     } else {
-      assert.equal(record.status, scenario === 'stop' ? 'stopped' : 'done')
+      assert.equal(record.status, scenario.startsWith('stop') ? 'stopped' : 'done')
     }
   } finally {
+    if (scenario === 'stop-release') fs.writeFileSync(releaseGate, '')
     IDLE_TIMEOUT.milliseconds = oldIdle
     for (const [key, value] of Object.entries(previousEnv)) {
       if (value === undefined) delete process.env[key]
@@ -276,6 +295,45 @@ it('keeps fork sources reserved until every concurrent preparation completes (#7
  await b.close(); await c.close()
 })
 
+it('assigns a fork to its requester when the source owner sees the notification first (#1015)', async () => {
+ const owner = await peer(), requester = await peer(), other = await peer()
+ const source = strThread(await owner.rpc.call('thread/start', {}))
+ await owner.rpc.call('turn/start', { threadId: source, input: [{ text: 'retain' }] })
+ await owner.rpc.call('wildcrane/settled', {
+  ...owner.hello.wildcrane as object, threadId: source, execution: 'kept', confirmed: true,
+  kept: [{ threadId: source, itemId: 'service', processId: '42' }],
+ })
+
+ const offset = read().length
+ const gate = path.join(root, 'release-fork-response')
+ const response = requester.rpc.call('thread/fork', { threadId: source, pauseForkResponse: gate })
+ try {
+  await until(() => owner.notifications.some(n => n.method === 'thread/name/updated' && n.params.threadId === source))
+ } finally { fs.writeFileSync(gate, '') }
+ const fork = strThread(await response)
+ assert.equal(owner.notifications.some(n => n.method === 'thread/started' && n.params.thread.id === fork), false)
+ await assert.rejects(other.rpc.call('thread/resume', { threadId: fork }), /already in use/)
+
+ const { turn } = await requester.rpc.call('turn/start', { threadId: fork, input: [{ text: 'spawn-child' }] })
+ await assert.rejects(other.rpc.call('turn/interrupt', { threadId: fork, turnId: (turn as { id: string }).id }), /does not own/)
+ const child = requester.notifications.find(n => n.method === 'thread/started' && n.params.thread.parentThreadId === fork)?.params.thread.id
+ assert.ok(child)
+ await requester.rpc.call('turn/start', { threadId: child })
+ await requester.close()
+
+ const trace = read().slice(offset)
+ assert.equal(trace.filter(call => call.method === 'turn/start' && call.params.threadId === fork).length, 1)
+ assert.equal(trace.filter(call => call.method === 'turn/interrupt' && call.params.threadId === fork).length, 1)
+ assert.ok(trace.some(call => call.method === 'turn/interrupt' && call.params.threadId === child))
+ assert.ok(trace.some(call => call.method === 'thread/unsubscribe' && call.params.threadId === child))
+ assert.ok(!trace.some(call => call.params?.threadId === source && ['turn/interrupt', 'thread/unsubscribe'].includes(call.method)))
+
+ await owner.close()
+ await other.rpc.call('thread/resume', { threadId: source })
+ await other.rpc.call('turn/start', { threadId: source, input: [{ text: 'finish-service' }] })
+ await other.close()
+})
+
 it('routes pending approvals through Runner takeover and stops only the owning execution (#766)', async () => {
  const offset = read().length
  const a = await peer(), b = await peer()
@@ -315,9 +373,10 @@ it('bounds unconfirmed cleanup while preserving parallel work and reconciling st
  await c.close(); await b.close()
 })
 
-it('cleans independent threads even when a source has already unloaded (#773)', async () => {
+for (const fault of ['missing', 'missing-reworded']) it(`cleans an already unloaded source with ${fault} RPC diagnostics (#932)`, async () => {
+ const offset = read().length
  const a = await peer(), b = await peer()
- const missing = ((await a.rpc.call('thread/start', { testCleanup: 'missing' })).thread as any).id
+ const missing = strThread(await a.rpc.call('thread/start', { testCleanup: fault, testLoadedList: 'paged' }))
  const sibling = ((await a.rpc.call('thread/start', {})).thread as any).id
  const parallel = ((await b.rpc.call('thread/start', {})).thread as any).id
  await b.rpc.call('turn/start', { threadId: parallel })
@@ -327,7 +386,73 @@ it('cleans independent threads even when a source has already unloaded (#773)', 
  assert.equal(fs.existsSync(leaseFile(backend, sibling)), false)
  assert.equal(a.notifications.some(n => n.method === 'wildcrane/cleanup'), false)
  assert.equal(b.notifications.some(n => n.method === 'turn/completed'), false)
+ const pages = read().slice(offset).filter(call => call.method === 'thread/loaded/list')
+ assert.deepEqual(pages.map(call => call.params.cursor), [undefined, 'page-two'])
  await b.close()
+})
+
+for (const fault of ['paged', 'invalid', 'timeout']) it(`keeps ownership without valid absence on every loaded page (${fault}, #932)`, async () => {
+ const a = await peer()
+ const id = strThread(await a.rpc.call('thread/start', {
+  testCleanup: 'refuse-release', testReadFailure: 'Unexpected conversation lookup result', testLoadedList: fault,
+ }))
+ const backend = backends()[0]!
+ const observer = await nativeConnection(backend, () => {})
+ try {
+  await initializeNative(observer)
+  await assert.rejects(releaseNativeThread(observer, id, undefined, false, Date.now() + 300), error => {
+   assert.ok(error instanceof RpcError)
+   assert.equal(error.code, -32600)
+   assert.match(error.message, /Unexpected release response.*Unexpected conversation lookup result/)
+   assert.match(error.message, { paged: /still loaded/, invalid: /invalid page/, timeout: /thread\/loaded\/list timed out/ }[fault]!)
+   return true
+  })
+  assert.ok(fs.existsSync(leaseFile(backend, id)))
+ } finally { observer.close() }
+ await manager.close()
+ if (fault !== 'timeout') {
+  await a.close()
+  assert.equal(a.notifications.find(n => n.method === 'wildcrane/cleanup')?.params.status, 'unconfirmed')
+  assert.ok(fs.existsSync(leaseFile(backend, id)))
+ } else {
+  const ended = once(a.child, 'close'); a.child.kill('SIGKILL'); await ended
+ }
+})
+
+it('preserves an abandoned root while a recorded child is still active (#932)', async () => {
+ const a = await peer(), successor = await peer()
+ const rootId = strThread(await a.rpc.call('thread/start', {}))
+ const childId = strThread(await a.rpc.call('thread/fork', { threadId: rootId }))
+ const { turn } = await a.rpc.call('turn/start', { threadId: childId })
+ const backend = backends()[0]!, rootLease = leaseFile(backend, rootId)
+ const observer = await nativeConnection(backend, () => {})
+ try {
+  await initializeNative(observer)
+  await observer.rpc.call('thread/resume', { threadId: rootId })
+  await manager.close()
+  const ended = once(a.child, 'close'); a.child.kill('SIGKILL'); await ended
+  fs.rmSync(leaseFile(backend, childId))
+  writePrivate(rootLease, { ...readPrivate<object>(rootLease), retained: { root: rootId, execution: 'legacy-empty', kept: [] } })
+  const offset = read().length
+  await reconcileCodexLeases(backend)
+  assert.ok(fs.existsSync(rootLease))
+  await assert.rejects(successor.rpc.call('thread/resume', { threadId: rootId }), /work still running/)
+  assert.equal(read().slice(offset).filter(row => row.method === 'thread/resume' || row.method === 'turn/start').length, 0)
+  await observer.rpc.call('turn/interrupt', { threadId: childId, turnId: (turn as { id: string }).id })
+  await reconcileCodexLeases(backend)
+  assert.equal(fs.existsSync(rootLease), false)
+  assert.equal(strThread(await successor.rpc.call('thread/resume', { threadId: rootId })), rootId)
+ } finally { observer.close() }
+ await successor.close()
+})
+
+for (const evidence of ['status', 'list']) it(`confirms release with ${evidence} when there is no close event (#932)`, async () => {
+ const a = await peer()
+ const id = strThread(await a.rpc.call('thread/start', { testUnloadEvidence: evidence }))
+ const backend = backends()[0]!
+ await a.close()
+ assert.equal(a.notifications.some(n => n.method === 'wildcrane/cleanup'), false)
+ assert.equal(fs.existsSync(leaseFile(backend, id)), false)
 })
 
 it('automatically reclaims failed cleanup without blocking another thread or replaying work (#773)', async () => {

@@ -7,7 +7,8 @@ const calls = process.env.FAKE_CODEX_CALLS;
 const record = value => fs.appendFileSync(calls, JSON.stringify({ pid: process.pid, ...value }) + '\n');
 record({ method: 'spawn', argv: process.argv.slice(2), marker: process.env.KANBAN_RUN });
 const loaded = new Map(), saved = new Set(), materialized = new Set(), active = new Map(), terminals = new Map(), peers = new Set(), hanging = new Set();
-const history = new Map(), idleModes = new Map();
+const history = new Map(), idleModes = new Map(), readFailures = new Map();
+let loadedListMode;
 let threads = 0, turns = 0;
 function frame(socket, value) {
  if (socket.destroyed) return;
@@ -19,7 +20,16 @@ const notify = (method, params, owner) => {
 };
 function unload(id, owner) {
  if([...peers].some(p=>p.threads.has(id)) || active.has(id) || terminals.get(id)?.length)return;
- setTimeout(()=>{ if([...peers].some(p=>p.threads.has(id))||active.has(id)||terminals.get(id)?.length)return;loaded.delete(id);for(const peer of peers)frame(peer.socket,{method:'thread/closed',params:{threadId:id}});},25);
+ setTimeout(()=>{
+  if([...peers].some(p=>p.threads.has(id))||active.has(id)||terminals.get(id)?.length)return;
+  const evidence = loaded.get(id)?.unloadEvidence;
+  loaded.delete(id);
+  for(const peer of peers) {
+   if(evidence==='list')continue;
+   if(evidence==='status')frame(peer.socket,{method:'thread/status/changed',params:{threadId:id,status:{type:'notLoaded'}}});
+   else frame(peer.socket,{method:'thread/closed',params:{threadId:id}});
+  }
+ },25);
 }
 const server = http.createServer((req,res)=>res.end('ready'));
 server.on('upgrade',(req,socket)=>{
@@ -32,14 +42,39 @@ server.on('upgrade',(req,socket)=>{
   if(m.method==='thread/fork' && p.pausePreparation) while(!fs.existsSync(p.pausePreparation)) await new Promise(resolve=>setTimeout(resolve,10));
   if(m.method==='initialize') {await new Promise(r=>setTimeout(r,20));result={userAgent:'fake-native'};}
   if(m.method==='config/read') result={config:{mcp_servers:{defaultProbe:{command:'node',env:{STATIC:'kept'}}}}};
-  if(m.method==='thread/start'){const id='thread-'+(++threads);loaded.set(id,{cwd:p.cwd,model:p.config?.model,config:p.config,cleanup:p.testCleanup,readDelay:p.testReadDelay});saved.add(id);peer.threads.add(id);result={thread:{id,modelProvider:'openai'},model:loaded.get(id).model};}
+  if(m.method==='thread/start'){
+   const id='thread-'+(++threads);
+   loaded.set(id,{cwd:p.cwd,model:p.config?.model,config:p.config,cleanup:p.testCleanup,readDelay:p.testReadDelay,unloadEvidence:p.testUnloadEvidence});
+   if(p.testReadFailure)readFailures.set(id,p.testReadFailure);
+   if(p.testLoadedList)loadedListMode=p.testLoadedList;
+   saved.add(id);peer.threads.add(id);result={thread:{id,modelProvider:'openai'},model:loaded.get(id).model};
+  }
   if(m.method==='thread/resume'){
    if(p.threadId==='missing'){send({id:m.id,error:{code:-32600,message:'no rollout found for thread id missing'}});return;}
-   if(!loaded.has(p.threadId))loaded.set(p.threadId,{model:p.config?.model,config:p.config});saved.add(p.threadId);peer.threads.add(p.threadId);result={thread:{id:p.threadId,status:{type:active.has(p.threadId)?'active':'idle'},modelProvider:'openai'},model:loaded.get(p.threadId).model};
+   if(!loaded.has(p.threadId))loaded.set(p.threadId,{model:p.config?.model,config:p.config});readFailures.delete(p.threadId);saved.add(p.threadId);peer.threads.add(p.threadId);result={thread:{id:p.threadId,status:{type:active.has(p.threadId)?'active':'idle'},modelProvider:'openai'},model:loaded.get(p.threadId).model};
   }
-  if(m.method==='thread/fork'){const id='fork-'+(++threads);loaded.set(id,{model:p.config?.model,config:p.config});saved.add(id);peer.threads.add(id);result={thread:{id,forkedFromId:p.threadId},model:p.config?.model};notify('thread/started',result,peer);}
-  if(m.method==='thread/loaded/list') result={data:[...loaded.keys()]};
+  if(m.method==='thread/fork'){
+   const id='fork-'+(++threads);
+   loaded.set(id,{model:p.config?.model,config:p.config});saved.add(id);peer.threads.add(id);
+   result={thread:{id,forkedFromId:p.threadId},model:p.config?.model};
+   notify('thread/started',result,peer);
+   if(p.pauseForkResponse){
+    for(const subscriber of peers) if(subscriber!==peer && subscriber.threads.has(p.threadId)) {
+     frame(subscriber.socket,{method:'thread/started',params:result});
+     frame(subscriber.socket,{method:'thread/name/updated',params:{threadId:p.threadId,threadName:'fork response pending'}});
+    }
+    while(!fs.existsSync(p.pauseForkResponse)) await new Promise(resolve=>setTimeout(resolve,10));
+   }
+  }
+  if(m.method==='thread/loaded/list') {
+   if(!loadedListMode)result={data:[...loaded.keys()]};
+   else if(!p.cursor)result={data:[],nextCursor:'page-two'};
+   else if(loadedListMode==='invalid')result={data:[42]};
+   else if(loadedListMode==='timeout')return;
+   else result={data:[...loaded.keys()],nextCursor:null};
+  }
   if(m.method==='thread/read'){
+   if(readFailures.has(p.threadId)){send({id:m.id,error:{code:-32600,message:readFailures.get(p.threadId)}});return;}
    if(!loaded.has(p.threadId)&&!materialized.has(p.threadId)){send({id:m.id,error:{code:-32600,message:'thread not loaded: '+p.threadId}});return;}
    if(loaded.get(p.threadId)?.readDelay)await new Promise(r=>setTimeout(r,loaded.get(p.threadId).readDelay));
    result={thread:{id:p.threadId,status:{type:active.has(p.threadId)?'active':loaded.has(p.threadId)?'idle':'notLoaded'},
@@ -52,7 +87,13 @@ server.on('upgrade',(req,socket)=>{
   if(m.method==='thread/turns/list') result={data:(history.get(p.threadId) ?? []).slice().reverse()};
   if(m.method==='thread/backgroundTerminals/clean'){
    const state=loaded.get(p.threadId);
-   if(state?.cleanup==='missing'){loaded.delete(p.threadId);peer.threads.delete(p.threadId);}
+   if(state?.cleanup==='missing' || state?.cleanup==='missing-reworded'){
+    loaded.delete(p.threadId);peer.threads.delete(p.threadId);
+    if(state.cleanup==='missing-reworded'){
+     readFailures.set(p.threadId,'Unexpected conversation lookup result');
+     send({id:m.id,error:{code:-32600,message:'Conversation lookup did not finish'}});return;
+    }
+   }
    if(state?.cleanup==='fail'){state.cleanup=undefined;send({id:m.id,error:{code:-32603,message:'injected cleanup failure'}});return;}
   }
   if(m.method.startsWith('thread/backgroundTerminals/')&&!loaded.has(p.threadId)){send({id:m.id,error:{code:-32600,message:'thread not found: '+p.threadId}});return;}
@@ -65,7 +106,7 @@ server.on('upgrade',(req,socket)=>{
    const text=p.input?.[0]?.text;
    if(text==='crash'){process.exit(1);return;}
    result={turn:{id:'turn-'+(++turns)}};active.set(p.threadId,result.turn.id);notify('turn/started',{threadId:p.threadId,turn:result.turn});
-   const idle = /^Idle regression (recover|restart|budget|unknown|live|stop)$/.exec(text)?.[1] ?? idleModes.get(p.threadId);
+   const idle = /^Idle regression (recover|release-rpc|restart|budget|unknown|live|stop|stop-release)$/.exec(text)?.[1] ?? idleModes.get(p.threadId);
    if (idle) {
     const list = history.get(p.threadId) ?? [];
     const first = !list.length;
@@ -84,12 +125,17 @@ server.on('upgrade',(req,socket)=>{
       turn.items.push(pending);
       notify('item/started',{threadId:p.threadId,turnId:turn.id,item:pending});
      }
-    } else if (idle === 'recover' || idle === 'restart') {
+    } else if (['recover','release-rpc','restart'].includes(idle)) {
      turn.status='completed'; active.delete(p.threadId);
      notify('turn/completed',{threadId:p.threadId,turn},peer);
     }
    }
    if(text==='approval')send({id:'permission',method:'item/commandExecution/requestApproval',params:{threadId:p.threadId,turnId:result.turn.id,itemId:'command'}});
+   if(text==='spawn-child'){
+    const id='child-'+(++threads);
+    loaded.set(id,{});saved.add(id);peer.threads.add(id);
+    notify('thread/started',{thread:{id,parentThreadId:p.threadId}},peer);
+   }
    if(text==='retain')terminals.set(p.threadId,[{itemId:'service',processId:'42',command:'service'}]);
    if(text==='hang-release')hanging.add(p.threadId);
    if(text==='finish-service'){terminals.delete(p.threadId);notify('item/completed',{threadId:p.threadId,item:{type:'commandExecution',id:'service',status:'completed'}});}
@@ -104,6 +150,19 @@ server.on('upgrade',(req,socket)=>{
   }
   if(m.method==='thread/unsubscribe'){
    if(!loaded.has(p.threadId)){send({id:m.id,error:{code:-32600,message:'thread not found: '+p.threadId}});return;}
+   const state = loaded.get(p.threadId);
+   if(state.cleanup==='refuse-release'){
+    send({method:'thread/closed',params:{threadId:'another-thread'}});
+    send({method:'thread/status/changed',params:{threadId:'another-thread',status:{type:'notLoaded'}}});
+    send({id:m.id,error:{code:-32600,message:'Unexpected release response'}});return;
+   }
+   const mode = idleModes.get(p.threadId);
+   if(mode==='release-rpc' && history.get(p.threadId)?.at(-1)?.status==='interrupted'){
+    loaded.delete(p.threadId);peer.threads.delete(p.threadId);loadedListMode='paged';
+    readFailures.set(p.threadId,'Unexpected conversation lookup result');
+    send({id:m.id,error:{code:-32600,message:'Unexpected release response'}});return;
+   }
+   if(mode==='stop-release')while(!fs.existsSync(`${state.cwd}/release-gate`))await new Promise(resolve=>setTimeout(resolve,10));
    if(hanging.delete(p.threadId))return;
    peer.threads.delete(p.threadId);result={status:loaded.has(p.threadId)?'unsubscribed':'notLoaded'};unload(p.threadId,peer);
   }
