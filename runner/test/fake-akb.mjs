@@ -82,24 +82,25 @@ if (a === 'raw' && b === 'init') {
   const studio = flag('--studio') ? `studio: ${flag('--studio')}\n` : ''
   fs.writeFileSync(path.join(board, 'todo', `${id}-${(flag('--slug') ?? flag('--title')).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'task'}.md`), `---\ntitle: ${flag('--title')}\n${studio}questions: []\n---\n\n${body}`)
   console.log(JSON.stringify({ ok: true, id }))
-} else if (a === 'agent' && b === 'use') {
-  fs.writeFileSync(path.join(state, 'agent'), c)
-} else if (a === 'agent' && b === 'set' && c === 'model') {
-  fs.writeFileSync(path.join(state, 'model'), words[3] && !words[3].startsWith('--') ? words[3] : '')
-} else if (a === 'agent' && b === 'set' && c === 'mcpConfig') {
-  // the file is the Runner's; nothing to keep
-} else if (a === 'agent' && b === 'set' && c === 'args') {
-  fs.writeFileSync(path.join(state, 'args'), text)
-} else if (a === 'agent' && b === 'set') {
-  // the runtime's other settings (#2135): nothing to keep
 } else if (a === 'card') {
   const how = plan[b] ?? {}
   if (how.refuse) fail(how.refuse)
   const id = Number(c)
   const file = cardOf(id)
   if (!file) fail(`no task with id ${id}`)
+  if (process.env.AI4KANBAN_EXECUTION_RUNTIMES) {
+    write(`runtime-${id}.json`, JSON.parse(process.env.AI4KANBAN_EXECUTION_RUNTIMES).default)
+  }
   const runs = read('runs.json', [])
   if (runs.some((r) => r.cardId === id && r.status === 'running')) fail(`#${id} is already being worked on`)
+  if (how.missingFork && words.includes('--fork')) {
+    const sessionId = `run-${b}-${runs.length + 1}`
+    const reason = `no rollout found for thread id ${flag('--session')}`
+    runs.push({ sessionId, cardId: id, action: b, status: 'error', failure: { code: 'codex_fork_source_missing', level: 3, source: 'harness', reason } })
+    write('runs.json', runs)
+    console.log(JSON.stringify({ ok: false, error: { kind: 'run-failed', message: reason, lastSessionId: sessionId } }))
+    process.exit(1)
+  }
   // The board every `akb` the agent types reaches.
   fs.writeFileSync(path.join(state, 'agent-board'), process.env.AI4KANBAN_BOARD ?? '')
   fs.writeFileSync(path.join(state, 'session-cost'), process.env.AI4KANBAN_SESSION_COST ?? '')

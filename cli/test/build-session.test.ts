@@ -183,7 +183,7 @@ describe('交付的构建会话续接（#368）', () => {
       }))
       const opened = openRun({ action: 'implement', id: 1 }, 'Complete the task.', [])
       if ('error' in opened) throw Error(opened.error)
-      const total = scenario === 'exhausted' ? 4 : ['repair', 'mixed'].includes(scenario) ? 2 : 1
+      const total = scenario === 'unconfirmed' ? 1 : 4
       const resume: NonNullable<Parameters<typeof watchRun>[1]> = async (id, options) => {
         const previous = readStore().runs.find(r => r.sessionId === id)!
         assert.ok(previous.retry?.pending)
@@ -192,15 +192,15 @@ describe('交付的构建会话续接（#368）', () => {
         assert.equal(next.run.retry?.attempt, previous.retry.attempt)
         assert.equal(next.run.retry?.launching, true)
         patch(next.run.sessionId, r => { r.pid = process.pid })
-        await watchRun(next.run.sessionId, resume)
+        await watchRun(next.run.sessionId, resume, () => 0)
         return { run: next.run, spawned: true }
       }
       patch(opened.run.sessionId, r => { r.pid = process.pid })
-      await watchRun(opened.run.sessionId, resume)
+      await watchRun(opened.run.sessionId, resume, () => 0)
       const saved = readStore().runs.find(r => r.deliveryId === opened.run.deliveryId)!
       assert.equal((fs.readFileSync(attempts, 'utf8').trim().split('\n')).length, total)
       assert.equal(saved.retry?.attempt ?? 1, total)
-      assert.equal(saved.retryPause, scenario === 'unknown' ? 'needs-review' : scenario === 'unconfirmed' ? 'unsafe' : 'limit')
+      assert.equal(saved.retryPause, scenario === 'unconfirmed' ? 'unsafe' : 'limit')
       assert.match(saved.error!, /503 retry-after: 1/)
     })
   }

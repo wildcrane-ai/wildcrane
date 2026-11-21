@@ -17,7 +17,7 @@ it('preserves Antigravity failures that only carry diagnostic text for manual re
     const renderer = createAntigravityRenderer()
     renderer.push(JSON.stringify({ event: 'result', result: { status: 'ERROR', error, response: '' } }) + '\n')
     renderer.flush()
-    assert.equal(renderer.executionFailure?.()?.level, 3)
+    assert.equal(renderer.executionFailure?.()?.source, 'runtime')
     assert.ok(renderer.failure?.()?.includes(error))
   }
   const tool = createAntigravityRenderer()
@@ -79,11 +79,14 @@ it('preserves an Antigravity task and its result after an unclassified EOF (#841
     if ('error' in started) throw Error(started.error)
     patch(started.run.sessionId, r => { r.pid = process.pid })
     fs.writeFileSync(started.run.logPath, '')
-    await watchRun(started.run.sessionId, async () => assert.fail('an unclassified failure cannot start a retry'))
+    let retryAttempts = 0
+    await watchRun(started.run.sessionId, async () => { retryAttempts++; return { error: 'stopped in test' } }, () => 0)
     const ended = readRuns().find(r => r.cardId === 1)!
     assert.equal(requests, 1)
+    assert.equal(retryAttempts, 1)
     assert.equal(ended.status, 'error')
-    assert.equal(ended.failure?.level, 3)
+    assert.equal(ended.failure?.source, 'runtime')
+    assert.equal(ended.retryHistory?.length, 1)
     assert.equal(fs.readFileSync(output, 'utf8'), 'written once')
     assert.equal(ended.result, partial)
     assert.match(ended.error!, /request failed: Post.*EOF/)

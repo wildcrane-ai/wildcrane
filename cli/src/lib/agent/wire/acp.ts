@@ -1,3 +1,4 @@
+import { makeFailure } from '../retry'
 import { ExecutionError, executionFailure, providerFailure } from './failures'
 import { acpCostFile, readAcpCost, saveAcpCost } from './acp-cost'
 import { bounded, CONVERSATION_MS } from '../../shared/conversation'
@@ -288,7 +289,7 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e)
         const failure = e instanceof RpcError ? providerFailure(e.data, reason) : executionFailure(e)
-        if (failure.code !== 'session_not_found') throw e
+        if (!(e instanceof RpcError) || obj(e.data).code !== 'session_not_found') throw e
         if (!io.restartPrompt) throw new ExecutionError(failure)
         const fresh = await bounded(newSession(rpc, io.cwd, mcpServers), preparingUntil - Date.now(), 'ACP session/new timed out.')
         opened = fresh.opened
@@ -352,7 +353,7 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
       io.log(`[error] ${why}\n`)
       events.error(why)
       emit()
-      return { ok: false, result, error: why, failure: { code: stopReason, level: 3, reason: why }, usage, context, costUsd }
+      return { ok: false, result, error: why, failure: makeFailure('runtime', why, { code: stopReason }), usage, context, costUsd }
     }
     emit()
     return { ok: true, result, usage, context, costUsd }

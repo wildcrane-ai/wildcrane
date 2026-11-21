@@ -3,19 +3,13 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { readRuntimeCredentials } from '../../cli/src/lib/agent/runtimes'
 
 import { runnerHome } from './home'
 
-const file = () => path.join(runnerHome(), 'secrets.json')
+export const runtimeCredentialsFile = () => path.join(runnerHome(), 'secrets.json')
 
-function readAll(): Record<string, Record<string, string>> {
-  try {
-    const held = JSON.parse(fs.readFileSync(file(), 'utf8')) as unknown
-    return held && typeof held === 'object' ? (held as Record<string, Record<string, string>>) : {}
-  } catch {
-    return {}
-  }
-}
+const readAll = () => readRuntimeCredentials(runtimeCredentialsFile())
 
 /** One runtime's keys, by setting key. */
 export const secretsOf = (runtime: string | null | undefined): Record<string, string> => (runtime ? readAll()[runtime] ?? {} : {})
@@ -31,9 +25,10 @@ export function keepSecrets(runtime: string, given: Record<string, string | null
   if (Object.keys(held).length) all[runtime] = held
   else delete all[runtime]
   fs.mkdirSync(runnerHome(), { recursive: true, mode: 0o700 })
-  const temp = `${file()}.${process.pid}.tmp`
+  const file = runtimeCredentialsFile()
+  const temp = `${file}.${process.pid}.tmp`
   fs.writeFileSync(temp, `${JSON.stringify(all)}\n`, { mode: 0o600 })
-  fs.renameSync(temp, file())
+  fs.renameSync(temp, file)
 }
 
 /** Which keys each runtime holds here — what the Runner reports, never the keys. */

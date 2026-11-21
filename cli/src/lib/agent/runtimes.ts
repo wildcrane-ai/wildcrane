@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import { DEFAULT_HARNESS, HARNESSES, MODEL_KEY, harnessByName } from './harnesses'
 import { configBlock, safeConfig, setSecret, writeConfig } from './settings'
 import { refusal, type RunRefusal, type Saved } from './types'
@@ -24,6 +25,35 @@ export const GLOBAL_ID = 'global'
 
 /** What it is called, everywhere. */
 export const GLOBAL_NAME = 'Global default'
+
+export const EXECUTION_RUNTIMES_ENV = 'AI4KANBAN_EXECUTION_RUNTIMES'
+
+export type ExecutionRuntime = Runtime & { credentialId?: string }
+export interface ExecutionRuntimes {
+  default: ExecutionRuntime
+  picks: Record<string, ExecutionRuntime>
+  credentialsFile: string
+}
+
+export function executionRuntimes(): ExecutionRuntimes | undefined {
+  const encoded = process.env[EXECUTION_RUNTIMES_ENV]
+  return encoded ? JSON.parse(encoded) as ExecutionRuntimes : undefined
+}
+
+export function readRuntimeCredentials(file: string): Record<string, Record<string, string>> {
+  try {
+    return configBlock(JSON.parse(fs.readFileSync(file, 'utf8'))) as Record<string, Record<string, string>>
+  } catch {
+    return {}
+  }
+}
+
+export function runRuntimeById(id: string): Runtime | undefined {
+  const scope = executionRuntimes()
+  return scope
+    ? [scope.default, ...Object.values(scope.picks)].find(row => row.id === id)
+    : runtimeById(id)
+}
 
 // ---- reading ----------------------------------------------------------------
 

@@ -1,4 +1,4 @@
-import type { ExecutionFailure } from '../retry'
+import { clipDetail, clipSummary, makeFailure, type ExecutionFailure } from '../retry'
 import { providerFailure } from './failures'
 // Turns `claude -p --output-format stream-json`'s NDJSON into a readable log (task #14).
 // Claude Code in its default text mode prints nothing until the session ends, so there is
@@ -209,8 +209,13 @@ export function createStreamRenderer(): StreamRenderer {
         failure = ev.is_error === true ? whyItFailed(ev) : undefined
         classified = failure
           ? ev.subtype === 'error_max_structured_output_retries'
-            ? { code: 'validation_failed', level: 1, source: 'validation', reason: failure }
-            : { ...(apiFailure ?? providerFailure(ev.error, failure)), reason: failure }
+            ? makeFailure('validation', failure, { code: 'validation_failed', detail: failure })
+            : (() => {
+                const base = apiFailure ?? providerFailure(ev.error, failure, failure)
+                const summary = clipSummary(failure)
+                const detail = clipDetail(failure)
+                return { ...base, summary, ...(detail && detail !== summary ? { detail } : {}) }
+              })()
           : undefined
         apiFailure = undefined
         if (failure) events.error(failure)

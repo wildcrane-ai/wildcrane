@@ -354,6 +354,7 @@ export interface RunRecord {
   error?: string
   failure?: import('./retry').ExecutionFailure
   retryPause?: import('./retry').RetryPause
+  retryHistory?: import('./retry').RetryRecord[]
   validationFailure?: import('./retry').ExecutionFailure
   /** A concrete interruption that needs one action from the user before Resume. */
   blocker?: ExecutionBlocker

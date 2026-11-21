@@ -16,6 +16,7 @@ import { agentInfo, agentRun, openPlan, planResume, planRun } from '../src/lib/a
 import { agentForRun } from '../src/lib/agent/runner.ts'
 import {
   addRuntime,
+  EXECUTION_RUNTIMES_ENV,
   readAgentRuntime,
   readRuntimes,
   secretVar,
@@ -72,6 +73,27 @@ afterEach(() => {
 })
 
 describe('a board where no agent picked a runtime', () => {
+  it('plans and opens from the execution runtime instead of the saved board settings', () => {
+    config({ runtimes: [runtime('global', 'antigravity', { model: 'board-model' })] })
+    const credentialsFile = path.join(root, 'credentials.json')
+    fs.writeFileSync(credentialsFile, JSON.stringify({ task: { apiKey: 'sk-task' } }))
+    const scope = { default: {
+      ...runtime('global', 'codex', { model: 'task-model', provider: 'openai-api' }),
+      credentialId: 'task',
+    }, picks: {}, credentialsFile }
+    process.env[EXECUTION_RUNTIMES_ENV] = JSON.stringify(scope)
+    try {
+      const started = plan({ action: 'implement' })
+      assert.equal(started.harness, 'codex')
+      assert.ok(started.argv.includes('task-model'))
+      assert.equal(openPlan(started).env.OPENAI_API_KEY, 'sk-task')
+      assert.ok(!JSON.stringify(started).includes('sk-task'))
+      assert.deepEqual(held(), { runtimes: [runtime('global', 'antigravity', { model: 'board-model' })] })
+    } finally {
+      delete process.env[EXECUTION_RUNTIMES_ENV]
+    }
+  })
+
   it('runs every flow on Global default', () => {
     config({ runtimes: [runtime('global', 'codex', { model: 'gpt-5.1-codex' })] })
     for (const action of ['implement', 'clarify', 'prune-memory'] as const) {

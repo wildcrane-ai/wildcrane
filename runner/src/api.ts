@@ -14,7 +14,7 @@ export { temporaryCloudFailure } from '../../cli/src/lib/cloud/response'
 import { AKB_CONTRACT } from './protocol'
 import { secretsSet } from './secrets'
 
-import type { ExecutionFailure } from '../../cli/src/lib/agent/retry'
+import type { ExecutionFailure, FailureDetail, RetryRecord } from '../../cli/src/lib/agent/retry'
 
 export type Call<T> = { ok: true; value: T } | { ok: false; error: string; code?: string; status?: number; project?: string; failure?: ExecutionFailure }
 
@@ -363,6 +363,10 @@ export interface JobReport {
   subagents?: Subagents
   /** A chat reply the user stopped part way (#2133). */
   stopped?: boolean
+  /** Structured failure when paused/failed (#996). */
+  failure?: FailureDetail
+  /** Retained retry trail when recovered after >= 1 retry (#996). */
+  retries?: RetryRecord[]
 }
 
 export const cancelReplyApproval = (machineId: string, job: string) => move(job, 'approve', { machineId, cancel: true })

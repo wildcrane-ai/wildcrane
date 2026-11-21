@@ -40,7 +40,8 @@ import { restartPrompt, resumePrompt } from './prompts'
 import { openPlan } from './resolve'
 import { createIdleWatchdog, IDLE_FAILURE, IDLE_MS } from './idle'
 import { idleStopConfirmed } from './wire/codex-background-types'
-import { agentRecovery, backoffMs, pauseLine, planRetry, retryLine, syncRepairPrompt, type ExecutionFailure, type RetryPause } from './retry'
+import { agentRecovery, backoffMs, isSessionMissingFailure, makeFailure, MAX_RETRY_ATTEMPTS, pauseLine, planRetry, retryContinuePrompt, retryLine, syncRepairPrompt, type ExecutionFailure, type RetryPause, type RetryRecord, type RetryRuntime, type SessionAction } from './retry'
+import { runtimeById } from './runtimes'
 import { executionFailure } from './wire/failures'
 import { executionHeld, executionOf } from '../cloud/execution'
 import {
@@ -156,16 +157,25 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   eventsFile.on('error', () => {})
   let observeActivity = (_e: RunEvent) => {}
   const pendingOperations = new Set<string>()
+  let hadEffects = false
   const event = (e: RunEvent) => {
     observeActivity(e)
     const hadPending = pendingOperations.size > 0
-    if (e.kind === 'tool_call' && !['read', 'search', 'fetch'].includes(e.data.kind) && !['completed', 'failed'].includes(e.data.status)) pendingOperations.add(e.data.toolCallId)
+    if (e.kind === 'tool_call' && !['read', 'search', 'fetch'].includes(e.data.kind)) {
+      hadEffects = true
+      if (!['completed', 'failed'].includes(e.data.status)) pendingOperations.add(e.data.toolCallId)
+    }
     if ((e.kind === 'tool_call' || e.kind === 'tool_call_update') && ['completed', 'failed'].includes(e.data.status ?? '')) pendingOperations.delete(e.data.toolCallId)
     if (record.cloudExecution && hadPending !== (pendingOperations.size > 0)) {
       patch(sessionId, run => { run.pendingWrites = pendingOperations.size > 0 })
     }
     eventsFile.write(`${JSON.stringify(e)}\n`)
   }
+  const runtimeInfo = (): RetryRuntime => ({
+    connector: record.harness,
+    name: record.runtime ? (runtimeById(record.runtime)?.name ?? null) : null,
+    model: peekRun(sessionId)?.model ?? record.model ?? null,
+  })
   const log = {
     write(text: string) {
       logFile.write(text)
@@ -209,7 +219,12 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
         ...(coding && !approvedUi && review?.plan?.some(node => node.previews.includes('ui-design')) ? [APPROVED_UI_RULE] : []),
       ].join('\n')
     : ''
-  const prompt = [process.env.AI4KANBAN_SYNC_DIAGNOSTIC ? syncRepairPrompt(process.env.AI4KANBAN_SYNC_DIAGNOSTIC) : '', record.retry ? `Previous execution failed: ${record.retry.reason}. Check existing results before continuing; do not repeat completed operations.` : '', conflictPrompt(KANBAN), boundary, basePrompt, resumedStudio, savedPrompt, approvedUi, recoveryPrompt, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n')
+  const retryDiag = record.retry
+    ? record.failure
+      ? retryContinuePrompt(record.failure, record.retry.attempt, record.retry.of)
+      : `Previous execution failed: ${record.retry.reason}. Check existing results before continuing; do not repeat completed operations.`
+    : ''
+  const prompt = [process.env.AI4KANBAN_SYNC_DIAGNOSTIC ? syncRepairPrompt(process.env.AI4KANBAN_SYNC_DIAGNOSTIC) : '', retryDiag, conflictPrompt(KANBAN), boundary, basePrompt, resumedStudio, savedPrompt, approvedUi, recoveryPrompt, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n')
 
   // The board as it was the moment before the agent touched it. The difference between this
   // and the same read at the close is what this run could be answerable for; which of it
@@ -260,11 +275,29 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
     letGo()
     return 1
   }
-  if (record.retry?.launching) patch(sessionId, (r) => {
-    if (!r.retry?.launching) return
-    r.retry.attempt++
-    delete r.retry.launching
-  })
+  if (record.retry?.launching) {
+    const nextAttempt = record.retry.attempt + 1
+    patch(sessionId, (r) => {
+      if (!r.retry?.launching) return
+      r.retry.attempt++
+      delete r.retry.launching
+    })
+    event({
+      kind: 'retry',
+      data: {
+        state: 'retrying',
+        source: record.failure?.source ?? 'runtime',
+        runtime: runtimeInfo(),
+        attempt: nextAttempt,
+        maxAttempts: record.retry.of,
+        summary: record.failure?.summary ?? record.retry.reason,
+        ...(record.failure?.detail ? { detail: record.failure.detail } : {}),
+        ...(record.failure?.code ? { code: record.failure.code } : {}),
+        sessionAction: record.resumedFrom ? 'resume' : 'reset_replay',
+        at: new Date().toISOString(),
+      },
+    })
+  }
   try {
     const start = spawnable(cmd!, client || stdinPrompt ? args : [...args, prompt], {
       // Where this run works: the project, or — inside a delivery with a worktree of its
@@ -498,49 +531,132 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       const said = spawnError ?? (silent ? silenceSaid(silenceFor) : spoken?.error ?? rendered)
       const failed = code !== 0 || spoken?.ok === false || !!rendered || silent || !!blocker
       const failure: ExecutionFailure | undefined = failed && !asked
-        ? silent ? { ...IDLE_FAILURE, reason: said ?? IDLE_FAILURE.reason }
+        ? silent ? makeFailure('runtime', said ?? IDLE_FAILURE.summary, { code: IDLE_FAILURE.code, detail: said ?? IDLE_FAILURE.summary })
           : spawnFailure ?? spoken?.failure ?? renderer?.executionFailure?.()
           ?? (!blocker ? held.validationFailure : undefined)
-          ?? { code: blocker ? 'execution_blocked' : 'execution_failed', level: 3, reason: said ?? blocker?.cause ?? `Agent exited with code ${code}.` }
+          ?? makeFailure('runtime', said ?? blocker?.cause ?? `Agent exited with code ${code}.`, {
+            code: blocker ? 'execution_blocked' : 'execution_failed',
+            detail: said ?? blocker?.cause ?? `Agent exited with code ${code}.`,
+          })
         : undefined
       const result = spoken ? spoken.result : renderer?.result()
       let retryPause: RetryPause | undefined
       let retrying = false
+      let retryHistory: RetryRecord[] | undefined = held.retryHistory ? [...held.retryHistory] : undefined
+      let sessionAction: SessionAction | undefined
       if (failure && !sub && !taskCompleted) {
         const attempt = held.retry?.attempt ?? 1
-        const decision = planRetry(failure, attempt, Date.now(), retryBackoff, !!held.cloudExecution)
-        if ('pause' in decision) retryPause = decision.pause
-        else {
-          const mark = runMark(sessionId, agentStartedAt)
-          const root = child.pid ? { pid: child.pid, since: agentStartedAt, identity: held.agentIdentity } : undefined
-          const stopped = () => client?.managedProcess ? connectionStopped(root) : processesStopped(mark, root)
-          const until = Date.now() + STOP_GRACE_MS + STOP_CLOSE_MS
-          while (!stopped() && Date.now() < until) await sleep(100)
-          const session = structured && !spawnFailure ? resumeSessionId(held) : undefined
-          const recovery = agentRecovery({
-            stopped: stopped(), session,
-            replayable: held.unspawned === true && !pendingOperations.size,
-            unconfirmedCleanup: pendingOperations.size > 0 || !!blocker || spoken?.cleanup?.status === 'unconfirmed'
-              || client?.managedProcess && silent && (uncertainAtIdle || !idleStopConfirmed(spoken?.cleanup, session)),
-          })
-          if (recovery === 'unsafe') retryPause = 'unsafe'
-          else {
-            const pending = decision.plan
+        const missingSession = isSessionMissingFailure(failure)
+        const mark = runMark(sessionId, agentStartedAt)
+        const root = child.pid ? { pid: child.pid, since: agentStartedAt, identity: held.agentIdentity } : undefined
+        const stopped = () => client?.managedProcess ? connectionStopped(root) : processesStopped(mark, root)
+        const until = Date.now() + STOP_GRACE_MS + STOP_CLOSE_MS
+        while (!stopped() && Date.now() < until) await sleep(100)
+        const isStopped = stopped()
+        const session = structured && !spawnFailure && !missingSession ? resumeSessionId(held) : undefined
+        const unconfirmedCleanup = pendingOperations.size > 0 || !!blocker || spoken?.cleanup?.status === 'unconfirmed'
+          || failure.code === 'codex_ownership_unconfirmed'
+          || (client?.managedProcess && silent && (uncertainAtIdle || !idleStopConfirmed(spoken?.cleanup, session)))
+        const canResetReplay = isStopped && !unconfirmedCleanup && !pendingOperations.size
+          && (held.unspawned === true || (structured && !hadEffects && !record.resumedFrom))
+        const recovery = missingSession
+          ? (canResetReplay ? 'replay' : 'unsafe')
+          : agentRecovery({
+              stopped: isStopped,
+              session,
+              replayable: canResetReplay,
+              unconfirmedCleanup,
+            })
+        sessionAction = recovery === 'unsafe' ? 'pause_unsafe' : recovery === 'replay' ? 'reset_replay' : 'resume'
+        const nowIso = new Date().toISOString()
+        const retryRecord: RetryRecord = {
+          attempt,
+          source: failure.source,
+          runtime: runtimeInfo(),
+          summary: failure.summary,
+          ...(failure.detail ? { detail: failure.detail } : {}),
+          ...(failure.code ? { code: failure.code } : {}),
+          sessionAction,
+          at: nowIso,
+        }
+        retryHistory = [...(retryHistory ?? []), retryRecord]
+        if (recovery === 'unsafe') {
+          retryPause = 'unsafe'
+        } else {
+          const decision = planRetry(failure, attempt, Date.now(), retryBackoff, !!held.cloudExecution)
+          if ('pause' in decision) {
+            retryPause = decision.pause
+          } else {
+            const pending = { ...decision.plan, sessionAction }
             patch(sessionId, r => {
               r.failure = failure
-              r.error = said ?? failure.reason
-              r.retry = { attempt, of: pending.of, reason: failure.reason, at: pending.at, since: held.retry?.since ?? held.startedAt, pending }
+              r.error = said ?? failure.summary
+              r.retryHistory = retryHistory
+              if (sessionAction === 'reset_replay') {
+                r.resumeId = undefined
+                r.unspawned = true
+              }
+              r.retry = { attempt, of: pending.of, reason: failure.summary, at: pending.at, since: held.retry?.since ?? held.startedAt, pending }
+            })
+            event({
+              kind: 'retry',
+              data: {
+                state: 'waiting',
+                source: failure.source,
+                runtime: runtimeInfo(),
+                attempt: attempt + 1,
+                maxAttempts: pending.of,
+                summary: failure.summary,
+                ...(failure.detail ? { detail: failure.detail } : {}),
+                ...(failure.code ? { code: failure.code } : {}),
+                nextRetryAt: new Date(pending.at).toISOString(),
+                sessionAction,
+                at: nowIso,
+              },
             })
             log.write(`\n[board] ${retryLine(pending, attempt)}\n`)
             if (!stoppedByUser()) await sleep(Math.max(0, pending.at - Date.now()))
             retrying = true
           }
         }
+        if (retryPause && !stoppedByUser()) {
+          event({
+            kind: 'retry',
+            data: {
+              state: 'paused',
+              source: failure.source,
+              runtime: runtimeInfo(),
+              attempt,
+              maxAttempts: held.retry?.of ?? MAX_RETRY_ATTEMPTS,
+              summary: failure.summary,
+              ...(failure.detail ? { detail: failure.detail } : {}),
+              ...(failure.code ? { code: failure.code } : {}),
+              sessionAction,
+              at: nowIso,
+            },
+          })
+        }
       }
       asked ||= stoppedByUser()
       retrying &&= !asked
-      const error = asked ? undefined : joinNotes(said ?? failure?.reason, retryPause && failure?.source !== 'invariant' ? pauseLine(retryPause) : undefined)
+      const error = asked ? undefined : joinNotes(said ?? failure?.summary, retryPause ? pauseLine(retryPause) : undefined)
       const status: RunStatus = asked ? 'stopped' : failed || code !== 0 ? 'error' : 'done'
+      if (status === 'done' && !sub && retryHistory?.length) {
+        const lastRetry = retryHistory[retryHistory.length - 1]!
+        event({
+          kind: 'retry',
+          data: {
+            state: 'recovered',
+            source: lastRetry.source,
+            runtime: runtimeInfo(),
+            attempt: held.retry?.attempt ?? (retryHistory.length + 1),
+            maxAttempts: held.retry?.of ?? MAX_RETRY_ATTEMPTS,
+            summary: lastRetry.summary,
+            ...(lastRetry.code ? { code: lastRetry.code } : {}),
+            at: new Date().toISOString(),
+          },
+        })
+      }
       const reported = spoken ? spoken.costUsd : renderer?.costUsd?.()
       // A session total carries what the session it continues spent (#1480, #1483).
       const totals = reportsSessionTotal(record.harness)
@@ -626,6 +742,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
         error,
         failure,
         retryPause,
+        retryHistory,
         note,
         errorWhy,
         noteWhy,

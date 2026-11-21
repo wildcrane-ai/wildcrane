@@ -49,7 +49,7 @@ export interface FakeJob {
   machine?: string
   outcome?: string
   reason?: string
-  report?: Record<string, unknown>
+  report?: import('../src/api').JobReport & Record<string, unknown>
   events: { seq: number; text: string; kind?: string; data?: Record<string, unknown> }[]
   claims: number
   leaseLost?: boolean

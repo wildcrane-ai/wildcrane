@@ -3,7 +3,7 @@ import { connectionStopped, stopConnection } from './connection-process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { agentRecovery, pauseLine, recoveryPrompt } from './retry'
+import { agentRecovery, isSessionMissingFailure, pauseLine, recoveryPrompt } from './retry'
 import { executionHeld, executionOf } from '../cloud/execution'
 
 import { boardCardIds, locate, locateArchived } from '../cards'
@@ -44,7 +44,7 @@ import { moveRunPictures } from './pictures'
 import { buildRun, restartPrompt, restartable, resumePrompt } from './prompts'
 import { agentForRun } from './runner'
 import { killMarked, killTreeOnWindows, killUnderOnWindows, probeProcesses, processesStopped, runMark } from './stop'
-import { readRuntimes, runtimeById } from './runtimes'
+import { readRuntimes, runRuntimeById } from './runtimes'
 import { dropReflected, stampMemoryPrune, stampMemoryReview, stampProjectDescription } from './settings'
 import { creationOf, eventsPathOf, logPathOf, noteRefineTried, readRuns, runIsLive, withRuns, withStore } from './store'
 import { withCreationLock } from './creation-lock'
@@ -613,7 +613,7 @@ export function openRun(
   // The runtime this one run was asked for (#518). Refused here rather than resolved away:
   // a pin nothing answers to would quietly run **Global default**, and a run on another
   // model than the one picked is the worst way to answer a pick.
-  if (req.runtime && !runtimeById(req.runtime)) {
+  if (req.runtime && !runRuntimeById(req.runtime)) {
     const runtimes = readRuntimes()
       .map((r) => r.id)
       .join(', ')
@@ -651,7 +651,7 @@ export function openRun(
   const plan = said
     ? { ...said.plan(cwd, sessionId), note: null }
     : planRun(sessionId, cwd, agentForRun(req), req.runtime ? { pin: req.runtime } : {})
-  const away = plan.runtime ? runtimeById(plan.runtime)?.away : undefined
+  const away = plan.runtime ? runRuntimeById(plan.runtime)?.away : undefined
   if (away) return refusal('runtimeAway', away, { id: plan.runtime! })
   // What that agent resolved to, when the board names a connector this version can't run. It
   // goes in the log rather than being swallowed: a run on another tool than the one asked
@@ -742,13 +742,24 @@ interface CarriedSession {
 /** The planning runs: each carries the card's planning session on (#1304). */
 const PLANNING = new Set<AgentAction>(['clarify', 'resolve', 'approve', 'edit'])
 
-/** The session a card's planning carries on (#1304): its last finished planning run's, resumed.
- *  Only one its CLI would find from `cwd`; otherwise `none` says why there is nothing to carry. */
+/** The session a card's planning carries on (#1304): its last finished or safely stopped
+ *  planning run's, resumed. Only one its CLI would find from `cwd`; otherwise `none` says why
+ *  there is nothing to carry. */
 export function planningSession(cardId: number, cwd = REPO_ROOT): { session: AgentSession; fork: boolean } | { none: 'unrecorded' | 'elsewhere' } {
   const here = (dir: string | undefined): boolean => !dir || path.resolve(dir) === cwd
+  const safeToContinue = (r: RunRecord): boolean => {
+    if (r.status === 'done') return true
+    if (r.status !== 'stopped' && r.status !== 'error' && r.status !== 'interrupted') return false
+    if (r.pendingWrites || r.cleanup?.status === 'unconfirmed') return false
+    if (isSessionMissingFailure(r.failure)) return false
+    const root = r.agentPid ? { pid: r.agentPid, since: r.agentStartedAt ?? r.startedAt, identity: r.agentIdentity } : undefined
+    const stopped = r.managedProcess ? connectionStopped(root) : processesStopped(runMark(r.sessionId, r.agentStartedAt ?? r.startedAt), root)
+    return stopped
+  }
   const planned = readRuns()
-    .filter((r) => r.status === 'done' && r.cardId === cardId && PLANNING.has(r.action))
-    .sort((a, b) => b.startedAt - a.startedAt)[0]
+    .filter((r) => r.status !== 'running' && r.cardId === cardId && PLANNING.has(r.action))
+    .sort((a, b) => b.startedAt - a.startedAt)
+    .find((r) => safeToContinue(r) && !!resumeSessionId(r))
   if (!planned) return { none: 'unrecorded' }
   if (!here(planned.cwd)) return { none: 'elsewhere' }
   const resumeId = resumeSessionId(planned)
@@ -863,12 +874,13 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   const automatic = typeof options === 'object' && options.automatic === true
   const pending = !forced && prev.status !== 'stopped' ? prev.retry?.pending : undefined
   if (automatic && !pending) return refusal('runContinued', 'The automatic retry is no longer pending.')
-  const session = forced ? undefined : resumeSessionId(prev)
+  const resetReplay = pending?.sessionAction === 'reset_replay'
+  const session = forced || resetReplay ? undefined : resumeSessionId(prev)
   if (pending || requireSession) {
     const root = prev.agentPid ? { pid: prev.agentPid, since: prev.agentStartedAt ?? prev.startedAt, identity: prev.agentIdentity } : undefined
     const stopped = prev.managedProcess ? connectionStopped(root) : processesStopped(runMark(prev.sessionId, prev.agentStartedAt), root)
     const recovery = agentRecovery({
-      stopped, session, replayable: !requireSession && neverStarted(prev),
+      stopped, session, replayable: !requireSession && (neverStarted(prev) || resetReplay),
       unconfirmedCleanup: prev.pendingWrites || prev.cleanup?.status === 'unconfirmed'
         || prev.managedProcess && (pending?.failure ?? prev.failure)?.code === 'idle_timeout' && !idleStopConfirmed(prev.cleanup, session),
     })
@@ -886,10 +898,10 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   const sessionId = randomUUID()
   let plan: RunPlan | null
   let fresh: FreshStart | undefined
-  if (!forced && prev.harness === 'antigravity' && !session && !neverStarted(prev)) {
+  if (!forced && !resetReplay && prev.harness === 'antigravity' && !session && !neverStarted(prev)) {
     return refusal('runNoSession', 'Antigravity did not record a conversation ID before interruption. The original session cannot be resumed.')
   }
-  if (!session && !forced && prev.cardId !== null && !neverStarted(prev)) return refusal('runNoSession', 'The original session is unavailable. Explicitly take over the saved task in a new session.')
+  if (!session && !forced && !resetReplay && prev.cardId !== null && !neverStarted(prev)) return refusal('runNoSession', 'The original session is unavailable. Explicitly take over the saved task in a new session.')
   if (session) {
     plan = planResume({ harness: prev.harness, resumeId: session, cwd }, prev.agent, prev.runtime ? { pin: prev.runtime } : {})
   } else {
@@ -912,7 +924,7 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   if ('error' in opened) return opened
   if (!opened.spec.prompt && buildResume) opened.spec.prompt = buildResume
   if (build?.notes?.trim()) opened.spec.prompt = [opened.spec.prompt || resumePrompt(prev.deliveryId, prev.action), build.notes.trim()].join('\n\n')
-  if (session && (pending || requireSession)) opened.spec.prompt = [recoveryPrompt, opened.spec.prompt].filter(Boolean).join('\n\n')
+  if (session && requireSession && !pending) opened.spec.prompt = [recoveryPrompt, opened.spec.prompt].filter(Boolean).join('\n\n')
   if (build || buildResume || pending || requireSession) writeSpec(opened.spec)
   return opened
 }
@@ -925,7 +937,7 @@ async function planRetry(
   sessionId: string,
   cwd: string,
 ): Promise<{ plan: RunPlan; fresh: FreshStart } | RunRefusal> {
-  const runtime = prev.runtime && runtimeById(prev.runtime) ? prev.runtime : undefined
+  const runtime = prev.runtime && runRuntimeById(prev.runtime) ? prev.runtime : undefined
   const { note, ...plan } = planRun(sessionId, cwd, prev.agent ?? agentForRun(ask), {
     ...(runtime ? { pin: runtime } : {}),
     ...(shipsHarness(prev.harness) ? { harness: prev.harness } : {}),
@@ -986,6 +998,7 @@ async function resumeHeld(
         }),
     failure: automatic ? prev.retry?.pending?.failure : undefined,
     retry: prev.retry ? { ...prev.retry, pending: undefined, launching: automatic ? true : undefined } : undefined,
+    ...(prev.retryHistory?.length ? { retryHistory: prev.retryHistory } : {}),
     logPath: logPathOf(sessionId),
     specAgent: prev.specAgent,
     cards: prev.cards,
@@ -1149,6 +1162,7 @@ export async function closeRun(
     error?: string
     failure?: RunRecord['failure']
     retryPause?: RunRecord['retryPause']
+    retryHistory?: RunRecord['retryHistory']
     note?: string
     errorWhy?: RunReason[]
     noteWhy?: RunReason[]
@@ -1164,6 +1178,7 @@ export async function closeRun(
     if (res.error) run.error = res.error
     run.failure = res.failure
     run.retryPause = res.retryPause
+    if (res.retryHistory?.length) run.retryHistory = res.retryHistory
     if (run.retry) {
       delete run.retry.launching
       if (res.status === 'stopped') delete run.retry.pending

@@ -42,11 +42,13 @@ import {
 import { readEnvFile, safeConfig } from './settings'
 import {
   GLOBAL_ID,
+  executionRuntimes,
   runtimeSecretVar,
   pickRuntime,
   readAgentRuntime,
+  readRuntimeCredentials,
   readRuntimes,
-  runtimeById,
+  runRuntimeById,
   runtimeOfAgent,
   secretVar,
   type Runtime,
@@ -80,6 +82,7 @@ interface ResolvedHarness {
   /** The keys of the secret settings whose id-scoped variable docs/kanban/.env holds right
    *  now. Set or not set — the value itself never leaves this module. */
   secretsSet: string[]
+  executionSecrets?: Record<string, string>
   /** The keys whose flag the command override already names, so the override wins and the
    *  setting is never appended. */
   ignored: string[]
@@ -157,19 +160,21 @@ export function readBlock(
   /** Whose key lines to look for — a runtime's keys are named after its id (#467). */
   runtimeId: string,
   secretRefs: Record<string, string> = {},
+  executionSecrets?: Record<string, string>,
 ): { values: Record<string, string>; secretsSet: string[]; ignored: string[] } {
   const values: Record<string, string> = {}
   const ignored: string[] = []
   const secretsSet: string[] = []
   // Read once for the whole loop — an agent can declare several secrets, and they all sit
   // in the same file.
-  const env = harness.settings.some((s) => s.kind === 'secret') ? readEnvFile() : {}
+  const env = !executionSecrets && harness.settings.some((s) => s.kind === 'secret') ? readEnvFile() : {}
   for (const setting of harness.settings) {
     // A key lives in docs/kanban/.env, never in this row. A hand-written one here is
     // ignored rather than used: the file we promised to keep it out of would be the one
     // holding it.
     if (setting.kind === 'secret') {
-      if (setting.env && env[secretRefs[setting.env] ?? secretVar(setting.env, runtimeId)]) secretsSet.push(setting.key)
+      const value = executionSecrets ? executionSecrets[setting.key] : setting.env && env[secretRefs[setting.env] ?? secretVar(setting.env, runtimeId)]
+      if (value) secretsSet.push(setting.key)
       continue
     }
     const value = block[setting.key]?.trim() ?? ''
@@ -194,11 +199,8 @@ export function readBlock(
  *  reads as yes, so a model name of the user's own is never reported by mistake. */
 export function onOwnEndpoint(runtimeId: string | undefined): boolean {
   try {
-    const runtime = runtimeId ? runtimeById(runtimeId) : undefined
-    const harness = harnessByName(runtime?.harness)
-    if (!runtime || !harness) return false
-    const { values, secretsSet } = readBlock(harness, runtime.settings, [], runtime.id, runtime.secretRefs)
-    return !!activeProviderOf({ harness, values, secretsSet })?.needs.includes('baseUrl')
+    if (!runtimeId || !runRuntimeById(runtimeId)) return false
+    return !!activeProviderOf(resolveHarness({ pin: runtimeId }))?.needs.includes('baseUrl')
   } catch {
     return true
   }
@@ -231,16 +233,17 @@ function resolveHarness(ask: HarnessAsk = {}): ResolvedHarness {
   const cfg = safeConfig()
   const staleCommand = typeof cfg.command === 'string' && cfg.command.trim() ? true : undefined
   const agent = ask.agent ?? ''
-  const list = readRuntimes(cfg)
-  // Which runtime this agent runs, from the board and nowhere else: its own pick, or
-  // **Global default** when it named none (agent/runtimes.ts).
-  const table = readAgentRuntime(cfg)
+  const execution = executionRuntimes()
+  const scoped = execution && [execution.default, ...Object.values(execution.picks)]
+  const list = scoped ?? readRuntimes(cfg)
   const owner = agent ? runtimeOwner(agent) : ''
-  const picked = owner ? runtimeOfAgent(owner, table) : undefined
+  const picked = owner ? execution ? execution.picks[owner]?.id : runtimeOfAgent(owner, readAgentRuntime(cfg)) : undefined
   // `pin` wins over the board: a run already committed to a runtime spawns that runtime,
   // whatever the settings have been changed to since.
   const asked = ask.pin ?? picked
   const runtime = pickRuntime(list, asked, ask.harness)
+  const credentialId = scoped?.find(row => row === runtime)?.credentialId
+  const executionSecrets = execution && (credentialId ? readRuntimeCredentials(execution.credentialsFile)[credentialId] ?? {} : {})
   const unknownAgentRuntime =
     picked && !ask.pin && !list.some((r) => r.id === picked || r.harness === picked) ? picked : undefined
   const known = harnessByName(runtime.harness)
@@ -255,6 +258,7 @@ function resolveHarness(ask: HarnessAsk = {}): ResolvedHarness {
     splitCommand(command),
     runtime.id,
     runtime.secretRefs,
+    executionSecrets,
   )
   return {
     runtime,
@@ -265,6 +269,7 @@ function resolveHarness(ask: HarnessAsk = {}): ResolvedHarness {
     unknownAgentRuntime,
     values,
     secretsSet,
+    executionSecrets,
     ignored,
     unknownName: known ? undefined : runtime.harness || undefined,
     staleCommand,
@@ -344,6 +349,7 @@ const settingArgs = (resolved: ResolvedHarness): string[] => argsOf(resolved.har
 // docs/kanban/.env — each runtime's own line, named after its id (#467).
 function runEnv(resolved: ResolvedHarness, cwd = REPO_ROOT): NodeJS.ProcessEnv {
   const { harness, runtime } = resolved
+  if (resolved.executionSecrets) return settingEnv(harness, resolved, resolved.executionSecrets, cwd)
   const file = readEnvFile()
   const secrets: Record<string, string> = {}
   for (const setting of harness.settings) {
@@ -455,7 +461,7 @@ export function planResume(
   if (!harnessByName(harnessName)) return null
   const resolved = resolveHarness({ agent, ...own, harness: harnessName })
   const { harness, command, runtime } = resolved
-  if (!harness.resumes) return null
+  if (!harness.resumes || (resolved.executionSecrets && !runtime.id)) return null
   const argv = splitCommand(command)
   return {
     harness: harness.name,
@@ -483,7 +489,7 @@ export function planFork(
   if (!harnessByName(harnessName)) return null
   const resolved = resolveHarness({ agent, ...own, harness: harnessName })
   const { harness, command, runtime } = resolved
-  if (!harness.forkArgs || harness.name !== harnessName) return null
+  if (!harness.forkArgs || harness.name !== harnessName || (resolved.executionSecrets && !runtime.id)) return null
   const argv = splitCommand(command)
   return {
     harness: harness.name,

@@ -3,7 +3,7 @@ import type { RunEvent } from './wire/events'
 export const IDLE_MS = 5 * 60_000
 export const IDLE_TIMEOUT = { milliseconds: IDLE_MS }
 export const IDLE_ERROR = 'No response for 5 minutes (idle timeout).'
-export const IDLE_FAILURE = { code: 'idle_timeout', level: 2, reason: IDLE_ERROR } as const
+export const IDLE_FAILURE = { code: 'idle_timeout', source: 'runtime' as const, summary: IDLE_ERROR } as const
 export const PROVIDER_RETRY_MS = { announcement: 10 * 60_000, episode: 30 * 60_000 }
 
 /** Local work and an explicitly announced native retry have separate clocks. */
@@ -37,6 +37,18 @@ export function createIdleWatchdog(expired: () => void, busy = () => false, mill
         else {
           recoveringAt ??= now()
           retryUntil = Math.min(now() + PROVIDER_RETRY_MS.announcement, recoveringAt + PROVIDER_RETRY_MS.episode)
+        }
+        check()
+        return
+      }
+      if (e.kind === 'retry') {
+        if (e.data.state === 'waiting' || e.data.state === 'retrying') {
+          recoveringAt ??= now()
+          const target = e.data.nextRetryAt ? Date.parse(e.data.nextRetryAt) : NaN
+          const waitUntil = Number.isFinite(target) ? Math.max(target + 30_000, now() + PROVIDER_RETRY_MS.announcement) : now() + PROVIDER_RETRY_MS.announcement
+          retryUntil = Math.min(waitUntil, recoveringAt + PROVIDER_RETRY_MS.episode)
+        } else {
+          touch()
         }
         check()
         return

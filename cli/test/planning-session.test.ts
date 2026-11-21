@@ -108,6 +108,28 @@ describe('the planning after an answer', () => {
     const second = await start({ action: 'resolve', id: 1 })
     assert.equal(after(second.argv, '--resume'), planned.sessionId)
   })
+
+  it('resumes an interrupted or stopped planning session when old process is stopped and resumeId is valid', async () => {
+    const planned = await start({ action: 'clarify', id: 1 })
+    fs.writeFileSync(peekRun(planned.sessionId)!.logPath, 'log\n')
+    await closeRun(planned.sessionId, { status: 'stopped', code: null })
+    const continued = await start({ action: 'resolve', id: 1 })
+    assert.deepEqual(continued.continues, { resumeId: planned.sessionId })
+
+    fs.writeFileSync(peekRun(continued.sessionId)!.logPath, 'log\n')
+    await closeRun(continued.sessionId, { status: 'error', ok: false, code: 1, failure: { source: 'runtime', code: 'connection_lost', summary: 'EOF' } })
+    const afterError = await start({ action: 'resolve', id: 1 })
+    assert.deepEqual(afterError.continues, { resumeId: planned.sessionId })
+  })
+
+  it('refuses to carry a planning session that has pendingWrites or session_not_found', async () => {
+    const planned = await start({ action: 'clarify', id: 1 })
+    fs.writeFileSync(peekRun(planned.sessionId)!.logPath, 'log\n')
+    patch(planned.sessionId, (r) => { r.pendingWrites = true })
+    await closeRun(planned.sessionId, { status: 'error', ok: false, code: 1 })
+    const fresh = await start({ action: 'resolve', id: 1 })
+    assert.equal(fresh.continues, undefined)
+  })
 })
 
 // The discussion, which planning follows, on `other` (`harness`).

@@ -20,7 +20,7 @@ import { buildRun } from './prompts'
 import { NEEDS_CLOUD, NOT_DOWNLOADED, pinMissing, studiosReachable } from './cloud-studios'
 import { archivesOnApproval, cardStudioId, noStudioMessage, studioFor } from './studios'
 import { carriedSession, closeRun, markSpawned, openResume, openRun, peekRun, type ResumeOptions } from './sessions'
-import { runtimeById } from './runtimes'
+import { runRuntimeById } from './runtimes'
 import { refusal, retiredStudioRun, type AgentRequest, type RunRecord, type RunRefusal } from './types'
 
 /** Open a run and spawn its watcher. `spawned` false means nothing is watching it — the
@@ -62,7 +62,7 @@ export function startSubRun(parentId: string, prompt: string, runtime?: string):
   const parent = peekRun(parentId)
   if (!parent || parent.status !== 'running') return refusal('runNotFound', `run ${parentId.slice(0, 8)} is not running here`, { id: parentId })
   if (parent.action === 'sub') return refusal('subRunNested', 'a sub-run cannot start sub-runs of its own')
-  const inherited = parent.runtime && runtimeById(parent.runtime) ? parent.runtime : undefined
+  const inherited = parent.runtime && runRuntimeById(parent.runtime) ? parent.runtime : undefined
   return open(
     {
       action: 'sub',

@@ -117,9 +117,9 @@ it('requires a native idle stop receipt and an exited managed connection before 
   const cleanup = { status: 'confirmed', execution: 'execution', kept: [], instance: 'native' } as const
   const idleStop = { threadId: 'thread', turnId: 'turn' }
   run({ sessionId: 'no-native-receipt', managedProcess: true, resumeId: 'thread',
-    cleanup: { ...cleanup, kept: [] }, retry: { ...pending, pending, attempt: 1, since: 0, reason: pending.failure.reason } })
+    cleanup: { ...cleanup, kept: [] }, retry: { ...pending, pending, attempt: 1, since: 0, reason: pending.failure.summary } })
   run({ sessionId: 'live-connection', managedProcess: true, resumeId: 'thread', agentPid: process.pid,
-    cleanup: { ...cleanup, kept: [], idleStop }, retry: { ...pending, pending, attempt: 1, since: 0, reason: pending.failure.reason } })
+    cleanup: { ...cleanup, kept: [], idleStop }, retry: { ...pending, pending, attempt: 1, since: 0, reason: pending.failure.summary } })
 
   for (const id of ['no-native-receipt', 'live-connection']) {
     assert.ok('error' in await openResume(id, { automatic: true }))

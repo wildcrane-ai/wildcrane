@@ -28,7 +28,7 @@ import { BOARD_FILE_LIMIT, assetsFile, cardFront, isBoardPath, isSettingsPath, n
 import { describeTaskPreviewProblems } from '../../cli/src/lib/shared/task-preview-validation'
 import { parsePreviewBlocks, sourcePosition, withoutCode, type SourceProblem } from '../../cli/src/lib/shared/preview-blocks'
 import { CODING_PREVIEWS, migrateTask } from '../../cli/src/lib/shared/studio-migration'
-import type { ExecutionFailure } from '../../cli/src/lib/agent/retry'
+import { makeFailure, type ExecutionFailure } from '../../cli/src/lib/agent/retry'
 import { itemAt, stampItem } from '../../cli/src/lib/shared/triage-files.ts'
 import { projectStateDir } from '../../cli/src/lib/machine/project'
 import { readPin, readVersion, savePin } from '../../cli/src/lib/agent/cloud-studios'
@@ -112,7 +112,7 @@ export type Pushed =
   | { ok: false; conflict: boolean; error: string; offline?: boolean; code?: string; failure?: ExecutionFailure; previews?: SourceProblem[]; tasks?: Record<string, SyncProblem> }
 
 type SyncProblem = { error: string; offline?: boolean; code?: string; blocking?: boolean; failure?: ExecutionFailure }
-const validationFailure = (reason: string, code = 'validation_failed'): ExecutionFailure => ({ code, level: 1, source: 'validation', reason })
+const validationFailure = (reason: string, code = 'validation_failed'): ExecutionFailure => makeFailure('validation', reason, { code, detail: reason })
 
 const TASK_ID = /^[\w-]{1,100}$/
 export const NO_FOLDER = 'This project has no folder on this computer. Link one, then try again.'
@@ -566,7 +566,7 @@ export function pull(ws: TaskFolder, machineId: string, stopped?: () => boolean,
       const previews = sent.previews?.filter(p => numberOfCard(p.file) === ws.number)
       const refused = sent.tasks?.[ws.cloudTask ?? ''] ?? (sent.tasks || sent.previews ? undefined : { ...sent, blocking: true })
       if (previews?.length) validation = validationFailure(describeTaskPreviewProblems(previews))
-      else if (refused?.failure?.level === 1) validation = refused.failure
+      else if (refused?.failure?.source === 'validation') validation = refused.failure
       else if (refused && refused.blocking !== false) {
         if (sent.conflict) {
           const prepared = await prepareConflictTask(ws)
@@ -580,7 +580,7 @@ export function pull(ws: TaskFolder, machineId: string, stopped?: () => boolean,
       const prepared = await prepareConflictTask(ws)
       if (!prepared.ok) return prepared
     }
-    return read.ok && validation ? { ok: false, code: 'bad_request', error: validation.reason, failure: validation } : read
+    return read.ok && validation ? { ok: false, code: 'bad_request', error: validation.summary, failure: validation } : read
   }, stopped)
 }
 

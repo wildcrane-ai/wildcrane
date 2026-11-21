@@ -472,7 +472,7 @@ function event(
     case 'turn.failed': {
       const error = obj(payload.error)
       const failure = providerFailure(error, str(error.message) || 'the turn failed')
-      return ended({ ok: false, error: failure.reason, failure })
+      return ended({ ok: false, error: failure.summary, failure })
     }
     case 'session.closed':
       return ended({ ok: false, error: str(payload.reason) || 'the agent closed the session' })

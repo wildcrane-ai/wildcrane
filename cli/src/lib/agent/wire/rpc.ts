@@ -101,7 +101,7 @@ export function connect(stdout: Readable, stdin: Writable, onCall: (msg: Message
       } else pending.ok(obj(msg.result))
     }
   })
-  stdout.on('close', () => closed(new ExecutionError({ code: 'connection_lost', level: 2, reason: 'The agent closed the connection.' })))
+  stdout.on('close', () => closed(new ExecutionError({ code: 'connection_lost', source: 'runtime', summary: 'The agent closed the connection.' })))
   stdout.on('error', (err: Error) => closed(new ExecutionError(executionFailure(err))))
   stdin.on('error', (err: Error) => closed(new ExecutionError(executionFailure(err))))
 

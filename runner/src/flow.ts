@@ -1,5 +1,5 @@
 import type { BoardRunSpend } from './recovery'
-import { agentRecovery, type ExecutionFailure } from '../../cli/src/lib/agent/retry'
+import { agentRecovery, clipDetail, clipSummary, makeFailure, MAX_RETRY_ATTEMPTS, readRetryPause, type ExecutionFailure, type FailureDetail, type RetryPause, type RetryRecord } from '../../cli/src/lib/agent/retry'
 import { connectionStopped } from '../../cli/src/lib/agent/connection-process'
 // A flow job (#2020): one board verb, run with the akb the Runner carries on the task's board
 // and followed to its end — for `implement`, until the delivery has landed. A periodic agent's
@@ -15,6 +15,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 import { APPROVED_UI_DIR_ENV, approvedUiPreviews } from '../../cli/src/lib/agent/approved-ui'
 import { SAVED_PREVIEW_FILE_ENV, SESSION_COST_ENV } from '../../cli/src/lib/agent/env'
+import { EXECUTION_RUNTIMES_ENV, GLOBAL_ID, GLOBAL_NAME, type ExecutionRuntimes } from '../../cli/src/lib/agent/runtimes'
 import type { DeliveryEnding, DeliveryStatus } from '../../cli/src/lib/agent/types'
 import { parseFrontmatter } from '../../cli/src/lib/frontmatter'
 import { asEvent, type RunEvent } from '../../cli/src/lib/agent/wire'
@@ -24,8 +25,8 @@ import { RUNTIMES, type AgentJob, type AgentRuntime, type Flow, type Job, type J
 import { answerOf, runAkb, type Akb, type Ran } from './akb'
 import { quoteArg } from '../../cli/src/lib/agent/argv'
 import { RAW_ARGS_KEY } from '../../cli/src/lib/agent/harnesses/types'
-import { LABELS, providerKey, providerOf, secretKeys, settingKeys } from './runtimes'
-import { secretsOf } from './secrets'
+import { LABELS, forks, providerKey, providerOf, secretKeys, settingKeys } from './runtimes'
+import { runtimeCredentialsFile, secretsOf } from './secrets'
 import { akbCardOf, cardAssetsDir, cardFile, findCard, mcpServersOf, pull, push, withBoard, workspaceOf, type McpServers, type TaskFolder } from './task-folder'
 import { studioName } from '../../cli/src/lib/shared/board-files.ts'
 import { pendingConflicts } from '../../cli/src/lib/shared/board-conflicts'
@@ -63,6 +64,7 @@ export interface FlowIo {
   lost: () => boolean
   asked?: () => boolean
   diagnostic?: string
+  executionRuntimes?: string
   repairDelivery?: boolean
   sync?: Sync
   syncBackoff?: (attempt: number) => number
@@ -84,7 +86,7 @@ function refusedSync(job: Job, problem: Extract<api.Call<unknown>, { ok: false }
 }
 
 
-export type FlowEnd = { ok: true; report: JobReport; reviewed?: Laid } | { ok: false; reason: string; stopped?: boolean; failure?: ExecutionFailure; report?: JobReport }
+export type FlowEnd = { ok: true; report: JobReport; reviewed?: Laid } | { ok: false; reason: string; stopped?: boolean; exhausted?: boolean; failure?: ExecutionFailure; report?: JobReport }
 
 type Delivery = { id?: string; status?: DeliveryStatus; commit?: string; branch?: string; ending?: DeliveryEnding }
 
@@ -94,7 +96,9 @@ interface Run extends BoardRunSpend {
   resumeId?: string
   pendingWrites?: boolean
   failure?: ExecutionFailure
-  retryPause?: string
+  retryPause?: RetryPause
+  retry?: { attempt: number; of: number; reason: string }
+  retryHistory?: RetryRecord[]
   cleanup?: { status: string }
   agentPid?: number
   agentStartedAt?: number
@@ -303,7 +307,17 @@ function boardAkb(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo, task?: s
     const log = show ? logLines(io.show, io.event) : undefined
     if (show) await io.starting?.()
     if (stopping(io)) return refused('Task preparation stopped.')
-    const ran = await runAkb(deps.akb, full, { cwd: ws.cwd, board: ws.board, task, language: cloudLanguage(job), env: { ...env, AI4KANBAN_SYNC_DIAGNOSTIC: io.diagnostic, AI4KANBAN_REVIEW_STAGES: job.flow?.review_stages ? JSON.stringify(job.flow.review_stages) : undefined, AI4KANBAN_TASK_REVIEW: job.taskReview ? JSON.stringify(job.taskReview) : undefined, AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId }) }, show: log?.push, track: io.track })
+    const ran = await runAkb(deps.akb, full, {
+      cwd: ws.cwd, board: ws.board, task, language: cloudLanguage(job), show: log?.push, track: io.track,
+      env: {
+        ...env,
+        [EXECUTION_RUNTIMES_ENV]: io.executionRuntimes,
+        AI4KANBAN_SYNC_DIAGNOSTIC: io.diagnostic,
+        AI4KANBAN_REVIEW_STAGES: job.flow?.review_stages ? JSON.stringify(job.flow.review_stages) : undefined,
+        AI4KANBAN_TASK_REVIEW: job.taskReview ? JSON.stringify(job.taskReview) : undefined,
+        AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId }),
+      },
+    })
     log?.end()
     return ran
   }
@@ -325,47 +339,25 @@ async function setUp(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Prom
   if (hook.note) io.show(`${hook.note}\n`)
   const pulled = await attemptSync(io, 'prepare', () => pull(ws, deps.machineId, () => stopping(io)))
   if (!pulled.ok) {
-    if (pulled.failure?.level === 1) io.diagnostic = pulled.failure.reason
+    if (pulled.failure?.source === 'validation' || pulled.failure?.source === 'sync') io.diagnostic = pulled.failure.summary
     else if (pulled.code !== 'board_content_conflict') return refusedSync(job, pulled)
   }
   if (io.flowRun?.finished) return null
-  const used = await akb(['raw', 'agent', 'use', runtime])
-  if (used.code !== 0) return refusal(used)
-  // The runtime's settings on the board's Global default, each one set or cleared (#2135); the
-  // studio's MCP servers ride on the extra arguments, or on `mcpConfig` for a CLI that talks.
   const servers = mcpServersOf(ws)
-  const mcpFile = path.join(ws.board, '.sync', `${ws.task}.mcp.json`)
-  const takes = new Set(settingKeys(runtime))
-  const given = job.settings ?? {}
-  const values = valuesOf(runtime, job.model, given, servers, mcpFile)
-  const secrets = secretsOf(job.runtimeId)
-  const valueOf = (key: string) => (secretKeys(runtime).includes(key) ? secrets[key] : values[key]) ?? ''
-  const set = async (key: string, value: string) => {
-    const done = await akb(['raw', 'agent', 'set', key, ...(value ? (key === RAW_ARGS_KEY ? ['--', value] : [value]) : [])])
-    return done.code === 0 ? null : refusal(done)
-  }
-  // A provider is never cleared, and is picked only once what it needs is filled in; what it
-  // no longer needs is cleared after.
-  const provider = providerKey(runtime)
-  const rest = [...takes].filter((k) => k !== provider)
-  for (const key of rest.filter((k) => valueOf(k))) {
-    const failed = await set(key, valueOf(key))
-    if (failed) return failed
-  }
-  if (provider) {
-    const failed = await set(provider, providerOf(runtime, job.model, { settings: job.settings, secrets }) ?? '')
-    if (failed) return failed
-  }
-  for (const key of rest.filter((k) => !valueOf(k))) {
-    const failed = await set(key, '')
-    if (failed) return failed
+  const mcpFile = path.join(ws.board, '.sync', `${ws.task}.${job.id}.mcp.json`)
+  const runtimes: ExecutionRuntimes = {
+    default: {
+      id: GLOBAL_ID, name: GLOBAL_NAME, harness: runtime,
+      ...runtimeSettings(runtime, job.model, job.settings ?? {}, job.runtimeId, servers, mcpFile),
+    },
+    picks: {},
+    credentialsFile: runtimeCredentialsFile(),
   }
   if (job.agentRuntimes && !job.task) {
     const reports = await deps.runtimes()
-    const rows = Object.fromEntries(Object.entries(job.agentRuntimes).map(([agent, r]) => [agent, pickRow(job, r, deps.machineId, reports, servers, mcpFile)]))
-    const picked = await akb(['raw', 'agent', 'picks', JSON.stringify(rows)])
-    if (picked.code !== 0) return refusal(picked)
+    runtimes.picks = Object.fromEntries(Object.entries(job.agentRuntimes).map(([agent, r]) => [agent, pickRow(job, r, deps.machineId, reports, servers, mcpFile)]))
   }
+  io.executionRuntimes = JSON.stringify(runtimes)
   return null
 }
 
@@ -377,6 +369,15 @@ function valuesOf(runtime: Job['runtime'], model: string | null | undefined, giv
   return values
 }
 
+function runtimeSettings(runtime: Job['runtime'], model: string | null | undefined, given: Record<string, string>, credentialId: string | null | undefined, servers: McpServers, file: string) {
+  const values = valuesOf(runtime, model, given, servers, file)
+  const provider = providerKey(runtime)
+  if (provider) values[provider] = providerOf(runtime, model, { settings: given, secrets: secretsOf(credentialId) }) ?? ''
+  const privateKeys = new Set(secretKeys(runtime))
+  const settings = Object.fromEntries(settingKeys(runtime).filter(key => !privateKeys.has(key) && values[key]).map(key => [key, values[key]!]))
+  return { settings, ...(credentialId ? { credentialId } : {}) }
+}
+
 /** One step's runtime as the board takes it (#625); one this computer cannot run says why. */
 export function pickRow(job: Job, r: AgentRuntime, machine: string, reports: RuntimeReport[], servers: McpServers, mcpFile: string) {
   const zh = cloudLanguage(job) === 'zh'
@@ -386,12 +387,7 @@ export function pickRow(job: Job, r: AgentRuntime, machine: string, reports: Run
     ? (zh ? `所选运行时「${r.name}」不在这台电脑上。` : `The runtime "${r.name}" picked for this step is not on this computer.`)
     : unavailable(runtime, reports)
   if (away) return { id: r.id, name: r.name, harness: runtime, settings: {}, away }
-  const secrets = secretsOf(r.id)
-  const values = valuesOf(runtime, r.model, r.settings, servers, mcpFile)
-  const provider = providerKey(runtime)
-  if (provider) values[provider] = providerOf(runtime, r.model, { settings: r.settings, secrets }) ?? ''
-  const settings = Object.fromEntries(Object.entries(values).filter(([k, v]) => v && !secretKeys(runtime).includes(k)))
-  return { id: r.id, name: r.name, harness: runtime, settings, secrets: Object.fromEntries(secretKeys(runtime).flatMap((k) => (secrets[k] ? [[k, secrets[k]]] : []))) }
+  return { id: r.id, name: r.name, harness: runtime, ...runtimeSettings(runtime, r.model, r.settings, r.id, servers, mcpFile) }
 }
 
 function recoveryArgs(run: NonNullable<FlowIo['flowRun']>): string[] {
@@ -542,7 +538,19 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
   if (flow.verb === 'discard') return discardBuilds()
   if (io.flowRun?.failure) {
     const failure = io.flowRun.failure
-    return { ok: false, reason: failure.reason, failure, report: spentBy(runsSpent([], since, job, io), job) }
+    const failureDetail: FailureDetail = {
+      summary: failure.summary,
+      ...(failure.detail ? { detail: failure.detail } : {}),
+      ...(failure.code ? { code: failure.code } : {}),
+      source: failure.source,
+      runtime: { connector: job.runtime, name: null, model: job.model ?? null },
+      attempt: 1,
+      maxAttempts: MAX_RETRY_ATTEMPTS,
+      pauseReason: 'limit',
+      safeToRetry: true,
+      history: [],
+    }
+    return { ok: false, reason: failure.summary, exhausted: failure.code === 'retry_exhausted' || io.flowRun.retryPause === 'limit', failure, report: { ...spentBy(runsSpent([], since, job, io), job), failure: failureDetail } }
   }
 
   const hasReview = !!job.taskReview || flow.review_stages !== undefined
@@ -731,7 +739,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
         return {
           ok: false,
           reason: 'task_recovery_unverified',
-          failure: { code: 'task_recovery_unverified', level: 1, source: 'validation', reason: 'task_recovery_unverified' },
+          failure: makeFailure('validation', 'task_recovery_unverified', { code: 'task_recovery_unverified' }),
           report: spentBy([...new Map([...learned, ...runsSpent(runs, since, job, io)].map(r => [r.sessionId, r])).values()], job),
         }
       }
@@ -850,7 +858,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
           return {
             ok: false,
             reason: 'task_recovery_unverified',
-            failure: { code: 'task_recovery_unverified', level: 1, source: 'validation', reason: 'task_recovery_unverified' },
+            failure: makeFailure('validation', 'task_recovery_unverified', { code: 'task_recovery_unverified' }),
           }
         }
       }
@@ -869,8 +877,8 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       }
     }
     if (effectiveVerb === 'revise' && !text) return fail('Say what to change.')
-    const fresh = () => {
-      const carry = carryArgs(effectiveVerb)
+    const fresh = (fromTranscript = false) => {
+      const carry = carryArgs(effectiveVerb, fromTranscript)
       const costFrom = carry.includes('--session') && typeof job.resumeCostUsd === 'number' ? { [SESSION_COST_ENV]: String(job.resumeCostUsd) } : undefined
       return launch(['raw', 'card', effectiveVerb, String(id), '--follow', '--events', '--json', ...carry, ...(note ? ['--', note] : [])], true, costFrom)
     }
@@ -885,13 +893,23 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       delivery?: Delivery
       error?: { message?: string; result?: string; lastSessionId?: string; agentSession?: string; delivery?: Delivery }
     }
-    const answer = answerOf<Ended>(ran)
+    const readRuns = async () => answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--card', String(id), '--all', '--json']))?.runs ?? []
+    const lastRun = (answer: Ended | null) => answer?.lastSessionId ?? answer?.error?.lastSessionId
+    let answer = answerOf<Ended>(ran)
+    let runs = await readRuns()
+    if (ran.code !== 0 && !continuation && job.fork && job.transcript && !stopping(io) &&
+        runs.some(run => run.sessionId === lastRun(answer) && run.failure?.code === 'codex_fork_source_missing')) {
+      ran = await fresh(true)
+      if (ran.reviewRefused) return fail(ran.reviewRefused)
+      if (io.lost()) return fail('')
+      answer = answerOf<Ended>(ran)
+      runs = await readRuns()
+    }
     const delivery = answer?.delivery ?? answer?.error?.delivery
     if (expectedDelivery && delivery?.id && delivery.id !== expectedDelivery) {
       return fail('续跑返回了其他交付的结果，原交付保持未完成。')
     }
-    const last = answer?.lastSessionId ?? answer?.error?.lastSessionId
-    const runs = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--card', String(id), '--all', '--json']))?.runs ?? []
+    const last = lastRun(answer)
     const recent = runs.find(r => r.sessionId === last) ?? runs.filter(r => !r.parentId && r.cloudExecution?.job === job.id).at(-1)
     const spent = spentBy([...new Map([...learned, ...runsSpent(runs, since, job, io)].map(run => [run.sessionId, run])).values()], job)
     const rejected = isRejected()
@@ -908,19 +926,42 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     // A build held on the user's question is reported as one, like a plan's.
     if (!rejected && ran.code !== 0 && !(effectiveCoding && completed) && !(effectiveVerb === 'refine' && waiting) && !(answer?.error && asked)) {
       const failure = recent?.failure
-      return { ok: false, reason: failure?.reason ?? reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran),
-        failure: recent?.retryPause === 'limit' && failure?.level === 2 ? { ...failure, code: 'retry_exhausted' } : failure, report: spent }
+      const rawReason = failure?.summary ?? reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran)
+      const pause = readRetryPause(recent?.retryPause) ?? 'limit'
+      const history = recent?.retryHistory ?? []
+      const lastAction = history.at(-1)?.sessionAction
+      const failureDetail: FailureDetail = {
+        summary: clipSummary(rawReason) || 'The run failed.',
+        ...(failure?.detail ? { detail: failure.detail } : rawReason.length > 300 ? { detail: clipDetail(rawReason) } : {}),
+        ...(failure?.code ? { code: failure.code } : {}),
+        source: failure?.source ?? 'runtime',
+        runtime: { connector: job.runtime, name: null, model: job.model ?? null },
+        attempt: recent?.retry?.attempt ?? (history.length || 1),
+        maxAttempts: recent?.retry?.of ?? MAX_RETRY_ATTEMPTS,
+        pauseReason: pause,
+        safeToRetry: pause !== 'unsafe' && lastAction !== 'pause_unsafe',
+        ...(lastAction ? { sessionAction: lastAction } : {}),
+        history,
+      }
+      return {
+        ok: false,
+        reason: rawReason,
+        exhausted: recent?.retryPause === 'limit',
+        failure,
+        report: { ...spent, failure: failureDetail },
+      }
     }
     if (effectiveCoding && !rejected && !completed && !asked && !waiting && delivery) {
       const reason = 'The Coding run exited without a delivery receipt. Verify the saved work and finish the original delivery.'
-      return { ok: false, reason, failure: { code: 'delivery_incomplete', level: 1, source: 'validation', reason }, report: spent }
+      return { ok: false, reason, failure: makeFailure('validation', reason, { code: 'delivery_incomplete', detail: reason }), report: spent }
     }
     const said = ((last ? runs.find((r) => r.sessionId === last)?.result : undefined) ?? answer?.result ?? answer?.error?.result)?.trim()
     const state = effectiveCoding ? { deliveryCompleted: !!completed, ...(completed ? { deliveryId: completed } : {}) }
       : effectiveVerb === 'implement' && delivery?.status === 'active' ? { review: {} } : {}
     const landing = (effectiveCoding ? completed : !rejected && ran.code === 0) ? landingOf(delivery) : {}
     const session = answer?.agentSession ?? answer?.error?.agentSession
-    return { ok: true, report: { ...(said ? { reply: said } : {}), ...(session ? { session } : {}), ...spent, card: id, ...state, ...(review ? { review } : {}), ...landing } }
+    const retries = recent?.retryHistory?.length ? recent.retryHistory : undefined
+    return { ok: true, report: { ...(said ? { reply: said } : {}), ...(session ? { session } : {}), ...spent, ...(retries ? { retries } : {}), card: id, ...state, ...(review ? { review } : {}), ...landing } }
   }
 
   /** A discarded build (#61): every delivery on the card still holding a checkout gives it up. */
@@ -937,7 +978,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
   }
 
   /** Planning carries the discussion's session and transcript; an immediate build carries only the transcript. */
-  function carryArgs(verb: string): string[] {
+  function carryArgs(verb: string, fromTranscript: boolean): string[] {
     if (flow.replan) return ['--new-session']
     if (verb === 'implement' && flow.verb === 'create') {
       const transcript = writeTranscript(job, path.join(ws.board, '.sync', `${ws.task}.discussion`))
@@ -945,8 +986,9 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     }
     if (!['refine', 'resolve', 'revise'].includes(verb)) return []
     const transcript = writeTranscript(job, path.join(ws.board, '.sync', `${ws.task}.discussion`))
+    const freshSession = fromTranscript || (job.fork && !forks(job.runtime))
     return [
-      ...(job.resume ? ['--session', job.resume, ...(job.fork ? ['--fork'] : [])] : []),
+      ...(freshSession ? ['--new-session'] : job.resume ? ['--session', job.resume, ...(job.fork ? ['--fork'] : [])] : []),
       ...(transcript ? ['--transcript', transcript] : []),
     ]
   }
@@ -971,23 +1013,28 @@ export async function flowRunEvidence(ws: TaskFolder, job: Job, deps: FlowDeps, 
   if (job.flow && !id) return { stopped: false }
   const akb = boardAkb(job, ws, deps, { show() {}, event() {}, track() {}, onStop() {}, lost: () => false })
   const ran = await akb(['raw', 'run', 'list', '--all', '--json', ...(id ? ['--card', String(id)] : [])])
-  const runs = answerOf<{ runs?: Run[] }>(ran)?.runs
-    ?.filter(run => run.cloudExecution?.machine === deps.machineId
-      && (run.cloudExecution.job === execution || run.sessionId === prior?.id && run.cloudExecution.job === prior.from))
-  if (!runs?.every(run => run.status !== 'running' && (run.managedProcess
+  const allRuns = answerOf<{ runs?: Run[] }>(ran)?.runs
+  if (!allRuns) return { stopped: false }
+  const owned = allRuns.filter(run => run.cloudExecution?.machine === deps.machineId
+    && (run.cloudExecution.job === execution || run.sessionId === prior?.id && run.cloudExecution.job === prior.from))
+  const deliveryIds = new Set(owned.map(r => r.deliveryId).filter((d): d is string => !!d))
+  const runs = [...new Map([
+    ...owned,
+    ...allRuns.filter(run => !run.parentId && !!run.deliveryId && deliveryIds.has(run.deliveryId) && ['conflict', 'hook'].includes(run.action ?? '')),
+  ].map(r => [r.sessionId, r])).values()]
+  if (!runs.every(run => run.status !== 'running' && (run.managedProcess
     ? connectionStopped(run.agentPid ? { pid: run.agentPid, identity: run.agentIdentity } : undefined)
     : processesStopped(runMark(run.sessionId, run.agentStartedAt ?? run.startedAt),
       run.agentPid && run.agentStartedAt ? { pid: run.agentPid, since: run.agentStartedAt } : undefined)))) return { stopped: false }
   const candidates = runs
-    .filter(run => !run.parentId && (job.agent || job.review || run.action === job.flow?.verb
-      || job.flow?.verb === 'create' && ['implement', 'refine', 'spec'].includes(run.action ?? '')
-      || !!run.deliveryId && (job.flow?.verb === 'create' || job.flow?.verb === 'implement') && ['conflict', 'hook'].includes(run.action ?? '')
-      || job.flow?.verb === 'refine' && run.action === 'spec'))
+    .filter(run => !run.parentId)
     .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
-  const previous = candidates.find(run => run.cloudExecution?.job === execution) ?? candidates.find(run => run.sessionId === prior?.id)
+  const previous = candidates.find(run => run.cloudExecution?.job === execution)
+    ?? candidates.find(run => run.sessionId === prior?.id)
+    ?? candidates[0]
   if (!previous) return { stopped: true }
   const terminal = job.flow && previous.status === 'error' && previous.retryPause ? previous.failure : undefined
-  const failure = terminal?.level === 2 && previous.retryPause === 'limit' ? { ...terminal, code: 'retry_exhausted' } : terminal
+  const failure = terminal && previous.retryPause === 'limit' ? { ...terminal, code: terminal.code ?? 'retry_exhausted' } : terminal
   const recovery = agentRecovery({ stopped: true, completed: previous.status === 'done' || !!failure,
     session: previous.resumeId, unconfirmedCleanup: previous.pendingWrites || previous.cleanup?.status === 'unconfirmed' })
   if (recovery === 'unsafe') return { stopped: true }
@@ -995,5 +1042,5 @@ export async function flowRunEvidence(ws: TaskFolder, job: Job, deps: FlowDeps, 
   const priorSpend = new Map(prior?.priorSpend?.map(spend => [spend.sessionId, spend]))
   priorSpend.set(sessionId, { sessionId, runtime, startedAt, usage, costUsd, costIncomplete, context })
   return { stopped: true, run: { id: sessionId, finished: recovery === 'report', from: previous.cloudExecution?.job,
-    ...(failure ? { failure } : {}), priorSpend: [...priorSpend.values()] } }
+    ...(failure ? { failure } : {}), ...(previous.retryPause ? { retryPause: previous.retryPause } : {}), priorSpend: [...priorSpend.values()] } }
 }

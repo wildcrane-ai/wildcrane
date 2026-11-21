@@ -1,6 +1,6 @@
 import path from 'node:path'
 import type { ContextWindow, TokenUsage } from '../types'
-import type { ExecutionFailure } from '../retry'
+import { makeFailure, type ExecutionFailure } from '../retry'
 import { priceUsd } from '../prices'
 import { translating } from '../language'
 import { createEventCollector, type ToolKind } from './events'
@@ -103,7 +103,7 @@ export function createAntigravityRenderer(expectedSession?: string, cwd = proces
   const events = createEventCollector()
   const fail = (reason: string, code = 'provider_failed') => {
     failure = failureHint(reason)
-    classified = { code, level: 3, reason: failure }
+    classified = makeFailure('runtime', failure, { code, detail: reason })
     events.error(failure)
   }
   const reader = createLineReader((line) => {
@@ -250,7 +250,7 @@ export function createAntigravityRenderer(expectedSession?: string, cwd = proces
     },
     failure: () => failure || imageFailure,
     terminalFailure: () => terminal && !!classified,
-    executionFailure: () => classified ?? (imageFailure ? { code: 'image_read_failed', level: 3, reason: imageFailure } : undefined),
+    executionFailure: () => classified ?? (imageFailure ? makeFailure('runtime', imageFailure, { code: 'image_read_failed', detail: imageFailure }) : undefined),
     events: events.events,
     activity: events.activity,
   }

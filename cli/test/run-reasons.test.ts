@@ -65,11 +65,11 @@ describe('a run the board ended', () => {
     fs.writeFileSync(path.join(SESSIONS_DIR, `${opened.run.sessionId}.plan.json`), JSON.stringify(opened.spec))
     patch(opened.run.sessionId, (r) => { r.pid = process.pid })
     fs.writeFileSync(opened.run.logPath, '')
-    await watchRun(opened.run.sessionId, async () => ({ error: 'no resume' }))
+    await watchRun(opened.run.sessionId, async () => ({ error: 'no resume' }), () => 0)
     const run = peekRun(opened.run.sessionId)!
     assert.equal(run.status, 'error')
     assert.match(run.error ?? '', /^Failed to authenticate\. API Error: 403\nSign in/)
-    assert.equal(run.retryPause, 'needs-review')
+    assert.equal(run.retry?.attempt, 1)
   })
 
   it('keeps the kinds through a read of the record', () => {
@@ -109,12 +109,13 @@ describe('Codex 后台收尾', () => {
       patch(opened.run.sessionId, (r) => { r.pid = process.pid })
       fs.writeFileSync(opened.run.logPath, '')
       let retries = 0
-      await watchRun(opened.run.sessionId, async () => { retries++; return { error: '不得续跑' } })
+      await watchRun(opened.run.sessionId, async () => { retries++; return { error: 'stop after first retry' } }, () => 0)
       const run = peekRun(opened.run.sessionId)!
       assert.equal(run.status, outcome === '恢复成功' ? 'done' : 'error')
       assert.equal(run.ok, outcome === '恢复成功')
-      assert.equal(run.retry, undefined)
-      assert.equal(retries, 0)
+      assert.equal(retries, outcome === '恢复成功' ? 0 : 1)
+      if (outcome === '恢复成功') assert.equal(run.retry, undefined)
+      else assert.equal(run.retry?.attempt, 1)
     })
   }
 })
@@ -152,8 +153,8 @@ describe('task recovery after a local Codex service exits (#724)', () => {
         assert.equal(peekRun(id)?.retry?.attempt, 1)
         assert.ok(peekRun(id)?.retry?.pending)
         return { error: 'test stops after confirming automatic recovery' }
-      })
-      assert.equal(resumed, mode === 'recover' ? 1 : 0)
+      }, () => 0)
+      assert.equal(resumed, mode === 'recover' || mode === 'agent crash' ? 1 : 0)
       assert.equal(peekRun(opened.run.sessionId)?.status, 'error')
       if (mode === 'pending operation') assert.equal(peekRun(opened.run.sessionId)?.retryPause, 'unsafe')
     })

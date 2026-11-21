@@ -53,7 +53,7 @@ for (const mode of ['init', 'work', 'no-session']) it(`AGy early-crash recovery 
     const original = readSpec(started.run.sessionId)!.prompt
     patch(started.run.sessionId, r => { r.pid = process.pid })
     fs.writeFileSync(started.run.logPath, '')
-    const watching = watchRun(started.run.sessionId)
+    const watching = watchRun(started.run.sessionId, async () => ({ error: 'stop for manual resume check' }), () => 0)
     if (mode !== 'no-session') {
       const until = Date.now() + 5000
       while (true) {
@@ -71,6 +71,9 @@ for (const mode of ['init', 'work', 'no-session']) it(`AGy early-crash recovery 
     assert.equal(ended.status, 'error')
     assert.equal(ended.result, undefined)
     if (mode === 'no-session') {
+      assert.equal(ended.retryHistory?.at(-1)?.sessionAction, 'reset_replay')
+      // When side effects occurred without a recorded session, openResume still refuses with runNoSession.
+      patch(ended.sessionId, r => { delete r.unspawned; delete r.retry })
       const next = await openResume(ended.sessionId)
       assert.ok('error' in next)
       assert.equal(next.reason, 'runNoSession')

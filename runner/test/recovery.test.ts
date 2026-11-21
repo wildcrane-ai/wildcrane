@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import type { Flow, Job } from '../src/api'
-import { runFlow, type FlowIo } from '../src/flow'
+import { flowRunEvidence, runFlow, type FlowIo } from '../src/flow'
 import { toWire } from '../src/jobs'
 import { checkpointEvent, checkpointRecovery, replayable, type Checkpoint } from '../src/recovery'
 import type { TaskFolder } from '../src/task-folder'
@@ -188,4 +188,59 @@ test('reconcile failure retries with bounded backoff and isolates diagnostic to 
     assert.match(ctx.logs.join(''), /d_bad/)
     assert.match(ctx.logs.join(''), /secret internal lock error/)
   } finally { ctx.cleanup() }
+})
+
+test('flowRunEvidence matches interrupted clarify planning runs by cloudExecution.job without action whitelist (#996)', async () => {
+  const ctx = setupFakeFlow({}, { flow: { verb: 'refine', studio: 'coding', resume: true } })
+  fs.writeFileSync(path.join(ctx.board, '.fake', 'runs.json'), JSON.stringify([
+    {
+      sessionId: 'clarify-session',
+      cardId: 947,
+      action: 'clarify',
+      status: 'interrupted',
+      resumeId: 'codex-thread-996',
+      cloudExecution: { job: 'job_947', machine: 'm_1' },
+      startedAt: Date.now() - 1000,
+    },
+  ]))
+  try {
+    const evidence = await flowRunEvidence(ctx.ws, ctx.job, ctx.deps, 'job_947')
+    assert.equal(evidence.stopped, true)
+    assert.equal(evidence.run?.id, 'clarify-session')
+    assert.equal(evidence.run?.finished, false)
+  } finally { ctx.cleanup() }
+})
+
+test('missing session / no rollout replays only when no side effects occurred and pauses unsafe otherwise (#996)', () => {
+  const job: Job = { id: 'job', runtime: 'codex', prompt: 'Continue', projectDir: null, attachments: [], state: 'claimed' }
+  const noRollout = { code: 'session_not_found', source: 'runtime' as const, summary: 'no rollout found for thread id th_1' }
+  assert.equal(checkpointRecovery(job, { pending: [], started: true, submitted: false, effects: false, session: 'th_1' }, true, noRollout), 'replay')
+  assert.equal(checkpointRecovery(job, { pending: [], started: true, submitted: true, effects: true, session: 'th_1' }, true, noRollout), 'unsafe')
+  assert.equal(checkpointRecovery(job, { pending: ['edit_1'], started: true, submitted: true, effects: true, session: 'th_1' }, true, noRollout), 'unsafe')
+})
+
+test('toWire preserves structured retry ACP events (#996)', () => {
+  const wire = toWire([
+    {
+      kind: 'retry',
+      data: {
+        state: 'waiting',
+        source: 'runtime',
+        runtime: { connector: 'codex', name: 'sol', model: 'gpt-5' },
+        attempt: 2,
+        maxAttempts: 4,
+        summary: 'HTTP 429 rate limit',
+        detail: 'HTTP 429 Too Many Requests',
+        code: 'rate_limited',
+        nextRetryAt: '2026-11-21T10:00:12.000Z',
+        sessionAction: 'resume',
+        at: '2026-11-21T10:00:00.000Z',
+      },
+    },
+  ], 10)
+  assert.equal(wire.length, 1)
+  assert.equal(wire[0]!.kind, 'retry')
+  assert.equal(wire[0]!.seq, 10)
+  assert.equal(wire[0]!.data?.state, 'waiting')
+  assert.equal(wire[0]!.data?.attempt, 2)
 })

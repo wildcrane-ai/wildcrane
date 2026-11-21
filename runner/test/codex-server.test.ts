@@ -48,7 +48,7 @@ it('shares native backends while isolating settings, thread ownership and stops 
   assert.match(String(error),/already in use/)
   assert.ok(error instanceof RpcError)
   assert.equal((error.data as any).wildcraneFailure.code, 'codex_ownership_unconfirmed')
-  assert.equal((error.data as any).wildcraneFailure.source, 'invariant')
+  assert.equal((error.data as any).wildcraneFailure.source, 'runner')
   const details=JSON.parse((error as Error).message.slice((error as Error).message.indexOf('{')))
   assert.equal(details.thread,aid.id);assert.equal(details.owner.run,'a');assert.equal(details.owner.task,'task-a')
   assert.equal(details.requester.run,'duplicate');assert.equal(details.requester.task,'task-b');assert.equal(details.status,'owner-alive')

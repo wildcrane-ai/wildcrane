@@ -88,7 +88,7 @@ describe('a resume against a session the agent no longer holds', () => {
       m === 'session/load' ? cursorGone : OK[m],
     )
     assert.equal(t.end.ok, false)
-    assert.equal(t.end.failure?.level, 3)
+    assert.equal(t.end.failure?.code, 'session_not_found')
     assert.deepEqual(methods(t), ['initialize', 'session/load'])
   })
 

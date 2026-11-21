@@ -1,5 +1,5 @@
 import { IDLE_FAILURE } from '../idle'
-import type { ExecutionFailure } from '../retry'
+import { makeFailure, MAX_RETRY_ATTEMPTS, type ExecutionFailure } from '../retry'
 import { codexFailure, executionFailure } from './failures'
 import { bounded, CONVERSATION_MS } from '../../shared/conversation'
 import type { RunClient, ClientTurn, TurnEnd } from './client'
@@ -166,12 +166,12 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     const costUsd = cost === undefined ? child.costUsd : cost + (child.costUsd ?? 0)
     const failure = error || (cleanup.status === 'unconfirmed' ? cleanup.detail : undefined) || work.work().filter(w => !w.intentionalStop && ['failed', 'interrupted'].includes(w.status)).map(w => w.result || `Background work ${w.id} ${w.status}.`).join('\n') || undefined
     if (failure) io.event?.({ kind: 'error', data: { text: failure } })
-    resolve({ ok: !failure, error: failure, failure: failure ? classified ?? { code: 'execution_failed', level: 3, reason: failure } : undefined, cleanup, result: renderer.result(), replyParts: renderer.replyParts?.(), usage: combinedUsage, context, costUsd, costIncomplete: child.costIncomplete || (cost === undefined && child.costUsd !== undefined) || undefined })
+    resolve({ ok: !failure, error: failure, failure: failure ? classified ?? makeFailure('runtime', failure, { code: 'execution_failed', detail: failure }) : undefined, cleanup, result: renderer.result(), replyParts: renderer.replyParts?.(), usage: combinedUsage, context, costUsd, costIncomplete: child.costIncomplete || (cost === undefined && child.costUsd !== undefined) || undefined })
   }
   const closed = () => {
     const reason = 'Codex connection closed before all work and results finished.'
     if (work.work().some(w => ['running', 'unknown'].includes(w.status))) note('Connection lost; managed cleanup is unconfirmed.')
-    end(reason, { code: 'connection_lost', level: 2, reason })
+    end(reason, makeFailure('runtime', reason, { code: 'connection_lost', detail: reason }))
   }
   const inputFailed = (e: Error) => {
     if (work.work().some(w => ['running', 'unknown'].includes(w.status))) note('Connection input failed; managed cleanup is unconfirmed.')
@@ -206,7 +206,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     } catch (error) {
       if (!ended) note(error instanceof Error ? error.message : String(error))
     }
-    if (!ended) end(IDLE_FAILURE.reason, IDLE_FAILURE)
+    if (!ended) end(IDLE_FAILURE.summary, IDLE_FAILURE)
   }
   io.idleSignal?.addEventListener('abort', idle, { once: true })
   const childUpdates = () => {
@@ -410,9 +410,23 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       const failure = codexFailure(p.error, 'Codex failed.')
       if (p.willRetry === true && submitted && active && !idling) {
         status = 'retrying'
-        io.log(`[Codex recovery] ${failure.code}: ${failure.reason}\n`)
+        io.log(`[Codex recovery] ${failure.code ?? 'error'}: ${failure.summary}\n`)
         io.event?.({ kind: 'status', data: { state: 'retrying', source: 'codex', code: failure.code } })
-      } else if (p.willRetry !== true) end(failure.reason, failure)
+        io.event?.({
+          kind: 'retry',
+          data: {
+            state: 'retrying',
+            source: 'runtime',
+            runtime: { connector: 'codex', name: null, model: model ?? null },
+            attempt: 1,
+            maxAttempts: MAX_RETRY_ATTEMPTS,
+            summary: failure.summary,
+            ...(failure.detail ? { detail: failure.detail } : {}),
+            ...(failure.code ? { code: failure.code } : {}),
+            at: new Date().toISOString(),
+          },
+        })
+      } else if (p.willRetry !== true) end(failure.summary, failure)
     }
     if (msg.method === 'turn/completed') {
       const turn = obj(p.turn)
@@ -423,7 +437,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       if (idling) return
       if (turn.status !== 'completed') {
         const reason = str(obj(turn.error).message) || `Codex turn ${str(turn.status)}.`
-        const failure = turn.status === 'failed' ? codexFailure(turn.error, reason) : { code: 'turn_stopped', level: 3 as const, reason }
+        const failure = turn.status === 'failed' ? codexFailure(turn.error, reason) : makeFailure('runtime', reason, { code: 'turn_stopped', detail: reason })
         end(reason, failure)
         return
       }
@@ -454,11 +468,16 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       try {
         response = await bounded(rpc.call(method, params), preparingUntil - Date.now(), `Codex ${method} timed out.`)
       } catch (error) {
+        if (mode === 'fork' && error instanceof RpcError && error.code === -32600 &&
+            error.message === `no rollout found for thread id ${params.threadId}`) {
+          end(error.message, { code: 'codex_fork_source_missing', source: 'runtime', summary: error.message, detail: error.message })
+          return done
+        }
         const failure = error instanceof RpcError ? codexFailure(error.data, error.message) : undefined
-        if (mode !== 'fork' || failure?.source !== 'harness' || failure.code !== 'codex_source_busy') throw error
+        if (mode !== 'fork' || failure?.code !== 'codex_source_busy') throw error
         if (!waiting) {
           waiting = true
-          io.event?.({ kind: 'log', data: { text: failure.reason } })
+          io.event?.({ kind: 'log', data: { text: failure.summary } })
         }
         io.activity?.()
         await delay(500, undefined, { signal: io.signal })
@@ -485,7 +504,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     await start(io.prompt, options.images)
   } catch (e) {
     const failure = e instanceof RpcError ? codexFailure(e.data, e.message) : executionFailure(e)
-    end(failure.reason, failure)
+    end(failure.summary, failure)
   }
   return done
 }

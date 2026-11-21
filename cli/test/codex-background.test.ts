@@ -162,6 +162,7 @@ for (const mode of ['resume', 'fork'] as const) {
     const end = await s.end
     assert.equal(end.ok, false)
     assert.match(end.error!, /no rollout found/)
+    assert.equal(end.failure?.code === 'codex_fork_source_missing', mode === 'fork')
     assert.equal(s.calls.some(c => c.method === 'turn/start'), false)
   })
 }

@@ -249,7 +249,7 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
         return ''
       // 最终失败保留；连接提示只在没有后续成功完成时才作为失败。
       case 'turn.failed': {
-        const said = str(obj(ev.error).message) || failure?.reason || 'Codex execution failed.'
+        const said = str(obj(ev.error).message) || failure?.summary || 'Codex execution failed.'
         failure = codexFailure(ev.error, said)
         events.error(said)
         return `[error] ${said}\n`
@@ -305,7 +305,7 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
     },
     costIncomplete: () => childSpend(subagents, since).costIncomplete || (childSpend(subagents, since).costUsd !== undefined && priceUsd(facts?.provider, turn()?.model ?? facts?.model, own()) === undefined) || undefined,
     resumeId: () => threadId,
-    failure: () => failure?.reason ?? background.failure(),
+    failure: () => failure?.summary ?? background.failure(),
     executionFailure: () => failure,
     background: () => subagents.size ? background.count() : undefined,
     events: events.events,

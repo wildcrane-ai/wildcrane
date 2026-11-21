@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { conflictPrompt, pendingConflicts } from '../../cli/src/lib/shared/board-conflicts'
 import { idleStopConfirmed } from '../../cli/src/lib/agent/wire/codex-background-types'
 import { createIdleWatchdog, IDLE_FAILURE } from '../../cli/src/lib/agent/idle'
-import { pauseLine, planRetry, recoveryPrompt, syncRepairPrompt, type ExecutionFailure, type RetryPause } from '../../cli/src/lib/agent/retry'
+import { clipDetail, clipSummary, isSessionMissingFailure, makeFailure, MAX_RETRY_ATTEMPTS, pauseLine, planRetry, recoveryPrompt, retryContinuePrompt, syncRepairPrompt, type ExecutionFailure, type FailureDetail, type RetryPause, type RetryRecord, type RetryRuntime, type SessionAction } from '../../cli/src/lib/agent/retry'
 import { executionFailure } from '../../cli/src/lib/agent/wire/failures'
 import { taskStudioContext } from './task-folder'
 import { connectionIdentity, endConnection } from '../../cli/src/lib/agent/connection-process'
@@ -184,6 +184,10 @@ export function toWire(events: RunEvent[], first: number): JobEvent[] {
     endLog()
     const data: Record<string, unknown> = { ...e.data, eventAt: 'eventAt' in e.data ? e.data.eventAt : new Date().toISOString() }
     for (const key of ['text', 'result'] as const) if (typeof data[key] === 'string') data[key] = cut(data[key] as string)
+    if (e.kind === 'retry') {
+      if (typeof data.summary === 'string') data.summary = clipSummary(data.summary)
+      if (typeof data.detail === 'string') data.detail = clipDetail(data.detail)
+    }
     out.push({ seq: first + out.length, kind: e.kind, text: '', data })
   }
   endLog()
@@ -339,7 +343,7 @@ function streamOut(deps: Shared, id: string, lease: Lease) {
     if (!valid()) return
     if (e.kind === 'message') messages.push(e.data.text)
     const content = ['message', 'tool_call', 'tool_call_update', 'plan'].includes(e.kind) || e.kind === 'phase' && !!e.data.contentAt || e.kind === 'status' && e.data.state === 'thinking'
-    const immediate = e.kind === 'phase' || e.kind === 'status' || content && !firstContent
+    const immediate = e.kind === 'phase' || e.kind === 'status' || e.kind === 'retry' || content && !firstContent
     firstContent ||= content
     const stamped = Object.assign({}, e, { data: { ...e.data, eventAt: 'eventAt' in e.data ? e.data.eventAt : new Date().toISOString() } })
     const chars = JSON.stringify(stamped).length
@@ -563,18 +567,51 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   if (manual && !local && job.retryReplay && !checkpoint.completed && replayable(checkpoint)) delete checkpoint.session
   if (!forkSource && (!previous || checkpoint.started === false) && !job.retryReplay) checkpoint.session ??= job.resume ?? undefined
 
+  const runtimeInfo = (): RetryRuntime => ({ connector: job.runtime, name: null, model: job.model ?? null })
+  const buildFailureDetail = (
+    failure: ExecutionFailure | undefined,
+    pause: RetryPause,
+    safeToRetry: boolean,
+    sessionAction?: SessionAction,
+    fallbackSummary?: string,
+  ): FailureDetail => {
+    const history = checkpoint.retryHistory ?? []
+    const summary = clipSummary(failure?.summary || fallbackSummary || pauseLine(pause, cloudLanguage(job) === 'zh')) || 'Execution failed.'
+    const detail = clipDetail(failure?.detail)
+    return {
+      summary,
+      ...(detail && detail !== summary ? { detail } : {}),
+      ...(failure?.code ? { code: failure.code } : {}),
+      source: failure?.source ?? 'runtime',
+      runtime: runtimeInfo(),
+      attempt: checkpoint.retry?.attempt ?? (history.length || 1),
+      maxAttempts: MAX_RETRY_ATTEMPTS,
+      pauseReason: pause,
+      safeToRetry,
+      ...(sessionAction ? { sessionAction } : {}),
+      history,
+    }
+  }
+
   const pauseRecovery = (pause: RetryPause, stopped: boolean) => {
     checkpoint.retryPause = pause
     if (checkpoint.retry) delete checkpoint.retry.pending
     persist()
-    const reason = [checkpoint.failure?.reason, pauseLine(pause, cloudLanguage(job) === 'zh')].filter(Boolean).join('\n')
+    const recovery = replyRecovery(job, checkpoint, stopped)
+    const safeToRetry = pause !== 'unsafe' && (recovery.safe || recovery.resumable)
+    const sessionAction: SessionAction | undefined = pause === 'unsafe' ? 'pause_unsafe' : recovery.safe ? 'reset_replay' : recovery.resumable ? 'resume' : undefined
+    const failureDetail = buildFailureDetail(checkpoint.failure, pause, safeToRetry, sessionAction)
+    const reason = [checkpoint.failure?.summary, pauseLine(pause, cloudLanguage(job) === 'zh')].filter(Boolean).join('\n')
     return finishClaimed('failed', pause === 'unsafe' ? 'recovery_unsafe' : reason, {
-      recovery: replyRecovery(job, checkpoint, stopped),
+      recovery,
+      failure: failureDetail,
     })
   }
   if (!replyStream && previous && !usesBoardRun(job, checkpoint)
     && !await stopReply(local ? id : sourceId ?? id, deps.stopMs)) {
-    return reply ? pauseRecovery('unsafe', false) : finishClaimed('failed', recoveryBlocked(job))
+    return reply ? pauseRecovery('unsafe', false) : finishClaimed('failed', recoveryBlocked(job), {
+      failure: buildFailureDetail(checkpoint.failure, 'unsafe', false, 'pause_unsafe', recoveryBlocked(job)),
+    })
   }
 
   if (reply) {
@@ -584,12 +621,15 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       if (!previous && recovering && !(manual && (job.retryReplay === true || !!checkpoint.session))) return pauseRecovery('unsafe', true)
       if (retry.at !== undefined || !Number.isSafeInteger(retry.attempt) || retry.attempt < 1) return pauseRecovery('unsafe', true)
       if (job.runtime === 'antigravity' && recovering && checkpoint.started && !checkpoint.session) {
-        return finishClaimed('failed', 'Antigravity did not record a conversation ID before interruption. The original session cannot be resumed.')
+        const msg = 'Antigravity did not record a conversation ID before interruption. The original session cannot be resumed.'
+        return finishClaimed('failed', msg, {
+          failure: buildFailureDetail(makeFailure('runtime', msg, { code: 'session_not_found' }), 'unsafe', false, 'pause_unsafe', msg),
+        })
       }
       if (!replyStream && priorExecution && !(manual && !local) && !retry.pending && !checkpoint.boardContinuation) {
         if (!recovering || !hadRetryCount) return pauseRecovery('unsafe', true)
         if (!updating || checkpoint.interrupted || checkpoint.failure) {
-          const failure = checkpoint.failure ?? { code: 'runner_interrupted', level: 2 as const, reason: 'The Runner was interrupted.' }
+          const failure = checkpoint.failure ?? makeFailure('runner', 'The Runner was interrupted.', { code: 'runner_interrupted' })
           checkpoint.failure = failure
           const decision = planRetry(failure, retry.attempt, Date.now(), deps.replyBackoff)
           if ('pause' in decision) return pauseRecovery(decision.pause, true)
@@ -602,7 +642,9 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   const pendingRetry = reply ? checkpoint.retry?.pending : undefined
   const directRecovery = (recovering || priorExecution) && !usesBoardRun(job, checkpoint)
     ? checkpointRecovery(job, checkpoint, true, pendingRetry?.failure ?? checkpoint.failure) : undefined
-  if (directRecovery === 'unsafe') return reply ? pauseRecovery('unsafe', true) : finishClaimed('failed', recoveryBlocked(job))
+  if (directRecovery === 'unsafe') return reply ? pauseRecovery('unsafe', true) : finishClaimed('failed', recoveryBlocked(job), {
+    failure: buildFailureDetail(checkpoint.failure, 'unsafe', false, 'pause_unsafe', recoveryBlocked(job)),
+  })
   const replay = directRecovery === 'replay'
   if (directRecovery === 'resume' && checkpoint.started !== false) job = { ...job, resume: checkpoint.session, fork: false }
   if (replay) job = { ...job, resume: forkSource ?? null, fork: !!forkSource }
@@ -673,7 +715,25 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       if (stream.asked() || stream.lost()) break
       const blocker = job.flow && !result.ok ? syncWaitCode(result) : undefined
       if (result.ok || !blocker && !retryableSync(result)) {
-        if (waiting) stream.event({ kind: 'status', data: { state: 'running', source: 'sync' } })
+        if (waiting) {
+          stream.event({ kind: 'status', data: { state: 'running', source: 'sync' } })
+          if (result.ok) {
+            const lastSync = checkpoint.retryHistory?.at(-1)
+            stream.event({
+              kind: 'retry',
+              data: {
+                state: 'recovered',
+                source: 'sync',
+                runtime: runtimeInfo(),
+                attempt: (checkpoint.syncRetry?.attempt ?? 1) + 1,
+                maxAttempts: MAX_RETRY_ATTEMPTS,
+                summary: lastSync?.summary ?? 'Sync recovered',
+                ...(lastSync?.code ? { code: lastSync.code } : {}),
+                at: new Date().toISOString(),
+              },
+            })
+          }
+        }
         if (retry) {
           delete checkpoint.syncRetry
           persist()
@@ -688,6 +748,36 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       const at = blocker === 'allowance'
         ? (Math.floor(Date.now() / 86_400_000) + 1) * 86_400_000
         : Date.now() + (deps.syncBackoff ?? syncBackoff)(attempt)
+      const nowIso = new Date().toISOString()
+      const syncSummary = clipSummary(result.error || 'Sync failed.')
+      const syncDetail = clipDetail(result.error)
+      checkpoint.retryHistory = [
+        ...(checkpoint.retryHistory ?? []),
+        {
+          attempt,
+          source: 'sync',
+          runtime: runtimeInfo(),
+          summary: syncSummary,
+          ...(syncDetail && syncDetail !== syncSummary ? { detail: syncDetail } : {}),
+          ...(result.code ? { code: result.code } : {}),
+          at: nowIso,
+        },
+      ]
+      stream.event({
+        kind: 'retry',
+        data: {
+          state: 'waiting',
+          source: 'sync',
+          runtime: runtimeInfo(),
+          attempt: attempt + 1,
+          maxAttempts: MAX_RETRY_ATTEMPTS,
+          summary: syncSummary,
+          ...(syncDetail && syncDetail !== syncSummary ? { detail: syncDetail } : {}),
+          ...(result.code ? { code: result.code } : {}),
+          nextRetryAt: new Date(at).toISOString(),
+          at: nowIso,
+        },
+      })
       checkpoint.syncRetry = { step, attempt, at }
       if (blocker && checkpoint.taskRecovery?.code !== blocker) await recoveryState({ code: blocker, at })
       else persist()
@@ -733,6 +823,22 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     const stream = waitingStream
     track(stream.stop)
     stream.event({ kind: 'log', data: { text: '[chat-recovery] waiting' } })
+    stream.event({
+      kind: 'retry',
+      data: {
+        state: 'waiting',
+        source: pendingRetry.failure.source,
+        runtime: runtimeInfo(),
+        attempt: (checkpoint.retry?.attempt ?? 1) + 1,
+        maxAttempts: pendingRetry.of,
+        summary: pendingRetry.failure.summary,
+        ...(pendingRetry.failure.detail ? { detail: pendingRetry.failure.detail } : {}),
+        ...(pendingRetry.failure.code ? { code: pendingRetry.failure.code } : {}),
+        nextRetryAt: new Date(pendingRetry.at).toISOString(),
+        ...(pendingRetry.sessionAction ? { sessionAction: pendingRetry.sessionAction } : {}),
+        at: new Date().toISOString(),
+      },
+    })
     let timer: ReturnType<typeof setTimeout> | undefined
     await Promise.race([new Promise<void>(resolve => { timer = setTimeout(resolve, Math.max(0, pendingRetry.at - Date.now())) }), stream.whenAsked])
     clearTimeout(timer)
@@ -816,7 +922,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       if (!allowed.ok || !allowed.value) return unauthorized(allowed)
       const prompt = pushed.conflict
         ? conflictPrompt(ws!.board, 'Resolve and confirm synchronization, preserve completed work, then return the saved result.')
-        : syncRepairPrompt(pushed.failure!.reason)
+        : syncRepairPrompt(pushed.failure!.summary)
       checkpoint.boardContinuation = { report: completed, facts, prompt, validation: !pushed.conflict || checkpoint.boardContinuation?.validation }
       checkpoint.session = session
       // The saved result is the input to this repair. Its launch evidence belongs to the prior phase.
@@ -878,7 +984,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
             await waitingStream?.end()
             return waitingStream?.asked() ? finishClaimed('stopped') : undefined
           }
-          if (pulled.failure?.level === 1) syncDiagnostic = syncRepairPrompt(pulled.failure.reason)
+          if (pulled.failure?.source === 'validation' || pulled.failure?.source === 'sync') syncDiagnostic = syncRepairPrompt(pulled.failure.summary)
           else if (pulled.code !== 'board_content_conflict') {
             console.error('runner: task sync refused', { job: id, code: pulled.code, error: pulled.error })
             throw new Error(syncRefusal(job, pulled))
@@ -930,7 +1036,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       const promptOf = (said: string) => {
         const lines = (head + said).trim()
         const prompt = recovering && !checkpoint.boardContinuation && !replay && (!forkSource || checkpoint.submitted === true) && (checkpoint.started || job.recoveryOf)
-          ? [job.runtime === 'antigravity' || checkpoint.submitted !== true ? job.prompt : '', recoveryPrompt, pendingRetry ? `Previous execution failed: ${pendingRetry.failure.reason}` : ''].filter(Boolean).join('\n\n')
+          ? [job.runtime === 'antigravity' || checkpoint.submitted !== true ? job.prompt : '', pendingRetry ? retryContinuePrompt(pendingRetry.failure, checkpoint.retry?.attempt, pendingRetry.of) : recoveryPrompt].filter(Boolean).join('\n\n')
           : job.prompt
         return lines ? `${lines}\n\n---\n\n${prompt}` : prompt
       }
@@ -986,7 +1092,24 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   if (waitingStream?.lost()) return
   if (waitingStream?.asked()) return finishClaimed('stopped', '', { stopped: true })
   const stream = watching()
-  if (pendingRetry) stream.event({ kind: 'log', data: { text: '[chat-recovery] running' } })
+  if (pendingRetry) {
+    stream.event({ kind: 'log', data: { text: '[chat-recovery] running' } })
+    stream.event({
+      kind: 'retry',
+      data: {
+        state: 'retrying',
+        source: pendingRetry.failure.source,
+        runtime: runtimeInfo(),
+        attempt: (checkpoint.retry?.attempt ?? 1) + 1,
+        maxAttempts: pendingRetry.of,
+        summary: pendingRetry.failure.summary,
+        ...(pendingRetry.failure.detail ? { detail: pendingRetry.failure.detail } : {}),
+        ...(pendingRetry.failure.code ? { code: pendingRetry.failure.code } : {}),
+        ...(pendingRetry.sessionAction ? { sessionAction: pendingRetry.sessionAction } : {}),
+        at: new Date().toISOString(),
+      },
+    })
+  }
   if (run?.startNote) stream.out(`${run.startNote}\n`)
   let attempt: NonNullable<Checkpoint['attempts']>[number] | undefined
   const beginAttempt = () => {
@@ -1044,23 +1167,71 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   const retry = async (failure: ExecutionFailure | undefined): Promise<boolean> => {
     if (!reply || !failure || stream.asked() || stream.lost()) return false
     checkpoint.failure = failure
-    const decision = planRetry(failure, checkpoint.retry!.attempt, Date.now(), deps.replyBackoff)
-    if ('pause' in decision) {
-      checkpoint.retryPause = decision.pause
-      persist()
-      return false
-    }
+    const currentAttempt = checkpoint.retry!.attempt
     checkpoint.approvalCancelled = true
     persist()
     if (job.chat && checkpoint.approvalRequested) await api.cancelReplyApproval(deps.machineId, id)
     const stopped = await stopReply(id, deps.stopMs) && await stream.confirmed()
-    if (checkpointRecovery(job, checkpoint, stopped, failure) === 'unsafe') {
+    const recovery = checkpointRecovery(job, checkpoint, stopped, failure)
+    const sessionAction: SessionAction = recovery === 'unsafe' ? 'pause_unsafe' : recovery === 'replay' ? 'reset_replay' : 'resume'
+    const nowIso = new Date().toISOString()
+    checkpoint.retryHistory = [
+      ...(checkpoint.retryHistory ?? []),
+      {
+        attempt: currentAttempt,
+        source: failure.source,
+        runtime: runtimeInfo(),
+        summary: failure.summary,
+        ...(failure.detail ? { detail: failure.detail } : {}),
+        ...(failure.code ? { code: failure.code } : {}),
+        sessionAction,
+        at: nowIso,
+      },
+    ]
+    if (recovery === 'unsafe') {
       checkpoint.retryPause = 'unsafe'
       persist()
+      stream.event({
+        kind: 'retry',
+        data: {
+          state: 'paused',
+          source: failure.source,
+          runtime: runtimeInfo(),
+          attempt: currentAttempt,
+          maxAttempts: MAX_RETRY_ATTEMPTS,
+          summary: failure.summary,
+          ...(failure.detail ? { detail: failure.detail } : {}),
+          ...(failure.code ? { code: failure.code } : {}),
+          sessionAction,
+          at: nowIso,
+        },
+      })
+      return false
+    }
+    const decision = planRetry(failure, currentAttempt, Date.now(), deps.replyBackoff)
+    if ('pause' in decision) {
+      checkpoint.retryPause = decision.pause
+      persist()
+      stream.event({
+        kind: 'retry',
+        data: {
+          state: 'paused',
+          source: failure.source,
+          runtime: runtimeInfo(),
+          attempt: currentAttempt,
+          maxAttempts: MAX_RETRY_ATTEMPTS,
+          summary: failure.summary,
+          ...(failure.detail ? { detail: failure.detail } : {}),
+          ...(failure.code ? { code: failure.code } : {}),
+          sessionAction,
+          at: nowIso,
+        },
+      })
       return false
     }
     if (stream.asked() || stream.lost()) return false
-    checkpoint.retry!.pending = decision.plan
+    if (sessionAction === 'reset_replay') checkpoint.session = undefined
+    checkpoint.retry!.pending = { ...decision.plan, sessionAction }
     persist()
     evidence.cancel()
     scope.bridge?.close()
@@ -1149,7 +1320,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       const saved = await flowRunEvidence(ws!, job, deps, id, checkpoint.flowRun)
       if (saved.stopped && saved.run?.finished && await stream.confirmed()) {
         checkpoint.flowRun = saved.run
-        checkpoint.boardRepair = { reason: result.failure.reason, run: saved.run.id }
+        checkpoint.boardRepair = { reason: result.failure.summary, run: saved.run.id }
         await recoveryState({ code: 'recovering', attempt: 2 })
         io.flowRun = saved.run
         io.repairDelivery = true
@@ -1161,7 +1332,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     const stopped = !result.ok && (stream.asked() || result.stopped === true)
     if (stopped && stream.asked()) await stream.halted()
     if (!result.ok) {
-      if (result.failure?.code === 'retry_exhausted') stream.event({ kind: 'error', data: { text: result.reason } })
+      if (result.exhausted || result.failure?.code === 'retry_exhausted') stream.event({ kind: 'error', data: { text: result.reason } })
       await stream.end()
     }
     if (stream.lost()) return
@@ -1171,12 +1342,20 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     if (result.ok) complete('done', { ...result.report, ...proof })
     if (stopped) return finishClaimed('stopped', '', { ...result.report, ...proof })
     if (!result.ok) {
-      const reason = result.failure?.code === 'retry_exhausted' ? 'task_retry_exhausted: ' + result.reason : result.reason
-      const report = { ...result.report, ...proof }
+      const reason = result.exhausted || result.failure?.code === 'retry_exhausted' ? 'task_retry_exhausted: ' + result.reason : result.reason
+      const failureDetail = result.report?.failure ?? buildFailureDetail(
+        result.failure ?? makeFailure('runtime', result.reason || 'The run failed.'),
+        result.failure?.code === 'retry_exhausted' ? 'limit' : 'limit',
+        true,
+        undefined,
+        result.reason,
+      )
+      const report = { ...result.report, ...proof, failure: failureDetail }
       complete('failed', report, reason)
       return finishClaimed('failed', reason, report)
     }
-    const report = result.report
+    const mergedRetries = [...(checkpoint.retryHistory ?? []), ...(result.report.retries ?? [])]
+    const report = { ...result.report, ...(mergedRetries.length ? { retries: mergedRetries } : {}) }
     return sendResult({ ...report, ...proof }, () => keepChat(job, report.reply))
   }
 
@@ -1230,7 +1409,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
         idle.abort()
         return
       }
-      timedOut({ ok: false, error: IDLE_FAILURE.reason, failure: IDLE_FAILURE,
+      timedOut({ ok: false, error: IDLE_FAILURE.summary, failure: IDLE_FAILURE,
         ...(plan.managedProcess ? { cleanup: { status: 'unconfirmed', execution: id, kept: [] } } : {}) })
       cancellation.abort()
       stop(child, plan.managedProcess)
@@ -1238,7 +1417,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     const end = await Promise.race([
       timeout,
       converse(child, remember, false, Date.now() + CONVERSATION_MS.prepare, cancellation.signal, () => idleWatch?.touch(), idle.signal),
-      spawned.then((failure): TurnEnd => ({ ok: false, error: failure.reason, failure })),
+      spawned.then((failure): TurnEnd => ({ ok: false, error: failure.summary, failure })),
       // Killed, the turn ends with what it said so far; one that never does is not waited on.
       stream.whenAsked.then(() => wait(KILL_GRACE_MS * 2)).then((): TurnEnd => ({ ok: false })),
     ])
@@ -1258,8 +1437,8 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       })
       if (parts) measured = { ...measured, parts, reply: parts.filter(p => p.type === 'text').map(p => p.text).join('') }
     }
-    const rawFailure = idle.signal.aborted ? IDLE_FAILURE : end.ok ? undefined : end.failure ?? { code: 'execution_failed', level: 3 as const, reason: end.error ?? 'The agent did not complete the reply.' }
-    if (rawFailure?.code === 'session_not_found') checkpoint.session = undefined
+    const rawFailure = idle.signal.aborted ? IDLE_FAILURE : end.ok ? undefined : end.failure ?? makeFailure('runtime', end.error ?? 'The agent did not complete the reply.', { code: 'execution_failed', detail: end.error })
+    if (isSessionMissingFailure(rawFailure)) checkpoint.session = undefined
     measured = retainReply(measured, !end.ok)
     if (await retry(rawFailure)) return
     await evidence.drain(deps.endMs)
@@ -1270,13 +1449,40 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     const ok = end.ok || stream.asked()
     const recovery = replyRecovery(job, checkpoint, stopped)
     const unsafe = reply && !ok && !recovery.safe && !recovery.resumable
-    const said = {
+    const retries = ok && !stream.asked() && checkpoint.retryHistory?.length ? checkpoint.retryHistory : undefined
+    if (retries) {
+      const last = retries[retries.length - 1]!
+      stream.event({
+        kind: 'retry',
+        data: {
+          state: 'recovered',
+          source: last.source,
+          runtime: runtimeInfo(),
+          attempt: checkpoint.retry?.attempt ?? (retries.length + 1),
+          maxAttempts: MAX_RETRY_ATTEMPTS,
+          summary: last.summary,
+          ...(last.code ? { code: last.code } : {}),
+          at: new Date().toISOString(),
+        },
+      })
+    }
+    const failureDetail = !ok && !stream.asked()
+      ? buildFailureDetail(
+          rawFailure,
+          unsafe ? 'unsafe' : (checkpoint.retryPause ?? 'limit'),
+          !unsafe && (recovery.safe || recovery.resumable),
+          unsafe ? 'pause_unsafe' : recovery.safe ? 'reset_replay' : recovery.resumable ? 'resume' : undefined,
+        )
+      : undefined
+    const said: JobReport = {
       ...told(stream.asked() ? cutShort(measured, stream.said()) : measured),
       ...(reply ? { recovery } : {}),
+      ...(retries ? { retries } : {}),
+      ...(failureDetail ? { failure: failureDetail } : {}),
     }
     const failure = replyReason(rawFailure, checkpoint.retryPause, job, unsafe)
     if (!stream.asked()) complete(ok ? 'done' : 'failed', said, failure)
-    if (!ok && rawFailure && unsafe) stream.event({ kind: 'error', data: { text: rawFailure.reason } })
+    if (!ok && rawFailure && unsafe) stream.event({ kind: 'error', data: { text: rawFailure.summary } })
     if (!ok || !ws || stream.asked()) {
       await stream.end()
       if (stream.lost()) return
@@ -1336,7 +1542,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     })
     idleWatch?.close()
     fromAgent(renderer.flush())
-    const pending = renderer.background?.() ? { code: 'background_unfinished', level: 3 as const, reason: 'The agent exited with unfinished background tasks.' } : undefined
+    const pending = renderer.background?.() ? makeFailure('runtime', 'The agent exited with unfinished background tasks.', { code: 'background_unfinished' }) : undefined
     return { ...ended, failure: ended.failure ?? backgroundFailure ?? pending }
   }
   const plan = run
@@ -1355,19 +1561,46 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
   }
   const diagnostic = renderer.failure?.() ?? (ended.code === 0 ? undefined : `Exited with code ${ended.code}.`)
   const rawFailure = ended.failure ?? renderer.executionFailure?.()
-    ?? (diagnostic ? { code: 'execution_failed', level: 3 as const, reason: diagnostic } : undefined)
+    ?? (diagnostic ? makeFailure('runtime', diagnostic, { code: 'execution_failed', detail: diagnostic }) : undefined)
   measured = retainReply(measured, !!rawFailure)
-  if (rawFailure?.code === 'session_not_found' || rawFailure?.code === 'session_mismatch') checkpoint.session = undefined
+  if (isSessionMissingFailure(rawFailure)) checkpoint.session = undefined
   if (await retry(rawFailure)) return
   const stopped = await stopReply(id, deps.stopMs)
   if (stream.asked() && (!stopped || !await stream.confirmed())) { await stream.end(); return }
   const recovery = replyRecovery(job, checkpoint, stopped)
   const unsafe = reply && !!rawFailure && !recovery.safe && !recovery.resumable
   const failure = stream.asked() ? undefined : replyReason(rawFailure, checkpoint.retryPause, job, unsafe)
-  if (rawFailure && unsafe) stream.event({ kind: 'error', data: { text: rawFailure.reason } })
-  const said = {
+  if (rawFailure && unsafe) stream.event({ kind: 'error', data: { text: rawFailure.summary } })
+  const retries = !failure && !stream.asked() && checkpoint.retryHistory?.length ? checkpoint.retryHistory : undefined
+  if (retries) {
+    const last = retries[retries.length - 1]!
+    stream.event({
+      kind: 'retry',
+      data: {
+        state: 'recovered',
+        source: last.source,
+        runtime: runtimeInfo(),
+        attempt: checkpoint.retry?.attempt ?? (retries.length + 1),
+        maxAttempts: MAX_RETRY_ATTEMPTS,
+        summary: last.summary,
+        ...(last.code ? { code: last.code } : {}),
+        at: new Date().toISOString(),
+      },
+    })
+  }
+  const failureDetail = failure && !stream.asked()
+    ? buildFailureDetail(
+        rawFailure,
+        unsafe ? 'unsafe' : (checkpoint.retryPause ?? 'limit'),
+        !unsafe && (recovery.safe || recovery.resumable),
+        unsafe ? 'pause_unsafe' : recovery.safe ? 'reset_replay' : recovery.resumable ? 'resume' : undefined,
+      )
+    : undefined
+  const said: JobReport = {
     ...told(stream.asked() ? cutShort(measured, stream.said()) : measured),
     ...(reply ? { recovery } : {}),
+    ...(retries ? { retries } : {}),
+    ...(failureDetail ? { failure: failureDetail } : {}),
   }
   if (!stream.asked()) complete(failure ? 'failed' : 'done', said, failure)
   if (failure || !ws || stream.asked()) {
@@ -1410,10 +1643,10 @@ const quietLines = (plan: Plan, chunk: string) =>
 
 function replyReason(failure: ExecutionFailure | undefined, pause: RetryPause | undefined, job: Job, unsafe: boolean): string | undefined {
   if (!failure) return
-  if (failure.source === 'invariant') return failure.reason
+  if (failure.code === 'codex_ownership_unconfirmed') return failure.summary
   if (unsafe || pause === 'unsafe') return 'recovery_unsafe'
-  if (failure.code === 'session_not_found' && job.sessionFallback) return 'session_unavailable'
-  return pause ? `${failure.reason}\n${pauseLine(pause, cloudLanguage(job) === 'zh')}` : failure.reason
+  if (isSessionMissingFailure(failure) && job.sessionFallback) return 'session_unavailable'
+  return pause ? `${failure.summary}\n${pauseLine(pause, cloudLanguage(job) === 'zh')}` : failure.summary
 }
 
 /** A runtime's process, started the way Windows needs (agent/spawnable.ts). */
@@ -1505,7 +1738,7 @@ async function sendBack(job: Job, deps: StepDeps, lease: Lease, ws: TaskFolder, 
   })
   const pushed = result.ok ? result.value : result
   const confirmed = pushed.ok ? await sync('confirm', confirm) : undefined
-  const repairable = !pushed.ok && 'conflict' in pushed && (pushed.conflict || pushed.failure?.level === 1) ? pushed : null
+  const repairable = !pushed.ok && 'conflict' in pushed && (pushed.conflict || pushed.failure?.source === 'validation' || pushed.failure?.source === 'sync') ? pushed : null
   const denied = confirmed && !confirmed.ok ? confirmed : !pushed.ok && !repairable ? pushed : null
   if (denied && !stream.lost() && !stream.asked()) stream.event({ kind: 'error', data: { text: syncRefusal(job, denied) } })
   await stream.end()

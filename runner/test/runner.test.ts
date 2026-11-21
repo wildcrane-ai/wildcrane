@@ -55,9 +55,9 @@ const MACHINE = '44444444-4444-4444-8444-444444444444'
 
 let cloud: FakeCloud
 let runner: Runner | null = null
-const overload = { code: 'service_overloaded', level: 2, reason: 'Selected model is at capacity' } as const
-const validation = { code: 'validation_failed', level: 1, reason: 'Schema check failed' } as const
-const disconnect = { code: 'connection_lost', level: 2, reason: 'Temporary network failure' } as const
+const overload = { code: 'service_overloaded', source: 'runtime', summary: 'Selected model is at capacity' } as const
+const validation = { code: 'validation_failed', source: 'validation', summary: 'Schema check failed' } as const
+const disconnect = { code: 'connection_lost', source: 'runtime', summary: 'Temporary network failure' } as const
 
 let planned: { runtime: string; prompt: string; cwd: string; resume?: string | null; model?: string | null; settings?: unknown; line?: 'zh' | 'en' | null }[] = []
 let installed: RuntimeReport[] = []
@@ -710,7 +710,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       assert.equal(job.report?.reply, 'Saved work.')
       assert.equal(job.report?.session, 'agy-limited-session')
     }
-    assert.equal(planned.length, 2)
+    assert.equal(planned.length, 5)
   })
 
   it('joins neighbouring log text and cuts what Cloud would not keep', () => {
@@ -1181,7 +1181,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
         if (converse) p.converse = async (_child, event) => {
           event({ kind: 'message', data: { text: failed ? '' : '完成' } })
           const spent = { usage: p.renderer!.usage!(), costUsd: p.renderer!.costUsd!() }
-          return failed ? { ok: false, error: overload.reason, failure: overload, ...spent } : { ok: true, result: '完成', ...spent }
+          return failed ? { ok: false, error: overload.summary, failure: overload, ...spent } : { ok: true, result: '完成', ...spent }
         }
         return p
       } })
@@ -1214,7 +1214,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       return p
     } })
     await until(() => job.state === 'finished')
-    assert.equal(planned.length, 1)
+    assert.equal(planned.length, 4)
     assert.equal(job.outcome, 'failed', job.reason)
     assert.match(job.reason!, /request failed: EOF/)
     assert.equal(job.report?.reply, partial)
@@ -1300,14 +1300,15 @@ process.stdin.on('data', () => { if (read) return; read = true;
       return p
     } })
     await until(() => job.state === 'finished')
-    assert.equal(planned.length, 1)
+    assert.equal(planned.length, 4)
     assert.equal(job.outcome, 'failed')
     assert.ok(job.reason?.startsWith(reason))
-    assert.equal(readCheckpoint(job.id)?.retry?.attempt, 1)
+    assert.equal(readCheckpoint(job.id)?.retry?.attempt, 4)
+    assert.equal(job.report?.failure?.pauseReason, 'limit')
   })
 
   for (const reason of ['quota exceeded', 'Please login first', 'unknown model error']) {
-    it(`未知或持续模型失败受直接挂起 ${reason}`, async () => {
+    it(`未知或持续模型失败进入统一 4 次重试后挂起 ${reason}`, async () => {
       const job = cloud.dispatch({ id: 'model-failure', chat: { message: 'm1', body: '原消息' } })
       start('', { plan: (...args) => {
         const p = fakeRuntime('process.exit(1)')(...args)
@@ -1316,10 +1317,11 @@ process.stdin.on('data', () => { if (read) return; read = true;
         return p
       } })
       await until(() => job.state === 'finished')
-      assert.equal(planned.length, 1)
+      assert.equal(planned.length, 4)
       assert.equal(job.outcome, 'failed')
       assert.ok(job.reason?.startsWith(reason))
-      assert.equal(readCheckpoint(job.id)?.retry?.attempt, 1)
+      assert.equal(readCheckpoint(job.id)?.retry?.attempt, 4)
+      assert.equal(job.report?.failure?.pauseReason, 'limit')
     })
   }
 
@@ -1351,8 +1353,8 @@ process.stdin.on('data', () => { if (read) return; read = true;
     })
   }
 
-  for (const failures of [[validation, validation], [disconnect, validation], [validation, disconnect, disconnect, disconnect]]) {
-    it(`shares cumulative retry slots across tiers (${failures.map(f => f.level).join(',')})`, async () => {
+  for (const failures of [[validation, validation, validation, validation], [disconnect, validation, disconnect, validation], [validation, disconnect, disconnect, disconnect]]) {
+    it(`shares cumulative 4-attempt retry slots across sources (${failures.map(f => f.source).join(',')})`, async () => {
       const job = cloud.dispatch({ id: 'mixed-retry', discussion: { id: 'd1', workspace: 'ws_1', ideas: [] } })
       let calls = 0
       start('', { plan: (...args) => {
@@ -1367,7 +1369,9 @@ process.stdin.on('data', () => { if (read) return; read = true;
       assert.equal(calls, failures.length)
       assert.equal(readCheckpoint(job.id)?.retry?.attempt, failures.length)
       assert.equal(readCheckpoint(job.id)?.retryPause, 'limit')
-      if (failures[0]?.level === 1) assert.match(planned[1]!.prompt, /Schema check failed/)
+      if (failures[0]?.source === 'validation') assert.match(planned[1]!.prompt, /Schema check failed/)
+      assert.equal(job.report?.failure?.pauseReason, 'limit')
+      assert.equal(job.report?.failure?.history.length, failures.length)
     })
   }
 
@@ -1630,8 +1634,11 @@ process.stdin.on('data', () => { if (read) return; read = true;
       return p
     } })
     await until(() => job.state === 'finished')
-    assert.equal(job.outcome, 'failed', job.reason)
-    assert.deepEqual(planned.map(p => p.resume), ['absent'])
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.deepEqual(planned.map(p => p.resume), ['absent', null])
+    assert.equal(job.report?.reply, '已续接')
+    assert.equal(job.report?.retries?.length, 1)
+    assert.equal(job.report?.retries?.[0]?.sessionAction, 'reset_replay')
   })
 
   it('Antigravity 续接失败保留会话且不新建空白会话（#687）', async () => {
@@ -1644,7 +1651,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     } })
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'failed')
-    assert.deepEqual(planned.map(p => p.resume), ['absent'])
+    assert.deepEqual(planned.map(p => p.resume), ['absent', 'absent', 'absent', 'absent'])
     assert.equal(job.report?.session, 'absent')
   })
 
@@ -1658,7 +1665,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       return p
     } })
     await until(() => job.state === 'finished')
-    assert.equal(planned.length, 1)
+    assert.equal(planned.length, 4)
     assert.match(job.reason!, /session/i)
   })
 
@@ -1672,7 +1679,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       return p
     } })
     await until(() => job.state === 'finished')
-    assert.deepEqual(planned.map(p => p.resume), ['existing'])
+    assert.deepEqual(planned.map(p => p.resume), ['existing', 'existing', 'existing', 'existing'])
     assert.match(job.reason!, /^Please login first/)
   })
 
@@ -1685,9 +1692,18 @@ process.stdin.on('data', () => { if (read) return; read = true;
       return { ...p, command: process.execPath, args: ['-e', ACP_AGENT], env: { ...p.env, ACP_MISSING: '1' } }
     } })
     await until(() => job.state === 'finished')
-    assert.equal(job.outcome, 'failed', job.reason)
-    assert.equal(planned.length, 1)
-    assert.match(job.reason!, /^Session not found/)
+    if (recovery) {
+      assert.equal(job.outcome, 'failed', job.reason)
+      assert.equal(planned.length, 1)
+      assert.equal(job.report?.failure?.pauseReason, 'unsafe')
+      assert.equal(job.report?.failure?.safeToRetry, false)
+      assert.match(job.report?.failure?.summary ?? '', /^Session not found/)
+    } else {
+      assert.equal(job.outcome, 'done', job.reason)
+      assert.deepEqual(planned.map(p => p.resume), ['absent', null])
+      assert.equal(job.report?.retries?.length, 1)
+      assert.equal(job.report?.retries?.[0]?.sessionAction, 'reset_replay')
+    }
   })
 
   it('更新保留会话，断网重启后自动续跑且可再次更新', async () => {
@@ -4157,6 +4173,7 @@ describe('flow jobs (#2020)', () => {
   // The calls by the group they act on: `raw card refine` (#551) reads as `card refine`.
   const calls = () => typed().map((c) =>
     c[0] !== 'raw' || c[1] === 'init' || c[1] === 'create' ? c : c[1] === 'memory' ? [`${c[2]}-memory`, ...c.slice(3)] : c.slice(1))
+  const runtimeFor = (id = 2) => JSON.parse(fs.readFileSync(path.join(board(), '.fake', `runtime-${id}.json`), 'utf8'))
   const cardCalls = () => calls().filter((c) => c[0] === 'card').map((c) => c.join(' '))
   const flowJob = async (id: string, flow: Partial<NonNullable<FakeFlow>> & { verb: string }, extra: Partial<Parameters<FakeCloud['dispatch']>[0]> = {}) => {
     const job = cloud.dispatch({ id, task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', ...flow }, ...extra })
@@ -4339,7 +4356,7 @@ describe('flow jobs (#2020)', () => {
     })
     assert.equal(job.outcome, 'done', job.reason)
     assert.equal(fs.readFileSync(path.join(cached(), 'existing.txt'), 'utf8'), '已有工作')
-    assert.ok(calls().some((c) => c[0] === 'agent' && c[1] === 'use' && c[2] === 'kimi'))
+    assert.equal(runtimeFor().harness, 'kimi')
     assert.equal(job.report?.evidence, undefined)
   })
 
@@ -4360,8 +4377,8 @@ describe('flow jobs (#2020)', () => {
     assert.deepEqual(create.slice(0, 6), ['raw', 'create', '--title', 'Pricing page', '--studio', 'coding'])
     assert.deepEqual(create.slice(create.indexOf('--id'), create.indexOf('--id') + 2), ['--id', '12'])
     assert.equal(fs.readFileSync(path.join(board(), '.fake', 'task-env'), 'utf8'), 'task_1')
-    assert.deepEqual(calls().find((c) => c[0] === 'agent'), ['agent', 'use', 'claude-code', '--board', board()])
-    assert.deepEqual(calls().find((c) => c[1] === 'set' && c[2] === 'model'), ['agent', 'set', 'model', '--board', board()])
+    assert.equal(runtimeFor(12).harness, 'claude-code')
+    assert.equal(runtimeFor(12).settings.model, undefined)
     assert.deepEqual(cardCalls(), [`card refine 12 --follow --events --json --board ${board()}`])
     assert.deepEqual(flowReport(job), {
       reply: 'Planned two tiers.',
@@ -4687,7 +4704,7 @@ describe('flow jobs (#2020)', () => {
     fs.writeFileSync(path.join(ws.board, '.fake/runs.json'), JSON.stringify([{
       cardId: 2, cloudExecution: { job: source.id, machine: MACHINE }, action: 'implement',
       sessionId: 'original-run', resumeId: 'original-thread', status: 'error', startedAt: Date.now() - 1000,
-      retryPause: 'limit', failure: { code: 'service_overloaded', level: 2, reason: 'Service returned 503.' }, costUsd: 0.25,
+      retryPause: 'limit', failure: { code: 'service_overloaded', source: 'runtime', summary: 'Service returned 503.' }, costUsd: 0.25,
     }]))
     const job = cloud.dispatch({ ...scope, id: 'recovered-exhausted', flow: { ...flow, sync_recovery_of: source.id } })
     start()
@@ -4849,6 +4866,42 @@ describe('flow jobs (#2020)', () => {
     assert.equal(cardCalls()[2], `card approve 2 --follow --events --json --board ${b}`)
   })
 
+  it('keeps concurrent Codex and Antigravity tasks on their own runtime and carries only compatible sessions (#1014)', async () => {
+    installed = [{ name: 'codex', installed: true }, { name: 'antigravity', installed: true }]
+    const gate = path.join(runnerHome(), 'runtime-gate')
+    process.env.FAKE_AKB = JSON.stringify({ refine: { gates: [gate] } })
+    const codex = cloud.dispatch({
+      id: 'codex-task', task: 'task_1', project: 'prj_1', number: 2, runtime: 'codex', model: 'gpt-6.2-sol',
+      settings: { reasoning: 'high' }, resume: 'codex-thread', fork: true, transcript: 'Codex discussion',
+      flow: { verb: 'create', studio: 'wf_builtin_coding' },
+    })
+    start()
+    const codexSettings = () => path.join(board(), '.fake', 'runtime-2.json')
+    try {
+      await until(() => fs.existsSync(codexSettings()))
+      process.env.FAKE_AKB = JSON.stringify({ revise: { result: 'Saved.' } })
+      cloud.put({ 'todo/3-other.md': '---\ntitle: Other task\nstatus: todo\nquestions: []\n---\n' })
+      const agy = await flowJob('antigravity-task', { verb: 'revise', card: 3, text: 'Continue' }, {
+        task: 'task_2', number: 3, runtime: 'antigravity', model: 'gemini-4-carbon', settings: { reasoning: 'low' },
+        resume: 'agy-thread', fork: true, transcript: 'Antigravity discussion',
+      })
+      assert.equal(agy.outcome, 'done', agy.reason)
+      assert.notEqual(codex.state, 'finished')
+      assert.equal(runtimeFor(2).harness, 'codex')
+      assert.equal(runtimeFor(2).settings.model, 'gpt-6.2-sol')
+      assert.equal(runtimeFor(2).settings.reasoning, 'high')
+      assert.equal(runtimeFor(3).harness, 'antigravity')
+      assert.deepEqual(runtimeFor(3).settings, { model: 'gemini-4-carbon', reasoning: 'low' })
+      assert.ok(cardCalls().some(line => line.includes('--session codex-thread --fork')))
+      assert.ok(cardCalls().some(line => line.startsWith('card revise 3 ') && line.includes('--new-session --transcript') && !line.includes('--session')))
+      assert.ok(!calls().some(call => call[0] === 'agent' && ['use', 'set', 'picks'].includes(call[1]!)))
+    } finally {
+      fs.writeFileSync(gate, '')
+    }
+    await until(() => codex.state === 'finished')
+    assert.equal(codex.outcome, 'done', codex.reason)
+  })
+
   it('starts a direct build without discussion session, passing only the transcript (#768, #896)', async () => {
     process.env.FAKE_AKB = JSON.stringify({ implement: { result: 'Built.', agentSession: 'bs1' } })
     const transcript = 'User: Tiers?\n\nAgent: Two.'
@@ -4861,6 +4914,20 @@ describe('flow jobs (#2020)', () => {
     assert.equal(fs.readFileSync(path.join(b, '.fake', 'session-cost'), 'utf8'), '')
     assert.ok(!fs.existsSync(file), 'the discussion was left on the board')
     assert.equal((built.report as { session?: string }).session, 'bs1')
+  })
+
+  it('starts a fresh planning session from the transcript when Codex cannot copy the original (#1014)', async () => {
+    process.env.FAKE_AKB = JSON.stringify({ refine: { missingFork: true, result: 'Planned.', agentSession: 'fresh-thread' } })
+    const transcript = 'Messages from the original discussion'
+    const job = await flowJob('missing-source', { verb: 'create' }, { runtime: 'codex', resume: 'missing-thread', fork: true, transcript })
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(cardCalls().length, 2)
+    assert.ok(cardCalls()[0]?.includes('--session missing-thread --fork'))
+    assert.ok(cardCalls()[1]?.includes('--new-session --transcript'))
+    assert.ok(!cardCalls()[1]?.includes('--session'))
+    assert.equal(runtimeFor().harness, 'codex')
+    assert.equal(fs.readFileSync(path.join(board(), '.fake', 'transcript'), 'utf8'), transcript + '\n')
+    assert.equal(job.report?.session, 'fresh-thread')
   })
 
   for (const verb of ['refine', 'create'] as const) {
@@ -4916,7 +4983,9 @@ describe('flow jobs (#2020)', () => {
       const job = await flowJob('j1', { verb: 'refine', card: 2 })
       assert.equal(job.outcome, 'failed')
       assert.equal(job.reason, how.failed)
-      assert.deepEqual(flowReport(job), {})
+      const { failure: structuredFailure, ...rest } = flowReport(job)
+      assert.deepEqual(rest, {})
+      assert.equal(structuredFailure?.summary, how.failed)
     })
   }
 
@@ -5328,8 +5397,8 @@ describe('flow jobs (#2020)', () => {
   it('runs on the runtime’s connector and model, and fails rather than switch when it is missing (#2074)', async () => {
     const used = await flowJob('j1', { verb: 'create' }, { runtime: 'codex', model: 'gpt-5-codex' })
     assert.equal(used.outcome, 'done', used.reason)
-    assert.deepEqual(calls().find((c) => c[0] === 'agent')!.slice(0, 3), ['agent', 'use', 'codex'])
-    assert.deepEqual(calls().find((c) => c[1] === 'set' && c[2] === 'model')!.slice(0, 4), ['agent', 'set', 'model', 'gpt-5-codex'])
+    assert.equal(runtimeFor().harness, 'codex')
+    assert.equal(runtimeFor().settings.model, 'gpt-5-codex')
     installed = [{ name: 'codex', installed: true }, { name: 'claude-code', installed: false }]
     const missing = await flowJob('j2', { verb: 'approve', card: 2 })
     assert.equal(missing.outcome, 'failed')
@@ -5341,11 +5410,11 @@ describe('flow jobs (#2020)', () => {
     const signedOut = cloud.dispatch({ id: 'j3', task: 'task_1', project: 'prj_1', number: 2,
       runtime: 'claude-code', flow: { verb: 'approve', studio: 'wf_builtin_coding', card: 2 } })
     await until(() => signedOut.state === 'claimed')
-    assert.equal(calls().filter((c) => c[0] === 'agent' && c[1] === 'use').length, 1)
+    assert.equal(runtimeFor().harness, 'codex')
     installed = [{ name: 'claude-code', installed: true, loggedIn: true }]
     await until(() => signedOut.state === 'finished')
     assert.equal(signedOut.outcome, 'done', signedOut.reason)
-    assert.equal(calls().filter((c) => c[0] === 'agent' && c[1] === 'use').at(-1)?.[2], 'claude-code')
+    assert.equal(runtimeFor().harness, 'claude-code')
   })
 
   it('names the task’s studio to akb, a built-in and an account’s own, and keeps the version on this machine (#409)', async () => {
@@ -5365,8 +5434,8 @@ describe('flow jobs (#2020)', () => {
     const servers = { mcpServers: { files: { command: 'npx', args: ['-y', '@acme/files'] } } }
     cloud.task.studio = { studio: 'wf_builtin_coding', version: 1, builtin: true, files: { 'STUDIO.md': 'x', 'mcp.json': JSON.stringify(servers) } }
     await flowJob('j1', { verb: 'create' })
-    const file = path.join(board(), '.sync', 'task_1.mcp.json')
-    assert.deepEqual(calls().find((c) => c[1] === 'set' && c[2] === 'args'), ['agent', 'set', 'args', '--board', board(), '--', `--mcp-config ${file}`])
+    const file = path.join(board(), '.sync', 'task_1.j1.mcp.json')
+    assert.equal(runtimeFor().settings.args, `--mcp-config ${file}`)
     assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), servers)
 
     assert.equal(
@@ -5378,7 +5447,7 @@ describe('flow jobs (#2020)', () => {
     cloud.task.studio = { ...cloud.task.studio, version: 2, files: { 'STUDIO.md': 'x' } }
     fs.rmSync(path.join(runnerHome(), 'studios', 'tasks', 'task_1.json'))
     await flowJob('j2', { verb: 'refine', card: 2 })
-    assert.deepEqual(calls().filter((c) => c[1] === 'set' && c[2] === 'args').at(-1), ['agent', 'set', 'args', '--board', board()], 'the servers outlived the version')
+    assert.equal(runtimeFor().settings.args, undefined, 'the servers outlived the version')
   })
 
   it('hands an ACP runtime the MCP servers as its mcpConfig, not as arguments', async () => {
@@ -5387,9 +5456,9 @@ describe('flow jobs (#2020)', () => {
     cloud.task.studio = { studio: 'wf_builtin_coding', version: 1, builtin: true, files: { 'STUDIO.md': 'x', 'mcp.json': JSON.stringify(servers) } }
     const job = await flowJob('j1', { verb: 'create' }, { runtime: 'opencode' })
     assert.equal(job.outcome, 'done', job.reason)
-    const file = path.join(board(), '.sync', 'task_1.mcp.json')
-    assert.deepEqual(calls().find((c) => c[1] === 'set' && c[2] === 'args'), ['agent', 'set', 'args', '--board', board()])
-    assert.deepEqual(calls().find((c) => c[1] === 'set' && c[2] === 'mcpConfig'), ['agent', 'set', 'mcpConfig', file, '--board', board()])
+    const file = path.join(board(), '.sync', 'task_1.j1.mcp.json')
+    assert.equal(runtimeFor().settings.args, undefined)
+    assert.equal(runtimeFor().settings.mcpConfig, file)
     assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), servers)
   })
 
@@ -6236,7 +6305,7 @@ it('旧尝试的进度拒绝迟到时不停止新的执行尝试 (#722)', async 
       return { ...fakeRuntime('setInterval(() => {}, 1000)')(runtime, prompt, cwd, resume),
         converse: async (_child, event) => {
           event({ kind: 'phase', data: { phase: 'preparing', at: new Date().toISOString() } })
-          if (attempt === 1) { await until(() => firstPending); return { ok: false, error: disconnect.reason, failure: disconnect } }
+          if (attempt === 1) { await until(() => firstPending); return { ok: false, error: disconnect.summary, failure: disconnect } }
           secondStarted = true
           await until(() => oldReturned)
           await new Promise(resolve => setImmediate(resolve))

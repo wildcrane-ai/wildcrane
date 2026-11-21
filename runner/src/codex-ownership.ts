@@ -15,8 +15,8 @@ export function ownershipConflict(thread: string, requester: Partial<ThreadLease
   const describe = (value?: Partial<ThreadLease>) => ({ run: value?.run ?? 'unknown', task: value?.task ?? 'unknown', job: value?.job ?? 'unknown', pid: value?.pid ?? 'unknown', lease: value?.lease ?? 'unknown' })
   const evidence = { thread, requester: describe(requester), owner: describe(owner), status, phase, diagnostic }
   const failure = wait
-    ? { code: 'codex_source_busy', level: 2, source: 'harness', reason: 'Waiting for the source conversation to finish.' }
-    : { code: 'codex_ownership_unconfirmed', level: 3, source: 'invariant', reason: 'The conversation could not be opened safely. Saved work was preserved.' }
+    ? { code: 'codex_source_busy', source: 'runner' as const, summary: 'Waiting for the source conversation to finish.' }
+    : { code: 'codex_ownership_unconfirmed', source: 'runner' as const, summary: 'The conversation could not be opened safely. Saved work was preserved.' }
   if (!wait) console.error(JSON.stringify({ code: failure.code, ...evidence }))
   const message = status === 'caller-does-not-own-thread' ? 'This run does not own that Codex thread.' : 'Codex thread is already in use by another run.'
   return new RpcError(`${message} ${JSON.stringify(evidence)}`, -32000, { wildcraneFailure: failure })

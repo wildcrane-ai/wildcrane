@@ -26,13 +26,13 @@ export function syncRefusal(job: Job, failure: Extract<Call<unknown>, { ok: fals
     case 'daily_write_budget_reached':
       return zh ? '每日写入额度于 UTC 零点恢复。' : 'The daily write allowance resets at midnight UTC.'
     case 'bad_request':
-      return failure.failure?.level === 1 ? failure.error
+      return failure.failure?.source === 'validation' ? failure.error
         : zh ? '请检查卡片内容和预览附件，。' : 'Check the card and its preview attachments.'
     case 'board_content_conflict':
     case 'version_conflict':
       return zh ? '请处理看板同步冲突，。' : 'Resolve the board sync conflict.'
     default:
-      return failure.failure?.level === 1 ? failure.error
+      return failure.failure?.source === 'validation' ? failure.error
         : zh ? '同步未完成。请检查任务状态后恢复。' : 'Sync could not finish. Check the task status.'
   }
 }

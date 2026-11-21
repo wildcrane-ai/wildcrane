@@ -1,4 +1,4 @@
-import { readFailure, readRetryPlan } from './retry'
+import { readFailure, readRetryHistory, readRetryPause, readRetryPlan } from './retry'
 
 import { executionOf } from '../cloud/execution'
 import fs from 'node:fs'
@@ -151,7 +151,8 @@ function parseStore(): Store {
       error: typeof entry.error === 'string' ? entry.error : undefined,
       failure: readFailure(entry.failure),
       validationFailure: readFailure(entry.validationFailure),
-      retryPause: entry.retryPause,
+      retryPause: readRetryPause(entry.retryPause),
+      retryHistory: readRetryHistory(entry.retryHistory),
       blocker: readBlocker(entry.blocker),
       // A run that never reported a cost shows none, rather than a zero it didn't earn.
       costUsd: typeof entry.costUsd === 'number' && entry.costUsd >= 0 ? entry.costUsd : undefined,

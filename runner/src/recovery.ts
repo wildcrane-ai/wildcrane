@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { killMarked, processesStopped, type Mark } from '../../cli/src/lib/agent/stop'
-import { agentRecovery, readFailure, readRetryPlan, type ExecutionFailure, type RetryPause, type RetryPlan } from '../../cli/src/lib/agent/retry'
+import { agentRecovery, isSessionMissingFailure, readFailure, readRetryHistory, readRetryPause, readRetryPlan, type ExecutionFailure, type RetryPause, type RetryPlan, type RetryRecord } from '../../cli/src/lib/agent/retry'
 import type { RunEvent } from '../../cli/src/lib/agent/wire'
 import { cloudLanguage } from '../../cli/src/lib/agent/language'
 import { idleStopConfirmed } from '../../cli/src/lib/agent/wire/codex-background-types'
@@ -27,7 +27,7 @@ export interface Checkpoint {
   reconcileRetry?: { attempt: number; at: number }
   taskRecovery?: api.TaskRecovery
   boardRepair?: { reason: string; run: string }
-  flowRun?: { id: string; finished: boolean; from?: string; failure?: ExecutionFailure; priorSpend?: BoardRunSpend[] }
+  flowRun?: { id: string; finished: boolean; from?: string; failure?: ExecutionFailure; retryPause?: RetryPause; priorSpend?: BoardRunSpend[] }
   forkSource?: string
   reviewMarks?: ReturnType<typeof import('./chats').reviewMarks>
   reviewedRejections?: import('./triage').Laid
@@ -47,6 +47,7 @@ export interface Checkpoint {
   opaque?: boolean
   effects?: boolean
   retry?: { since: number; attempt: number; pending?: RetryPlan; at?: number }
+  retryHistory?: RetryRecord[]
   failure?: ExecutionFailure
   retryPause?: RetryPause
   launching?: true
@@ -66,6 +67,8 @@ export function readCheckpoint(id: string): Checkpoint | null {
       delete held.syncRetry
     }
     held.failure = readFailure(held.failure)
+    held.retryPause = readRetryPause(held.retryPause)
+    held.retryHistory = readRetryHistory(held.retryHistory)
     if (held.retry?.pending) {
       const pending = readRetryPlan(held.retry.pending, held.retry.attempt)
       if (!pending) held.retry.at = held.retry.pending.at ?? 0
@@ -131,14 +134,22 @@ export const usesBoardRun = (job: Job, checkpoint: Checkpoint) =>
 
 export function checkpointRecovery(job: Job, checkpoint: Checkpoint, stopped: boolean, failure?: ExecutionFailure) {
   const board = usesBoardRun(job, checkpoint)
+  const unconfirmedCleanup = !!checkpoint.boardContinuation && checkpoint.pending.length > 0
+    || checkpoint.cleanup?.status === 'unconfirmed'
+    || failure?.code === 'codex_ownership_unconfirmed'
+    || checkpoint.managedProcess && failure?.code === 'idle_timeout' && !idleStopConfirmed(checkpoint.cleanup, checkpoint.session)
+  const canReplay = replayable(checkpoint) && (!board || checkpoint.started === false)
+    && (job.runtime !== 'antigravity' || checkpoint.started === false)
+  if (isSessionMissingFailure(failure)) {
+    if (!stopped || unconfirmedCleanup) return 'unsafe'
+    return canReplay ? 'replay' : 'unsafe'
+  }
   return agentRecovery({
     stopped,
     completed: !!checkpoint.completed || board && checkpoint.flowRun?.finished,
     session: board ? checkpoint.flowRun?.id : checkpoint.opaque && !checkpoint.boardContinuation ? undefined : checkpoint.session,
-    replayable: replayable(checkpoint) && (!board || checkpoint.started === false)
-      && (job.runtime !== 'antigravity' || checkpoint.started === false) && failure?.level !== 1,
-    unconfirmedCleanup: !!checkpoint.boardContinuation && checkpoint.pending.length > 0 || checkpoint.cleanup?.status === 'unconfirmed'
-      || checkpoint.managedProcess && failure?.code === 'idle_timeout' && !idleStopConfirmed(checkpoint.cleanup, checkpoint.session),
+    replayable: canReplay,
+    unconfirmedCleanup,
   })
 }
 
