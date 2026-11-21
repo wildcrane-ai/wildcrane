@@ -67,13 +67,6 @@ describe('what an agent offers', () => {
   })
 })
 
-describe('what a run is told', () => {
-  const helperAsk = (name: string): string => buildAsk({ action: 'spec', id: card, title: 'Change an endpoint', specAgent: name })
-})
-
-describe("a studio's shared rules, files and memory (#656)", () => {
-})
-
 describe('`akb raw agent-file`', () => {
 
   it('refuses a project agent with only SKILL.md', async () => {

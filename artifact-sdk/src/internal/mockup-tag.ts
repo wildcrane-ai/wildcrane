@@ -67,6 +67,16 @@ export type TiledSpec = { file: { name: string; load: () => Promise<string> }; l
 /** A sprite animation (#481): its frames and sheet image. `problem`: why it does not play. */
 export type SpriteFiles = { sheet: SpriteSheet | null; image: Blob | null; name: string; problem?: "missing" | "remote" | "invalid" };
 
+export type DelimitedSpec = {
+  file: NonNullable<Drawn["file"]>;
+  delimiter: "," | "\t";
+  load: () => Promise<{ text: string | null } | { error: "encoding" }>;
+};
+
+export type DocumentSpec = { file: NonNullable<Drawn["file"]>; load: (() => Promise<Blob>) | null };
+
+export type WorkbookSpec = { file: { name: string; load: () => Promise<string> }; load: () => Promise<Blob> };
+
 export type SpriteSpec = { file: { name: string; load: () => Promise<string> }; load: () => Promise<SpriteFiles> };
 
 /** What the card page draws for one tag: a preview still to load, or the note saying why not. */
@@ -86,6 +96,9 @@ export type MockupView = Drawn & {
   compare?: CompareSpec;
   tiled?: TiledSpec;
   sprite?: SpriteSpec;
+  workbook?: WorkbookSpec;
+  document?: DocumentSpec;
+  delimited?: DelimitedSpec;
   /** Its artifact is still being read. */
   loading?: true;
   /** The original file, to download. */

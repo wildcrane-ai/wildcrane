@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 import { parseStudioFile } from '../cli/src/lib/agent/studio-def.ts'
 import { readStudioFolder } from '../cli/src/lib/agent/studio-folder.ts'
-import { checkStudioFiles, hashInput, landsOf, officialId, STUDIO_FILE, type StudioFiles } from '../cli/src/lib/shared/studio-files.ts'
+import { checkStudioFiles, hashInput, landsOf, officialId, STUDIO_FILE, formatStudioProblem, type StudioFiles } from '../cli/src/lib/shared/studio-files.ts'
 
 export const OFFICIAL = path.dirname(fileURLToPath(import.meta.url))
 
@@ -39,7 +39,7 @@ export function packOfficial(root = OFFICIAL, loose = false): OfficialStudio[] {
     if ('problem' in parsed) throw new Error(parsed.problem)
     const def = parsed.def
     const checked = loose ? { ok: true as const } : checkStudioFiles(files, true)
-    if (!checked.ok) throw new Error(`official/studios/${folder}: ${checked.file}: ${checked.reason}`)
+    if (!checked.ok) throw new Error(`official/studios/${folder}: ${formatStudioProblem(checked)}`)
     if (!def.names?.zh && !loose) throw new Error(`official/studios/${folder}/${STUDIO_FILE}: add its Chinese name under \`names: zh\``)
     return {
       id: officialId(folder),

@@ -176,23 +176,9 @@ export const PLANNING_ROLE = PLANNER_ROLE.name
 /** This board's roles, in the order a roster draws them. */
 export const roles = (): AgentRole[] => BOARD_ROLES
 
-/** The role that runs one flow, by flow name — resolved through the contracts (./stages.ts),
- *  which is the one place a flow is joined to who does it. Every flow the board has belongs
- *  to exactly one agent, so a rule written for a role reaches every flow it runs and no
- *  other.
- *
- *  Undefined when this board has no such flow, and also when the contract names a
- *  SPECIALIST — a land agent — as its lead: a specialist is not a role, and `agentForFlow` is
- *  what a caller that only wants the name should ask. */
-export const roleForFlow = (flow: string, studio?: string): AgentRole | undefined => {
-  const name = agentForFlow(flow, studio)
-  return name ? (roleNamed(name) ?? landRole(name)) : undefined
-}
-
-// A land agent runs the build's flows as a role does (#822, #2152): its rule is keyed by its name.
-function landRole(name: string): AgentRole | undefined {
-  const agent = specAgentCatalog().agents.find((a) => a.name === name)
-  return agent ? { name, gloss: agent.description, memory: [] } : undefined
+export function roleForFlow(flow: string): AgentRole | undefined {
+  const name = agentForFlow(flow)
+  return name ? roleNamed(name) : undefined
 }
 
 /** The role of a given name. */
@@ -203,9 +189,9 @@ export const hiddenRole = (name: string): boolean => roleNamed(name)?.hidden ===
 
 /** The flows an agent runs, in the order the board declares them (./flows.ts). What the
  *  one-time rule migration concatenates in. */
-export function roleFlowsInOrder(name: string, studio?: string): string[] {
+export function roleFlowsInOrder(name: string): string[] {
   const order = FLOWS.map((flow) => flow.command)
-  return flowsOfAgent(name, studio).sort((a, b) => order.indexOf(a) - order.indexOf(b))
+  return flowsOfAgent(name).sort((a, b) => order.indexOf(a) - order.indexOf(b))
 }
 
 /** Every reason one of this board's contracts names an agent it does not have (./stages.ts).

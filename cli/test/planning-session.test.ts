@@ -5,12 +5,13 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { harnessLabel } from '../src/lib/agent/resolve.ts'
-import { closeRun, openRun, patch, peekRun, readSpec, resumeSessionId } from '../src/lib/agent/sessions.ts'
+import { closeRun, openResume, openRun, patch, peekRun, readSpec, resumeSessionId } from '../src/lib/agent/sessions.ts'
 import { startRun } from '../src/lib/agent/start.ts'
 import { readRuns } from '../src/lib/agent/store.ts'
 import type { AgentRequest, RunRecord } from '../src/lib/agent/types.ts'
 import { watchRun } from '../src/lib/agent/watch.ts'
 import { setBoardProvider } from '../src/lib/board/index.ts'
+import type { TaskReview } from '../src/lib/shared/review-plan.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
 import { forgetMachineState, move, uiConfigOf } from './helpers/board.ts'
 
@@ -235,7 +236,7 @@ describe("a Cloud task's session (#2146)", () => {
 
 })
 
-describe('a new implementation session (#768)', () => {
+describe('a new implementation session (#768, #896)', () => {
   const TRANSCRIPT = '/tmp/task_1.discussion/discussion.md'
 
   for (const carry of [
@@ -243,7 +244,7 @@ describe('a new implementation session (#768)', () => {
     { resumeId: 'ts1', transcript: TRANSCRIPT, costFrom: 2 },
     { transcript: TRANSCRIPT },
   ]) {
-    it(`ignores discussion context: ${JSON.stringify(carry)}`, async () => {
+    it(`ignores discussion session while passing lazy transcript guidance: ${JSON.stringify(carry)}`, async () => {
       await planned1()
       const run = await start({ action: 'implement', id: 1, carry, notes: 'Keep the approved preview' })
       assert.equal(run.continues, undefined)
@@ -256,15 +257,100 @@ describe('a new implementation session (#768)', () => {
       assert.deepEqual(notes(run), [])
       assert.match(spec.prompt, /Implement task 1.*Read its current card before starting/)
       assert.match(spec.prompt, /Keep the approved preview/)
-      assert.doesNotMatch(spec.prompt, /discussion|planned this card|ds1|ts1|discussion\.md/)
+      assert.match(spec.prompt, new RegExp(`read-only transcript at \`${TRANSCRIPT}\``))
+      assert.match(spec.prompt, /background reference only.*keyword search or sectioned reads rather than reading the whole file/)
+      assert.doesNotMatch(spec.prompt, /planned this card|ds1|ts1/)
     })
   }
 
-  it('does not fall back to a transcript on a connector that cannot fork', async () => {
+  it('still skips session inheritance without transcript on a normal implementation run', async () => {
+    await planned1()
+    const run = await start({ action: 'implement', id: 1, carry: { resumeId: 'ts1', costFrom: 2 } })
+    assert.equal(run.continues, undefined)
+    assert.equal(run.sessionCostFrom, undefined)
+    assert.deepEqual(notes(run), [])
+    assert.doesNotMatch(readSpec(run.sessionId)!.prompt, /discussion|planned this card|ts1|discussion\.md/)
+  })
+
+  it('passes transcript without forking on a connector that cannot fork', async () => {
     board('kimi')
     const run = await start({ action: 'implement', id: 1, carry: { resumeId: 'ds1', fork: true, transcript: TRANSCRIPT } })
     assert.equal(run.continues, undefined)
     assert.deepEqual(notes(run), [])
-    assert.doesNotMatch(readSpec(run.sessionId)!.prompt, /discussion/)
+    assert.match(readSpec(run.sessionId)!.prompt, new RegExp(`read-only transcript at \`${TRANSCRIPT}\``))
   })
+})
+
+it('sends the current approved Coding mockups to the implementation session and its resume', async (t) => {
+  const src = '.assets/3/screen.tsx'
+  const phone = '.assets/3/phone.tsx'
+  const unspecified = '.assets/3/detail.tsx'
+  const previewId = 'ui-designer'
+  const body = [
+    `<Mockup src="${src}" label="Desktop mockup" device="desktop" />`,
+    `<Asset src="${phone}" label="Phone mockup" device="mobile" />`,
+    `<Asset src="${unspecified}" label="Detail" />`,
+  ].join('\n\n')
+  const plan = [{ id: 'design', after: [], previews: [previewId] }]
+  const review = (revision: number, label: string): TaskReview => ({
+    plan, revision, stages: [{
+      id: 'design', status: 'approved', revision,
+      snapshot: {
+        body: `<Preview id="${previewId}">\n${body.replace('Desktop mockup', label)}\n</Preview>`,
+        previews: [{ id: previewId, assets: {
+          [src]: { artifact: 'art_1', version: revision },
+          [phone]: { artifact: 'art_2', version: revision },
+          [unspecified]: { artifact: 'art_3', version: revision },
+        } }],
+      },
+    }],
+  })
+  const prompt = path.join(root, 'captured.txt')
+  const frozen = path.join(root, 'frozen')
+  fs.writeFileSync(path.join(root, 'agent.mjs'), `
+    import fs from 'node:fs';
+    import { createInterface } from 'node:readline';
+    for await (const line of createInterface({ input: process.stdin })) {
+      fs.writeFileSync(${JSON.stringify(prompt)}, JSON.parse(line).message.content);
+      break;
+    }
+    console.log(JSON.stringify({ type: 'result', result: 'Stopped short' }));
+  `)
+  const draft = path.join(root, 'draft.md')
+  fs.writeFileSync(draft, 'Current draft page')
+  await move(root, ['create', '--title', 'Approved UI', '--studio', 'coding', '--body-file', draft])
+  const saveEnv = (key: string) => {
+    const saved = process.env[key]
+    t.after(() => { if (saved === undefined) delete process.env[key]; else process.env[key] = saved })
+  }
+  saveEnv('AI4KANBAN_TASK_REVIEW')
+  saveEnv('AI4KANBAN_APPROVED_UI_DIR')
+  saveEnv('AI4KANBAN_SAVED_PREVIEW_FILE')
+  process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify(review(4, 'Desktop mockup'))
+  process.env.AI4KANBAN_APPROVED_UI_DIR = frozen
+  const first = openRun({ action: 'implement', id: 3 }, 'Build the task.', [])
+  if ('error' in first) assert.fail(first.error)
+  await watchRun(first.run.sessionId)
+  const captured = fs.readFileSync(prompt, 'utf8')
+  assert.match(captured, /Approved UI previews/)
+  const started = captured.split('Approved UI previews\n\n')[1]!
+  assert.match(started, /Desktop mockup · Desktop · Review revision 4 · \.assets\/3\/screen\.tsx/)
+  assert.match(started, /Phone mockup · Mobile · Review revision 4/)
+  assert.match(started, /Detail · Device unspecified · Review revision 4/)
+  assert.ok(started.includes(path.join(frozen, 'review-4-0/ui-designer/rendered-0/.assets/3/screen.html')))
+  assert.doesNotMatch(started, /Current draft page/)
+
+  process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify(review(8, 'Reapproved desktop'))
+  process.env.AI4KANBAN_SAVED_PREVIEW_FILE = path.join(root, 'previews.md')
+  const resumed = await openResume(first.run.sessionId)
+  if ('error' in resumed) assert.fail(resumed.error)
+  assert.equal(resumed.run.resumedFrom, first.run.sessionId)
+  await watchRun(resumed.run.sessionId)
+  const resumedPrompt = fs.readFileSync(prompt, 'utf8')
+  assert.match(resumedPrompt, /<Preview id="ui-design">/)
+  const continued = resumedPrompt.split('Approved UI previews\n\n')[1]!
+  assert.match(continued, /Reapproved desktop · Desktop · Review revision 8/)
+  assert.ok(continued.includes(path.join(frozen, 'review-8-0/ui-designer/rendered-0/.assets/3/screen.html')))
+  assert.match(resumedPrompt, /Read the saved task Previews/)
+  assert.doesNotMatch(continued, /Review revision 4/)
 })

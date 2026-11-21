@@ -24,6 +24,10 @@ previews:
 
 Write requested notes.
 
+## Land
+
+Save the final notes and record their path.
+
 <Preview id="notes">
 Write a short document. Read [style](references/style.md) if needed.
 </Preview>
@@ -62,8 +66,30 @@ it('keeps Markdown code examples out of delimiter parsing and retains single-fil
   const code = '\n`<Preview id="example" />`\n\n```md\n<Preview id="example">\n```\n'
   assert.equal(parsePreviewBlocks(code).blocks.length, 0)
   assert.equal(parsePreviewBlocks(code).problems.length, 0)
-  assert.ok(checkStudioFiles({ 'STUDIO.md': '---\nname: Plain\n---\n\nWrite the requested document.\n' }).ok)
+  assert.ok(checkStudioFiles({ 'STUDIO.md': '---\nname: Plain\n---\n\nWrite the requested document.\n\n## Land\n\nCheck and save the final copy.\n' }).ok)
   assert.ok(checkStudioFiles({ ...files, 'STUDIO.md': source + code }).ok)
+})
+
+it('requires one nonempty Land section in published definitions and reads older definitions', () => {
+  const work = '---\nname: Notes\npreviews: {example: {}}\n---\n\nWrite notes.\n'
+  const examples = '\n<!--\n## Land\nA commented example.\n-->\n\n```markdown\n## Land\nA fenced example.\n```\n\n<Preview id="example">\n## Land\nA Preview example.\n</Preview>\n'
+  const legacy = work + examples
+  assert.ok('def' in parseStudioFile('notes', legacy, 'STUDIO.md'))
+
+  for (const [body, code, line] of [
+    [legacy, 'studio-land-missing', 5],
+    [work + '\n## Land\n\n<!-- Fill this in. -->\n\n## Previews\n' + examples, 'studio-land-empty', 8],
+    [work + '\n## Land\nCheck the document.\n\n## Land\nSave it.\n' + examples, 'studio-land-duplicate', 11],
+  ] as const) {
+    const checked = checkStudioFiles({ 'STUDIO.md': body }, true)
+    assert.ok(!checked.ok)
+    const problem = checked.problems.find(p => p.code === code)
+    assert.deepEqual([problem?.file, problem?.line, problem?.column], ['STUDIO.md', line, 1])
+    assert.ok(problem?.hint)
+  }
+
+  const valid = legacy + '\n  ## Land ##\n\n`npm test`\n'
+  assert.ok(checkStudioFiles({ 'STUDIO.md': valid.replaceAll('\n', '\r\n') }, true).ok)
 })
 
 it('keeps indented historical examples literal without masking list resources (#873)', () => {
@@ -103,7 +129,7 @@ it('preserves display metadata and resources through full definition round trips
   assert.deepEqual(previewCatalog(copied.files), read.def.previews)
   assert.deepEqual(landsOf(read.def), { lands: true })
   assert.notEqual(hashInput(files), hashInput({ ...files, 'STUDIO.md': source.replace('Release notes', 'Notes revised') }))
-  assert.equal(read.def.rules, 'Write requested notes.')
+  assert.equal(read.def.rules, 'Write requested notes.\n\n## Land\n\nSave the final notes and record their path.')
 })
 
 it('rejects missing resources and safe-path violations without executing scripts', () => {
@@ -137,7 +163,7 @@ it('migrates old groups idempotently without losing Sets, file versions or sourc
   assert.deepEqual(migrateTask(first.body, first.previews, { 'api-designer': 'api-docs' }, first.historical), first)
   assert.equal(first.body.split('<!-- agent -->')[1], old.split('<!-- agent -->')[1])
   const converted = migrateStudio({ 'STUDIO.md': '---\nname: Old\npreviews: [writer]\nland: []\n---\n\nDo requested work.', 'agents/writer/AGENT.md': '---\nname: writer\ndescription: Write notes\n---\n\nWrite a short document.' })
-  assert.ok(checkStudioFiles(converted.files, false, true).ok)
+  assert.ok(checkStudioFiles(converted.files, false, { allowLegacyPreviewCopy: true, allowLegacyLand: true }).ok)
   assert.ok(!Object.keys(converted.files).some(p => p.startsWith('agents/')))
   assert.deepEqual(migrateStudio(converted.files).files, converted.files)
 })
@@ -149,7 +175,9 @@ it('packs all built-ins on the same format and exposes only ID and output instru
   const definition = checkStudioFiles(builder.files, true)
   assert.ok(definition.ok)
   assert.deepEqual(definition.def.previews.map(p => p.id), ['studio', 'files'])
-  assert.match(definition.def.rules, /```markdown\n<Preview id="draft">/)
+  const template = /```markdown\n(---\n[^]*?)```/.exec(definition.def.rules)?.[1]
+  assert.ok(checkStudioFiles({ 'STUDIO.md': template }).ok)
+  assert.match(template!, /^## Work\n[^]+^## Land\n[^]+^## Previews\n\n<Preview id="draft">/m)
   assert.ok(!Object.keys(builder.files).some(p => p.startsWith('agents/') || p === 'shared/RULES.md'))
   assert.equal(packed.find(s => s.id === 'wf_builtin_coding')!.lands, true)
   const context = studioRulesBlock({ action: 'clarify', studio: 'coding' })

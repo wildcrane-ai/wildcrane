@@ -31,16 +31,17 @@ Runner synchronization implies that a raw command exposes the Cloud operation's 
 | `akb task list` | list tasks | `--project <id>`; `--workspace <id>`; `--status <status>` | GET /v1/tasks; project/workspace/status; partial G06 | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task show <task>` | a task and its card | — | GET /v1/tasks/{id} + /card; task page read | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task create <request...>` | create a task and prepare its card asynchronously | `--project <id>`; `--studio <id>` | POST /v1/tasks; --studio required by handler; partial G06 | [task.ts](../../cli/src/commands/task.ts) |
-| `akb task approve <task>` | approve the reviewed version | `--revision <n>`*; `--stage <id>`; `--comment <text>` | Explicit node or candidate-plan revision; optional after-reply bridge | [task.ts](../../cli/src/commands/task.ts) |
-| `akb task review <task>` | read/propose/report/revise task review | `--file <json>`; `--stage <id> --status running/done`; `--revise-from <id>`; `--revision <n>` | GET task or POST review; write revision required | [task.ts](../../cli/src/commands/task.ts) |
-| `akb task update-questions <task>` | edit the task's open questions, like `raw update-questions` | `--append <text>`; `--update <n> <text...>`; `--drop <positions>`; `--clear`; `--option <text>`; `--recommended-option <text>`; `--mode <mode>`; `--agent <name>` | GET /card + PATCH /questions, base_version automatic; full question operations | [task.ts](../../cli/src/commands/task.ts) |
+| `akb task approve <task>` | approve the reviewed version | `--revision <n>`*; `--stage <id>`; `--comment <text>` | Explicit stage revision; optional after-reply bridge | [task.ts](../../cli/src/commands/task.ts) |
+| `akb task review <task>` | read the review, set the plan or report/revise a stage | `--review <flow>` or `--file <path>`; `--stage <id> --status running/done`; `--revise-from <id>`; `--revision <n>` | GET task or POST review; write revision required | [task.ts](../../cli/src/commands/task.ts) |
+| `akb task update-questions <task>` | append, rewrite, or remove open questions | `--append <text>`; `--update <n> <text...>`; `--drop <positions>`; `--clear`; `--option <text>`; `--recommended-option <text>`; `--mode <mode>`; `--agent <name>` | Current Runner task: local save for synchronization. Other tasks: GET /card + PATCH /questions with the version read | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task chat <task> [message...]` | read task chat history, follow or stop its reply, or send a message | `--limit <n>`; `--all`; `--follow`; `--stop` | GET/POST /chat; --stop → POST /chat/stop; --follow → job read/log; partial G08 | [task-chat.ts](../../cli/src/commands/task-chat.ts) |
-| `akb task remove <task> [reason...]` | remove a task; bring it back with task restore | — | POST /v1/tasks/{id}/cancel; not /discard | [task.ts](../../cli/src/commands/task.ts) |
+| `akb task archive <task>` | archive an eligible task | — | Current Runner task: local archive; otherwise POST /v1/tasks/{id}/archive | [task.ts](../../cli/src/commands/task.ts) |
+| `akb task remove <task> [reason...] [--discard]` | remove a task; bring it back with task restore | `--discard` | Current local task via Runner sync, otherwise POST /v1/tasks/{id}/cancel | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task restore <task>` | restore a removed or completed task without starting it | — | POST /v1/tasks/{id}/restore; removed or completed task, no execution replay | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task resume <task>` | continue its stopped run | — | POST /v1/tasks/{id}/resume; no runtime selector; G06 | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task stop <task>` | stop its current run | — | POST /v1/tasks/{id}/stop; execution only | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task comment <task> <text...>` | comment on a task | — | POST /v1/tasks/{id}/comments; text, session required | [task.ts](../../cli/src/commands/task.ts) |
-| `akb goal <move>` | save, drop and start goals of this conversation | `--id <goal>`; `--title <title>`; `--body-file <path>`; `--studio <id>`; `--review-file <json>` | new/save/drop/start; current conversation only; local goals file in Runner, Cloud external/draft/start otherwise; G10/G11 | [goal-cloud.ts](../../cli/src/commands/goal-cloud.ts) |
+| `akb goal <move>` | save, drop and start goals of this conversation | `--id <goal>`; `--title <title>`; `--body-file <path>`; `--studio <id>`; `--review <flow>` or `--review-file <path>` | new/save/drop/start; current conversation only; local goals file in Runner, Cloud external/draft/start otherwise; G10/G11 | [goal-cloud.ts](../../cli/src/commands/goal-cloud.ts) |
 | `akb workspace` | Command group / help | — | Help/command group only; no operation | [agent.ts](../../cli/src/lib/cli/agent.ts) |
 | `akb workspace list` | list workspaces | — | GET /v1/workspaces; listing only; G01 | [task.ts](../../cli/src/commands/task.ts) |
 | `akb project` | Command group / help | — | Help/command group only; no operation | [agent.ts](../../cli/src/lib/cli/agent.ts) |
@@ -77,6 +78,24 @@ Runner synchronization implies that a raw command exposes the Cloud operation's 
 | `akb guide [topic]` | the flows the board works by, shipped with this command | — | Local bundled/board guides; no API | [guide.ts](../../cli/src/commands/guide.ts) |
 | `akb __watch <sessionId>` | Hidden: Internal command | — | Hidden local run watcher, no user API | [run.ts](../../cli/src/commands/run.ts) |
 
+## Task archive
+
+`akb task archive <task>` takes a task key, a task ID, or a number in a linked
+project. In a Runner execution targeting its own task, it files the local card
+and reports `pending_sync`. The Runner synchronizes the archive and retries
+transient synchronization failures.
+
+Other calls archive in Cloud. They report `archived` once Cloud confirms both
+the archived card and the completed task. A successful `--json` result includes
+`task` (the canonical task ID) and `archive_status` (`pending_sync` or `archived`).
+Retrying a confirmed archive returns the confirmed result.
+
+Land completes delivery before archive. The command checks task state and
+card versions. It exits nonzero with the reason on refusal, for example when
+creation failed, review is pending, or another operation changed the card.
+
+Example: `akb task archive W-42 --json`
+
 ## Raw commands
 
 | Command and arguments | Operation | Nonshared options | API relationship / UI coverage | Implementation |
@@ -87,16 +106,15 @@ Runner synchronization implies that a raw command exposes the Cloud operation's 
 | `akb raw conflict show <id>` | read saved three-way versions and a read credential | — | Offline local records and current files; no API | [board-conflicts.ts](../../cli/src/lib/shared/board-conflicts.ts) |
 | `akb raw conflict resolve <id>` | explicitly resolve the original atomic batch | `--expect <revision>`*; `--file <path>`* | Current execution required; GET board versions and POST /board/commits; no new HTTP route | [board-conflicts.ts](../../cli/src/lib/cloud/board-conflicts.ts) |
 | `akb raw create` | write exactly one card — its fields, its body template and its index entry | `--title <title>`*; `--recurring` (hidden); `--priority <level>`; `--blocked-by <ids>`; `--related <ids>`; `--modules <names>`; `--question <text>`; `--option <text>`; `--recommended-option <text>`; `--mode <mode>`; `--slug <slug>`; `--no-body`; `--body-file <path>`; `--cadence <cadence>` (hidden); `--studio <id>`; `--previews <ids>`; `--id <n>` (hidden); `--triage <source-id>`; `--source <ref>` | Local card; without --id creates Cloud task via POST /v1/tasks first; --title required, --studio conditionally required; G06 | [board.ts](../../cli/src/lib/cli/board.ts) |
-| `akb raw update <id>` | rewrite a card's fields | `--title <title>`; `--priority <level>`; `--status <status>`; `--blocked-by <ids>`; `--related <ids>`; `--add-blocked-by <ids>`; `--add-related <ids>`; `--modules <names>`; `--source <ref>`; `--add-source <ref>`; `--previews <ids>`; `--phase <n>`; `--slug <slug>`; `--studio <id>`; `--cadence <cadence>` (hidden) | Local card fields; no direct PATCH /v1/tasks; --cadence refused | [board.ts](../../cli/src/lib/cli/board.ts) |
-| `akb raw update-questions <id>` | Patch local open questions in typed order | `--append <text>`; `--update <n> <text...>`; `--drop <positions>`; `--clear`; `--option <text>`; `--recommended-option <text>`; `--mode <mode>`; `--agent <name>` | Local question list; no direct PATCH /v1/tasks/{id}/questions | [board.ts](../../cli/src/lib/cli/board.ts) |
+| `akb raw update <id>` | rewrite a card's fields | `--title <title>`; `--priority <level>`; `--status <status>`; `--blocked-by <ids>`; `--related <ids>`; `--add-blocked-by <ids>`; `--add-related <ids>`; `--modules <names>`; `--source <ref>`; `--add-source <ref>`; `--previews <ids>`; `--slug <slug>`; `--studio <id>`; `--cadence <cadence>` (hidden) | Local card fields; no direct PATCH /v1/tasks; --cadence refused | [board.ts](../../cli/src/lib/cli/board.ts) |
+| `akb raw update-questions <id>` | Hidden migration compatibility for numeric local cards | `--append <text>`; `--update <n> <text...>`; `--drop <positions>`; `--clear`; `--option <text>`; `--recommended-option <text>`; `--mode <mode>`; `--agent <name>` | Local question list; no direct PATCH /v1/tasks/{id}/questions | [board.ts](../../cli/src/lib/cli/board.ts) |
 | `akb raw inspect <id>` | read task facts, saved work and execution references | — | Local saved facts only; no Cloud task query | [board.ts](../../cli/src/lib/cli/board.ts) |
 | `akb raw validate [id]` | validate card format and report file, line, and repair instructions | — | Local explicit card/asset format diagnostic; no API | [board.ts](../../cli/src/lib/cli/board.ts) |
 | `akb raw file <studio> <path>` | print one file of a studio | — | Local cached/pinned Studio file; definition download uses GET /v1/tasks/{id}/studio or /v1/studios/{id} | [cloud-studios.ts](../../cli/src/lib/agent/cloud-studios.ts) |
 | `akb raw agent-file <agent> <path>` | Hidden: Internal command | — | Hidden compatibility local project-agent file read; no direct API | [board.ts](../../cli/src/lib/cli/board.ts) |
 | `akb raw memory-file <name>` | print one global memory's rules, its MEMORY.md | — | Local bundled memory rules; no API | [board.ts](../../cli/src/lib/cli/board.ts) |
 | `akb raw list` | the open cards: id, title, meta, summary, path — or, with --archived, the cards that landed | `-m, --module <name>`; `--stale`; `--archived`; `--since <time>`; `--studio <id>` | Local card/landing list; not Cloud task listing | [board.ts](../../cli/src/lib/cli/board.ts) |
-| `akb raw archive <id>` | finish a card | — | Local archive and handoff; no direct Cloud archive endpoint | [board.ts](../../cli/src/lib/cli/board.ts) |
-| `akb raw reject <id>` | drop a card | `--discard`; `--reason <text>` | Local reject/archive; no direct /tasks/{id}/cancel | [board.ts](../../cli/src/lib/cli/board.ts) |
+| `akb raw reject <id>` | legacy local removal | `--discard`; `--reason <text>` | Local board only | [board.ts](../../cli/src/lib/cli/board.ts) |
 | `akb raw init` | scaffold docs/kanban/; on an existing board add only what is missing | — | Local board scaffold/repair; no API | [board.ts](../../cli/src/lib/cli/board.ts) |
 | `akb raw version` | print the installed version | — | Local installed version; no API | [board.ts](../../cli/src/lib/cli/board.ts) |
 | `akb raw card` | Command group / help | — | Help/command group only; no operation | [agent.ts](../../cli/src/lib/cli/agent.ts) |
@@ -126,12 +144,11 @@ Runner synchronization implies that a raw command exposes the Cloud operation's 
 | `akb raw review-dismissals` | learn what the user does not want from their rejection and dismissal reasons | `-p, --print`; `-f, --follow`; `--events` | Agent workflow: GET /v1/rejections + POST /v1/rejections/reviewed; no dismissal UI operation | [flows.ts](../../cli/src/lib/agent/flows.ts) |
 | `akb raw describe-project` | rewrite the project description the planning flows read | `-p, --print`; `-f, --follow`; `--events` | Local project-memory rewrite run; no API | [flows.ts](../../cli/src/lib/agent/flows.ts) |
 | `akb raw reflect` | propose the work that should follow some finished cards | `--cards <id...>`; `-p, --print`; `-f, --follow`; `--events` | Local reflection run, can add local triage proposals; no direct API counterpart | [flows.ts](../../cli/src/lib/agent/flows.ts) |
-| `akb raw previews [agent] [id] [note...]` | list Preview output IDs and instructions | `-f, --follow`; `--notes <text>`; `--print`; `--triggers`; `--studio <id>`; `--workspace <id>` | Lists Preview output instructions only; --triggers --studio --workspace can query Cloud Studio; role arguments refused | [spec.ts](../../cli/src/commands/spec.ts) |
+| `akb raw previews` | list Preview IDs and instructions | `--studio <id>`; `--triggers`; `--workspace <id>` | With `--triggers --studio`, queries the Goal Preview catalog | [previews.ts](../../cli/src/commands/previews.ts) |
 | `akb raw agent` | what runs the board, and how it is set up | — | Local runtime settings read; no GET /v1/runtimes | [agent.ts](../../cli/src/commands/agent.ts) |
 | `akb raw agent use <name>` | the harness Global default runs | — | Local default harness; no Cloud runtime update | [agent.ts](../../cli/src/commands/agent.ts) |
 | `akb raw agent set <key> [value...]` | one runtime setting, or its key | `--runtime <id>`; `--agent <name>` | Local runtime setting/secret; no Cloud runtime update | [agent.ts](../../cli/src/commands/agent.ts) |
 | `akb raw agent picks <json>` | Hidden: Internal command | — | Hidden local replacement of per-agent runtime picks; no Cloud assignment | [agent.ts](../../cli/src/commands/agent.ts) |
-| `akb raw agent run <studio> <agent>` | run a studio's scheduled agent once, now | `-p, --print`; `-f, --follow`; `--events` | Local Studio scheduled-agent execution; not POST /v1/projects/{id}/agents/{agent}/run | [agent.ts](../../cli/src/lib/cli/agent.ts) |
 | `akb raw components` | list an agent or studio’s Preview Components and their usage | `--studio <id>`; `--docs` | Local Studio component docs; --studio required by handler; not /v1/components publisher registry | [components.ts](../../cli/src/commands/components.ts) |
 | `akb raw studio` | Command group / help | — | Help/command group only; no operation | [agent.ts](../../cli/src/lib/cli/agent.ts) |
 | `akb raw studio validate <folder>` | validate the complete Studio definition and its references | — | Local Studio folder validation; no API | [studio.ts](../../cli/src/commands/studio.ts) |
@@ -146,15 +163,15 @@ Runner synchronization implies that a raw command exposes the Cloud operation's 
 
 | Move | Necessary arguments/options | API or local effect |
 | --- | --- | --- |
-| `goal new` | `--title <text> --body-file <path>`; optional `--studio <id>` (defaults to first installed) and `--review-file <json>` | Creates a goal in the current draft; Cloud uses external discussion + PUT draft. The body contains `## Done when`. |
-| `goal save` | `--id <goal>` plus changed title/body-file/studio/review-file | Updates current draft; PUT draft with expectedVersion. `[]` explicitly selects no extra review; omitted edits preserve the plan. |
+| `goal new` | `--title <text> --body-file <path>`; optional `--studio <id>` (defaults to first installed) and one of `--review <flow>` or `--review-file <path>` | Creates a goal in the current draft; Cloud uses external discussion + PUT draft. The body contains `## Done when`. |
+| `goal save` | `--id <goal>` plus changed title/body-file/studio/review | Updates current draft; PUT draft with expectedVersion. `--review ''` explicitly selects no extra review; omitted review edits preserve the plan. |
 | `goal drop` | `--id <goal>` | Drops current goal; Cloud adapter saves remaining goals through PUT draft, not DELETE one goal. |
 | `goal start` | `--id <goal>` | Marks start in Runner goal file; external adapter saves draft then POSTs `/goals/{goal}/start`. No explicit project/machine/skip_plan flags. |
 
 - **Current session**: there is no `--discussion` selector. In a Runner discussion, goal changes go to the local goals file for Runner to report; external host sessions use Cloud. `goal save --studio` and `goal drop` achieve UI outcomes through whole-draft writes, not the individual PATCH/DELETE endpoint.
 - **Chat modes**: without message, `task chat` reads the latest 20 retained messages; `--all` and `--limit` are alternatives. `--follow` follows only the reply selected at entry; `--stop` stops that reply, not task execution. Send/read/follow/stop combinations are validated by [task-chat](../../cli/src/commands/task-chat.ts). There is no image, runtime, clear or continue option.
-- **Ordered questions**: append/update/drop/clear run in typed order. Choice/mode/agent flags belong to the preceding append/update; positions are 1-based. Cloud `task update-questions` reads the card version itself; local `raw update-questions` writes local metadata.
-- **Local list**: `raw list --archived --since <time> [--studio <id>]` reads landing receipts; `--since last-run` is for scheduled agents. `--stale` and `--module` filter local cards, not Cloud tasks.
+- **Ordered questions**: append/update/drop/clear run in typed order. Choice/mode/agent flags belong to the preceding append/update; positions are 1-based. Each batch takes 1–50 edits. New or rewritten questions take 2–20 distinct options and up to one recommendation. Question text is limited to 4,000 UTF-8 bytes and each option to 200. `--json` returns `changes` and `open` plus the local card's `id` and `file`, or the Cloud task fields. On `version_conflict`, read the card again and check positions before resubmitting.
+- **Local list**: `raw list --archived --since <time> [--studio <id>]` reads landing receipts. `--stale` and `--module` filter local cards, not Cloud tasks.
 - **Flow options**: `--print` prints instructions without starting; it conflicts with `--follow`. `--events` is structured log output with follow. `raw card implement` accepts `--session/--fork/--transcript` for compatibility but ignores them; other applicable flows carry session context. `--new-session` selects a fresh session (the generic implementation help still calls carry options ignored).
 - **Studio publication**: `studio create` requires a request ID; push uses local `version.json` and expectedVersion, optionally a request ID; dry-run writes nothing. `studio rule/instructions` reads without text/file and clears with empty text. Instructions set project board-agent rules; Workspace Studio Agent routes are removed (HTTP 404); Studio/Preview names are rejected by `studio instructions`. They do not set schedules.
 - **Local secrets**: `raw agent set` stores local runtime secrets/settings. It cannot manage Cloud runtimes or their immutable computer binding. `agent check` probes installation and login where supported; it does not perform a Cloud runtime's prompt-based connection test.
@@ -163,7 +180,7 @@ Runner synchronization implies that a raw command exposes the Cloud operation's 
 
 | Declaration or old spelling | Current behavior / source |
 | --- | --- |
-| `raw previews <agent> <id>` or old stage/submit operations | Role arguments are refused by [spec](../../cli/src/commands/spec.ts). Only output instruction listing remains; undeclared stage/submit flags are not supported. |
+| Former Studio role commands | `raw previews <agent> <id>` and `raw agent run <studio> <agent>` refuse without starting a run. |
 | `raw studio diagram` | Refused by [studio](../../cli/src/commands/studio.ts#L53); no current Studio agent graph. |
 | `raw create --recurring/--cadence`, `raw update --cadence` | Hidden compatibility flags are refused by [board CLI](../../cli/src/lib/cli/board.ts); not recurring-task support. |
 | Old top-level `create`, `runs`, `log`, `stop`, `resume`, `cancel`, `discard`, `board`, `version`, flow names, `cloud`; `studio diagram` | [moved](../../cli/src/lib/cli/moved.ts) and the Studio dispatcher print replacement/refusal. These are not working aliases. Use current root/raw tree above. |

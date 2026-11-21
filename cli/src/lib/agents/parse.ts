@@ -132,8 +132,7 @@ export function parseSpecAgent(
   if (old.length) {
     return bad(
       `\`${name}\` declares ${old.map((key) => `\`akb.${key}\``).join(', ')}, which the board no longer reads — remove ` +
-        `${old.length > 1 ? 'them' : 'it'}, and list the agent in its studio's \`STUDIO.md\` under \`previews\`, \`land\` ` +
-        'or `scheduled` (`akb guide write-agent`), or ask the Studio builder to rewrite it',
+        `${old.length > 1 ? 'them' : 'it'}. Define task Previews in STUDIO.md (\`akb guide update-studio\`).`,
       { keys: old },
     )
   }

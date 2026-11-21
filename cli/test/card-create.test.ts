@@ -116,11 +116,11 @@ describe('card creation', () => {
     assert.ok(fs.readFileSync(path.join(root, String(made.file)), 'utf8').endsWith('\n\n# 登录页\n\n加一个登录页。\n\n## Source\nsomewhere\n'))
   })
 
-  it('refuses the retired recurring options and points at the agent guide (#1414)', async () => {
-    await refuses(root, ['create', '--title', 'A repeated job', '--recurring'], /--recurring is gone[\s\S]*akb guide write-agent/)
-    await refuses(root, ['create', '--title', 'A job', '--cadence', '1d'], /--cadence is gone[\s\S]*akb guide write-agent/)
+  it('refuses the retired recurring options and points at project background tasks (#1414)', async () => {
+    await refuses(root, ['create', '--title', 'A repeated job', '--recurring'], /--recurring is no longer supported.*background task settings/)
+    await refuses(root, ['create', '--title', 'A job', '--cadence', '1d'], /--cadence is no longer supported.*background task settings/)
     const made = await create(['--title', 'A card'])
-    await refuses(root, ['update', String(made.id), '--cadence', '1d'], /--cadence is gone/)
+    await refuses(root, ['update', String(made.id), '--cadence', '1d'], /--cadence is no longer supported/)
     await refuses(root, ['record-run', String(made.id)], /unknown command/)
   })
 

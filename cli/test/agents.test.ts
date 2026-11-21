@@ -20,15 +20,12 @@ import {
   findSpecAgent,
   roleSettings,
   specAgentCatalog,
-  specAgentInstructions,
-  specAgentList,
-  specAgentSelector,
 } from '../src/lib/agents/index.ts'
 import { runAgent } from '../src/lib/agent-cli.ts'
 import { readRuns } from '../src/lib/agent/sessions.ts'
 import { parseSpecAgent } from '../src/lib/agents/parse.ts'
 import { parseYamlBlock } from '../src/lib/agents/yaml.ts'
-import { previewStages, studioById } from '../src/lib/agent/studios.ts'
+import { studioById } from '../src/lib/agent/studios.ts'
 import { findGuide } from '../src/lib/guide.ts'
 import { roleNamed } from '../src/lib/agent/roles.ts'
 import { writeConfig } from '../src/lib/agent/settings.ts'
@@ -225,7 +222,6 @@ describe('the hook an agent declares', () => {
     const { agents, problems } = specAgentCatalog()
     assert.ok(!agents.some((a) => a.name === 'api-contract'))
     assert.match(problems.join('\n'), /declares `akb.kind`, which the board no longer reads/)
-    assert.doesNotMatch(specAgentSelector(12, 'coding', null), /api-contract/)
   })
 })
 
@@ -256,7 +252,7 @@ describe('an agent nobody can read', () => {
         const got = read(...keys)
         assert.ok('problem' in got, keys.join(' + '))
         for (const key of keys.filter((k) => !k.startsWith('when'))) assert.ok(got.problem.includes(`\`akb.${key.split(':')[0]}\``), key)
-        assert.match(got.problem, /list the agent in its studio's `STUDIO.md` under `previews`, `land` or `scheduled`/)
+        assert.match(got.problem, /Define task Previews in STUDIO\.md/)
       }
     })
 
@@ -402,21 +398,9 @@ describe("an agent's memory folder", () => {
     })
   }
 
-  it('marks no agent in the roster', () => {
-    assert.doesNotMatch(specAgentSelector(12, 'coding', null), /remembers|memory\/agents/)
-  })
 })
 
-// Where a spec agent's section goes (#1574): above the boundary, for every hook. There is no
-// setting for it, and what a board saved for the old one stays in the file, acting on nothing.
-describe("where a spec agent's section goes", () => {
-  it('is no setting on any spec agent, whoever wrote it', () => {
-    project('api-contract', { 'AGENT.md': AGENT })
-    assert.doesNotMatch(specAgentList('akb'), /Output:/)
-  })
-
-  // #226: `studio-writer` writes `STUDIO.md` and agents, not only its section.
-
+describe('legacy agent settings', () => {
   it('loads an `AGENT.md` that still declares `akb.output`, and ignores it', () => {
     project('api-contract', { 'AGENT.md': AGENT.replace('  when: A card needs it.', '  when: A card needs it.\n  output: nobody') })
     assert.deepEqual(specAgentCatalog().problems, [])

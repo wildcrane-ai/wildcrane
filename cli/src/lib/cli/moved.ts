@@ -22,7 +22,9 @@ export const MOVED: Record<string, string> = {
 /** The whole refusal for a word that used to be a command, or '' when it never was. */
 export function movedTo(word: string, program: string): string {
   // Inside `akb raw` the words are already where they belong.
-  if (/ raw$/.test(program)) return ''
+  if (/ raw$/.test(program)) {
+    return word === 'archive' ? `Use \`${program.slice(0, -4)} task archive <task>\` to archive a task.` : ''
+  }
   if (word === 'cloud') {
     return `\`${program} cloud\` is gone: use \`${program} account\`, \`${program} image\`, \`${program} tts\`, \`${program} music\` or \`${program} template\`.`
   }

@@ -107,25 +107,25 @@ describe('the pick reaching the run', () => {
   })
 })
 
-// A Runner's picks per studio step (#625): each agent runs its own, and one bound to another
+// A project's background work uses its own runtime; one bound to another
 // computer fails the step rather than running something else.
 describe('a step’s own runtime', () => {
-  const spec = (specAgent: string) => openRun({ action: 'spec', id: 1, specAgent }, 'prompt')
+  const run = (action: 'prune-memory' | 'describe-project' | 'review-dismissals') => openRun({ action }, 'prompt')
 
   it('runs the agent’s pick, and refuses one not on this computer', () => {
     assert.ok(replaceAgentRuntimes({
-      'ui-designer': runtime('rt_codex', 'codex', { model: 'gpt-5.5' }),
-      writer: { ...runtime('rt_far', 'codex', {}), away: 'The runtime "Far" is not on this computer.' },
+      'memory-pruner': runtime('rt_codex', 'codex', { model: 'gpt-5.5' }),
+      'project-writer': { ...runtime('rt_far', 'codex', {}), away: 'The runtime "Far" is not on this computer.' },
     }).ok)
-    const here = spec('ui-designer')
+    const here = run('prune-memory')
     assert.ok('run' in here)
     assert.equal(here.run.runtime, 'rt_codex')
     assert.ok(here.spec.plan.argv.includes('gpt-5.5'))
-    const far = spec('writer')
+    const far = run('describe-project')
     assert.ok('error' in far)
     assert.equal(far.reason, 'runtimeAway')
     assert.equal(far.error, 'The runtime "Far" is not on this computer.')
-    const other = spec('critic')
+    const other = run('review-dismissals')
     assert.ok('run' in other)
     assert.equal(other.run.runtime, 'global')
   })

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
+import fs from 'node:fs'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { it } from 'node:test'
@@ -11,6 +13,24 @@ import { it } from 'node:test'
 
 for (const key of ['WILDCRANE_HOST_PROXY', 'HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy']) delete process.env[key]
 const { followProxy } = await import('../src/proxy')
+const { useRunnerHome } = await import('../src/home')
+
+it('ignores the retired proxy.env on startup', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-proxy-test-'))
+  const keys = ['WILDCRANE_HOME', 'AI4KANBAN_HOME', 'https_proxy']
+  const previous = keys.map((key) => [key, process.env[key]] as const)
+  t.after(() => {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+  process.env.WILDCRANE_HOME = dir
+  fs.writeFileSync(path.join(dir, 'proxy.env'), 'https_proxy=http://127.0.0.1:7890\n')
+  useRunnerHome()
+  assert.equal(process.env.https_proxy, undefined)
+})
 
 it('routes fetch through the system proxy and drops it when turned off', { skip: process.platform !== 'darwin' }, async (t) => {
   const seen: string[] = []

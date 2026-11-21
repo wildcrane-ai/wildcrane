@@ -125,24 +125,6 @@ describe('the akb the Runner carries (#171)', () => {
     assert.notEqual((await onBoard(['raw', 'run', 'stop', 'nobody'])).code, 0)
   })
 
-  it('gives a reflection the scheduled agents it is told, or else the ones the studios list (#277)', async () => {
-    const body = path.join(project, 'done.md')
-    fs.writeFileSync(body, 'Done.\n\n## Worth noting\n\n<!-- agent -->\n\n## Scope\n- Done.\n\n## Todo\n- [x] Done\n\n## Decided by the agent\n')
-    ok(await onBoard(['raw', 'create', '--title', 'Done', '--studio', 'coding', '--body-file', body, '--id', '3', '--priority', 'med', '--json']))
-    ok(await onBoard(['raw', 'archive', '3']))
-    const printed = async (env?: NodeJS.ProcessEnv) => {
-      const ran = await runAkb(akb, ['raw', 'reflect', '--cards', '3', '--print', '--board', board], { cwd: project, board, env })
-      ok(ran)
-      return ran.out
-    }
-    assert.doesNotMatch(await printed(), /<scheduled-agents>\n/)
-    const home = path.join(board, 'agents', 'night-auditor')
-    fs.mkdirSync(home, { recursive: true })
-    fs.writeFileSync(path.join(home, 'AGENT.md'), '---\nname: night-auditor\ndescription: Audits the night.\n---\nAudit.\n')
-    assert.match(await printed({ AI4KANBAN_SCHEDULED_AGENTS: 'night-auditor,gone' }), /<scheduled-agents>\n\s*night-auditor — .*\n\s*<\/scheduled-agents>/)
-    assert.doesNotMatch(await printed({ AI4KANBAN_SCHEDULED_AGENTS: '' }), /<scheduled-agents>\n/)
-  })
-
   it('builds a card on its picked runtime, and leaves the delivery the Runner reads', async () => {
     const builder = { id: 'rt_builder', name: 'Task runtime', harness: 'claude-code', settings: { model: 'opus' } }
     ok(await onBoard(['raw', 'agent', 'picks', JSON.stringify({ builder })]))
@@ -166,6 +148,6 @@ describe('the akb the Runner carries (#171)', () => {
   it('takes every other verb a job sends', async () => {
     refused(await onBoard(['raw', 'delivery', 'resume', 'gone', '--json']), /no delivery/)
     refused(await onBoard(['raw', 'delivery', 'cancel', 'gone', '--json']), /no delivery/)
-    refused(await onBoard(['raw', 'agent', 'run', 'coding', 'nobody', ...follow]), /nobody/)
+    refused(await onBoard(['raw', 'agent', 'run', 'coding', 'nobody', ...follow]), /Studio roles no longer run on their own/)
   })
 })

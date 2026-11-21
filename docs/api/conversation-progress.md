@@ -7,6 +7,12 @@
 Missing, invalid, future or out-of-order evidence falls back to receipt time;
 existing history is untouched. Submission alone does not prove execution started.
 
+For a confirmed failed reply, conversation responses can include
+`"failureRuntime": {"connector": "codex", "name": null}`. The connector comes from
+the failed job. `name` is the caller’s named runtime when available. A default
+runtime has a null name. Responses omit the field when the failed job cannot be
+confirmed. Retry inputs and failure codes are unchanged.
+
 Runner claim responses add optional `job.claim` and `job.discussion.catalog`
 (`account`, `version`). Ordinary renewal responses include the same optional catalog.
 `GET /v1/studios` adds `catalogVersion` so a paginated snapshot can be checked.

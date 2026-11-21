@@ -16,16 +16,13 @@ import { FLOWS } from '../src/lib/agent/flows.ts'
 import { refinementRunsAfter, markBoard } from '../src/lib/agent/refine.ts'
 import { roleForFlow, stageContractProblems } from '../src/lib/agent/roles.ts'
 import { deliveryRules, ruleFor } from '../src/lib/agent/rules.ts'
-import { endOfStage, missingRequired, stageOfAction } from '../src/lib/agent/stage-end.ts'
 import {
   agentForFlow,
   contractProblems,
   flowNodes,
   flowsOfAgent,
-  stageContract,
   stageContracts,
   stageOfFlow,
-  type StageContract,
 } from '../src/lib/agent/stages.ts'
 import type { RunRecord } from '../src/lib/agent/types.ts'
 import { logPathOf, withStore } from '../src/lib/agent/store.ts'
@@ -157,66 +154,6 @@ describe('a contract that names somebody the board has not', () => {
     for (const contract of stageContracts().filter((c) => c.lead)) {
       assert.match(said, new RegExp(`the ${contract.stage} stage is led by \`${contract.lead}\``))
     }
-  })
-})
-
-describe('the completion check', () => {
-  it('requires nothing but the lead on everything the command ships', () => {
-    for (const contract of stageContracts()) assert.deepEqual(contract.requires, [], contract.stage)
-  })
-
-  it('stops for the user once it has asked and the section is still not there', () => {
-    writeCard(1)
-    recordRun({ sessionId: 's1', action: 'spec', cardId: 1, specAgent: 'ui-designer' })
-    const contract: StageContract = { ...stageContract('plan'), requires: ['ui-designer'] }
-    const end = endOfStage(contract, findCard(1)!)
-    assert.ok('missing' in end)
-    assert.deepEqual(end.missing, ['ui-designer'])
-    assert.equal(end.stage, 'plan')
-  })
-
-  it('is satisfied by the helper’s own section on the card', () => {
-    writeCard(1, 'A card.\n\n## By `ui-designer` agent\n\nThe screens.')
-    const contract: StageContract = { ...stageContract('plan'), requires: ['ui-designer'] }
-    assert.deepEqual(missingRequired(contract, findCard(1)!), [])
-    assert.deepEqual(endOfStage(contract, findCard(1)!), { done: true })
-  })
-
-  it('puts a spec run in the planning stage, and an event in no stage at all', () => {
-    assert.equal(stageOfAction('spec'), 'plan')
-    assert.equal(stageOfAction('clarify'), 'plan')
-    assert.equal(stageOfAction('implement'), 'build')
-    assert.equal(stageOfAction('reflect'), undefined)
-  })
-
-  // A stage nothing on this board requires anything of can never hold a card up — whatever
-  // shape that card is in.
-  it('asks a run with no card, a group root and a recurring card for no stage they have not', () => {
-    writeCard(1)
-    writeCard(2, 'A group.', { folder: '2-group' })
-    fs.mkdirSync(path.join(kanban(), 'todo', 'recurring'), { recursive: true })
-    const before = markBoard()
-    const closes = [
-      aRun({ sessionId: 'a', action: 'prune-memory' }),
-      aRun({ sessionId: 'b', action: 'clarify', cardId: 2, refineRound: 1 }),
-      aRun({ sessionId: 'c', action: 'run', cardId: 1 }),
-    ]
-    for (const run of closes) {
-      const after = refinementRunsAfter(run, [], before)
-      assert.doesNotMatch(after.stalled ?? '', /stage of #/, run.action)
-    }
-  })
-})
-
-describe('the helpers, one at a time', () => {
-  // Helpers run in turn, and planning is one session (#1203): the last helper's close starts
-  // no second planning pass.
-  it('starts no planning pass after a helper', () => {
-    writeCard(1)
-    const before = markBoard()
-    const spec = aRun({ sessionId: 's1', action: 'spec', cardId: 1, specAgent: 'ui-designer' })
-    assert.deepEqual(refinementRunsAfter(spec, [], before, true).runs, [])
-    assert.deepEqual(refinementRunsAfter(spec, [], before, false).runs, [])
   })
 })
 

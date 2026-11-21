@@ -1,20 +1,8 @@
-// Which agent runs one run (#443).
-//
-// Every run belongs to exactly one agent: a flow is run by the role that owns it
-// (./roles.ts), and a `spec` or `write` run by the specialist it names. That agent is what
-// picks the harness the run spawns (./resolve.ts) and how its prompt calls the skill
-// (./prompts.ts).
-//
-// Only a flow is named, never a pass: a refine's `clarify`, `resolve` and `writing` passes
-// belong to the flow that spawned them, and so to the same agent.
-
-import { findSpecAgent } from '../agents'
 import { flowByAction } from './flows'
 import { roleForFlow } from './roles'
-import { cardStudioId, landAgents, studioFor } from './studios'
+import { cardStudioId } from './studios'
 import { deliveryFor } from './deliveries'
-import { deliveryStep } from './progress'
-import { REFINE_ACTIONS, SPECIALIST_ACTIONS } from './types'
+import { REFINE_ACTIONS } from './types'
 import type { AgentAction } from './types'
 
 /** What a run has to say about itself for its agent to be worked out. The same three fields
@@ -24,7 +12,7 @@ export interface RunAsk {
   /** The card this run is for, when it names one. Read only to find the card's studio —
    *  who leads a stage is the card's answer now, not the board's (#715). */
   id?: number
-  /** The agent's name on a `spec` or `write` run, and nothing on any other. */
+  /** The parent agent's name on a sub-run. */
   specAgent?: string
   /** Set on a pass a refine spawned, absent on a flow a user typed — the one thing that
    *  tells a refine's `resolve` pass from an `akb raw card resolve` of its own. */
@@ -46,15 +34,13 @@ export const studioForRun = (ask: RunAsk): string | undefined =>
       ? deliveryFor({ action: 'implement', deliveryId: ask.deliveryId })?.studio?.id
       : undefined)
 
-/** The agent one run is done by: a role's name, a specialist's own name, or nothing when the
- *  request names no action — then the board's default harness runs it. */
+/** The board role for this flow or the parent agent inherited by a sub-run. */
 export function agentForRun(ask: RunAsk = {}): string | undefined {
   const { action, specAgent } = ask
   if (!action) return undefined
   if (action === 'implement') return undefined
-  // A specialist runs as itself, whichever hook it is on; a sub-run as its parent's agent.
-  if (SPECIALIST_ACTIONS.has(action) || action === 'sub') return specAgent
-  return roleForFlow(flowOf(ask, action), studioForRun(ask))?.name
+  if (action === 'sub') return specAgent
+  return roleForFlow(flowOf(ask, action))?.name
 }
 
 // The flow this run belongs to. A pass belongs to the flow that spawned it, never to a flow

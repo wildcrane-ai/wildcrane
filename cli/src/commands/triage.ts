@@ -3,7 +3,7 @@
 
 import fs from 'node:fs'
 
-import { runAgent } from '../lib/agent/scheduled'
+import { runAgent } from '../lib/agent/project-agent'
 import { knownStudio } from '../lib/agent/studios'
 import { addToInbox, checkSource, migrateTriage } from '../lib/signals'
 import { say } from '../lib/io'

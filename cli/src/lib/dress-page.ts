@@ -3,14 +3,15 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+export const isHtmlFile = (file: string): boolean => /\.html?$/i.test(file)
+
 const CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; " +
   "media-src data: blob:; font-src data: blob:; worker-src 'none'; base-uri 'none'; form-action 'none'"
 
 export const head = `<meta http-equiv="Content-Security-Policy" content="${CSP}"><meta charset="utf-8">` +
   '<meta name="viewport" content="width=device-width, initial-scale=1"><style>html{overflow-x:hidden;overscroll-behavior:contain}</style>'
 
-/** An `.html` mockup keeps its own markup; a stylesheet it links from its folder is inlined on
- *  the `<link>`'s line, its `url()`s rebased onto the page, since the review's frame loads nothing by path. */
+/** Inline local stylesheets and rebase their URLs onto the page. */
 export function dressPage(file: string): string {
   const folder = path.dirname(file)
   const html = fs.readFileSync(file, 'utf8').replace(/<link\b[^>]*>/gi, (tag) => {
@@ -26,5 +27,5 @@ export function dressPage(file: string): string {
   return /<!doctype\b|<html[\s>]|<head[\s>]/i.test(html) ? html.slice(0, at) + head + html.slice(at) : `<!doctype html><html><head>${head}</head><body>${html}</body></html>`
 }
 
-/** The text a file's references are read from: an `.html` page as it goes up. */
-export const referenceText = (file: string): string => (/\.html$/i.test(file) ? dressPage(file) : fs.readFileSync(file, 'utf8'))
+/** Read references from the page as it goes up. */
+export const referenceText = (file: string): string => isHtmlFile(file) ? dressPage(file) : fs.readFileSync(file, 'utf8')

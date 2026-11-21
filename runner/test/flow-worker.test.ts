@@ -147,7 +147,7 @@ it('collects a result completed with the Runner offline (#693)', async () => {
   assert.equal(job.claims, 1)
 })
 
-it('retains a completed result while its upload is offline across a restart (#693)', async () => {
+for (const workerExited of [false, true]) it(`retains a completed result while its upload is offline (${workerExited ? 'worker exit, #903' : 'Runner restart, #693'})`, async () => {
   process.env.FAKE_AKB = JSON.stringify({ refine: { gates: [gate(1)], result: 'Pending upload', spent: { costUsd: 0.25 } } })
   const job = cloud.dispatch({ id: 'job', task: 'task_1', project: 'prj_1', projectDir: folder(), number: 2,
     runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb: 'refine' } })
@@ -161,6 +161,7 @@ it('retains a completed result while its upload is offline across a restart (#69
   }, 10_000)
   const record = path.join(runnerHome(), 'flow-workers/job.json')
   assert.ok(fs.existsSync(record))
+  if (workerExited) process.kill(JSON.parse(fs.readFileSync(record, 'utf8')).pid, 'SIGKILL')
   await reclaimFlowWorkers(machine)
   assert.ok(fs.existsSync(record))
   launch()
@@ -171,7 +172,7 @@ it('retains a completed result while its upload is offline across a restart (#69
   assert.equal(job.report?.reply, 'Pending upload')
   assert.equal(job.report?.costUsd, 0.25)
   assert.equal(commands('refine').length, 1)
-  assert.equal(job.claims, 1)
+  assert.equal(job.claims, workerExited ? 2 : 1)
 })
 
 for (const reason of ['stop', 'account', 'transfer', 'runner-transfer', 'crash'] as const) {
@@ -190,7 +191,9 @@ for (const reason of ['stop', 'account', 'transfer', 'runner-transfer', 'crash']
     if (reason === 'account') fs.writeFileSync(path.join(runnerHome(), 'account-generation'), 'signed-out')
     if (reason === 'crash') process.kill(worker.pid, 'SIGKILL')
     if (reason === 'stop' || reason === 'crash') {
-      await until(() => job.state === 'finished', 15_000)
+      await until(() => job.state === 'finished', 15_000).catch(e => {
+        throw new Error(`${e}: ${log}\n${fs.existsSync(record + '.log') ? fs.readFileSync(record + '.log', 'utf8') : ''}\n${fs.existsSync(record) ? fs.readFileSync(record, 'utf8') : ''}`)
+      })
       await reclaimed(record)
       assert.equal(job.outcome, reason === 'stop' ? 'stopped' : 'failed', `${log}\n${job.reason}`)
     } else {
@@ -215,7 +218,7 @@ it('refuses a recorded launch whose execution cannot be identified (#693)', asyn
   await until(() => job.state === 'finished', 10_000)
   assert.equal(job.outcome, 'failed', log)
   assert.equal(commands('refine').length, 0)
-  assert.match(job.reason ?? '', /已有成果已保留/)
+  assert.match(job.reason ?? '', /Saved work was preserved/)
 })
 
 it('keeps replies and other flow types outside detached execution (#693)', () => {

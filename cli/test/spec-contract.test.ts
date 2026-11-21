@@ -303,7 +303,7 @@ describe('the card format contract', () => {
     assert.deepEqual(rules('<Storyboard src=".assets/1/board.json" />'), ['preview-nesting'])
   })
 
-  it('validates specialist sections while ignoring examples inside code fences', () => {
+  it('validates Preview blocks while ignoring examples inside code fences', () => {
     const example = '\n<Preview id="ui-design">\n\n### Layout\n\n````md\n```\n## Scope\n<!-- agent -->\n<Mockup broken>\n```\n````\n</Preview>\n'
     assert.deepEqual(validateSpec(file, valid.replace('<!-- agent -->', example + '\n<!-- agent -->')), [])
     assert.ok(validateSpec(file, valid + '\n```md\ntext').some((e) => e.rule === 'code-fence'))
@@ -359,7 +359,7 @@ async function watchWithResume(id: string): Promise<string> {
 describe('run completion validation', () => {
   // #566: the card format is the agent's own check; it never fails a run.
   it('finishes a run that leaves a malformed card', async () => {
-    for (const action of ['spec', 'clarify', 'edit'] as const) {
+    for (const action of ['clarify', 'edit'] as const) {
       fs.writeFileSync(file, valid)
       fs.rmSync(path.join(root, 'prompts.log'), { force: true })
       const last = await watchWithResume(await fakeRun(false, action, false))

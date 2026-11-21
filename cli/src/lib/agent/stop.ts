@@ -338,16 +338,28 @@ export function trackAgent(child: ChildProcess, mark: Mark): void {
 }
 
 /** 查询失败不能充当退出证明；Windows 同时按创建时间核对遗留子进程。 */
-export function processesStopped(mark: Mark, root?: { pid: number; since: number }): boolean {
+export function probeProcesses(
+  mark: Mark,
+  root?: { pid: number; since: number },
+): { ok: true; alive: boolean } | { ok: false; error: string } {
   try {
     if (WINDOWS) {
       const list = procsOnWindows()
-      if (!list || !root) return false
+      if (!list) return { ok: false, error: '无法查询进程列表。' }
+      if (!root) return { ok: false, error: '缺少进程起点，无法核对退出状态。' }
       const current = list.procs.find((p) => p.pid === root.pid)
-      if (current && current.startedAt > root.since) return false
-      return startedUnder(list, root.pid, root.since).length === 0
+      if (current && current.startedAt > root.since) return { ok: false, error: '进程号已被复用。' }
+      return { ok: true, alive: startedUnder(list, root.pid, root.since).length > 0 }
     }
     const entry = `${mark.name}=${mark.value}`
-    return (process.platform === 'linux' ? markedInProc(entry, true, mark.since) : markedInPs(entry, root ? [root.pid] : [])).length === 0
-  } catch { return false }
+    const pids = process.platform === 'linux' ? markedInProc(entry, true, mark.since) : markedInPs(entry, root ? [root.pid] : [])
+    return { ok: true, alive: pids.length > 0 }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+export function processesStopped(mark: Mark, root?: { pid: number; since: number }): boolean {
+  const probed = probeProcesses(mark, root)
+  return probed.ok && !probed.alive
 }

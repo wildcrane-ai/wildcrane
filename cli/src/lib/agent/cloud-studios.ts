@@ -11,7 +11,8 @@ import path from 'node:path'
 
 import { studioName } from '../shared/board-files.ts'
 import { packOfficial } from '../../../../official/pack.ts'
-import { call, runnerProject, workspaceTask } from '../cloud/tasks'
+import { call, runnerProject, workspaceTask, type CloudCall } from '../cloud/tasks'
+import { hasText, invalidResponse, isRecord, temporaryCloudFailure, type CloudProblem } from '../cloud/response'
 import { cloudConfigured } from '../cloud/config'
 import { readSession, sessionFile } from '../cloud/session'
 import { memoByFiles } from '../file-memo'
@@ -165,18 +166,32 @@ export function pinMissing(): boolean {
 export const NEEDS_CLOUD = 'Sign in to run studios.'
 export const NOT_DOWNLOADED = "This studio isn't downloaded yet. Connect and try again."
 
-let offline = false
+let verification: { cached: boolean; problem?: CloudProblem } = { cached: false }
 
-/** The last sync could not reach Cloud, so the list is what was downloaded before. */
-export const studiosOffline = () => offline
+export const studioVerification = () => verification
+export const studiosOffline = () => verification.problem?.retryable === true
 
-type Answer<T> = { ok: true; value: T } | { ok: false; error: string; code?: string }
+type Answer<T> = CloudCall<T>
+
+function invalid<T>(expected: string): Answer<T> {
+  const problem = invalidResponse(expected)
+  return { ...problem, ok: false, error: problem.message }
+}
+
+export const isStudioVersion = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+
+export function isStudioFiles(value: unknown): value is StudioFiles {
+  return isRecord(value) && hasText(value['STUDIO.md']) && Object.entries(value).every(([file, text]) =>
+    typeof text === 'string' && !/[\\:\0]/.test(file) && file.split('/').every(part => !!part && part !== '.' && part !== '..'))
+}
 
 async function versionOf(id: string, version: number): Promise<Answer<HeldVersion>> {
   const held = readVersion(id, version)
   if (held) return { ok: true, value: held }
   const read = await call<HeldVersion>('GET', `/v1/studios/${encodeURIComponent(id)}`)
   if (!read.ok) return read
+  if (read.value.id !== id || !isStudioVersion(read.value.version) || !isStudioFiles(read.value.files)) return invalid('a valid Studio version')
   saveVersion(read.value)
   return read
 }
@@ -188,6 +203,7 @@ async function pinTask(task: string): Promise<Answer<HeldVersion>> {
   if (held && 'def' in parseStudioFile('studio', held.files['STUDIO.md'] ?? '', 'STUDIO.md')) return { ok: true, value: held }
   const read = await call<{ historicalPreviews?: Record<string, unknown>; studio: string; version: number; name: string; files: StudioFiles }>('GET', `/v1/tasks/${encodeURIComponent(task)}/studio`)
   if (!read.ok) return read
+  if (!hasText(read.value.studio) || !isStudioVersion(read.value.version) || !isStudioFiles(read.value.files)) return invalid('the task’s Studio version')
   const value = { id: read.value.studio, version: read.value.version, name: read.value.name, files: read.value.files, historicalPreviews: read.value.historicalPreviews }
   savePin(task, value)
   return { ok: true, value }
@@ -196,48 +212,57 @@ async function pinTask(task: string): Promise<Answer<HeldVersion>> {
 /** Bring this machine's copy of the workspace's studios up to date. Never throws: offline, the
  *  copy downloaded before stands. `force` reads the list even when it is fresh. */
 export async function syncStudios(force = false): Promise<void> {
-  offline = false
+  verification = { cached: false }
   const project = boardProject()
   if (devFolder() || !project || !cloudConfigured() || !readSession()) return
   const task = workspaceTask()
   const held = readJson<List>(listFile(project))
   const fresh = held && Date.now() - Date.parse(held.at) < FRESH_MS
+  const failed = (failure: Extract<CloudCall<unknown>, { ok: false }>) => {
+    verification = { cached: !!held, problem: { code: failure.code ?? 'unreachable', message: failure.error,
+      status: failure.status, retryable: failure.retryable ?? temporaryCloudFailure(failure) } }
+  }
   try {
     if (task) {
       const pinned = await pinTask(task)
-      if (!pinned.ok && !pinned.code) offline = true
+      if (!pinned.ok) failed(pinned)
     }
-    if (fresh && !force) return
+    if (fresh && !force) {
+      verification.cached = true
+      return
+    }
     let workspace = held?.workspace
     if (!workspace) {
       const read = await call<{ workspace: string }>('GET', `/v1/projects/${encodeURIComponent(project)}`)
-      if (!read.ok) {
-        offline = !read.code
-        return
-      }
+      if (!read.ok) return failed(read)
+      if (!hasText(read.value.workspace)) return failed({ ok: false, error: 'Cloud did not return a workspace.', code: 'invalid_response' })
       workspace = read.value.workspace
     }
     const listed: List['studios'] = []
+    const cursors = new Set<string>()
     let after: string | null = null
     do {
-      const page: Answer<{ data: { id: string; version: number }[]; next: string | null }> = await call('GET',
+      const page: Answer<{ data: List['studios']; next: string | null }> = await call('GET',
         `/v1/studios?workspace=${encodeURIComponent(workspace)}&limit=100${after ? `&after=${encodeURIComponent(after)}` : ''}`)
-      if (!page.ok) {
-        offline = !page.code
-        return
+      if (!page.ok) return failed(page)
+      if (!Array.isArray(page.value.data) || page.value.data.some(w => !isRecord(w) || !hasText(w.id) || !isStudioVersion(w.version))
+          || (page.value.next !== null && (!hasText(page.value.next) || cursors.has(page.value.next)))) {
+        return failed({ ok: false, error: 'Cloud did not return a valid Studio list.', code: 'invalid_response' })
       }
-      listed.push(...page.value.data.map((w) => ({ id: w.id, version: w.version })))
+      listed.push(...page.value.data.map(({ id, version }) => ({ id, version })))
       after = page.value.next
+      if (after) cursors.add(after)
     } while (after)
     const kept: List['studios'] = []
     for (const w of listed) {
       const read = await versionOf(w.id, w.version)
-      if (read.ok) kept.push({ id: read.value.id, version: read.value.version })
-      else if (!read.code) offline = true
+      if (!read.ok) return failed(read)
+      kept.push({ id: read.value.id, version: read.value.version })
     }
     writeJson(listFile(project), { at: new Date().toISOString(), workspace, studios: kept } satisfies List)
-  } catch {
-    offline = true
+    verification.cached = false
+  } catch (error) {
+    failed({ ok: false, code: 'studio_cache_error', error: error instanceof Error ? error.message : String(error) })
   }
 }
 

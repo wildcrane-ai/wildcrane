@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { PreviewDefinition } from './preview-definitions.ts'
 
 const id = z.string().trim().min(1).max(100)
 export const reviewNodeSchema = z.object({
@@ -9,13 +10,26 @@ export const reviewNodeSchema = z.object({
 }).strict()
 export type ReviewNode = z.infer<typeof reviewNodeSchema>
 export type ReviewPlan = ReviewNode[] | null
-export type ReviewStatus = 'blocked' | 'available' | 'running' | 'ready' | 'approved'
+export type ReviewStatus = 'blocked' | 'available' | 'running' | 'ready' | 'approved' | 'done'
 export interface ReviewStage { id: string; status: ReviewStatus; revision: number; snapshot: Record<string, unknown> | null }
+export type PreviewUnavailable = 'not_generated' | 'waiting'
+export interface ReviewApproval { stage: string; revision: number; starts: string[] }
 export interface TaskReview {
   revision: number
   plan: ReviewPlan
-  pending_plan: { revision: number; snapshot: { kind: 'plan'; plan: ReviewNode[] } } | null
   stages: ReviewStage[]
+  previews?: Record<string, PreviewUnavailable>
+  approvals?: ReviewApproval[]
+  preview_definitions?: PreviewDefinition[]
+}
+
+export interface SavedPreviewInputs {
+  sections: Record<string, { body: string; sources: string[] }>
+  assets: Record<string, { artifact: string; version?: number; status?: string; error?: string; dependencies?: string[] }>
+}
+
+export function reviewPreviewIds(plan: ReviewPlan | undefined): string[] {
+  return [...new Set((plan ?? []).flatMap(node => node.previews))]
 }
 
 export function reviewLayers(plan: ReviewNode[]): ReviewNode[][] {
@@ -43,12 +57,71 @@ export const reviewPlanSchema = z.array(reviewNodeSchema).max(50).superRefine((n
   try { reviewLayers(nodes) } catch (e) { ctx.addIssue({ code: 'custom', message: (e as Error).message }) }
 }).nullable()
 
-export function parseReviewPlan(value: unknown, previews?: readonly string[]): ReviewPlan {
-  const plan = reviewPlanSchema.parse(value)
-  if (previews) for (const n of plan ?? []) for (const p of n.previews) {
-    if (!previews.includes(p)) throw new Error(`Preview ${p} is not defined in this Studio.`)
+export function parseReviewPlan(value: unknown): ReviewPlan {
+  return reviewPlanSchema.parse(value)
+}
+
+type ReviewPreview = { id: string; title?: Record<string, string> }
+const HANDOFF = 'delivery-handoff'
+const HANDOFF_WITH_COLLISION = 'delivery-handoff:flow'
+
+function reviewNames(catalog: readonly ReviewPreview[]) {
+  return catalog.map(({ id, title }) => {
+    const labels = Object.values(title ?? {}).map(label => label.trim()).filter(Boolean)
+    return { id, labels: labels.length ? [...new Set(labels)] : [id] }
+  })
+}
+
+function previewError(message: string, names: ReturnType<typeof reviewNames>) {
+  const available = names.map(({ labels, id }) => `${labels.join(' / ')} (${id})`).join(', ') || 'none'
+  return new Error(`${message} Available Previews: ${available}. Use a listed name in a flow or its ID in a JSON plan. Define custom Previews before using them. A Preview is a draft or result for review. Keep task context in the card body.`)
+}
+
+export function validateReviewPreviews(plan: ReviewPlan, catalog?: readonly ReviewPreview[], { saved = false } = {}): ReviewPlan {
+  const prerequisites = new Set((plan ?? []).flatMap(node => node.after))
+  const ids = new Set(catalog?.map(p => p.id))
+  for (const node of plan ?? []) {
+    if (node.previews.length) {
+      if (!catalog) throw new Error('Preview outputs are unavailable; update Runner and try again.')
+      const unknown = node.previews.find(preview => !ids.has(preview))
+      if (unknown) throw previewError(`Preview ${unknown} is not defined for review node "${node.id}".`, reviewNames(catalog))
+    } else if (!saved && node.kind !== 'work') {
+      // Match the automatic handoff recognized by Cloud, and require it to be terminal.
+      const handoff = (node.id === HANDOFF || node.id === HANDOFF_WITH_COLLISION) &&
+        node.after.length && !prerequisites.has(node.id)
+      if (!handoff) throw previewError(
+        `Review node "${node.id}" needs at least one Preview. Use an empty plan for no extra review.`, reviewNames(catalog ?? []))
+    }
   }
   return plan
+}
+
+export function parseReviewFlow(flow: string, catalog?: readonly ReviewPreview[]): ReviewNode[] {
+  if (flow === '') return []
+  if (!catalog) throw new Error('Preview outputs are unavailable; update Runner and try again.')
+  const names = reviewNames(catalog)
+  const seen = new Set<string>()
+  const nodes: ReviewNode[] = []
+  let after: string[] = []
+  for (const [index, group] of flow.split('->').entries()) {
+    const current = group.split('+').map(entry => {
+      const name = entry.trim()
+      if (!name) throw previewError(`Review flow group ${index + 1} contains an empty Preview name.`, names)
+      const matches = names.filter(({ labels }) => labels.includes(name))
+      if (matches.length !== 1) {
+        throw previewError(`${matches.length ? 'Ambiguous' : 'Unknown'} Preview "${name}" in review flow group ${index + 1}.`, names)
+      }
+      const { id } = matches[0]!
+      if (seen.has(id)) throw previewError(`Repeated Preview "${name}" in review flow group ${index + 1}.`, names)
+      seen.add(id)
+      nodes.push({ id, after, previews: [id] })
+      return id
+    })
+    after = current
+  }
+  // Preserve the saved Flow shape. The terminal handoff completes with its prerequisites.
+  nodes.push({ id: seen.has(HANDOFF) ? HANDOFF_WITH_COLLISION : HANDOFF, after, previews: [] })
+  return parseReviewPlan(nodes)!
 }
 
 /** Projects stored plans onto the current contract, including plans saved with legacy titles. */
@@ -57,7 +130,7 @@ export function readReviewPlan(plan: ReviewPlan | undefined): ReviewPlan {
 }
 
 export function reviewEdgeNeedsApproval(from: ReviewNode, to: ReviewNode): boolean {
-  return from.kind !== 'work' && to.kind !== 'work'
+  return from.kind !== 'work' && to.kind !== 'work' && from.previews.length > 0 && to.previews.length > 0
 }
 
 export function reviewDependencies(plan?: ReviewPlan): ReviewNode[] {
@@ -77,11 +150,10 @@ export function reviewDependencies(plan?: ReviewPlan): ReviewNode[] {
 }
 
 type ReviewAuthorization =
-  | { kind: 'plan' | 'pending' | 'unreviewed' | 'delivery' | 'changed' | 'waiting' }
+  | { kind: 'plan' | 'unreviewed' | 'delivery' | 'changed' | 'waiting' }
   | { kind: 'stages'; nodes: ReviewNode[] }
 
 export function reviewAuthorization(review: TaskReview, assigned?: readonly string[], dispatchRevision?: number): ReviewAuthorization {
-  if (review.pending_plan) return { kind: 'pending' }
   const states = new Map(review.stages.map(stage => [stage.id, stage]))
   const nodes = (review.plan ?? []).filter(node => {
     const stage = states.get(node.id)
@@ -94,7 +166,10 @@ export function reviewAuthorization(review: TaskReview, assigned?: readonly stri
   if (review.plan === null) return { kind: 'plan' }
   if (review.plan.length === 0) return { kind: 'unreviewed' }
   if (nodes.length) return { kind: 'stages', nodes }
-  if (review.plan.every(node => states.get(node.id)?.status === 'approved')) return { kind: 'delivery' }
+  if (review.plan.every(node => {
+    const status = states.get(node.id)?.status
+    return status === 'approved' || status === 'done'
+  })) return { kind: 'delivery' }
   return { kind: 'waiting' }
 }
 
@@ -106,12 +181,11 @@ export function reviewAllows(authorization: ReviewAuthorization, action: 'refine
 
 function reviewInstruction(authorization: ReviewAuthorization): string {
   switch (authorization.kind) {
-    case 'plan': return 'Planning only. Propose a review plan; wait for explicit plan approval.'
-    case 'pending': return 'Wait for the proposed plan decision. Do not start new stages.'
+    case 'plan': return 'Planning only. Submit a review plan. Work only on dispatched stages.'
     case 'unreviewed': return 'No extra review. Complete the authorized work and Studio delivery checks.'
     case 'stages': return [
       'Work only on these unlocked stages: ' + authorization.nodes.map(node => node.id).join(', '),
-      ...authorization.nodes.map(node => `- ${node.id}: ${node.previews.length ? node.previews.join(', ') : 'card body'}`),
+      ...authorization.nodes.map(node => `- ${node.id}: ${node.previews.length ? node.previews.join(', ') : 'no Preview'}`),
     ].join('\n')
     case 'delivery': return 'Stages complete. Follow Studio delivery checks.'
     case 'changed': return 'Review authorization changed. Read the task again.'
@@ -120,9 +194,19 @@ function reviewInstruction(authorization: ReviewAuthorization): string {
 }
 
 export function reviewBoundary(review: TaskReview, assigned?: readonly string[]): string {
+  const { preview_definitions = [], ...state } = review
+  const authorization = reviewAuthorization(review, assigned)
+  const definitions = authorization.kind === 'stages' && assigned
+    ? preview_definitions.filter(p => authorization.nodes.some(node => node.previews.includes(p.id)))
+    : preview_definitions
   return [
-    'Task review: ' + JSON.stringify(review),
-    reviewInstruction(reviewAuthorization(review, assigned)),
-    'Read akb task review before reporting running/done with its revision. Sync content and assets before done. Revise a stage before changing its approved output. Questions and plan approval never approve outputs.',
+    'Task review: ' + JSON.stringify(state),
+    reviewInstruction(authorization),
+    ...definitions.map(p => [
+      `<Preview id="${p.id}">`, p.instructions,
+      ...(p.components ? [`Allowed Preview Components: ${p.components.join(', ') || 'none'}.`] : []),
+      '</Preview>',
+    ].join('\n')),
+    'Read akb task review before reporting running/done with its revision. Sync content and assets before done. Revise a stage before changing its approved output. Only stage approval accepts reviewable outputs.',
   ].join('\n')
 }

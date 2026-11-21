@@ -14,6 +14,10 @@ import { restoreMachineHome } from './helpers/board.ts'
 const SUPABASE = 'https://project.supabase.co'
 const API = 'https://api.example.test'
 
+const imageBytes = Buffer.from('89504e470d0a1a0a0011223344556677', 'hex')
+const wavBytes = Buffer.from('RIFF\x04\x00\x00\x00WAVE')
+const mp3Bytes = Buffer.from('ID3\x04\x00\x00\x00\x00\x00\x00')
+
 let home = ''
 const realFetch = globalThis.fetch
 let sent: { url: string; body: unknown }[] = []
@@ -140,11 +144,11 @@ describe('akb image / tts / music', () => {
     signIn()
     const ref = path.join(home, 'shot.png')
     fs.writeFileSync(ref, 'png')
-    answer(() => new Response('image-bytes', { headers: { 'x-model': 'model-x', 'x-tier': 'premium' } }))
+    answer(() => new Response(imageBytes, { headers: { 'content-type': 'image/png', 'x-model': 'model-x', 'x-tier': 'premium' } }))
     const out = path.join(home, 'covers', 'a.png')
     const { code, out: said } = await akb(['image', '--aspect', '16:9', '--tier', 'premium', '--ref', ref, '--out', out, 'a', 'cat'])
     assert.equal(code, 0)
-    assert.equal(fs.readFileSync(out, 'utf8'), 'image-bytes')
+    assert.deepEqual(fs.readFileSync(out), imageBytes)
     assert.equal(said, `${out} (model-x, premium)`)
     assert.deepEqual(sent, [
       {
@@ -156,7 +160,7 @@ describe('akb image / tts / music', () => {
 
   it('asks for standard by default, and refuses an unknown tier with exit 2 (#77)', async () => {
     signIn()
-    answer(() => new Response('image-bytes', { headers: { 'x-model': 'model-x' } }))
+    answer(() => new Response(imageBytes, { headers: { 'content-type': 'image/png', 'x-model': 'model-x' } }))
     const out = path.join(home, 'b.png')
     const { code, out: said } = await akb(['image', '--aspect', '1:1', '--out', out, 'a cat'])
     assert.equal(code, 0)
@@ -171,7 +175,7 @@ describe('akb image / tts / music', () => {
 
   it('asks for the tier given, naming the voice and tier it got (#87)', async () => {
     signIn()
-    answer(() => new Response('wav-bytes', { headers: { 'content-type': 'audio/wav', 'x-voice': 'Kore', 'x-tier': 'premium' } }))
+    answer(() => new Response(wavBytes, { headers: { 'content-type': 'audio/wav', 'x-voice': 'Kore', 'x-tier': 'premium' } }))
     const out = path.join(home, 'line.wav')
     const { code, out: said } = await akb(['tts', '--voice', 'kore', '--tier', 'premium', '--out', out, 'hi'])
     assert.equal(code, 0)
@@ -185,22 +189,44 @@ describe('akb image / tts / music', () => {
 
   it('writes an mp3 answer beside the .wav asked for', async () => {
     signIn()
-    answer(() => new Response('mp3-bytes', { headers: { 'content-type': 'audio/mpeg', 'x-voice': 'Yunzhou', 'x-tier': 'standard' } }))
+    answer(() => new Response(mp3Bytes, { headers: { 'content-type': 'audio/mpeg', 'x-voice': 'Yunzhou', 'x-tier': 'standard' } }))
     const { code, out: said } = await akb(['tts', '--voice', 'Yunzhou', '--out', path.join(home, 'line.wav'), '你好'])
     assert.equal(code, 0)
     assert.equal(said, `${path.join(home, 'line.mp3')} (Yunzhou, standard)`)
-    assert.equal(fs.readFileSync(path.join(home, 'line.mp3'), 'utf8'), 'mp3-bytes')
+    assert.deepEqual(fs.readFileSync(path.join(home, 'line.mp3')), mp3Bytes)
     assert.equal(fs.existsSync(path.join(home, 'line.wav')), false)
   })
 
   it('writes the track and asks for the length given', async () => {
     signIn()
-    answer(() => new Response('wav-bytes', { headers: { 'content-type': 'audio/wav' } }))
+    answer(() => new Response(wavBytes, { headers: { 'content-type': 'audio/wav' } }))
     const out = path.join(home, 'music', 'score.wav')
     const { code, out: said } = await akb(['music', '--seconds', '42.5', '--out', out, 'calm', 'piano'])
     assert.equal(code, 0)
-    assert.equal(fs.readFileSync(out, 'utf8'), 'wav-bytes')
+    assert.deepEqual(fs.readFileSync(out), wavBytes)
     assert.equal(said, `${out} (42.5s)`)
     assert.deepEqual(sent, [{ url: `${API}/v1/music`, body: { prompt: 'calm piano', seconds: 42.5 } }])
   })
+})
+
+it('refuses empty, partial or mislabeled media before writing the output', async () => {
+  signIn()
+  const out = path.join(home, 'new', 'result.wav')
+  const commands = [
+    ['image', '--aspect', '1:1', '--out', out, 'cat'],
+    ['tts', '--voice', 'Kore', '--out', out, 'hello'],
+    ['music', '--seconds', '20', '--out', out, 'piano'],
+  ]
+  for (const args of commands) {
+    answer(() => Response.json({ error: { code: 'provider_failed', message: 'No audio or image.' } }))
+    assert.match((await akb(args)).err, /provider_failed/)
+    const type = args[0] === 'image' ? 'image/png' : 'audio/wav'
+    answer(() => new Response(null, { headers: { 'content-type': type } }))
+    assert.equal((await akb(args)).code, 1)
+    answer(() => new Response('short', { headers: { 'content-type': type, 'content-length': '12' } }))
+    assert.equal((await akb(args)).code, 1)
+    answer(() => new Response('not media', { headers: { 'content-type': type } }))
+    assert.match((await akb(args)).err, /invalid_response/)
+    assert.equal(fs.existsSync(path.dirname(out)), false)
+  }
 })

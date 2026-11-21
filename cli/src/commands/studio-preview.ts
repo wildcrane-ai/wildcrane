@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { parseReview, type StudioReview } from '../../../artifact-sdk/src/internal/format/studio'
 import { readStudioFolder } from '../lib/agent/studio-folder'
-import { checkStudioFiles, hashInput, VERSION_FILE, FILE_LIMITS, type StudioFiles } from '../lib/shared/studio-files'
+import { checkStudioFiles, hashInput, VERSION_FILE, FILE_LIMITS, formatStudioProblem, type StudioFiles } from '../lib/shared/studio-files'
 import { locate } from '../lib/cards'
 import { ASSETS, die } from '../lib/paths'
 import { translating } from '../lib/agent/language'
@@ -19,7 +19,7 @@ const readVersion = (files: StudioFiles) => {
   } catch {}
   throw Error('version.json: invalid Studio version')
 }
-function readFolder(folder: string) {
+function readFolder(folder: string, baseline = false) {
   const root = fs.realpathSync(folder)
   let count = 0, total = 0
   const scan = (dir: string) => {
@@ -36,8 +36,8 @@ function readFolder(folder: string) {
     }
   }
   scan(root)
-  const files = readStudioFolder(root), checked = checkStudioFiles(files, readVersion(files)?.id.startsWith('wf_builtin_') === true)
-  if (!checked.ok) die(`${folder}/${checked.file}: ${checked.reason}`, 'studio-problems')
+  const files = readStudioFolder(root), checked = checkStudioFiles(files, readVersion(files)?.id.startsWith('wf_builtin_') === true, { allowLegacyLand: baseline })
+  if (!checked.ok) die(`${folder}/${formatStudioProblem(checked)}`, 'studio-problems')
   const fingerprint = createHash('sha256').update(hashInput({ ...checked.files, ...(files[VERSION_FILE] ? { [VERSION_FILE]: files[VERSION_FILE]! } : {}) })).digest('hex')
   return { files, def: checked.def, fingerprint }
 }
@@ -54,7 +54,7 @@ export async function cmdStudioPreview(id: number, opts: { folder: string; base:
   const destination = path.join(ASSETS, String(id), 'studio-review'), staging = `${destination}.${randomUUID()}.tmp`, backup = `${destination}.${randomUUID()}.previous`
   let moved = false
   try {
-    const draft = readFolder(path.resolve(opts.folder)), base = opts.base === 'empty' ? null : readFolder(path.resolve(opts.base))
+    const draft = readFolder(path.resolve(opts.folder)), base = opts.base === 'empty' ? null : readFolder(path.resolve(opts.base), true)
     const version = readVersion(draft.files), baseVersion = base && readVersion(base.files)
     if (base ? !version || !baseVersion || JSON.stringify(version) !== JSON.stringify(baseVersion) : version !== null) throw Error('version.json: existing Studios need matching baseline and draft versions; use --base empty only for a new Studio without version.json')
     fs.mkdirSync(staging, { recursive: true })

@@ -11,6 +11,7 @@ import { recordAnswer } from '../lib/agent/answers'
 import {
   activeDelivery,
   deliveryAcceptsAnswers,
+  endedDelivery,
   findDelivery,
   heldByDelivery,
   namedDelivery,
@@ -29,13 +30,13 @@ import {
   listRuns,
   peekRun,
   planningRun,
+  reconcileCardDelivery,
+  releaseCardDelivery,
   resumeSessionId,
   stopRun,
   titleOf,
 } from '../lib/agent/sessions'
 import { startResume, startRun, startSubRun } from '../lib/agent/start'
-import { knownStudio, scheduledAgent } from '../lib/agent/studios'
-import { scheduledRequest } from '../lib/agent/scheduled'
 import { cardCreation, eventsPathOf, noteRefineTried, readRuns, withStore } from '../lib/agent/store'
 import type {
   AgentRequest,
@@ -55,7 +56,7 @@ import { die, BOARD_FLAG, KANBAN } from '../lib/paths'
 import { REPLY_APPROVAL_ENV } from '../lib/cloud/reply-approval'
 import { approveTask, runnerProject, workspaceTask } from '../lib/cloud/tasks'
 import { findCard } from '../lib/view/read'
-import { awaitingApproval, creationRefusal } from '../lib/view/rules'
+import { creationRefusal } from '../lib/view/rules'
 import type { MoveResult } from '../lib/types'
 import {
   cancelBoardDelivery as cancelDelivery,
@@ -142,23 +143,6 @@ export async function cmdStartRun(
   say(`  stop it:   ${program} raw run stop ${short(run.sessionId)}${BOARD_FLAG}`)
   if (follow) return await followStarted(run.sessionId, program, opts.events === true)
   return { sessionId: run.sessionId, action, cardId: run.cardId }
-}
-
-/** One pass of a studio's scheduled agent, now (#2068): what a Runner starts once it is due. */
-export async function cmdRunScheduled(studio: string, agent: string, opts: StartOptions, program = 'akb'): Promise<MoveResult> {
-  const id = knownStudio(studio)
-  const one = scheduledAgent(id, agent)
-  if (!one) die(`\`${id}\` schedules no agent called \`${agent}\``, { kind: 'run-refused', action: 'scheduled' })
-  const req = scheduledRequest({ studio: id, agent: one!.agent })
-  if (insideRun() || opts.print) return printFlow(req, program)
-  const started = await startRun(req)
-  if ('error' in started) die(started.error, { kind: 'run-refused', action: 'scheduled' })
-  const { run, spawned } = started
-  if (!spawned) die(`couldn't start a process for run ${run.sessionId}`, { kind: 'spawn-failed' })
-  say(`${one!.agent} — run ${run.sessionId}${run.deliveryId ? ` in delivery ${run.deliveryId}` : ''}`)
-  say(`  follow it: ${program} raw run log ${short(run.sessionId)} --follow${BOARD_FLAG}`)
-  if (opts.follow) return await followStarted(run.sessionId, program, opts.events === true)
-  return { sessionId: run.sessionId, action: 'scheduled' }
 }
 
 async function approveInCloud(project: string, id: number): Promise<MoveResult> {
@@ -310,7 +294,9 @@ function readRequest(
   // nothing else can be given one.
   if (action === 'implement') req.runtime = opts.runtime
   if (opts.newSession) req.session = 'new'
-  if (action !== 'implement' && (opts.session || opts.transcript)) {
+  if (action === 'implement') {
+    if (opts.transcript) req.carry = { transcript: opts.transcript }
+  } else if (opts.session || opts.transcript) {
     // Set by the Runner (#627): an env var, so an older akb ignores it.
     const costFrom = Number(process.env[SESSION_COST_ENV])
     req.carry = {
@@ -351,13 +337,32 @@ export async function cmdCancel(named: string): Promise<MoveResult> {
   return { deliveryId: res.deliveryId }
 }
 
+export async function cmdReconcileDelivery(cardId: number): Promise<MoveResult> {
+  const result = await reconcileCardDelivery(cardId)
+  if (result.kind === 'unverified') {
+    say(`delivery${result.deliveryId ? ` ${result.deliveryId}` : ''}: unverified — ${result.diagnostic}`)
+  } else if (result.kind === 'none') {
+    say(`#${cardId}: no delivery to reconcile`)
+  } else {
+    say(`#${cardId}: ${result.kind}${result.deliveryId ? ` (${result.deliveryId})` : ''}`)
+  }
+  return result
+}
+
+export async function cmdReleaseDelivery(cardId: number): Promise<MoveResult> {
+  const res = await releaseCardDelivery(cardId)
+  if (!res.ok) die(res.error, { kind: 'run-refused', ...(res.deliveryId ? { deliveryId: res.deliveryId } : {}) })
+  say(res.released ? `delivery ${res.deliveryId} lock released — files and branch preserved.` : `#${cardId}: no active delivery lock to release.`)
+  return res
+}
+
 /** Resume the saved conversation or inspect existing results in a fresh run. */
 export async function cmdResumeDelivery(named: string): Promise<MoveResult> {
   const res = await resumeDelivery(named)
   if (!res.ok) die(res.error ?? 'that delivery could not be carried on', {
     kind: 'run-refused', ...(res.kind === 'refused' ? { reason: res.reason, args: res.args } : {}),
   })
-  if (res.landed) return { deliveryId: res.deliveryId, landed: true }
+  if (res.landed) return { deliveryId: res.deliveryId, landed: true, delivery: deliveryOutcome(res.deliveryId!) }
   const delivery = findDelivery(res.deliveryId!)!
   const started = await startRun({ action: 'implement', id: delivery.cardId ?? undefined,
     deliveryId: delivery.deliveryId, title: delivery.title })
@@ -705,7 +710,7 @@ async function moveDelivery(deliveryId: string, idle: Idle): Promise<RunView | n
 function deliveryOutcome(
   deliveryId: string,
 ): { id: string; status: DeliveryStatus; stage?: string; line: string; commit?: string; branch?: string; ending?: DeliveryEnding } | undefined {
-  const delivery = findDelivery(deliveryId)
+  const delivery = findDelivery(deliveryId) ?? endedDelivery(deliveryId)
   if (!delivery) return undefined
   if (delivery.status !== 'active') {
     const commit = delivery.status === 'finished' ? delivery.landing?.commit : undefined

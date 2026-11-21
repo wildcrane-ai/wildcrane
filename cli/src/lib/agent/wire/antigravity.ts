@@ -6,6 +6,9 @@ import { translating } from '../language'
 import { createEventCollector, type ToolKind } from './events'
 import { obj, str, num } from './json'
 import { createLineReader, frame, type StreamRenderer } from './stream'
+import { antigravityRecordedContextLimit, antigravityRecordedModels } from './antigravity-session'
+
+const CONTEXT_LOOK_EVERY_MS = 250
 
 const KINDS: Record<string, ToolKind> = {
   run_command: 'execute', command_status: 'execute', send_command_input: 'execute',
@@ -56,19 +59,40 @@ export function createAntigravityRenderer(expectedSession?: string, cwd = proces
   let stderr = ''
   let context: ContextWindow | undefined
   let contextStep = -1
+  let contextPrompt = -1
+  let contextLimitStep = -1
+  let contextLimitLookedAt = 0
+  const resolveContextLimit = (now: boolean) => {
+    if (!context || !session || contextStep < 0 || contextLimitStep === contextStep) return
+    const at = Date.now()
+    if (!now && at - contextLimitLookedAt < CONTEXT_LOOK_EVERY_MS) return
+    contextLimitLookedAt = at
+    const limit = antigravityRecordedContextLimit(session, contextStep, contextPrompt)
+    if (limit !== undefined) {
+      context = { used: context.used, limit }
+      contextLimitStep = contextStep
+    }
+  }
   const started = Date.now()
   let cost: number | undefined
   let incomplete = false
   const priced = new Set<number>()
+  let prompt = -1
+  const pendingCosts = new Map<number, { prompt: number; usage: TokenUsage }>()
+  const estimate = (id: string | undefined, usage: TokenUsage) => {
+    const usd = priceUsd('antigravity', id, usage, started)
+    if (usd === undefined) incomplete = true
+    else cost = (cost ?? 0) + usd
+  }
   const countCost = (step: Record<string, unknown>) => {
     const index = step.step_index
-    if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || priced.has(index)) return
+    if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || priced.has(index) || (!model && index <= prompt)) return
     priced.add(index)
     const u = obj(step.usage)
     const valid = [u.input_tokens, u.output_tokens, u.cache_read_tokens].every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0)
-    const usd = valid ? priceUsd('antigravity', model, usageOf(u), started) : undefined
-    if (usd === undefined) incomplete = true
-    else cost = (cost ?? 0) + usd
+    if (!valid || (!model && prompt < 0)) incomplete = true
+    else if (model) estimate(model, usageOf(u))
+    else pendingCosts.set(index, { prompt, usage: usageOf(u) })
   }
   let used: TokenUsage | undefined
   let turnUsage = zero()
@@ -97,9 +121,12 @@ export function createAntigravityRenderer(expectedSession?: string, cwd = proces
     }
     if (e.event === 'step_update') {
       const step = obj(e.step_update)
-      if (expectedSession && str(step.conversation_id) !== expectedSession) return ''
-      session = str(step.conversation_id) || session
+      const got = str(step.conversation_id)
+      if ((expectedSession && got !== expectedSession) || (session && got && got !== session)) return ''
+      session = got || session
       const id = String(step.step_index ?? '')
+      if (step.state === 'DONE' && step.step_type === 'user_input' && typeof step.step_index === 'number'
+        && Number.isSafeInteger(step.step_index) && step.step_index > prompt) prompt = step.step_index
       if (step.state === 'DONE' && ['agent_response', 'checkpoint'].includes(str(step.step_type))) countCost(step)
       if (step.step_type === 'agent_response') {
         const text = str(step.text_delta)
@@ -108,12 +135,15 @@ export function createAntigravityRenderer(expectedSession?: string, cwd = proces
         const index = num(step.step_index)
         if (step.state === 'DONE' && Number.isSafeInteger(index) && step.step_index === index && index > contextStep) {
           contextStep = index
+          contextPrompt = prompt
+          contextLimitStep = -1
+          contextLimitLookedAt = 0
           const u = obj(step.usage)
           // agy counts fresh input and cache reads separately; result.usage is cumulative.
           const counts = [u.input_tokens, u.cache_read_tokens]
-          const prompt = counts.every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0)
+          const promptTokens = counts.every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0)
             ? num(u.input_tokens) + num(u.cache_read_tokens) : 0
-          context = prompt > 0 && Number.isFinite(prompt) ? { used: prompt } : undefined
+          context = promptTokens > 0 && Number.isFinite(promptTokens) ? { used: promptTokens } : undefined
         }
         if (step.state === 'DONE' && step.usage && !counted.has(index)) {
           counted.add(index)
@@ -157,7 +187,8 @@ export function createAntigravityRenderer(expectedSession?: string, cwd = proces
     if (e.event === 'result') {
       const result = obj(e.result)
       if (expectedSession && str(result.conversation_id) && result.conversation_id !== expectedSession) { fail(translating() ? 'Antigravity 未续接指定会话，请检查本机原会话后重试。' : 'Antigravity did not resume the requested conversation.', 'session_mismatch'); terminal = true; return '' }
-      session = str(result.conversation_id) || session
+      session ||= str(result.conversation_id) || undefined
+      resolveContextLimit(true)
       terminal = true
       final = typeof result.response === 'string' ? result.response : undefined
       const total = usageOf(result.usage)
@@ -190,6 +221,12 @@ export function createAntigravityRenderer(expectedSession?: string, cwd = proces
     setRequiredImages(files) { requiredImages = files.filter(imagePath).map(file => path.resolve(cwd, file)) },
     flush() {
       const text = reader.flush()
+      resolveContextLimit(true)
+      if (pendingCosts.size) {
+        const models = session ? antigravityRecordedModels(session, pendingCosts) : undefined
+        for (const [index, { usage }] of pendingCosts) estimate(models?.get(index), usage)
+        pendingCosts.clear()
+      }
       if (!terminal) {
         incomplete = true
         const diagnostics = [stderr.trim(), offStream?.match(/^(?:error:|rpc error:|API error\b)/i) ? offStream : undefined]
@@ -207,7 +244,10 @@ export function createAntigravityRenderer(expectedSession?: string, cwd = proces
     usage: () => used,
     costUsd: () => cost,
     costIncomplete: () => incomplete || undefined,
-    context: () => context,
+    context: () => {
+      resolveContextLimit(false)
+      return context
+    },
     failure: () => failure || imageFailure,
     terminalFailure: () => terminal && !!classified,
     executionFailure: () => classified ?? (imageFailure ? { code: 'image_read_failed', level: 3, reason: imageFailure } : undefined),

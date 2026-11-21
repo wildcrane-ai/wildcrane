@@ -3,10 +3,12 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { cloud } from './task'
+import { cloudError, hasText, invalidResponse, requireResponse } from '../lib/cloud/response'
 import type { MoveResult } from '../lib/types'
 import { die } from '../lib/paths'
-import { say, quietlyAsync } from '../lib/io'
-import { cmdGoal, cmdGoalPreviews, cmdGoalStudios, goalsFile, shortStudioId, type GoalOptions, type GoalStudio, type Goal } from './goal'
+import { say } from '../lib/io'
+import { editGoal, cmdGoalPreviews, cmdGoalStudios, goalsFile, shortStudioId, type GoalOptions, type GoalStudio, type GoalsFile } from './goal'
+import { decodeGoals, goalRoute, type GoalEnvelope, type Goal } from '../lib/shared/goal'
 
 /** The host session the goals belong to; Cursor's and Kimi Code's models pass their session id themselves,
  *  and dsh's model the discussion `wildcrane_draft_read` opened. */
@@ -25,26 +27,23 @@ const request = <T>(method: string, route: string, body?: unknown): Promise<T> =
 
 async function studios(workspace: string): Promise<GoalStudio[]> {
   const all: GoalStudio[] = []
+  const cursors = new Set<string>()
   let after: string | null = null
   do {
     const page: { data: GoalStudio[]; next: string | null } = await request('GET', `/v1/studios?workspace=${encodeURIComponent(workspace)}&limit=100${after ? `&after=${encodeURIComponent(after)}` : ''}`)
+    requireResponse(page, 'a valid Studio list', value => Array.isArray(value.data)
+      && value.data.every(studio => hasText(studio?.id) && hasText(studio.name))
+      && (value.next === null || hasText(value.next) && !cursors.has(value.next)))
     all.push(...page.data)
     after = page.next
+    if (after) cursors.add(after)
   } while (after)
   return all
 }
 
-type CloudGoal = Omit<Goal, 'task'> & { task: string | { id: string } | null }
-interface Discussion { id: string; workspace: string; version: number; goals?: CloudGoal[]; ideas: CloudGoal[] }
+interface Discussion { id: string; workspace: string; version: number; goals: Goal[] }
 
-function goalsOf(d: Discussion): CloudGoal[] {
-  if (d.goals !== undefined && d.ideas !== undefined && JSON.stringify(d.goals) !== JSON.stringify(d.ideas)) die('goals and ideas do not match.')
-  const goals = d.goals ?? d.ideas
-  if (!Array.isArray(goals)) die('The goals array is missing or invalid.')
-  return goals
-}
-
-async function discussion(): Promise<Discussion> {
+async function discussion(): Promise<GoalEnvelope<Discussion>> {
   const session = hostSession()
   if (!session) die('Goals exist only inside a WildCrane goal discussion.')
   const home = process.env.WILDCRANE_HOME || path.join(os.homedir(), '.wildcrane')
@@ -63,52 +62,55 @@ async function discussion(): Promise<Discussion> {
   return request('POST', '/v1/discussions/external', { requestId: session.id, host: session.host, ...(folder ? { project: folder.project } : {}) })
 }
 
-export async function withGoalDiscussion(action: () => unknown, save = false): Promise<MoveResult & { discussion: string; url: string }> {
-  const d = await discussion()
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-goals-'))
-  const file = path.join(dir, 'goals.json')
-  const before = process.env.KANBAN_GOALS
+function discussionReceipt(value: GoalEnvelope<Discussion>) {
   try {
-    const previous = goalsOf(d)
-    fs.writeFileSync(file, JSON.stringify({ workspace: d.workspace, studios: await studios(d.workspace), ideas: previous.map((g) => ({ ...g, task: typeof g.task === 'object' && g.task ? g.task.id : g.task })) }))
-    process.env.KANBAN_GOALS = file
-    const result = (save ? await quietlyAsync(async () => action()) : await action()) as Record<string, unknown>
-    if (save) {
-      const goals = JSON.parse(fs.readFileSync(file, 'utf8')).ideas as Goal[]
-      const saved = await request<Discussion>('PUT', `/v1/discussions/${d.id}/draft`, { expectedVersion: d.version, goals: goals.filter((g) => !g.dropped) })
-      const savedGoals = goalsOf(saved)
-      const fresh = goals.filter((g) => !g.dropped && !previous.some((p) => p.id === g.id))
-      const made = savedGoals.filter((g) => !previous.some((p) => p.id === g.id))
-      const actualId = (id: string) => made[fresh.findIndex((g) => g.id === id)]?.id ?? id
-      if (typeof result.id === 'string') result.id = actualId(result.id)
-      for (const goal of goals.filter((g) => g.start && !g.task)) {
-        const actual = savedGoals.find((g) => g.id === actualId(goal.id))
-        if (actual) await request('POST', `/v1/discussions/${d.id}/goals/${actual.id}/start`, { expectedVersion: saved.version })
-      }
-      say(`${result.dropped ? 'Dropped' : result.start ? 'Started' : 'Saved'} goal ${result.id}${result.title ? `: ${result.title}` : ''}.`)
-    }
-    const url = `${process.env.WILDCRANE_WEB_URL || 'https://app.wildcrane.ai'}/discussions/${d.id}`
-    say(url)
-    return { ...result, discussion: d.id, url }
-  } finally {
-    if (before === undefined) delete process.env.KANBAN_GOALS
-    else process.env.KANBAN_GOALS = before
-    fs.rmSync(dir, { recursive: true, force: true })
-  }
+    const decoded = decodeGoals(value)
+    if (hasText(decoded.value.id) && hasText(decoded.value.workspace) && Number.isSafeInteger(decoded.value.version)) return decoded
+  } catch { /* An unrecognized draft cannot confirm any change. */ }
+  throw cloudError(invalidResponse('a valid discussion draft'))
 }
 
-export const cloudGoal = (args: string[], opts: GoalOptions) => withGoalDiscussion(() => cmdGoal(args, opts), true)
+async function withGoalDiscussion(action: (held: GoalsFile) => MoveResult, save = false): Promise<MoveResult & { discussion: string; url: string }> {
+  const { field, value: d } = discussionReceipt(await discussion())
+  const held = { workspace: d.workspace, studios: await studios(d.workspace), goals: d.goals.map(goal => ({ ...goal })) }
+  const result = action(held)
+  if (save) {
+    const goals = held.goals.filter(g => !g.dropped)
+    const saved = await request<GoalEnvelope<Discussion>>('PUT', `/v1/discussions/${encodeURIComponent(d.id)}/draft`, {
+      expectedVersion: d.version, [field]: goals,
+    })
+    const { field: savedField, value: latest } = discussionReceipt(saved)
+    const existing = new Set(d.goals.map(g => g.id))
+    const fresh = goals.filter(g => !existing.has(g.id))
+    const made = latest.goals.filter(g => !existing.has(g.id))
+    const actualId = (id: string) => made[fresh.findIndex(g => g.id === id)]?.id ?? id
+    if (typeof result.id === 'string') result.id = actualId(result.id)
+    if (result.start) {
+      const actual = latest.goals.find(g => g.id === result.id)
+      if (!actual) throw cloudError(invalidResponse('the saved goal'))
+      const task = actual.task ?? requireResponse(await request<{ id: string }>('POST', `${goalRoute(d.id, actual.id, savedField)}/start`,
+        { expectedVersion: latest.version }), 'a started task', value => hasText(value.id))
+      result.task = task.id
+    }
+    say(`${result.dropped ? 'Dropped' : result.start ? 'Started' : 'Saved'} goal ${result.id}${result.title ? `: ${result.title}` : ''}.`)
+  }
+  const url = `${process.env.WILDCRANE_WEB_URL || 'https://app.wildcrane.ai'}/discussions/${d.id}`
+  say(url)
+  return { ...result, discussion: d.id, url }
+}
+
+export const cloudGoal = (args: string[], opts: GoalOptions) => withGoalDiscussion(held => editGoal(args, opts, held), true)
 export const cloudGoalStudios = () => withGoalDiscussion(cmdGoalStudios)
 export async function queryPreviews(studio: string, workspace?: string) {
   if (!workspace) {
-    if (externalGoalSession()) return withGoalDiscussion(() => cmdGoalPreviews(studio))
+    if (externalGoalSession()) return withGoalDiscussion(held => cmdGoalPreviews(studio, held))
     die('--workspace is required outside a goal discussion.')
   }
   const list = await studios(workspace)
   const flow = list.find((w) => w.id === studio || shortStudioId(w.id) === studio)
   if (!flow) die(`No studio \`${studio}\` here.`)
   if (!flow.previews) die('Preview outputs are unavailable; update Runner and try again.')
-  const previews = flow.previews.map(({ id, instructions }) => ({ id, instructions }))
+  const previews = flow.previews
   say(previews.map(p => `${p.id}\n  ${p.instructions}`).join('\n'))
   return { previews, problems: [] }
 }

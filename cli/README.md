@@ -21,7 +21,7 @@ Run `akb help` for commands and `akb guide` for studios.
 
 ## 在对话里操作 WildCrane
 
-顶层 `task`、`goal`、`workspace`、`project`、`runner` 直接读写 WildCrane 云端，结果立即在网页可见，不读写本地看板。全部支持 `--json`。
+顶层 `task`、`goal`、`workspace`、`project`、`runner` 支持 `--json`。归档或移除当前 Runner 任务时，命令可以先在本机受理，再由 Runner 同步。
 
 ```sh
 akb task list [--project <id> | --workspace <id>] [--status <status>]
@@ -29,6 +29,7 @@ akb task show <task>
 akb task create <request...> [--project <id>] [--studio <id>]
 akb task approve <task> [--comment <text>]
 akb task chat <task> <message...>
+akb task archive <task>
 akb task remove <task> [reason...]
 akb task restore <task>
 akb task resume <task>
@@ -46,9 +47,10 @@ akb runner list [--workspace <id>]
 | `task create` | `POST /v1/tasks`（`source: api`，`run: true`，启动卡片准备） | `Created WC-13: <标题>  <网页链接>`，随后显示实际状态 |
 | `task approve` | `POST /v1/tasks/{id}/decisions`，`decision: approve` 带当前 `review_revision` | `Approved WC-12.` |
 | `task chat` | `POST /v1/tasks/{id}/chat`，`body: <message>` | `Sent to WC-12.`，等同网页任务页的对话框 |
-| `task remove` | `POST /v1/tasks/{id}/cancel`，`reason` 可选 | `Removed WC-12. Restore it with akb task restore WC-12.` |
+| `task archive` | `POST /v1/tasks/{id}/archive` | Cloud 确认后显示已归档，当前 Runner 任务可处于待同步。 |
+| `task remove` | `POST /v1/tasks/{id}/cancel`，`reason` 可选 | Cloud 确认后显示已移除，当前 Runner 任务可处于待同步。 |
 | `task restore` | `POST /v1/tasks/{id}/restore`，无需请求体 | `Restored WC-12. Status: stopped.` |
-| `task resume` / `stop` | `POST /v1/tasks/{id}/resume` / `stop` | `Resumed WC-12.` / `Stopped WC-12.` |
+| `task resume` / `stop` | `POST /v1/tasks/{id}/resume` / `stop` | 显示续跑已排队或启动，以及停止已请求或完成。 |
 | `task comment` | `POST /v1/tasks/{id}/comments` | `Commented on WC-12.` |
 | `workspace list` | `GET /v1/workspaces` | 每行 `ws_…  <名称>` |
 | `project list` | `GET /v1/projects?workspace=` | 每行 `prj_…  WC  <名称>` |
@@ -61,7 +63,7 @@ akb runner list [--workspace <id>]
 - **显式选择**：`task list` 的 `--project` 优先于 `--workspace`，否则推导项目；`task create` 的 `--project` 优先；`runner list` 的 `--workspace` 优先，否则取所选项目的工作区。`project list` 仍列出全部可见项目，仅用 `--workspace` 筛选。
 - **完整列表**：`task list` 自动读完所有页，保持范围、状态筛选和服务端顺序。文字每个任务一行；JSON 的 `data` 包含全部任务，`next` 为 `null`，空列表为 `data: []`。后续页失败仍非零退出，沿用错误封装，不输出成功的部分列表；任务越多，等待越久。
 - **无关联项目**：需要推导项目却未找到有效关联时，返回 `no_project`，不会退回原执行目录；完整 key/id 或显式项目、工作区无需位置关联。
-- **`--json`**：成功为 `{"ok":true, …云端返回}`；失败为 `{"ok":false,"error":{"kind":"<code>","code":"<code>","message":"…"}}`。
+- **错误**：失败以非零退出。终端和 JSON 都显示 Cloud 错误码及原因。JSON 的 `error.retryable` 表明是否属于暂时失败。待同步和已受理的后台操作以实际状态返回。
 
 ### 创建任务与恢复
 
@@ -152,8 +154,8 @@ akb task remove WC-13 "Not needed this quarter"
 目标包含结果和 `## Done when` 验收清单：
 
 ```sh
-akb goal new --title <title> --body-file <file> [--studio <id>] [--previews <agents>]
-akb goal save --id <goal> [--title <title>] [--body-file <file>] [--studio <id>] [--previews <agents>]
+akb goal new --title <title> --body-file <file> [--studio <id>] [--previews <ids>]
+akb goal save --id <goal> [--title <title>] [--body-file <file>] [--studio <id>] [--previews <ids>]
 akb goal drop --id <goal>
 akb goal start --id <goal>
 akb guide discuss-goal
@@ -170,17 +172,9 @@ akb guide discuss-goal
 `akb --json guide troubleshoot` 返回 `guide: "troubleshoot"` 和 `text`，沿用现有 JSON 结果封装。
 
 
-## Preview agents
+## Preview
 
-`akb raw previews [agent] [id] [note...]` lists this board's agents or asks one to preview a card.
-Add `--print` to work in the current session, or `--follow` to watch a separate run.
-
-`akb raw previews --triggers [--json]` lists names and original `akb.when` conditions in catalog order,
-including disabled and unassigned agents. Agents without a condition display `Always` and are always selected; JSON keeps `when: null`.
-JSON returns `agents: { name: string, when: string | null }[]`, `problems` and `output` in the standard response.
-An empty catalog returns `agents: []` with a message. Catalog diagnostics match the regular listing.
-This read-only query accepts `--board` and `--dir`. Combining it with positional arguments,
-`--print`, `--follow` / `-f` or `--notes` exits with 1 and JSON error kind `invalid-usage`.
+`akb raw previews [--studio <id>] [--json]` 列出 Studio 声明的 Preview ID 和制作说明。任务会话按需制作产物，审阅与批准使用 `akb task review` 和 `akb task approve`。
 
 ## 完成交付
 
@@ -201,6 +195,6 @@ Builder 自行创建分支和 worktree、处理冲突、检查并合入，登记
 成功退出的运行仍须完成登记。归档中断后可重试同一结果。
 
 `cancel` 停止运行并结束交付，保留磁盘成果。`resume` 返回交付与运行编号，继续原会话或从既有成果恢复。
-交付外仍可使用 `akb raw archive <id>` 手动归档。`delivery conflict`、`delivery blocked` 和 `delivery discard` 已移除。
+交付外仍可使用 `akb task archive <task>` 手动归档。`delivery conflict`、`delivery blocked` 和 `delivery discard` 已移除。
 
 工作台只存于云端（#409）：`akb studio list` 列出当前工作区可用的工作台，各版本缓存在本机 `studios/`；`akb raw studio validate <文件夹>` 检查一个工作台文件夹，`akb raw studio rename` 只在「搭建工作台」任务里写草稿，`delete`、`agent` 已移除，改在网页上管理。

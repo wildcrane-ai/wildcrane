@@ -1,3 +1,4 @@
+import { fileManifest, splitFileReference } from './file-references';
 import { manifestOf, referencesOf, typeOf, type Found } from './manifest';
 import { bodyReferences, kindOf, type Source } from './references';
 
@@ -47,7 +48,7 @@ export function collectSources(sources: Source[], card: string, host: CollectorH
   const active = new Set<string>();
   const out: Collected[] = [];
   const visit = (src: string, types: string[], owner: string, partial = false): { key: string | null; error?: string } => {
-    const path = src.replace(/[?#].*$/, '');
+    const [path] = splitFileReference(src);
     let resolved: ReturnType<CollectorHost['resolve']>;
     try { resolved = host.resolve(path, owner); }
     catch (error) {
@@ -96,11 +97,11 @@ export function collectSources(sources: Source[], card: string, host: CollectorH
         }
       } else {
         node.kind = textKind(extOf(file), types);
-        try { if (manifestOf(node.kind)?.references) node.data = host.read(file); }
+        try { if (fileManifest(node.kind, file)?.references) node.data = host.read(file); }
         catch (error) { node.problems.push({ src: file, message: why(error) }); }
       }
       node.error = node.problems[0]?.message;
-      if (!node.error) for (const ref of referencesOf(manifestOf(node.kind), node.data)) child(ref, file);
+      if (!node.error) for (const ref of referencesOf(fileManifest(node.kind, file), node.data)) child(ref, file);
     } else {
       for (const ref of host.retained(key, types)) child(ref, card);
     }

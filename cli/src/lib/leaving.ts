@@ -1,6 +1,6 @@
 // ---- what a card leaving the board does to the cards it leaves behind --------
 //
-// `raw archive` and `reject` rewrite the cards that pointed at the one leaving: the dangling
+// `task archive` and `task remove` rewrite the cards that pointed at the one leaving: the dangling
 // `blocked_by`/`related` dropped, the group root's line ticked or struck, and the group closed
 // when its pieces are. These are those rules on card text alone, so Cloud applies them to its
 // boards too (#2064); the revise a waiting card gets is Cloud's to start (#169), worded here.
@@ -33,10 +33,12 @@ export function stampLeavingIn(text: string, day: string, rejection: Rejection |
   const { meta, body } = parseFrontmatter(text)
   if (!meta) return text
   meta.archived = day
-  if (rejection) meta.rejected = true
-  if (rejection?.reason) meta.rejected_reason = rejection.reason
-  if (rejection?.at) meta.rejected_at = rejection.at
-  if (rejection?.by) meta.rejected_by = rejection.by
+  if (rejection) {
+    meta.rejected = true
+    meta.rejected_reason = rejection.reason
+    meta.rejected_at = rejection.at ?? ''
+    meta.rejected_by = rejection.by ?? ''
+  }
   if (meta.status === 'implementing') meta.status = 'todo'
   return serializeFrontmatter(meta) + '\n' + body
 }

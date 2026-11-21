@@ -5,13 +5,14 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { readSession } from '../../cli/src/lib/cloud/session'
-import { processesStopped } from '../../cli/src/lib/agent/stop'
+import { killMarked, processesStopped } from '../../cli/src/lib/agent/stop'
 import { pidAlive, tryLock } from '../../cli/src/lib/lock'
 import * as api from './api'
 import { hold } from './cache'
 import { runnerCwd, runnerHome } from './home'
-import { confirmFlowStopped } from './flow'
-import { readCheckpoint } from './recovery'
+import { confirmFlowStopped, flowRunEvidence } from './flow'
+import { clearCheckpoint, readCheckpoint, recoverInterruptedJob, recoveryBlocked } from './recovery'
+import { openTaskFolder } from './task-folder'
 import { defaultDeps, folderFor, runJob, type Deps } from './jobs'
 import { accountGeneration, executorRecord } from './settings-control'
 
@@ -80,9 +81,17 @@ export async function watchFlowWorker(id: string, machine: string, detached: () 
     if (worker.machine !== machine || worker.account !== readSession()?.subject
         || worker.generation !== accountGeneration()) throw new Error('无法确认原执行的归属，未重新启动。')
     if (worker.ended) return
-    if (worker.pid ? !pidAlive(worker.pid) || Date.now() - worker.at > 30_000 : Date.now() - worker.at > 10_000) {
-      throw new Error('无法确认原执行的状态，已有成果已保留，请检查后续跑。')
+    if (!worker.pid && Date.now() - worker.at > 10_000) {
+      const remote = await api.readJob(id)
+      if (remote.ok && remote.value.job.id === id && remote.value.job.state === 'waiting' && !detached()) {
+        const claim = await api.claimJob(machine, id)
+        if (claim.ok && claim.value.claimed && !detached()) {
+          await api.finishJob(machine, id, 'failed', recoveryBlocked(remote.value.job))
+        }
+      }
+      return
     }
+    if (worker.pid && (!pidAlive(worker.pid) || Date.now() - worker.at > 30_000)) return
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
 }
@@ -155,9 +164,14 @@ export async function reclaimFlowWorkerAfterExit(id: string, machine: string, gi
   const account = readSession()?.subject
   const generation = accountGeneration()
   const until = Date.now() + 30_000
+  let stoppedChildren = false
   while (!writerStopped(worker)) {
     if (Date.now() >= until || read(id)?.token !== worker.token
         || readSession()?.subject !== account || accountGeneration() !== generation) return
+    if (!stoppedChildren && worker.generation === generation && worker.markedAt && !pidAlive(worker.pid)) {
+      killMarked({ name: FLOW_MARK, value: worker.token, since: worker.markedAt })
+      stoppedChildren = true
+    }
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, 250)
       if (!token) timer.unref()
@@ -197,35 +211,55 @@ export async function reclaimFlowWorkers(machine: string, given?: Deps, only?: s
           if (!only) void reclaimFlowWorkerAfterExit(worker.id, machine, given)
           continue
         }
-        const queried = tryLock(path.join(directory(), '.lookup.lock'))
-        if (!queried) continue
-        const remote = await api.readJob(worker.id).finally(queried)
-        if (!valid()) break
-        if (!remote.ok || remote.value.job.id !== worker.id || remote.value.job.state !== 'finished'
-            || !canKeepFlow(remote.value.job)) continue
-        // Legacy workers have no inherited mark: also verify their board runs and checkpoint.
-        if (!worker.markedAt) {
-          const job = remote.value.job
-          const folder = job.projectDir ? folderFor(job) : { cwd: path.join(runnerHome(), 'work', job.id) }
-          if ('refused' in folder || !job.task || !job.project) continue
-          const board = path.join(folder.cwd, '.akb', 'kanban')
-          if (!fs.existsSync(board)) continue
-          const deps = given ?? defaultDeps(machine)
-          if (!await confirmFlowStopped({ task: job.task, cloudTask: job.task, project: job.project,
-            cwd: folder.cwd, board, number: job.number ?? null, studio: job.studio ?? job.flow?.studio ?? null },
-          job, { ...deps, machineId: machine, akb: deps.akb() })) continue
-          const checkpoint = readCheckpoint(worker.id)
-          if (checkpoint && (!checkpoint.mark || !processesStopped(checkpoint.mark, checkpoint.process))) continue
-        }
         const release = tryLock(`${file}.lock`)
         if (!release) continue
         try {
+          if (fs.readFileSync(file, 'utf8') !== original) continue
+          const queried = tryLock(path.join(directory(), '.lookup.lock'))
+          if (!queried) continue
+          const remote = await api.readJob(worker.id).finally(queried)
+          if (!valid()) break
+          if (!remote.ok || remote.value.job.id !== worker.id || !canKeepFlow(remote.value.job)) continue
+          const job = remote.value.job
+          if (worker.generation === generation && (job.state === 'claimed' || job.state === 'interrupted')) {
+            const runner = await api.readRunner()
+            if (!runner.ok || runner.value.runner?.machineId && runner.value.runner.machineId !== machine || !valid()) continue
+            const checkpoint = readCheckpoint(worker.id)
+            const deps = given ?? defaultDeps(machine)
+            const folder = job.projectDir ? folderFor(job) : null
+            if (folder && 'refused' in folder) continue
+            let stopped = true
+            if (checkpoint && checkpoint.started !== false && !checkpoint.completed) {
+              const ws = openTaskFolder(job, folder?.cwd ?? null)
+              const evidence = await flowRunEvidence(ws, job, { ...deps, machineId: machine, akb: deps.akb() }, job.id, checkpoint.flowRun)
+              checkpoint.flowRun = evidence.run
+              stopped = evidence.stopped
+            }
+            if (!valid() || !writerStopped(worker)) continue
+            const recovered = await recoverInterruptedJob(machine, job, checkpoint, stopped, valid)
+            if (!recovered?.resumed && !recovered?.finished) continue
+          } else if (job.state !== 'finished' && !(job.state === 'waiting' && readCheckpoint(job.id)?.updating)) continue
+          // Legacy workers have no inherited mark: also verify their board runs and checkpoint.
+          if (!worker.markedAt) {
+            const job = remote.value.job
+            const folder = job.projectDir ? folderFor(job) : { cwd: path.join(runnerHome(), 'work', job.id) }
+            if ('refused' in folder || !job.task || !job.project) continue
+            const board = path.join(folder.cwd, '.akb', 'kanban')
+            if (!fs.existsSync(board)) continue
+            const deps = given ?? defaultDeps(machine)
+            if (!await confirmFlowStopped({ task: job.task, cloudTask: job.task, project: job.project,
+              cwd: folder.cwd, board, number: job.number ?? null, studio: job.studio ?? job.flow?.studio ?? null },
+            job, { ...deps, machineId: machine, akb: deps.akb() })) continue
+            const checkpoint = readCheckpoint(worker.id)
+            if (checkpoint && (!checkpoint.mark || !processesStopped(checkpoint.mark, checkpoint.process))) continue
+          }
           if (!writerStopped(worker) || !valid() || fs.readFileSync(file, 'utf8') !== original) continue
           fs.rmSync(`${file}.log`, { force: true })
           fs.rmSync(`${file}.stop`, { force: true })
           fs.unlinkSync(file)
+          if (job.state === 'finished' && job.outcome === 'done') clearCheckpoint(job.id)
         } finally { release() }
-      } catch { /* Preserve the record on partial deletion or uncertain evidence. */ }
+      } catch { /* Preserve the record for the next sweep. */ }
     }
   }
   reclaiming = sweep().finally(() => { reclaiming = undefined })

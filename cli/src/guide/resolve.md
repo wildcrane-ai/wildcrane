@@ -12,17 +12,12 @@ another question, or change project code.
    selected choice, remove obsolete or contradictory text, preserve completed work, and add
    newly required work as unchecked todos. When the answer changes an agent's section, read
    that agent's rules first, as "Preview ownership" there says.
-3. Drop each answered question after its answer is fully applied:
-
-```text
-akb raw update-questions <id> --drop <n[,n...]>
-```
 
 When an answer accepts a step the user was asked to review and asks for no changes, tick that
 step's review todo; an answer asking for changes leaves it unticked.
 
 When an answer chooses to discard the card, first run `akb raw delivery cancel <delivery>` if a
-delivery is in flight, then `akb raw reject <id> --reason "<why>"`, and stop. Skip every
+delivery is in flight, then `akb task remove <id> "<why>" --discard`, and stop. Skip every
 remaining step of this guide.
 
 When an answer sends an agent's (`agent:`) section back for rework that the user must confirm
@@ -67,7 +62,20 @@ Re-read the whole human half against the same rule. Remove or move down entries 
 fail it, repeat scope, or overlap another entry. Merge entries governed by one decision. One to
 three independent items is normal; every additional item needs distinct user-facing stakes.
 
+## Close the answered questions
+
+Save the body and any delivery conclusion first. Drop only the questions whose answers
+are fully applied. Runner synchronizes the updated body and question list together.
+
+```text
+akb task update-questions <task> --drop <n[,n...]>
+```
+
 ## Refine
+
+If any question remains open, stop and leave the card waiting. When a delivery is in flight,
+never refine — even if `--changed` updated requirements, execution resumes directly from the
+updated card.
 
 Once no question is left and no delivery is building the card, refine it in this session by
 `akb guide refine`, which decides readiness:

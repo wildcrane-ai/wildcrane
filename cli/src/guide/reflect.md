@@ -8,7 +8,7 @@ Find needs the work left behind or revealed, and verify them in the project. Pro
 ## Filter
 
 - **Duplicates**: check `akb raw list` and `akb raw triage check <source-id>`; propose shared work only once.
-- **Exclude**: skip unsupported guesses, work covered by `<scheduled-agents>`, work rejected in `docs/kanban/memory/agents/planner/rejected.md` or its module folders, and calls the user reversed, in any `redesign.md` under `docs/kanban/memory/agents/` or under a card's `Overruled by the user`.
+- **Exclude**: skip unsupported guesses, work rejected in `docs/kanban/memory/agents/planner/rejected.md` or its module folders, and calls the user reversed, in any `redesign.md` under `docs/kanban/memory/agents/` or under a card's `Overruled by the user`.
 - **Existing cards**: when shipped work invalidates an open card's plan, run `akb raw card revise <id> "<the change and why>"` instead of proposing an item.
 
 ## Write

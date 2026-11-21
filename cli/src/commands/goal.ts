@@ -1,8 +1,9 @@
-// 目标草稿沿用 KANBAN_IDEAS 和 ideas 文件字段，兼容旧 Runner。
-
 import fs from 'node:fs'
-import { parseReviewPlan, readReviewPlan, type ReviewPlan } from '../lib/shared/review-plan'
+import { effectivePreviewCatalog, previewDefinitionsSchema, type PreviewDefinition } from '../lib/shared/preview-definitions'
+import { parseReviewFlow, parseReviewPlan, readReviewPlan, validateReviewPreviews, type ReviewPlan } from '../lib/shared/review-plan'
 
+import { type Goal } from '../lib/shared/goal'
+import { goalDraftPath, readGoalDraft, writeGoalDraft } from '../lib/goal-draft'
 import { say } from '../lib/io'
 import { die } from '../lib/paths'
 import { noStudioMessage } from '../lib/agent/studios'
@@ -13,7 +14,9 @@ export interface GoalOptions {
   title?: string
   bodyFile?: string
   studio?: string
+  review?: string
   reviewFile?: string
+  previewDefinitionsFile?: string
 }
 
 export interface GoalStudio {
@@ -24,18 +27,6 @@ export interface GoalStudio {
   when?: string
 }
 
-export interface Goal {
-  id: string
-  title: string
-  outcome: string
-  acceptance: string[]
-  review_plan?: ReviewPlan
-  studio: string
-  task?: string | null
-  start?: boolean
-  dropped?: boolean
-}
-
 export interface GoalsFile {
   workspace?: string
   studios: GoalStudio[]
@@ -44,17 +35,15 @@ export interface GoalsFile {
 
 const MAX_GOALS = 10
 
-export const goalsFile = (): string | null => process.env.KANBAN_GOALS || process.env.KANBAN_IDEAS || null
+export { goalDraftPath as goalsFile }
+export type { Goal }
 
-export function loadGoals(): { file: string; held: GoalsFile } {
-  const file = goalsFile()
+function loadGoals() {
+  const file = goalDraftPath()
   if (!file) die('Goals exist only inside a WildCrane goal discussion.')
-  const held = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<GoalsFile> & { ideas?: Goal[] }
-  if (held.goals !== undefined && held.ideas !== undefined && JSON.stringify(held.goals) !== JSON.stringify(held.ideas)) die('goals and ideas do not match.')
-  const goals = held.goals ?? held.ideas
-  if (!Array.isArray(goals)) die('The goals array is missing or invalid.')
-  for (const goal of goals) if (goal.review_plan !== undefined) goal.review_plan = readReviewPlan(goal.review_plan)
-  return { file, held: { ...held, studios: held.studios ?? [], goals } }
+  const { field, value } = readGoalDraft<GoalsFile>(file)
+  const held = { ...value, studios: value.studios ?? [] }
+  return { held, write: () => writeGoalDraft(file, held, field) }
 }
 
 /** A built-in's short name, as `akb studio list` shows it: `wf_builtin_slide_deck` → `slide-deck`. */
@@ -103,10 +92,17 @@ function named(held: GoalsFile, id: string | undefined): Goal {
 }
 
 export function cmdGoal(args: string[], opts: GoalOptions): MoveResult {
-  const sub = args[0] ?? ''
-  const { file, held } = loadGoals()
-  const write = () => fs.writeFileSync(file, `${JSON.stringify({ ...held, goals: undefined, ideas: held.goals }, null, 2)}\n`)
+  const { held, write } = loadGoals()
+  const result = editGoal(args, opts, held)
+  write()
+  if ('dropped' in result) say(`Dropped goal ${result.id}.`)
+  else if ('start' in result) say(`Goal ${result.id} starts as a task when this turn ends.`)
+  else say(`Goal ${result.id} will be saved when this turn ends: ${result.title} (${shortStudioId(result.studio)}).`)
+  return result
+}
 
+export function editGoal(args: string[], opts: GoalOptions, held: GoalsFile) {
+  const sub = args[0] ?? ''
   if (sub === 'new') {
     const title = opts.title?.trim()
     if (!title) die('--title must not be empty')
@@ -114,46 +110,40 @@ export function cmdGoal(args: string[], opts: GoalOptions): MoveResult {
     const body = readBody(opts.bodyFile)
     const studio = opts.studio ? studioOf(held, opts.studio) : fallbackStudio(held)
     const id = `new_${held.goals.filter((i) => i.id.startsWith('new_')).length + 1}`
-    const review_plan = goalReview(held, studio, opts.reviewFile)
-    held.goals.push({ id, title, ...body, studio, review_plan, task: null })
-    write()
-    say(`Saved goal ${id}: ${title} (${shortStudioId(studio)}).`)
-    return { id, title, studio, review_plan }
+    const preview_definitions = goalDefinitions(opts)
+    const review_plan = goalReview(held, studio, opts, null, preview_definitions)
+    held.goals.push({ id, title, ...body, studio, review_plan, ...(opts.previewDefinitionsFile !== undefined ? { preview_definitions } : {}), task: null })
+    return { id, title, studio, review_plan, preview_definitions }
   }
 
   const goal = named(held, opts.id)
   if (goal.task) die(`${goal.id} is already a task; it no longer changes here.`)
   if (sub === 'save') {
     const studio = opts.studio !== undefined ? studioOf(held, opts.studio) : goal.studio
-    const review_plan = opts.reviewFile !== undefined ? goalReview(held, studio, opts.reviewFile) : checkGoalReview(held, studio, goal.review_plan ?? null)
+    const preview_definitions = goalDefinitions(opts, goal.preview_definitions)
+    const review_plan = goalReview(held, studio, opts, goal.review_plan ?? null, preview_definitions)
     if (opts.title !== undefined) {
       if (!opts.title.trim()) die('--title must not be empty')
       goal.title = opts.title.trim()
     }
     if (opts.bodyFile !== undefined) Object.assign(goal, readBody(opts.bodyFile))
     Object.assign(goal, { studio, review_plan })
-    write()
-    say(`Saved goal ${goal.id}: ${goal.title} (${shortStudioId(goal.studio)}).`)
-    return { id: goal.id, title: goal.title, studio: goal.studio, review_plan: goal.review_plan }
+    if (opts.previewDefinitionsFile !== undefined) goal.preview_definitions = preview_definitions
+    return { id: goal.id, title: goal.title, studio: goal.studio, review_plan, preview_definitions }
   }
   if (sub === 'drop') {
     goal.dropped = true
-    write()
-    say(`Dropped goal ${goal.id}.`)
     return { id: goal.id, dropped: true }
   }
   if (sub === 'start') {
     goal.start = true
-    write()
-    say(`Goal ${goal.id} starts as a task when this turn ends.`)
     return { id: goal.id, start: true }
   }
   die('Use goal new, save, drop or start.')
 }
 
 /** `akb studio list` inside a goal discussion: the workspace's installed studios. */
-export function cmdGoalStudios(): MoveResult {
-  const { held } = loadGoals()
+export function cmdGoalStudios(held = loadGoals().held): MoveResult {
   for (const w of held.studios) {
     say(`${shortStudioId(w.id)}  ${w.name}`)
     if (w.description && w.description !== w.name) say(`  ${w.description}`)
@@ -163,25 +153,33 @@ export function cmdGoalStudios(): MoveResult {
 }
 
 
-export function checkGoalReview(held: GoalsFile, studio: string, value: unknown): ReviewPlan {
-  const catalog = held.studios.find(w => w.id === studio)?.previews
-  try {
-    const plan = parseReviewPlan(value)
-    if (plan?.some(n => n.previews.length) && !catalog) die('Preview outputs are unavailable; update Runner and try again.')
-    return parseReviewPlan(plan, catalog?.map(p => p.id))
-  } catch (e) { return die((e as Error).message) }
+function goalDefinitions(opts: GoalOptions, previous: PreviewDefinition[] = []) {
+  return opts.previewDefinitionsFile === undefined ? previous
+    : previewDefinitionsSchema.parse(JSON.parse(fs.readFileSync(opts.previewDefinitionsFile, 'utf8')))
 }
 
-export function goalReview(held: GoalsFile, studio: string, file?: string): ReviewPlan {
-  return checkGoalReview(held, studio, file ? JSON.parse(fs.readFileSync(file, 'utf8')) : null)
+function goalCatalog(held: GoalsFile, studio: string, definitions: PreviewDefinition[]) {
+  const builtIn = held.studios.find(w => w.id === studio)?.previews
+  if (!builtIn && definitions.length) die('Preview outputs are unavailable; update Runner and try again.')
+  return builtIn && effectivePreviewCatalog(builtIn, definitions)
 }
 
-export function cmdGoalPreviews(studio: string): MoveResult {
-  const { held } = loadGoals()
+function goalReview(held: GoalsFile, studio: string, opts: GoalOptions, previous: ReviewPlan, definitions: PreviewDefinition[]): ReviewPlan {
+  const catalog = goalCatalog(held, studio, definitions)
+  if (opts.review !== undefined) {
+    if (opts.reviewFile !== undefined) die('Use either --review or --review-file.')
+    return parseReviewFlow(opts.review, catalog)
+  }
+  const value = opts.reviewFile === undefined ? readReviewPlan(previous) : JSON.parse(fs.readFileSync(opts.reviewFile, 'utf8'))
+  const saved = opts.reviewFile === undefined && opts.previewDefinitionsFile === undefined && opts.studio === undefined
+  return validateReviewPreviews(parseReviewPlan(value), catalog, { saved })
+}
+
+export function cmdGoalPreviews(studio: string, held = loadGoals().held): MoveResult {
   const id = studioOf(held, studio)
   const catalog = held.studios.find((w) => w.id === id)?.previews
   if (!catalog) die('Preview outputs are unavailable; update Runner and try again.')
-  const previews = catalog.map(({ id, instructions }) => ({ id, instructions }))
+  const previews = catalog
   say(previews.map(p => `${p.id}\n  ${p.instructions}`).join('\n'))
   return { previews, problems: [] }
 }

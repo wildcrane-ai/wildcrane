@@ -200,7 +200,7 @@ describe('交付的构建会话续接（#368）', () => {
       const saved = readStore().runs.find(r => r.deliveryId === opened.run.deliveryId)!
       assert.equal((fs.readFileSync(attempts, 'utf8').trim().split('\n')).length, total)
       assert.equal(saved.retry?.attempt ?? 1, total)
-      assert.equal(saved.retryPause, scenario === 'unconfirmed' ? 'unsafe' : scenario === 'unknown' ? 'needs-review' : 'limit')
+      assert.equal(saved.retryPause, scenario === 'unknown' ? 'needs-review' : scenario === 'unconfirmed' ? 'unsafe' : 'limit')
       assert.match(saved.error!, /503 retry-after: 1/)
     })
   }

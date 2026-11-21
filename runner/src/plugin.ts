@@ -1,4 +1,6 @@
-import { readReviewPlan, reviewPlanSchema } from '../../cli/src/lib/shared/review-plan'
+import { previewDefinitionsSchema } from '../../cli/src/lib/shared/preview-definitions'
+import type { Goal } from '../../cli/src/lib/shared/goal'
+import { reviewPlanSchema } from '../../cli/src/lib/shared/review-plan'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -93,28 +95,29 @@ const discussionUrl = (id: string) => `${WEB_URL()}/discussions/${encodeURICompo
 const boardUrl = (project: string) => `${WEB_URL()}/projects/${encodeURIComponent(project)}`
 
 /** 模型读取的目标。 */
-const goalOf = (i: api.DraftGoal) => ({
+const goalOf = (i: Goal) => ({
   id: i.id,
   title: i.title,
   outcome: i.outcome,
   acceptance: i.acceptance,
   studio: i.studio,
-  review_plan: readReviewPlan(i.review_plan),
+  review_plan: i.review_plan ?? null,
+  preview_definitions: i.preview_definitions ?? [],
   task: i.task ? { ...i.task, url: taskUrl(i.task.key || i.task.id) } : null,
 })
 
 async function studiosOf(workspace: string) {
   const list = await api.listStudios(workspace)
   if (!list.ok) return []
-  return list.value.data.map((w) => ({ id: w.id, name: w.name, names: w.names, description: w.description ?? '', when: w.when ?? '', previews: w.previews?.map(({ id, instructions }) => ({ id, instructions })) }))
+  return list.value.data.map((w) => ({ id: w.id, name: w.name, names: w.names, description: w.description ?? '', when: w.when ?? '', previews: w.previews }))
 }
 
 async function draftOf(id: string) {
   const read = await api.readDiscussion(id)
   if (!read.ok) return failure(read)
   const d = read.value
-  const goals = linked(d, (d.goals ?? d.ideas).map(goalOf))
-  return { discussion: d.id, url: discussionUrl(d.id), project: d.project, version: d.version, goals, ideas: goals, studios: await studiosOf(d.workspace) }
+  const goals = linked(d.id, d.goals)
+  return { discussion: d.id, url: discussionUrl(d.id), project: d.project, version: d.version, goals, studios: await studiosOf(d.workspace) }
 }
 
 /** The Runner: started once signed in, closed with the host. */
@@ -270,7 +273,7 @@ async function chats() {
     chats: held.flatMap((c, n) => {
       const d = read[n]!
       if (!d.ok) return d.code === 'not_found' ? [] : [{ ...c, title: '', goals: 0, offline: true }]
-      return [{ ...c, dir: home(c.dir), title: d.value.title, goals: (d.value.goals ?? d.value.ideas).length, at: d.value.updated_at }]
+      return [{ ...c, dir: home(c.dir), title: d.value.title, goals: d.value.goals.length, at: d.value.updated_at }]
     }),
   }
 }
@@ -381,11 +384,16 @@ const GoalInput = z.object({
   acceptance: z.array(z.string()).describe('`Done when` checks a reviewer can verify.'),
   studio: z.string().describe('One of the studio ids wildcrane_draft_read lists.'),
   review_plan: reviewPlanSchema.optional(),
+  review_flow: z.string().max(20_000).optional(),
+  preview_definitions: previewDefinitionsSchema.optional(),
 })
 
 /** 已开始目标链接任务，其余链接讨论。 */
-const linked = (d: { id: string }, goals: ReturnType<typeof goalOf>[]) =>
-  goals.map((i) => ({ ...i, url: i.task?.url ?? discussionUrl(d.id) }))
+const linked = (id: string, goals: Goal[]) =>
+  goals.map(goalOf).map(goal => ({ ...goal, url: goal.task?.url ?? discussionUrl(id) }))
+
+// Older MCP consumers still read the ideas alias.
+const draftText = <T extends { goals: unknown }>(draft: T) => text({ ...draft, ideas: draft.goals })
 
 /** Shared MCP hosts bind explicitly; every first read opens a separate discussion. */
 const PROCESS = `process-${crypto.randomUUID()}`
@@ -398,6 +406,7 @@ const pathOf = (given: string | undefined, meta: Meta) => given || Object.keys(m
 
 const SIGNED_OUT = { error: 'signed_out', message: 'Not signed in to WildCrane. Call wildcrane_open_settings to open settings and sign in, then try again.' }
 const PANEL_SIGNED_OUT = { error: 'signed_out', message: 'Not signed in to WildCrane. Tell the user to run /wildcrane and sign in, then try again.' }
+const jobDraft = () => ({ ...text({ error: 'runner_managed_draft', message: 'Use `akb goal` in the current web discussion to work with its draft.' }), isError: true })
 
 export function server(): McpServer {
   const instructions = host !== 'claude-code' && akbFile ? `Run \`${akbFile}\` for every \`akb\` command.` : undefined
@@ -411,16 +420,15 @@ export function server(): McpServer {
   })
   const saveSchema = { discussionId: z.string(), expectedVersion: z.number().int(), goals: z.array(GoalInput).max(10).optional(), ideas: z.array(GoalInput).max(10).optional() }
   const save: ToolCallback<typeof saveSchema> = async ({ discussionId, expectedVersion, goals, ideas }) => {
+    if (process.env.WILDCRANE_JOB) return jobDraft()
     if (!readSession()) return { ...text(host === 'claude-code' ? PANEL_SIGNED_OUT : SIGNED_OUT), isError: true }
     if ((goals === undefined) === (ideas === undefined)) return { ...text({ error: 'bad_request', message: 'Provide exactly one of goals or ideas.' }), isError: true }
     const saved = await api.saveDraft(discussionId, expectedVersion, goals ?? ideas!)
     if (saved.ok) {
-      const out = linked(saved.value, (saved.value.goals ?? saved.value.ideas).map(goalOf))
-      return text({ saved: true, url: discussionUrl(discussionId), version: saved.value.version, goals: out, ideas: out })
+      return draftText({ saved: true, url: discussionUrl(discussionId), version: saved.value.version, goals: linked(discussionId, saved.value.goals) })
     }
     if (saved.discussion) {
-      const out = linked(saved.discussion, (saved.discussion.goals ?? saved.discussion.ideas).map(goalOf))
-      return text({ saved: false, reason: 'The goals have changed. Merge your changes with the latest goals and save again.', url: discussionUrl(discussionId), version: saved.discussion.version, goals: out, ideas: out })
+      return draftText({ saved: false, reason: 'The goals have changed. Merge your changes with the latest goals and save again.', url: discussionUrl(discussionId), version: saved.discussion.version, goals: linked(discussionId, saved.discussion.goals) })
     }
     return { ...text({ saved: false, ...failure(saved) }), isError: true }
   }
@@ -436,6 +444,7 @@ export function server(): McpServer {
         discussionId: z.string().optional().describe((host === 'dsh' || host === 'grok') ? 'Leave out only on the first call in this chat.' : "Leave out for this session's discussion."),
       },
     }, async ({ path: given, discussionId }, extra) => {
+      if (process.env.WILDCRANE_JOB) return jobDraft()
       if (!readSession()) return { ...text(SIGNED_OUT), isError: true }
       let id = discussionId
       let project: { name: string; board: string } | null = null
@@ -458,11 +467,8 @@ export function server(): McpServer {
         const name = list.ok ? list.value.folders.find((f) => f.project === draft.project)?.name : undefined
         project = { name: name ?? draft.project, board: boardUrl(draft.project) }
       }
-      return text({
+      return draftText({
         ...draft,
-        url: discussionUrl(id),
-        goals: linked({ id }, draft.goals ?? draft.ideas),
-        ideas: linked({ id }, draft.goals ?? draft.ideas),
         project,
         ...(akbFile ? { akb: akbFile } : {}),
         ...(project ? {} : { note: 'This folder is not a WildCrane project: goals go to General. The user can ask to add it.' }),
@@ -517,10 +523,11 @@ export function server(): McpServer {
       sessionId: z.string().optional().describe("This Claude Code session's id, given at session start."),
     },
   }, async ({ discussionId, sessionId }) => {
+    if (process.env.WILDCRANE_JOB) return jobDraft()
     if (!readSession()) return { ...text(PANEL_SIGNED_OUT), isError: true }
-    if (discussionId) return text(await draftOf(discussionId))
-    if (!sessionId) return { ...text({ error: 'bad_request', message: 'Give discussionId or sessionId.' }), isError: true }
-    return text(await sessionDraft(sessionId, process.cwd()))
+    if (!discussionId && !sessionId) return { ...text({ error: 'bad_request', message: 'Give discussionId or sessionId.' }), isError: true }
+    const draft = discussionId ? await draftOf(discussionId) : await sessionDraft(sessionId!, process.cwd())
+    return 'error' in draft ? text(draft) : draftText(draft)
   })
   mcp.registerTool('wildcrane_draft_save', { description: saveWhat, inputSchema: saveSchema }, save)
   mcp.registerTool('wildcrane_panel', {

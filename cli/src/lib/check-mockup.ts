@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import vm from 'node:vm'
 import ts from 'typescript'
+import { isHtmlFile } from './dress-page'
 import { drawMockup, MOCKUP_IMPORTS } from './draw-mockup'
 import { renderError } from './preview-validation'
 import { manifestOf, mapReferences } from '../../../artifact-sdk/src/internal/manifest'
@@ -79,7 +80,8 @@ export function checkMockupTypes(files: string[], root: string, work: string): v
 
 async function pageFor(entry: string, work: string): Promise<string> {
   entry = fs.realpathSync(entry)
-  if (!/\.(?:html|tsx)$/i.test(entry)) throw new Error(`${entry}: expected an HTML or TSX entry`)
+  const isHtml = isHtmlFile(entry)
+  if (!isHtml && !/\.tsx$/i.test(entry)) throw new Error(`${entry}: expected an HTML or TSX entry`)
   const root = fs.realpathSync(path.dirname(entry))
   contained(entry, root)
   const cssParser = 'postcss'
@@ -113,7 +115,7 @@ async function pageFor(entry: string, work: string): Promise<string> {
     }
   }
   visit(entry)
-  if (/\.tsx$/i.test(entry)) checkMockupTypes([...files], root, work)
+  if (!isHtml) checkMockupTypes([...files], root, work)
   let html = await drawMockup(entry)
   // Use the upload manifest: files named only inside scripts are deliberately unreachable.
   const assets = new Map<string, string>()
@@ -140,7 +142,7 @@ async function pageFor(entry: string, work: string): Promise<string> {
     return `data:${TYPES[ext] ?? 'application/octet-stream'};base64,${bytes.toString('base64')}`
   }) as string
   // Check HTML source before dressing it, which may otherwise leave missing CSS links intact.
-  if (/\.html$/i.test(entry)) {
+  if (isHtml) {
     const original = fs.readFileSync(entry, 'utf8')
     checkResources(original, entry)
     inline(original, entry)
@@ -151,7 +153,7 @@ async function pageFor(entry: string, work: string): Promise<string> {
   const parser = 'parse5'
   const { parse } = await import(parser)
   const errors: {code: string; startLine: number; startCol: number}[] = []
-  const syntaxHtml = /\.html$/i.test(entry) ? fs.readFileSync(entry, 'utf8') : html
+  const syntaxHtml = isHtml ? fs.readFileSync(entry, 'utf8') : html
   parse(syntaxHtml, { onParseError: (error: typeof errors[number]) => { if (error.code !== 'missing-doctype') errors.push(error) } })
   if (errors.length) throw new Error(errors.map(e => `${entry}:${e.startLine}:${e.startCol}: ${e.code}`).join('\n'))
   for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {

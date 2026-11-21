@@ -18,10 +18,10 @@ previews:
     description: {en: "Review page layouts, interactions, and user flows.", zh: "审阅页面布局、交互和用户流程。"}
   api-docs:
     icon: api
-    title: {en: API docs, zh: 接口文档}
+    title: {en: API design, zh: 接口设计}
   schema:
     icon: schema
-    title: {en: Schema, zh: 数据结构}
+    title: {en: Schema, zh: 数据库结构}
   prompts:
     icon: prompt
     title: {en: Prompts, zh: 提示词}
@@ -30,10 +30,13 @@ previews:
     title: {en: Competitor research, zh: 竞品研究}
 ---
 
-Plan software changes with `akb guide refine` without editing project code; deliver approved
-work through local checks and merge with `akb guide implement` and
-[delivery requirements](references/delivery.md). Choose only the Previews the task needs,
-keep outputs concise, and read linked references or AKB Guides only when needed.
+Plan software changes with `akb guide refine` without editing project code. Choose only the
+Previews the task needs and read linked references or AKB Guides when needed.
+
+## Land
+
+Follow [delivery requirements](references/delivery.md) to check the approved work and merge it into
+the target branch or apply it to the project. Record the commit and branch for Git projects.
 
 ## Preview memory
 
@@ -79,10 +82,8 @@ Recommended display: Asset for one screen; Set for several screens or states.
 
 <Preview id="api-docs">
 
-Write caller documentation for changed user or third-party interfaces (inputs, outputs,
-errors and one example) in the project's docs style: use a unified `diff` for existing
-entries and a `mermaid` `sequenceDiagram` for message exchanges.
-Recommended display: inline Markdown for a small entry; Asset for a document or its diff.
+Show only the shape of each new or changed user-facing or third-party interface,
+using its signature or the structure of its request and response as appropriate.
 
 </Preview>
 
@@ -101,8 +102,8 @@ Recommended display: Asset for the diff; inline Markdown for the note.
 Show changed instructions (unified `.diff` per target), following `akb guide write-prompt`;
 include a one-line reason per file only when needed for review. When prompt context changes,
 list what it is, its source, target prompt, rough size, and one-sentence reason.
-Recommended display: inline Markdown for one small change, Assets for two changed files,
-or Set for more than two files.
+Use inline Markdown for one small change and separate Assets for two changed files.
+For more than two changed files, use a Set with one diff Asset per file.
 
 </Preview>
 

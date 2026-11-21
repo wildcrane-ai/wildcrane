@@ -1,3 +1,4 @@
+import type { ArchiveCompletionReceipt } from '../../cli/src/lib/shared/delivery-evidence'
 import type { SourceProblem } from '../../cli/src/lib/shared/preview-blocks'
 // A stand-in for Cloud's /v1/runner routes, holding the migration's rules in memory: one
 // Runner per account, a job claimed once, a lapsed lease refused. It also holds one project's
@@ -28,6 +29,7 @@ export interface FakeJob {
   number?: number | null
   studio?: string | null
   recoveryOf?: string | null
+  syncRecoveryOf?: string | null
   manualRecovery?: boolean
   retryReplay?: boolean
   resume?: string | null
@@ -35,7 +37,7 @@ export interface FakeJob {
   fork?: boolean
   transcript?: string | null
   flow?: { review_stages?: string[]; review_revision?: number; sync_recovery_of?: string; verb: string; studio: string; card?: number; text?: string; title?: string; resume?: boolean; replan?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null
-  discussion?: { id: string; workspace: string; goals?: Record<string, unknown>[]; ideas: Record<string, unknown>[] } | null
+  discussion?: { id: string; workspace: string; version?: number; goals?: Record<string, unknown>[]; ideas: Record<string, unknown>[] } | null
   chat?: { message: string; body: string } | null
   review?: { tasks: string[] } | null
   agent?: { name: string; studio?: string; tasks?: { id: string; number: number }[] } | null
@@ -75,6 +77,7 @@ const BYTES = Symbol('bytes')
 
 export interface FakeTask {
   review?: import('../src/api').Job['taskReview']
+  previewInputs?: import('../../cli/src/lib/shared/review-plan').SavedPreviewInputs
   project?: string
   artifacts: Map<string, Buffer[]>
   /** The studio version the task runs on (#2040); none for a task made before. */
@@ -130,6 +133,9 @@ export class FakeCloud {
   unreachableArtifacts = new Set<string>()
   serviceUnavailableUploads = false
   boardTimeouts = 0
+  cancelTask?: (task: string, body: { reason?: string; discard: boolean }) => { status: number; value: unknown }
+  taskCancelReasons: Record<string, string> = {}
+  completeArchives?: (body: any) => { receipts?: ArchiveCompletionReceipt[] } | null
   loseVersionReply = false
   private lostVersion?: { upload: string; version: number }
   /** The type each artifact was made with. */
@@ -500,6 +506,15 @@ export class FakeCloud {
     const task = this.task
     const route = url.pathname
     this.log.push(`${method} ${route}`)
+    const cancel = /^\/v1\/tasks\/([^/]+)\/cancel$/.exec(route)
+    if (cancel && method === 'POST' && this.cancelTask) {
+      const result = this.cancelTask(cancel[1]!, body)
+      return send(result.status, result.value)
+    }
+    if (route.endsWith('/board/archive-completions') && method === 'POST') {
+      const result = this.completeArchives ? this.completeArchives(body) : { receipts: body.cards.map(({ task }: { task: string }) => ({ task, status: 'confirmed' })) }
+      return result ? send(200, result) : refuse(503, 'service_unavailable', 'Completion interrupted.')
+    }
     const board = /^\/v1\/projects\/([^/]+)\/board(\/commits)?$/.exec(route)
     const ours = (p: string) => p.startsWith(`projects/${board![1]}/`) || p.startsWith('memory/')
     if (board && !board[2] && method === 'GET') {
@@ -562,7 +577,7 @@ export class FakeCloud {
       if (status === 'gone') return refuse(404, 'not_found', 'No task has this id.')
       if (status === 'down') return refuse(500, 'internal', 'Down.')
       if (status === 'unauthenticated' || status === 'forbidden') return refuse(status === 'unauthenticated' ? 401 : 403, status, 'Task read refused.')
-      return send(200, { status, project: task.project ?? 'prj_1', key: 'WC-1', card_version: this.board.get('projects/prj_1/todo/1-task-1.md')?.seq, review: task.review ?? { revision: 1 }, id: route.split('/')[3], title: task.title ?? 'Pricing', request: task.request ?? 'Two tiers.', context: task.context ?? {} })
+      return send(200, { status, cancel_reason: this.taskCancelReasons[route.split('/')[3]!] ?? null, project: task.project ?? 'prj_1', key: 'WC-1', card_version: this.board.get('projects/prj_1/todo/1-task-1.md')?.seq, review: task.review ?? { revision: 1 }, preview_inputs: task.previewInputs, id: route.split('/')[3], title: task.title ?? 'Pricing', request: task.request ?? 'Two tiers.', context: task.context ?? {} })
     }
     if (/^\/v1\/studios\/[^/]+$/.test(route)) {
       const files = this.studios[route.split('/')[3]!]

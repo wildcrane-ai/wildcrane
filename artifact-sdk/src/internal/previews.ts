@@ -1,4 +1,6 @@
 import type { Context } from '../index';
+import { documentPreviewKey, isDocumentPreview, officeExtension, OFFICE_TYPES, PDF } from './document';
+import { fileManifest, relativeFileReference, splitFileReference } from './file-references';
 import { manifestOf, mapReferences, referencesOf, type Manifest } from './manifest';
 import { hyperframeDocument } from './hyperframe-document';
 import { parseReview } from './format/studio';
@@ -21,6 +23,8 @@ export type Services = {
 };
 
 type Ref = { art: Artifact; version: ArtifactVersion };
+type PageFile = Blob | { css: string; references: PageReference[] };
+type PageReference = [source: string, file: PageFile, fragment: string];
 
 const urls = new WeakMap<Blob, string>();
 const urlOf = (blob: Blob) => {
@@ -49,7 +53,7 @@ const LANGS: Record<string, string> = {
   js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
   json: "json", jsonc: "json", yml: "yaml", yaml: "yaml", py: "python", go: "go",
   sh: "bash", bash: "bash", zsh: "bash", sql: "sql", css: "css", scss: "css",
-  xml: "xml", svg: "xml", diff: "diff", patch: "diff",
+  xml: "xml", svg: "xml", diff: "diff", patch: "diff", mmd: "mermaid", mermaid: "mermaid",
 };
 const PLAIN = new Set(["txt", "text", "log", "csv", "tsv", "toml", "ini", "env", "rs", "java", "kt", "swift", "rb", "php", "c", "h", "cpp", "hpp", "cs", "lua", "vue", "svelte", "graphql", "prisma", "dockerfile", "gitignore"]);
 
@@ -114,18 +118,13 @@ export class Previews {
     const art = [...this.byId.values()].find(a => a.versions.includes(v))!;
     return this.resource(art, v).text(field);
   }
-  private fileOf(art: Artifact, v: ArtifactVersion) {
-    return { name: withExt(art.name, v.file?.content_type ?? 'application/json'), load: async () => urlOf(await this.resource(art, v).blob()) };
+  private fileOf(art: Artifact, v: ArtifactVersion, name = withExt(art.name, v.file?.content_type ?? 'application/json')) {
+    return { name, load: async () => urlOf(await this.resource(art, v).blob()) };
   }
 
-  private relative(src: string, owner: string): string {
+  protected relative(src: string, owner: string): string {
     if (this.shared.card?.assets[src] || this.byId.has(src) || /^[a-z][\w+.-]*:/i.test(src)) return src;
-    const parts = owner.split('/').slice(0, -1);
-    for (const part of src.split('/')) {
-      if (part === '..') parts.pop();
-      else if (part && part !== '.') parts.push(part);
-    }
-    return parts.join('/');
+    return relativeFileReference(src, owner);
   }
 
   /** The version shown: the one `card.assets` pins, else the latest. */
@@ -162,7 +161,7 @@ export class Previews {
   unreferenced(srcs: string[]): Artifact[] {
     const used = this.referenced(srcs);
     const inner = new Set(this.shared.artifacts.flatMap((a) => (used.has(a.id) ? [] : innerIdsOf(this.ref(a.id)))));
-    return this.shared.artifacts.filter((a) => !used.has(a.id) && !inner.has(a.id));
+    return this.shared.artifacts.filter((a) => !isDocumentPreview(a.name) && !used.has(a.id) && !inner.has(a.id));
   }
 
   missing(src: string, label?: string): MockupView {
@@ -205,7 +204,7 @@ export class Previews {
 
   private viewOf(ref: Ref, src: string): MockupView {
     const view = this.drawOf(ref, src);
-    return view.component || view.error !== undefined ? view : { ...view, download: this.fileOf(ref.art, ref.version) };
+    return view.component || view.error !== undefined ? view : { ...view, download: view.document?.file ?? view.delimited?.file ?? this.fileOf(ref.art, ref.version) };
   }
 
   private drawOf({ art, version: v }: Ref, src: string): MockupView {
@@ -308,6 +307,41 @@ export class Previews {
           return this.compareOf(data, src).load();
         } } };
       default: {
+        const file = v.file;
+        const documentName = [art.name, src].find(name => /\.pdf$/i.test(name) || officeExtension(name));
+        const mime = file?.content_type.split(';')[0]!.trim().toLowerCase();
+        if (file && (documentName || mime === PDF || Object.values(OFFICE_TYPES).some(type => type === mime))) {
+          const key = documentPreviewKey(art.id, v.version);
+          const pin = this.shared.card?.assets[key];
+          const native = mime === PDF || /\.pdf$/i.test(documentName ?? '');
+          const pdf = native ? file : pin?.version && this.refOfSrc(key)?.version.file;
+          const name = (documentName ?? withExt(art.name, mime!)).split('/').pop()!;
+          return { src, document: { file: this.fileOf(art, v, name), load: pdf ? () => this.blobOf(pdf) : null } };
+        }
+        if (file && [src, art.name].some(name => /\.xlsx$/i.test(name))) {
+          return { src, workbook: { file: this.fileOf(art, v), load: () => this.blobOf(file) } };
+        }
+        const delimitedName = [art.name, src.split("/").pop()!].find(name => /\.(csv|tsv)$/i.test(name));
+        if (file && delimitedName) {
+          return { src, delimited: {
+            file: this.fileOf(art, v, delimitedName),
+            delimiter: /\.tsv$/i.test(delimitedName) ? "\t" : ",",
+            load: async () => {
+              const blob = await this.blobOf(file);
+              if (blob.size > 3 * TEXT_LIMIT + 3) return { text: null };
+              const data = await blob.arrayBuffer();
+              const [first, second] = new Uint8Array(data, 0, Math.min(2, data.byteLength));
+              const encoding = first === 0xff && second === 0xfe ? "utf-16le"
+                : first === 0xfe && second === 0xff ? "utf-16be" : "utf-8";
+              try {
+                const text = new TextDecoder(encoding, { fatal: true }).decode(data);
+                return { text: text.length <= TEXT_LIMIT ? text : null };
+              } catch {
+                return { error: "encoding" };
+              }
+            },
+          } };
+        }
         const lang = textLang(src, art.name, v.file?.content_type);
         if (lang === null) return { src, file: this.fileOf(art, v) };
         return {
@@ -466,8 +500,8 @@ export class Previews {
   /** The files `content` names, as its manifest declares, each by the reference written there. */
   private filesOf(manifest: Manifest | undefined, content: unknown, art: Artifact, version: ArtifactVersion): Map<string, Ref> {
     const files = new Map<string, Ref>();
-    for (const { src } of this.fileReferences(manifest, content, art, version)) {
-      const ref = this.ref(this.relative(src, art.name));
+    for (const { src, text } of this.fileReferences(manifest, content, art, version)) {
+      const ref = this.ref(this.relative(text ? splitFileReference(src)[0] : src, art.name));
       if (ref?.version.file && !files.has(src)) files.set(src, ref);
     }
     return files;
@@ -481,11 +515,25 @@ export class Previews {
 
   /** A page whose own files reach it once it asks: a sandboxed page cannot read the review's blob URLs. */
   private async withFiles(doc: string, art: Artifact, version: ArtifactVersion): Promise<string> {
-    const files = this.filesOf(manifestOf(art.type), doc, art, version);
-    if (!files.size) return doc;
-    const blobs: Record<string, Blob> = {};
-    await Promise.all([...files].map(async ([src, ref]) => { blobs[src] = await this.blobOf(ref.version.file!); }));
-    return injectFiles(doc, blobs);
+    const pageReferences = async (files: Map<string, Ref>, parents: ReadonlySet<string>): Promise<PageReference[]> => {
+      return Promise.all([...files].filter(([, ref]) => !parents.has(ref.art.id)).map(async ([src, ref]) => {
+        const blob = await this.blobOf(ref.version.file!);
+        const manifest = fileManifest(ref.art.type, ref.art.name);
+        const fragment = src.match(/#.*$/)?.[0] ?? '';
+        if (manifest?.name !== 'css') return [src, blob, fragment];
+
+        const text = await blob.text();
+        const children = this.filesOf(manifest, text, ref.art, ref.version);
+        const references = await pageReferences(children, new Set([...parents, ref.art.id]));
+        let prefix = '__wildcrane_css_';
+        while (text.includes(prefix)) prefix += '_';
+        const tokens = new Map(references.map(([source], index) => [source, `${prefix}${index}_`]));
+        const css = mapReferences(manifest, text, source => tokens.get(source) ?? source) as string;
+        return [src, { css, references: references.map(([source, file, hash]) => [tokens.get(source)!, file, hash]) }, fragment];
+      }));
+    };
+    const files = await pageReferences(this.filesOf(manifestOf(art.type), doc, art, version), new Set([art.id]));
+    return files.length ? injectFiles(doc, files) : doc;
   }
 
   /** A document with the pictures it names swapped for blob URLs; one it cannot reach keeps its path. */
@@ -535,10 +583,10 @@ function innerIds({ art, version }: Ref): string[] {
 
 const innerIdsOf = (ref: Ref | null) => (ref ? innerIds(ref) : []);
 
-const pages = new Map<string, Record<string, Blob>>();
+const pages = new Map<string, PageReference[]>();
 
 /** The page's references swapped for blob URLs it makes itself from the files the review hands it. */
-function injectFiles(doc: string, files: Record<string, Blob>): string {
+function injectFiles(doc: string, files: PageReference[]): string {
   if (typeof window === "undefined") return doc;
   if (!pages.size) {
     window.addEventListener("message", (event) => {
@@ -549,14 +597,43 @@ function injectFiles(doc: string, files: Record<string, Blob>): string {
   }
   const token = Math.random().toString(36).slice(2) + Date.now().toString(36);
   pages.set(token, files);
-  const script = `<script>(()=>{const t=${JSON.stringify(token)};addEventListener("message",e=>{const d=e.data;if(!d||d.wildcraneFiles!==t||!d.files)return;const u=Object.entries(d.files).map(([k,b])=>[k,URL.createObjectURL(b)]).sort((a,b)=>b[0].length-a[0].length);const fix=s=>u.reduce((s,[k,v])=>s.split(k).join(v),s);const run=()=>{for(const el of document.querySelectorAll("*")){for(const a of [...el.attributes]){const v=fix(a.value);if(v!==a.value)el.setAttribute(a.name,v)}if(el.tagName==="STYLE"){const v=fix(el.textContent);if(v!==el.textContent)el.textContent=v}}};document.readyState==="loading"?addEventListener("DOMContentLoaded",run):run()});parent.postMessage({wildcraneFiles:t},"*")})()</script>`;
+  const script = `<script>(()=> {
+    const token = ${JSON.stringify(token)};
+    addEventListener("message", event => {
+      const data = event.data;
+      if (!data || data.wildcraneFiles !== token || !data.files) return;
+      const urls = new WeakMap();
+      const rewrite = (text, refs) => refs.reduce((value, [src, file, hash]) => value.split(src).join(fileUrl(file) + hash), text);
+      function fileUrl(file) {
+        if (!urls.has(file)) {
+          const blob = file instanceof Blob ? file : new Blob([rewrite(file.css, file.references)], {type: "text/css"});
+          urls.set(file, URL.createObjectURL(blob));
+        }
+        return urls.get(file);
+      }
+      const files = data.files.sort((a, b) => b[0].length - a[0].length);
+      const run = () => {
+        for (const element of document.querySelectorAll("*")) {
+          for (const attr of [...element.attributes]) {
+            const value = rewrite(attr.value, files);
+            if (value !== attr.value) element.setAttribute(attr.name, value);
+          }
+          if (element.tagName === "STYLE") element.textContent = rewrite(element.textContent, files);
+        }
+      };
+      document.readyState === "loading" ? addEventListener("DOMContentLoaded", run) : run();
+    });
+    parent.postMessage({wildcraneFiles: token}, "*");
+  })()</script>`;
   const head = /<head\b[^>]*>/i.exec(doc);
   return head ? doc.slice(0, head.index + head[0].length) + script + doc.slice(head.index + head[0].length) : script + doc;
 }
 
 const EXTS: Record<string, string> = {
   "application/json": "json",
-  "application/pdf": "pdf",
+  [PDF]: "pdf",
+  [OFFICE_TYPES[".docx"]]: "docx",
+  [OFFICE_TYPES[".pptx"]]: "pptx",
   "text/csv": "csv",
   "text/plain": "txt",
   "text/markdown": "md",
@@ -579,6 +656,6 @@ function withExt(name: string, contentType: string): string {
   const ext = EXTS[contentType.split(";")[0]!.trim().toLowerCase()];
   if (!ext) return name;
   const has = name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
-  const same = has === ext || (ext === "jpeg" && has === "jpg");
+  const same = has === ext || (ext === "jpeg" && has === "jpg") || (ext === "html" && has === "htm");
   return same ? name : `${name}.${ext}`;
 }

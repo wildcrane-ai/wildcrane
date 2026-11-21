@@ -46,7 +46,7 @@ beforeEach(async () => {
     assert.equal((init?.headers as any).authorization, 'Bearer secret-token')
     if (route === '/v1/tasks/WC-12' || route === '/v1/tasks/task_test') return Response.json({ key: 'WC-12', status: taskStatus })
     if (route.endsWith('/chat/stop')) return Response.json(onStop(body))
-    if (route.endsWith('/chat')) return Response.json(method === 'POST' ? { accepted: true } : chat)
+    if (route.endsWith('/chat')) return Response.json(method === 'POST' ? { status: 'queued', job: target, messages: [{ id: 'msg_new', role: 'user', body: body.body }] } : chat)
     if (route.startsWith('/v1/runner/jobs/')) return Response.json({ job: onJob() })
     throw Error(`Unexpected ${route}`)
   }) as typeof fetch
@@ -96,7 +96,9 @@ it('empty chats and send keep their existing semantics', async () => {
   assert.equal(value.total, 0); assert.equal(value.reply.state, 'idle')
   const sent = await run('WC-12', 'Keep', 'this')
   assert.deepEqual(calls.at(-1), { route: '/v1/tasks/WC-12/chat', method: 'POST', body: { body: 'Keep this' } })
-  assert.equal(sent.lines[0].accepted, true)
+  assert.equal(sent.code, 0)
+  assert.equal(sent.lines[0].status, 'queued')
+  assert.match(sent.lines[0].output, /Reply pending/)
 })
 it('rejects incompatible modes and invalid limits before any request', async () => {
   for (const args of [['--all', '--limit', '2'], ['hello', '--follow'], ['hello', '--all'], ['hello', '--stop'], ['--stop', '--follow'], ['--stop', '--all'], ['--stop', '--limit', '2'], ['--limit', '0'], ['--limit', '1.5']]) {

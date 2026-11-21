@@ -13,7 +13,8 @@ import { cloudEndpoints } from '../lib/cloud/config'
 import { accessToken } from '../lib/cloud/session'
 import { workspaceTask } from '../lib/cloud/tasks'
 import { die } from '../lib/paths'
-import { say } from '../lib/io'
+import { BoardError, say } from '../lib/io'
+import { cloudBytes, cloudError, cloudProblem, invalidResponse, readCloudJson, type CloudProblem } from '../lib/cloud/response'
 import type { MoveResult } from '../lib/types'
 
 export async function cmdCloud(args: string[], program: string): Promise<MoveResult> {
@@ -31,6 +32,12 @@ export async function cmdCloud(args: string[], program: string): Promise<MoveRes
   }
 
   const account = await readCloudAccount()
+  if (account.verificationFailure) {
+    if (account.handle || account.email) say(`Cached account: ${account.handle ? '@' + account.handle : account.email}`)
+    throw cloudError({ ...account.verificationFailure,
+      message: `Cloud verification failed. Showing cached account details. ${account.verificationFailure.message}` },
+    { details: { cached: true, cloud: account } })
+  }
   for (const line of report(account, program)) say(line)
   return { cloud: account }
 }
@@ -238,39 +245,67 @@ export async function cloudMusic(
   })
 }
 
-function refuse(m: Said, fallback: Said): never {
-  die([m.zh, m.en, fallback.zh, fallback.en].join('\n'), { kind: 'cloud-refused', bare: true })
+function refuse(m: Said, fallback: Said, problem: CloudProblem, exitCode = 1): never {
+  const message = [m.zh, m.en, problem.message, fallback.zh, fallback.en].filter(Boolean).join('\n')
+  throw cloudError({ ...problem, message }, { bare: true, exitCode })
 }
 
 async function generate(g: Generation): Promise<MoveResult> {
   const token = await accessToken()
-  if (!token.ok) refuse(SAID[token.reason], g.fallback)
+  if (!token.ok) refuse(SAID[token.reason], g.fallback, { code: token.reason.replace('-', '_'),
+    message: 'error' in token ? token.error ?? '' : '', retryable: token.reason === 'unreachable' })
   const task = workspaceTask()
   let res: Response
   try {
     res = await fetch(`${cloudEndpoints().api}${g.endpoint}`, {
       method: 'POST',
-      // The task this spends credits for, inside a Runner task (#629).
       headers: { authorization: `Bearer ${token.token}`, 'content-type': 'application/json', ...(task ? { 'x-wildcrane-task': task } : {}) },
       body: JSON.stringify(g.body),
     })
   } catch {
-    refuse(SAID.unreachable, g.fallback)
+    refuse(SAID.unreachable, g.fallback, { code: 'unreachable', message: '', retryable: true })
   }
-  if (!res.ok) {
-    const { error } = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } }
-    if (res.status === 401) refuse(SAID.expired, g.fallback)
-    if (error?.code === 'pro_required') refuse(g.pro_required, g.fallback)
-    // Only the month's pool resets, so only its refusal says when (#1932).
-    if (error?.code === 'credits_used_up') {
-      refuse(res.headers.has('retry-after') ? SAID.credits_used_up : SAID.trial_credits_used_up, g.fallback)
+  const contentType = res.headers.get('content-type') ?? ''
+  const problem = !res.ok || /^application\/(?:[\w.+-]+\+)?json(?:;|$)/i.test(contentType)
+    ? cloudProblem(res, await readCloudJson(res)) ?? invalidResponse('a complete media file')
+    : null
+  if (problem) {
+    if (res.status === 401) refuse(SAID.expired, g.fallback, problem)
+    if (problem.code === 'pro_required') refuse(g.pro_required, g.fallback, problem)
+    if (problem.code === 'credits_used_up') {
+      refuse(res.headers.has('retry-after') ? SAID.credits_used_up : SAID.trial_credits_used_up, g.fallback, problem)
     }
-    if (res.status === 400) usage(error?.message ?? 'The request was refused.', g.usage)
-    refuse(g.failed, g.fallback)
+    if (res.status === 400) {
+      throw cloudError({ ...problem, message: `${problem.message}\nusage: ${g.usage}` }, { bare: true, exitCode: 2 })
+    }
+    refuse(g.failed, g.fallback, problem)
+  }
+  let bytes: Buffer
+  try {
+    bytes = await cloudBytes(res, 'a complete media file')
+    if (!mediaMatches(contentType, bytes, g.endpoint.endsWith('image'))) throw cloudError(invalidResponse('a complete media file'))
+  } catch (error) {
+    if (!(error instanceof BoardError)) throw error
+    refuse(g.failed, g.fallback, { code: error.kind, message: error.message, retryable: true })
   }
   const out = g.outFor?.(res, g.out) ?? g.out
   fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true })
-  fs.writeFileSync(out, Buffer.from(await res.arrayBuffer()))
+  fs.writeFileSync(out, bytes)
   say(`${out} (${g.label(res)})`)
   return { out }
+}
+
+
+function mediaMatches(contentType: string, bytes: Buffer, image: boolean): boolean {
+  const type = contentType.toLowerCase().split(';', 1)[0]?.trim()
+  const starts = (signature: string, offset = 0) => bytes.toString('ascii', offset, offset + signature.length) === signature
+  const riff = (format: string) => starts('RIFF') && starts(format, 8)
+  if (image) {
+    if (type === 'image/png') return bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
+    if (type === 'image/jpeg') return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+    if (type === 'image/webp') return riff('WEBP')
+    return false
+  }
+  if (type === 'audio/wav') return riff('WAVE')
+  return type === 'audio/mpeg' && (starts('ID3') || bytes.length > 2 && bytes[0] === 0xff && (bytes[1]! & 0xe0) === 0xe0)
 }

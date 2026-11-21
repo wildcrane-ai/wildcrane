@@ -52,7 +52,13 @@ Build or revise the requested template from the current `clone-storyboard` draft
 - **Cost**: wait for valid approval of every required prerequisite before downstream music, speech, image or video generation and rendering; stopping, resuming or answering a question never grants approval.
 - **Revision**: when an approved draft changes, use the task’s review mechanism to return affected work for review before dependent production; preserve unaffected drafts and cached clips.
 - **Existing tasks**: keep pinned files and review evidence readable; when switching definitions, revise affected Preview references through the saved review plan, without transferring approval to renamed outputs.
-- **Delivery**: submit the requested comparison and reusable files, report remaining differences honestly, and stop at any required final review; never publish unless requested.
+
+## Land
+
+Deliver the requested comparison and reusable files from the task's asset folder or the folder
+specified on the card. For a template, check the render against the source, record the render
+command and template path, and name any remaining differences by beat. Complete delivery after
+any required final review and publish only when requested.
 
 ## Terms
 

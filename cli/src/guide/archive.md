@@ -6,16 +6,13 @@ Record the delivered outcome and verification on the task. Do not write independ
 
 ## Archive the card
 
-Use `akb raw delivery complete <id>` to finish the approved task and archive the card.
-Follow the returned result.
-Outside an active delivery, use `akb raw archive <id>` or `akb raw reject <id>`.
+Verify the approved requirements and outputs. Leave unmet work unchecked and handle blockers
+through `akb guide implement`.
 
-Finish cards through these commands, never by deleting their files.
+For an active delivery, run `akb raw delivery complete <id>` and follow the handoff. For Git
+projects, supply `--commit <full-sha> --branch <target>`. If interrupted, inspect the recorded
+result and retry the same completion.
 
-Before completion, verify the complete approved requirements and outputs.
-Record results on the card, leave unmet work unchecked, and handle user-action blockers through
-`akb guide implement`.
-
-Once those checks pass, run `akb raw delivery complete <id>`. Software
-tasks in a git project supply `--commit <full-sha> --branch <target>`.
-If completion was interrupted, inspect the recorded result and retry the same completion.
+Outside an active delivery, use `akb task archive <task>`. The current Runner task archives
+locally and synchronizes afterward. Other tasks archive in Cloud before the command returns.
+Use `akb task remove <task> [reason...]` to remove a task.

@@ -25,6 +25,7 @@ beforeEach(() => {
     write(path.join(dir, 'references/writer/notes.md'), 'Before\n')
     write(path.join(dir, 'references/writer/deleted.md'), 'Remove\n')
   }
+  fs.appendFileSync(path.join(draft, 'STUDIO.md'), '\n## Land\n\nCheck and save the requested document.\n')
   write(path.join(draft, 'references/writer/notes.md'), 'After\n')
   write(path.join(draft, 'references/writer/added.md'), 'New\n')
   fs.rmSync(path.join(draft, 'references/writer/deleted.md'))
@@ -37,6 +38,7 @@ it('freezes complete files and prints ungrouped Studio and attachment previews',
   assert.equal(review.agents, undefined)
   assert.equal(review.results, undefined)
   assert.equal(review.base.version, 3)
+  assert.match(read(review.files.find((f: { path: string }) => f.path === 'STUDIO.md').diff), /\+## Land/)
   assert.equal(review.fingerprint, cmdStudioValidate(draft).fingerprint)
   assert.equal(setItems(setBlock(String(out.files))!.tags).length, 3)
   for (const f of review.files) {

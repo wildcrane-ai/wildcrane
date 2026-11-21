@@ -89,63 +89,6 @@ function readCatalog(): SpecAgentCatalog {
   return { agents, problems, refused }
 }
 
-/** Where each agent sits in this board's studios (#2152): `<studio>#preview`, `land` or
- *  `scheduled`. Agents in no studio are absent. */
-export type AgentPlaces = Map<string, string>
-
-/** Check what only one group reads (#2152): `when`, `after` and `session` belong to a
- *  preview, `reads` to a scheduled agent, and `after` names a preview of the same studio and
- *  never loops back (#2154). One line per key ignored, and each preview's `after` as it is used. */
-export function checkAgentKeys(agents: SpecAgent[], places: AgentPlaces): { problems: string[]; after: Map<string, string[]> } {
-  const problems: string[] = []
-  const preview = (name: string) => places.get(name)?.includes('#') ?? false
-  for (const agent of agents) {
-    const where = places.get(agent.name)
-    if (!where) continue
-    const ignored = [
-      ...(!preview(agent.name) && agent.when ? ['when'] : []),
-      ...(!preview(agent.name) && agent.after.length ? ['after'] : []),
-      ...(!preview(agent.name) && agent.session ? ['session'] : []),
-      ...(!preview(agent.name) && agent.stages ? ['stages'] : []),
-      ...(where !== 'scheduled' && agent.reads ? ['reads'] : []),
-    ]
-    for (const key of ignored) problems.push(`${agent.from}: \`akb.${key}\` is read only on ${key === 'reads' ? 'a scheduled agent' : 'a preview'} — ignoring it`)
-  }
-  const byName = new Map(agents.map((a) => [a.name, a]))
-  const after = new Map<string, string[]>()
-  for (const agent of agents.filter((a) => preview(a.name))) {
-    after.set(
-      agent.name,
-      agent.after.filter((other) => {
-        if (places.get(other) === places.get(agent.name)) return true
-        const what = byName.has(other) ? 'is not a preview of the same studio' : 'is not an agent on this board'
-        problems.push(`${agent.from}: \`akb.after\` names \`${other}\`, which ${what} — ignoring it`)
-        return false
-      }),
-    )
-  }
-  // Drop the edge that closes each loop, walking in board order.
-  const state = new Map<string, 'open' | 'done'>()
-  const visit = (name: string): void => {
-    state.set(name, 'open')
-    after.set(
-      name,
-      after.get(name)!.filter((other) => {
-        const seen = state.get(other)
-        if (seen === 'open') {
-          problems.push(`${byName.get(name)!.from}: \`akb.after\` names \`${other}\`, which waits on \`${name}\` already, so the two make a loop — ignoring it`)
-          return false
-        }
-        if (!seen) visit(other)
-        return true
-      }),
-    )
-    state.set(name, 'done')
-  }
-  for (const name of after.keys()) if (!state.has(name)) visit(name)
-  return { problems, after }
-}
-
 // ---- the agents the command ships ------------------------------------------
 
 const bundledFolders = (): string[] =>

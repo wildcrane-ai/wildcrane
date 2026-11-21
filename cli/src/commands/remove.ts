@@ -9,7 +9,7 @@ import path from 'node:path'
 
 import { activeDelivery, heldByDelivery } from '../lib/agent/deliveries'
 import { cardCreation, creationOf, readRuns, runIsLive, withStore } from '../lib/agent/store'
-import { runnerProject } from '../lib/cloud/tasks'
+import { runnerProject, workspaceTask } from '../lib/cloud/tasks'
 import { insideRun } from '../lib/agent/env'
 import { withCreationLock } from '../lib/agent/creation-lock'
 import { withBoardLock } from '../lib/lock'
@@ -118,7 +118,7 @@ interface Rejection {
 function stampLeaving(cards: { id: number; file: string }[], rejection: Rejection | null): void {
   const day = formatDay()
   const stamp = rejection && !rejection.discard
-    ? { reason: rejection.reason, at: new Date().toISOString(), by: insideRun() ? 'agent' as const : 'user' as const }
+    ? { reason: rejection.reason, at: new Date().toISOString(), by: insideRun() || workspaceTask() ? 'agent' as const : 'user' as const }
     : rejection && { reason: rejection.reason }
   for (const card of cards) {
     if (!fs.existsSync(card.file)) continue
@@ -130,6 +130,7 @@ function stampLeaving(cards: { id: number; file: string }[], rejection: Rejectio
 
 export interface RemoveOptions {
   completing?: string
+  archivingTask?: boolean
   /** This removal is the board closing a group root under its last subtask (#299). The
    *  root's own enclosing group is not chased any further, and no memory note is asked
    *  for: each subtask wrote its own shipped line as it left, and the root's would only
@@ -193,6 +194,16 @@ function removeCard(id: number, metric: Metric, options: RemoveOptions): MoveRes
   // Read while the group's folder is still in `todo/`.
   const leftIds = leavingIds(id, found)
   const leaving = leavingCards(id, found)
+  if (options.archivingTask) {
+    for (const card of leaving) {
+      const meta = parseFrontmatter(fs.readFileSync(card.file, 'utf8')).meta
+      if (!meta || meta.rejected) die(`#${card.id} is not eligible for archive.`, { kind: 'conflict' })
+      if (meta.questions.length) die(`Resolve the open questions on #${card.id} before archiving.`, { kind: 'conflict' })
+      if (card.id !== id && (activeDelivery(card.id) || creationRefusal(card.id, cardCreation(card.id), 'archive', false))) {
+        die(`Finish the active work on #${card.id} before archiving.`, { kind: 'card-held' })
+      }
+    }
+  }
   if (options.discard && !options.cleanupDiscarded) {
     const runs = readRuns()
     for (const card of leaving) {
@@ -369,7 +380,7 @@ function printHandoff(ids: number[], meta: Meta | null, mentions: Mention[]): { 
   }
   if (mentions.some((m) => m.where !== 'body')) {
     say('     A mention in frontmatter is the script\'s to rewrite, not yours:')
-    say('     `update-questions <id> --update <n> "..."` (see help).')
+    say('     `akb task update-questions <task> --update <n> "..."` (see help).')
   }
   return note
 }

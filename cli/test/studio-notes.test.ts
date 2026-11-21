@@ -34,7 +34,8 @@ beforeEach(() => {
     const route = String(url).slice(API.length)
     if (init?.method === 'PUT') {
       puts.push({ route, rule: JSON.parse(String(init.body)).rule })
-      return Response.json({})
+      const rule = puts.at(-1)!.rule
+      return Response.json(route.endsWith('/rule') ? { id: route.split('/').at(-2), rule } : { agent: route.split('/').at(-1), rule })
     }
     if (route === '/v1/projects/prj_1') return Response.json({ id: 'prj_1', workspace: 'ws_1' })
     if (route === '/v1/projects/prj_1/agents') return Response.json({ board: ['proposer', 'memory-pruner'], data: [{ agent: 'proposer', rule: 'Propose less.' }, { agent: 'memory-pruner', rule: '' }] })
@@ -95,4 +96,26 @@ it('prints the current rules without writing when no text is given', async () =>
   }
   assert.match(out.join(''), /- Titles in English\.\n- Tests first\.[\s\S]*Propose less\./)
   assert.deepEqual(puts, [])
+})
+
+it('reports verification failure, preserves the prior Studio list and rejects missing save receipts', async (t) => {
+  const dev = process.env.AI4KANBAN_STUDIOS
+  delete process.env.AI4KANBAN_STUDIOS
+  t.after(() => { if (dev !== undefined) process.env.AI4KANBAN_STUDIOS = dev })
+  const fetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    const route = new URL(String(url)).pathname
+    if (route === '/v1/studios') return Response.json({ data: [], next: null })
+    return fetch(url, init)
+  }
+  await run(root, ['studio', 'list'])
+  globalThis.fetch = async (url, init) => {
+    const route = new URL(String(url)).pathname
+    if (route === '/v1/studios') return Response.json({ error: { code: 'forbidden', message: 'Studio access was revoked.' } }, { status: 403 })
+    if (init?.method === 'PUT') return Response.json({})
+    return fetch(url, init)
+  }
+  await assert.rejects(() => run(root, ['studio', 'list']), /Showing cached Studios.*Studio access was revoked/)
+  await assert.rejects(() => run(root, ['studio', 'rule', 'coding', '--text', 'New rule']), /saved Studio rules/)
+  await assert.rejects(() => run(root, ['studio', 'instructions', 'proposer', '--text', 'New rule']), /saved instructions/)
 })

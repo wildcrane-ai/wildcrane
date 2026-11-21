@@ -14,6 +14,8 @@ export interface QuestionOp {
   question?: Question
 }
 
+export const QUESTION_EDIT_LIMITS = { operations: 50, text: 4000, options: 20, option: 200 }
+
 export class QuestionOpError extends Error {}
 
 /** One or more 1-based question positions (`1` or `1,3`), checked against the list's length. */

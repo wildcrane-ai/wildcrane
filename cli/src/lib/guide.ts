@@ -37,7 +37,6 @@ import reflect from '../guide/reflect.md'
 import resolve from '../guide/resolve.md'
 import resolveConflict from '../guide/resolve-conflict.md'
 import revise from '../guide/revise.md'
-import previewAgent from '../guide/preview-agent.md'
 import updateQuestions from '../guide/update-questions.md'
 import troubleshoot from '../guide/troubleshoot.md'
 import writeAgent from '../guide/write-agent.md'
@@ -76,7 +75,6 @@ export const GUIDES: Guide[] = [
   { name: 'describe-project', when: 'rewrite the description of what the project is today', text: describeProject },
   { name: 'review-rejections', when: 'learn what the user does not want from their rejection and dismissal reasons', text: reviewRejections },
   { name: 'reflect', when: 'propose the work just-completed cards leave behind', text: reflect },
-  { name: 'preview-agent', when: 'be a preview agent: write your one section of a card', text: previewAgent },
   { name: 'write-agent', when: 'create or change an agent, including one built from a skill — its AGENT.md, files, memory, and how to check it', text: writeAgent },
   { name: 'write-prompt', when: "write or change any prompt's text — an agent, a skill, a guide, or a prompt in code", text: writePrompt },
   { name: 'module-map', when: 'write or rebuild docs/kanban/modules.md', text: moduleMap },

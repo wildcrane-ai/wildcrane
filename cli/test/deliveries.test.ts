@@ -24,7 +24,7 @@ import {
 } from '../src/lib/agent/deliveries.ts'
 import { RUN_ENV } from '../src/lib/agent/env.ts'
 import { restartPrompt, resumePrompt } from '../src/lib/agent/prompts.ts'
-import { cancelDelivery, listRuns, openResume, recoverOrphanedDeliveries, resumeDelivery } from '../src/lib/agent/sessions.ts'
+import { cancelDelivery, listRuns, openResume, reconcileCardDelivery, recoverOrphanedDeliveries, releaseCardDelivery, resumeDelivery } from '../src/lib/agent/sessions.ts'
 import { readStore, withStore } from '../src/lib/agent/store.ts'
 import type { RunRecord } from '../src/lib/agent/types.ts'
 import { DELIVERIES, setBoardRoot } from '../src/lib/paths.ts'
@@ -887,6 +887,48 @@ describe('carrying an ended delivery on', () => {
   it('answers to a prefix of the delivery id', async () => {
     stopped('carryeee')
     assert.equal((await resumeDelivery('carrye')).deliveryId, 'carryeee')
+  })
+
+  it('reconciles none, running, resumable, completed and safely releases write lock (#966)', async () => {
+    assert.equal((await reconcileCardDelivery(5)).kind, 'none')
+    const id = start(session({ status: 'running', pid: process.pid, startedAt: Date.now() }))
+    const live = await reconcileCardDelivery(5)
+    assert.equal(live.kind, 'running')
+    assert.equal(live.kind === 'running' && live.deliveryId, id)
+    const blocked = await releaseCardDelivery(5)
+    assert.equal(blocked.ok, false)
+
+    // Simulate exited watcher (dead pid) so reconcile reaps it and classifies as resumable.
+    withStore((store) => {
+      const run = store.runs.find((r) => r.deliveryId === id)!
+      run.pid = 999999
+      run.startedAt = Date.now() - 60_000
+    })
+    const resumable = await reconcileCardDelivery(5)
+    assert.equal(resumable.kind, 'resumable')
+    assert.equal(resumable.kind === 'resumable' && resumable.deliveryId, id)
+    assert.ok(heldByDelivery(5))
+
+    const released = await releaseCardDelivery(5)
+    assert.equal(released.ok, true)
+    assert.equal(released.ok && released.released, true)
+    assert.equal(heldByDelivery(5), undefined)
+    assert.equal(rowOf(id)?.status, 'failed')
+    assert.ok(rowOf(id)?.steps.some((s) => s.step === 'released'))
+    assert.equal(readAudit(id).status, 'failed')
+
+    // Completed delivery returns receipt & landing info.
+    withStore((store) => {
+      const row = store.deliveries.find((d) => d.deliveryId === id)!
+      row.status = 'finished'
+      row.landing = { status: 'landed', commit: 'a'.repeat(40), attempts: 0, at: Date.now() }
+      row.targetBranch = 'main'
+    })
+    const completed = await reconcileCardDelivery(5)
+    assert.equal(completed.kind, 'completed')
+    assert.equal(completed.kind === 'completed' && completed.deliveryId, id)
+    assert.equal(completed.kind === 'completed' && completed.commit, 'a'.repeat(40))
+    assert.equal(completed.kind === 'completed' && completed.branch, 'main')
   })
 })
 

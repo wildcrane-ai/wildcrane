@@ -587,6 +587,42 @@ describe('the plugin component', () => {
     }
   })
 
+  it('keeps web discussions on their draft and lets independent Codex sessions open one (#982)', async () => {
+    useRunnerHome()
+    fs.rmSync(runnerHome(), { recursive: true, force: true })
+    writeFakeSession(runnerHome())
+    const cloud = new FakeCloud()
+    await cloud.start()
+    const url = `http://127.0.0.1:${cloud.port}`
+    const web = component('codex', url, { WILDCRANE_JOB: '1' })
+    const local = component('codex', url, { WILDCRANE_JOB: '' })
+    const call = async (client: typeof web, id: number, name: string, args: Record<string, unknown>) => {
+      await client.ready
+      client.send(id, 'tools/call', { name, arguments: args, _meta: { threadId: 'test-codex-thread' } })
+      await until(() => client.answers.has(id))
+      const result = client.answers.get(id)!.result as { isError?: boolean; content: { text: string }[] }
+      return { ...JSON.parse(result.content[0]!.text), isError: result.isError }
+    }
+    try {
+      const read = await call(web, 2, 'wildcrane_draft_read', { path: os.homedir() })
+      assert.equal(read.isError, true)
+      assert.match(read.message, /akb goal/)
+      assert.equal(cloud.discussions.length, 0)
+
+      const draft = await call(local, 2, 'wildcrane_draft_read', { path: os.homedir() })
+      assert.equal(cloud.discussions.length, 1)
+      assert.equal((await call(local, 3, 'wildcrane_draft_read', { path: os.homedir() })).discussion, draft.discussion)
+      const save = await call(web, 3, 'wildcrane_draft_save', { discussionId: draft.discussion, expectedVersion: draft.version, goals: [] })
+      assert.equal(save.isError, true)
+      assert.match(save.message, /akb goal/)
+      assert.equal((await call(local, 4, 'wildcrane_draft_read', { discussionId: draft.discussion })).version, draft.version)
+      assert.equal(cloud.discussions.length, 1)
+    } finally {
+      await Promise.all([web, local].map(({ child }) => new Promise(resolve => { child.once('exit', resolve); child.stdin.end() })))
+      await cloud.stop()
+    }
+  })
+
   for (const sharedHost of ['dsh', 'grok'] as const) it(`opens a new discussion for each ${sharedHost} chat and keeps it by id (#675)`, async () => {
     useRunnerHome()
     fs.rmSync(runnerHome(), { recursive: true, force: true })

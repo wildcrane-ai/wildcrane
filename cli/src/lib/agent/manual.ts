@@ -18,15 +18,14 @@ Print it, or run it
               command that closes the job — because nothing is watching you finish.
   (no flag)   start a separate session with its own context.
 
-  Choose either mode for preview work. Other board actions inside a board run print their
-  flows; preview requests can queue a separate session.
+  Inside a task session, board actions print their flows. Prepare requested Previews there.
 `,
 
   /** Under `delivery`: what one is, which no verb of it says on its own. */
   deliveries: (program: string): string => `
 What a delivery is
-  A delivery freezes the approved requirements and runs the studio agents in order.
-  Each agent records its result with \`delivery complete\`; the final step archives the card.
+  A delivery freezes the approved requirements. The task session records the result with
+  \`delivery complete\` and archives the card.
   The builder manages its branch, worktree, checks and merge. File studios deliver their
   recorded outputs in the authorized directory. A successful run alone does not finish a delivery.
   \`cancel\` ends it and preserves files. \`resume\` continues unfinished work.

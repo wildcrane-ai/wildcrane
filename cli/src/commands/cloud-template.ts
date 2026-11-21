@@ -11,7 +11,8 @@ import path from 'node:path'
 
 import { cloudEndpoints } from '../lib/cloud/config'
 import { accessToken } from '../lib/cloud/session'
-import { say } from '../lib/io'
+import { BoardError, say } from '../lib/io'
+import { cloudBytes, cloudError, cloudProblem, hasText, invalidResponse, isRecord, readCloudJson, requireResponse, type CloudProblem } from '../lib/cloud/response'
 import { die } from '../lib/paths'
 import type { MoveResult } from '../lib/types'
 import { SAID } from './cloud'
@@ -61,8 +62,10 @@ function usage(problem: string, line: string): never {
   die(`${problem}\nusage: ${line}`, { kind: 'bad-args', bare: true, exitCode: 2 })
 }
 
-function refuse(m: Said, also?: Said): never {
-  die([m.zh, m.en, ...(also ? [also.zh, also.en] : [])].join('\n'), { kind: 'cloud-refused', bare: true })
+function refuse(m: Said, also?: Said, problem?: CloudProblem): never {
+  const message = [m.zh, m.en, problem?.message, also?.zh, also?.en].filter(Boolean).join('\n')
+  if (problem) throw cloudError({ ...problem, message }, { bare: true })
+  die(message, { kind: 'cloud-refused', bare: true })
 }
 
 function invalid(zh: string, en: string): never {
@@ -73,7 +76,8 @@ function invalid(zh: string, en: string): never {
  *  route with no template name (tags, search) means the catalog itself is missing. */
 async function ask(route: string, init: RequestInit = {}, fallback?: Said): Promise<Response> {
   const token = await accessToken()
-  if (!token.ok) refuse(SAID[token.reason], fallback)
+  if (!token.ok) refuse(SAID[token.reason], fallback, { code: token.reason.replace('-', '_'),
+    message: 'error' in token ? token.error ?? '' : '', retryable: token.reason === 'unreachable' })
   let res: Response
   try {
     res = await fetch(`${cloudEndpoints().api}/v1/templates${route}`, {
@@ -81,21 +85,56 @@ async function ask(route: string, init: RequestInit = {}, fallback?: Said): Prom
       headers: { authorization: `Bearer ${token.token}` },
     })
   } catch {
-    refuse(SAID.unreachable, fallback)
+    refuse(SAID.unreachable, fallback, { code: 'unreachable', message: '', retryable: true })
   }
   if (res.ok) return res
-  const { error } = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } }
-  if (res.status === 401) refuse(SAID.expired, fallback)
-  if (error?.code === 'pro_required') refuse(T.pro_required, fallback)
+  const problem = cloudProblem(res, await readCloudJson(res))!
+  if (res.status === 401) refuse(SAID.expired, fallback, problem)
+  if (problem.code === 'pro_required') refuse(T.pro_required, fallback, problem)
   const named = route.startsWith('/') && !route.startsWith('/tags?')
-  if (error?.code === 'not_found' && named) refuse(T.not_found, fallback)
-  if (error?.code === 'owner_only') refuse(T.publisher_only)
-  if (error?.code === 'template_exists') refuse(T.exists)
-  if (res.status === 400) invalid(error?.message ?? '', error?.message ?? '')
-  refuse(T.failed, fallback)
+  if (problem.code === 'not_found' && named) refuse(T.not_found, fallback, problem)
+  if (problem.code === 'owner_only') refuse(T.publisher_only, undefined, problem)
+  if (problem.code === 'template_exists') refuse(T.exists, undefined, problem)
+  if (res.status === 400) refuse({ zh: '模板请求未通过校验。', en: 'The template request is not valid.' }, fallback, problem)
+  refuse(T.failed, fallback, problem)
 }
 
-const asJson = async <T>(res: Response): Promise<T> => (await res.json()) as T
+async function asJson<T>(res: Response): Promise<T> {
+  const value = await readCloudJson(res)
+  const problem = cloudProblem(res, value)
+  if (problem) throw cloudError(problem)
+  if (!isRecord(value)) throw cloudError(invalidResponse('a valid template response'))
+  return value as T
+}
+
+function entries(value: unknown): value is Entry[] {
+  return Array.isArray(value) && value.every(entry => isRecord(entry) && hasText(entry.path)
+    && !/[\\:\0]/.test(entry.path) && entry.path.split('/').every(part => !!part && part !== '.' && part !== '..')
+    && typeof entry.size === 'number' && Number.isSafeInteger(entry.size) && entry.size >= 0
+    && (entry.sha256 === undefined || typeof entry.sha256 === 'string' && /^[a-f0-9]{64}$/.test(entry.sha256)))
+}
+
+async function downloadEntries(name: string, kind: 'previews' | 'evidence', files: Entry[], to: string, fallback?: Said): Promise<string[]> {
+  if (!SLUG.test(name)) throw cloudError(invalidResponse('a valid template name'))
+  const fetched: { out: string; bytes: Buffer }[] = []
+  const names = new Set<string>()
+  const expected = 'a matching template download'
+  for (const file of files) {
+    const leaf = path.basename(file.path)
+    const out = path.join(to, kind === 'previews' && leaf.startsWith(`${name}-`) ? leaf : `${name}-${leaf}`)
+    if (names.has(out)) refuse(T.corrupt, fallback, invalidResponse(expected))
+    names.add(out)
+    const bytes = await cloudBytes(await ask(`/${encodeURIComponent(name)}/${kind}/${route(file.path)}`, {}, fallback), expected, { size: file.size })
+    if (file.sha256 && createHash('sha256').update(bytes).digest('hex') !== file.sha256) refuse(T.corrupt, fallback, invalidResponse(expected))
+    fetched.push({ out, bytes })
+  }
+  if (fetched.length) fs.mkdirSync(to, { recursive: true })
+  return fetched.map(({ out, bytes }) => {
+    fs.writeFileSync(out, bytes)
+    say(out)
+    return out
+  })
+}
 
 function category(value: string | undefined, line: string): string {
   if (!value) usage('Missing --category.', line)
@@ -144,19 +183,10 @@ export async function templateSearch(
 export async function templatePreview(name: string, opts: { to?: string }, program: string): Promise<MoveResult> {
   if (!opts.to) usage('Missing --to.', `${program} template preview <name> --to <dir>`)
   const at = encodeURIComponent(name)
-  const { previews } = await asJson<{ previews: Entry[] }>(await ask(`/${at}/previews`, {}, WITHOUT))
-  if (previews.length === 0) say(`这个模板没有预览图。\nThis template has no preview.`)
-  const written: string[] = []
-  for (const p of previews) {
-    const bytes = Buffer.from(await (await ask(`/${at}/previews/${route(p.path)}`, {}, WITHOUT)).arrayBuffer())
-    const file = path.basename(p.path)
-    const out = path.join(opts.to, file.startsWith(`${name}-`) ? file : `${name}-${file}`)
-    fs.mkdirSync(opts.to, { recursive: true })
-    fs.writeFileSync(out, bytes)
-    written.push(out)
-    say(out)
-  }
-  return { name, previews: written }
+  const { previews } = requireResponse(await asJson<{ previews: Entry[] }>(await ask(`/${at}/previews`, {}, WITHOUT)),
+    'the template preview list', value => entries(value.previews))
+  if (previews.length === 0) say('这个模板没有预览图。\nThis template has no preview.')
+  return { name, previews: await downloadEntries(name, 'previews', previews, opts.to, WITHOUT) }
 }
 
 /** `akb template get <name> --to <dir>` — every file, checked against the catalog's
@@ -165,12 +195,17 @@ export async function templateGet(name: string, opts: { to?: string }, program: 
   if (!opts.to) usage('Missing --to.', `${program} template get <name> --to <dir>`)
   const to = opts.to
   const at = encodeURIComponent(name)
-  const { template } = await asJson<{ template: { files: Entry[] } }>(await ask(`/${at}`, {}, WITHOUT))
+  const { template } = requireResponse(await asJson<{ template: { files: Entry[] } }>(await ask(`/${at}`, {}, WITHOUT)),
+    'the template file list', value => isRecord(value.template) && entries(value.template.files))
   const fetched: { out: string; bytes: Buffer }[] = []
   for (const f of template.files) {
     const out = path.resolve(to, f.path)
     if (!out.startsWith(path.resolve(to) + path.sep)) refuse(T.corrupt, WITHOUT)
-    const bytes = Buffer.from(await (await ask(`/${at}/files/${route(f.path)}`, {}, WITHOUT)).arrayBuffer())
+    const response = await ask(`/${at}/files/${route(f.path)}`, {}, WITHOUT)
+    const bytes = await cloudBytes(response, 'a matching template file', { size: f.size }).catch(error => {
+      if (!(error instanceof BoardError)) throw error
+      return refuse(T.corrupt, WITHOUT, invalidResponse('a matching template file'))
+    })
     if (bytes.byteLength !== f.size || createHash('sha256').update(bytes).digest('hex') !== f.sha256) {
       refuse(T.corrupt, WITHOUT)
     }
@@ -197,22 +232,13 @@ const route = (p: string) => p.split('/').map(encodeURIComponent).join('/')
  *  captured at the time, which stays readable after the original site changes. */
 export async function templateSource(name: string, opts: { to?: string }): Promise<MoveResult> {
   const at = encodeURIComponent(name)
-  const { source, evidence } = await asJson<{ source: Record<string, unknown>; evidence: Entry[] }>(await ask(`/${at}/source`))
+  const { source, evidence } = requireResponse(await asJson<{ source: Record<string, unknown>; evidence: Entry[] }>(await ask(`/${at}/source`)),
+    'the template source and evidence list', value => isRecord(value.source) && entries(value.evidence))
+  const written = opts.to ? await downloadEntries(name, 'evidence', evidence, opts.to) : []
   if (source.original === true) say('原创模板，没有外部参考。\nAn original template, with no outside reference.')
   for (const [k, v] of Object.entries(source)) if (k !== 'original') say(`${k}: ${Array.isArray(v) ? v.join(', ') : String(v)}`)
-  const written: string[] = []
-  for (const e of evidence) {
-    if (!opts.to) {
-      say(`evidence: ${e.path}`)
-      continue
-    }
-    const out = path.join(opts.to, `${name}-${path.basename(e.path)}`)
-    fs.mkdirSync(opts.to, { recursive: true })
-    fs.writeFileSync(out, Buffer.from(await (await ask(`/${at}/evidence/${route(e.path)}`)).arrayBuffer()))
-    written.push(out)
-    say(out)
-  }
-  return { name, source, evidence: written.length > 0 ? written : evidence.map((e) => e.path) }
+  if (!opts.to) for (const file of evidence) say(`evidence: ${file.path}`)
+  return { name, source, evidence: opts.to ? written : evidence.map((e) => e.path) }
 }
 
 
@@ -251,7 +277,8 @@ export async function templatePublish(
   for (const f of opts.preview) add('previews', path.basename(f), f)
   for (const f of opts.evidence) add('evidence', path.basename(f), f)
 
-  const done = await asJson<{ name: string; replaced: boolean }>(await ask('', { method: 'POST', body: form }))
+  const done = requireResponse(await asJson<{ name: string; replaced: boolean }>(await ask('', { method: 'POST', body: form })),
+    'a template publication receipt', value => value.name === meta.name && typeof value.replaced === 'boolean')
   say(
     done.replaced
       ? `已替换 ${done.name}：${files.length} 个文件。\nReplaced ${done.name}: ${files.length} files.`
@@ -262,7 +289,8 @@ export async function templatePublish(
 
 /** `akb template delete <name>` — maintainers only. */
 export async function templateDelete(name: string): Promise<MoveResult> {
-  await ask(`/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  requireResponse(await asJson<{ name: string; deleted: boolean }>(await ask(`/${encodeURIComponent(name)}`, { method: 'DELETE' })),
+    'confirmation that the template was deleted', value => value.name === name && value.deleted === true)
   say(`已从模板库删除 ${name}。\nDeleted ${name} from the catalog.`)
   return { name, deleted: true }
 }
@@ -290,7 +318,8 @@ export async function templateShowcase(name: string, dir: string): Promise<MoveR
     if (!fs.existsSync(at)) invalid(`找不到文件 ${at}。`, `${at} does not exist.`)
     form.append(`media:${p}`, new Blob([fs.readFileSync(at)]), p)
   }
-  const done = await asJson<{ files: number }>(await ask(`/${encodeURIComponent(name)}/showcase`, { method: 'PUT', body: form }))
+  const done = requireResponse(await asJson<{ name: string; files: number }>(await ask(`/${encodeURIComponent(name)}/showcase`, { method: 'PUT', body: form })),
+    'a showcase publication receipt', value => value.name === name && value.files === new Set(named).size)
   say(`已更新 ${name} 的展示资料：${done.files} 个文件。\nUpdated ${name}'s showcase: ${done.files} files.`)
   return { name, files: done.files }
 }

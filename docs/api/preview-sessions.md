@@ -1,24 +1,8 @@
-# Preview sessions
+# Preview outputs
 
-`AGENT.md` may declare `akb.session: new` to recommend a separate session. The calling agent
-chooses either mode, including when the preview has its own runtime:
+A task session prepares the requested outputs using the Preview definitions in its bound
+Studio. Use `akb raw previews --studio <id>` to read the IDs and instructions.
 
-```sh
-akb raw previews ui-designer 738 --print
-akb raw previews ui-designer 738
-```
-
-`--print` enters the selected role in the current task session and prints its instructions.
-Omitting it starts a separate session, queued after the caller when inside a board run.
-Planning runs, task chats and external sessions use the same stage commands:
-
-```sh
-akb raw previews ui-designer 738 --stages ui-draft
-akb raw previews ui-designer 738 --revise-from ui-draft
-akb raw previews ui-designer 738 --submit --stage ui-draft
-```
-
-Each task, role and execution has its own baseline;
-re-entering the same request and submitting again preserve saved versions. Use `--revise-from` to revise saved work while preserving its confirmed prefix.
-Old executions, other tasks and unselected roles cannot submit. User confirmation still gates
-later stages. Existing command parameters and JSON results are unchanged.
+Use `akb task review <task>` to read the review plan and revision. Sync the card and assets
+before reporting an assigned node done, then use `akb task approve` for reviewable outputs.
+See [Task review](task-review.md) for the review and revision contract.

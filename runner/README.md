@@ -29,7 +29,7 @@ Codex 由 Runner 管理原生 App Server，任务直接连接；Runner 更新或
 - **看板与技能**：通过插件连接云端项目；Runner 在绑定目录和运行任务时把 kanban 技能写入项目，无需手动安装，并维护提交保护，保留用户文件和已有钩子。
 
 - **Node**: 22 or newer.
-- **代理**：宿主未传入代理时，在 `~/.wildcrane/proxy.env` 写入 `HTTPS_PROXY=...` 等代理变量并重启 Runner。支持 HTTP、HTTPS、ALL 和 NO_PROXY 的大小写形式。
+- **代理**：Runner 优先使用启动环境的 `HTTP_PROXY`、`HTTPS_PROXY` 或 `ALL_PROXY`，否则跟随 macOS 系统代理。其他平台可通过环境变量指定代理。旧版 `proxy.env` 中仍需使用的配置可移到启动环境。
 - **One computer per account**: a second computer is refused while the first is connected.
 - **Folders**: tasks run in `~/.wildcrane/work/`, or in a project folder listed in
   `~/.wildcrane/projects.json` (`{ "projects": ["/path/to/project"] }`). Any other folder is

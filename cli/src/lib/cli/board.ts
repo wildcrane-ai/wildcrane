@@ -8,7 +8,7 @@
 
 import { insideRun } from '../agent/env'
 import { recordCards } from '../agent/created-cards'
-import { runAgent } from '../agent/scheduled'
+import { runAgent } from '../agent/project-agent'
 import { board, moveTarget, withLease, type MoveOutput, type OpResult } from '../board'
 import { BOARD_MOVES, READ_ONLY_MOVES } from '../board/local'
 import { BoardError, say, warn } from '../io'
@@ -40,6 +40,7 @@ import { validateCreate, type CreateOptions } from '../../commands/card'
 import { declareRaw } from './agent'
 import { conflictList, conflictShow } from '../shared/board-conflicts'
 import { submitConflict } from '../cloud/board-conflicts'
+import { withQuestionOptions } from './question-options'
 
 /** What the door hands in — see `runBoard`. */
 export interface BoardCliOptions {
@@ -179,7 +180,7 @@ function refuseRecurring(command: Command): void {
   const { recurring, cadence } = command.opts()
   if (recurring === undefined && cadence === undefined) return
   command.error(
-    `error: ${recurring !== undefined ? '--recurring' : '--cadence'} is gone — repeating work is a scheduled agent now, not a card. Write one with \`akb guide write-agent\`.`,
+    `error: ${recurring !== undefined ? '--recurring' : '--cadence'} is no longer supported. Configure recurring work in the project’s background task settings.`,
   )
 }
 
@@ -282,7 +283,6 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
     .option('--source <ref>', "where it came from: a plan's path, plan:<id>, #<id> or a URL. Repeatable; \"\" clears the list", collect)
     .option('--add-source <ref>', 'append one source, keeping the ones already there. Repeatable', collect)
     .option('--previews <ids>', 'the Preview IDs chosen from its Studio; "" chooses none', collectList)
-    .option('--phase <n>', 'the approval it is on, 1-based')
     .option('--slug <slug>', 'rename the file')
     .option('--studio <id>', 'the studio it runs through. The card goes back to todo and is re-planned')
     .addOption(new Option('--cadence <cadence>').hideHelp())
@@ -291,28 +291,11 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
       await dispatch('update', this, [String(id)], this.opts(), cli)
     })
 
-  // Every op patches the list in place and they run in the order typed, so handing one
-  // question to the user never means re-passing its siblings.
   const questionOps: Typed[] = []
-  const opInOrder = ordered(questionOps)
-
-  move('update-questions')
+  withQuestionOptions(withShared(program.command('update-questions', { hidden: true }))
     .argument('<id>', ID, cardId)
-    .summary("patch a card's open questions: append, rewrite, drop, skip, or clear")
-    .description(
-      'Patch the open-question list in place. Ops apply in the order they were typed, and a position is ' +
-        'read against the list as it stands when its op runs. Positions are 1-based. A question handed to ' +
-        'the user always carries choices to tick — follow `akb guide update-questions`. --option, ' +
-        '--recommended-option, --mode and --agent attach to the --append or --update before them.',
-    )
-    .option('--append <text>', 'add one question to the end', opInOrder('append'))
-    .option('--update <n> <text...>', 'rewrite question <n> whole', opInOrder('update'))
-    .option('--drop <positions>', 'remove answered questions, e.g. 1 or 1,3', opInOrder('drop'))
-    .option('--clear', 'remove every open question', opInOrder('clear'))
-    .option('--option <text>', 'a choice for the op before it', opInOrder('option'))
-    .option('--recommended-option <text>', 'a choice for the op before it, ticked to start', opInOrder('recommended-option'))
-    .option('--mode <mode>', 'how many choices the op before it takes: single | multi', opInOrder('mode'))
-    .option('--agent <name>', 'the preview agent whose section the op before it is about', opInOrder('agent'))
+    .summary('edit open questions on a local card (compatibility)')
+    .description('For older Runner instructions. Use akb task update-questions.\nSee akb guide update-questions.'), questionOps)
     .action(async function (this: Command, id: number) {
       await dispatch('update-questions', this, [String(id)], { ops: questionOps }, cli)
     })
@@ -334,7 +317,7 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
 
   move('file')
     .argument('<studio>', 'the studio, e.g. blog-post')
-    .argument('<path>', 'the file as `akb studio pull` lays it out: shared/… or agents/<name>/…')
+    .argument('<path>', 'the path inside the Studio folder')
     .summary('print one file of a studio')
     .description("In a task's run, reads the version the task is pinned to; otherwise the current one.")
     .action(async function (this: Command, studio: string, file: string) {
@@ -380,35 +363,17 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
     .option('--archived', 'the cards that landed and were archived, oldest first, each with its landed commit')
     .option(
       '--since <time>',
-      'with --archived: only landings after this time, written "YYYY-MM-DD HH:MM"; inside a scheduled ' +
-        "agent's run, `last-run` is when its last run began",
+      'with --archived: only landings after this time, written "YYYY-MM-DD HH:MM"',
     )
     .option('--studio <id>', 'with --archived: only the cards of that studio')
     .action(async function (this: Command) {
       await dispatch('list', this, [], this.opts(), cli)
     })
 
-  move('archive')
-    .argument('<id>', ID, cardId)
-    .summary('finish a card')
-    .description(
-      "File it to .archive/, strip its index entry, drop its id from every other card's blocked_by and " +
-        'related, keep its assets, and count it completed. Ends with a handoff: which memory file the ' +
-        'note goes in, and every line elsewhere that still mentions the id — read that instead of ' +
-        'grepping, because a bare id also matches dates.',
-    )
-    .action(async function (this: Command, id: number) {
-      await dispatch('archive', this, [String(id)], this.opts(), cli)
-    })
-
   move('reject')
     .argument('<id>', ID, cardId)
-    .summary('drop a card')
-    .description(
-      'The same clean-up as archive: the file or folder moves to .archive/, marked `rejected: true`, and ' +
-        'the card counts as rejected. It stays readable there and is listed as rejected. A reason is kept ' +
-        'on the card, and on each subtask a group takes with it.',
-    )
+    .summary('legacy local removal; use task remove')
+    .description('Use akb task remove to remove the current task or a Cloud task. This compatibility command always removes a card from the local board.')
     .option('--discard', 'just drop it: nothing learns from it')
     .option('--reason <text>', 'why, kept on the archived card as `rejected_reason` and shown on its page')
     .action(async function (this: Command, id: number) {

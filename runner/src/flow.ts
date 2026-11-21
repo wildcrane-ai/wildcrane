@@ -1,3 +1,5 @@
+import type { BoardRunSpend } from './recovery'
+import { agentRecovery, type ExecutionFailure } from '../../cli/src/lib/agent/retry'
 import { connectionStopped } from '../../cli/src/lib/agent/connection-process'
 // A flow job (#2020): one board verb, run with the akb the Runner carries on the task's board
 // and followed to its end — for `implement`, until the delivery has landed. A periodic agent's
@@ -7,9 +9,12 @@ import { cloudLanguage } from '../../cli/src/lib/agent/language'
 import { processesStopped, runMark } from '../../cli/src/lib/agent/stop'
 import type { ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 
-import { SCHEDULED_AGENTS_ENV, SESSION_COST_ENV } from '../../cli/src/lib/agent/env'
+import { APPROVED_UI_DIR_ENV, approvedUiPreviews } from '../../cli/src/lib/agent/approved-ui'
+import { SAVED_PREVIEW_FILE_ENV, SESSION_COST_ENV } from '../../cli/src/lib/agent/env'
 import type { DeliveryEnding, DeliveryStatus } from '../../cli/src/lib/agent/types'
 import { parseFrontmatter } from '../../cli/src/lib/frontmatter'
 import { asEvent, type RunEvent } from '../../cli/src/lib/agent/wire'
@@ -25,10 +30,12 @@ import { akbCardOf, cardAssetsDir, cardFile, findCard, mcpServersOf, pull, push,
 import { studioName } from '../../cli/src/lib/shared/board-files.ts'
 import { pendingConflicts } from '../../cli/src/lib/shared/board-conflicts'
 import { reviewAllows, reviewAuthorization } from '../../cli/src/lib/shared/review-plan'
+import { stageApprovedUi } from './approved-ui'
+import { stageSavedPreviews } from './saved-previews'
 import { layOut, type Laid } from './triage'
 import { removeLegacyKanbanSkill } from './kanban-skill'
 import { installCommitHook } from '../../cli/src/lib/skill/hook'
-import { syncRefusal, syncStopped, type Sync, type SyncStep } from './sync-retry'
+import { syncBackoff, syncRefusal, syncStopped, type Sync, type SyncStep } from './sync-retry'
 
 /** Why the runtime a job names cannot run here; null when it can. */
 export function unavailable(wanted: Job['runtime'], reports: RuntimeReport[]): string | null {
@@ -42,7 +49,7 @@ export interface FlowDeps {
   machineId: string
   akb: Akb
   runtimes: () => Promise<RuntimeReport[]>
-  api: Pick<typeof api, 'readTask' | 'readStudio' | 'readRejections' | 'markReviewed' | 'readAgents'>
+  api: Pick<typeof api, 'readTask' | 'readRejections' | 'markReviewed'>
   /** How long stopping the job's board runs may take. */
   stopMs: number
 }
@@ -56,7 +63,15 @@ export interface FlowIo {
   lost: () => boolean
   asked?: () => boolean
   diagnostic?: string
+  repairDelivery?: boolean
   sync?: Sync
+  syncBackoff?: (attempt: number) => number
+  reconcileRetry?: {
+    get: () => { attempt: number; at: number } | undefined
+    set: (next: { attempt: number; at: number } | undefined) => void
+  }
+  starting?: () => void | Promise<void>
+  flowRun?: import('./recovery').Checkpoint['flowRun']
 }
 
 const stopping = (io: FlowIo) => io.lost() || !!io.asked?.()
@@ -69,21 +84,26 @@ function refusedSync(job: Job, problem: Extract<api.Call<unknown>, { ok: false }
 }
 
 
-export type FlowEnd = { ok: true; report: JobReport; reviewed?: Laid } | { ok: false; reason: string; stopped?: boolean }
+export type FlowEnd = { ok: true; report: JobReport; reviewed?: Laid } | { ok: false; reason: string; stopped?: boolean; failure?: ExecutionFailure; report?: JobReport }
 
-interface Run {
-  sessionId: string
+type Delivery = { id?: string; status?: DeliveryStatus; commit?: string; branch?: string; ending?: DeliveryEnding }
+
+interface Run extends BoardRunSpend {
+  parentId?: string
+  cloudExecution?: { job: string; machine: string }
+  resumeId?: string
+  pendingWrites?: boolean
+  failure?: ExecutionFailure
+  retryPause?: string
+  cleanup?: { status: string }
+  agentPid?: number
+  agentStartedAt?: number
+  managedProcess?: boolean
+  agentIdentity?: string
   action?: string
   status?: string
   deliveryId?: string
   result?: string
-  startedAt?: number
-  usage?: api.Usage
-  costUsd?: number
-  costIncomplete?: boolean
-  context?: { used?: number; limit?: number }
-  /** The board runtime it ran on: a step's pick by its Cloud id, otherwise the board's own. */
-  runtime?: string
 }
 
 /** What the runs this job started spent, summed and split by runtime (#629), and the context window
@@ -281,6 +301,8 @@ function boardAkb(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo, task?: s
     const at = args.includes('--') ? args.indexOf('--') : args.length
     const full = [...args.slice(0, at), '--board', ws.board, ...args.slice(at)]
     const log = show ? logLines(io.show, io.event) : undefined
+    if (show) await io.starting?.()
+    if (stopping(io)) return refused('Task preparation stopped.')
     const ran = await runAkb(deps.akb, full, { cwd: ws.cwd, board: ws.board, task, language: cloudLanguage(job), env: { ...env, AI4KANBAN_SYNC_DIAGNOSTIC: io.diagnostic, AI4KANBAN_REVIEW_STAGES: job.flow?.review_stages ? JSON.stringify(job.flow.review_stages) : undefined, AI4KANBAN_TASK_REVIEW: job.taskReview ? JSON.stringify(job.taskReview) : undefined, AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId }) }, show: log?.push, track: io.track })
     log?.end()
     return ran
@@ -291,7 +313,7 @@ function boardAkb(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo, task?: s
 async function setUp(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Promise<string | null> {
   const akb = boardAkb(job, ws, deps, io)
   const runtime = job.runtime
-  const missing = unavailable(runtime, await deps.runtimes())
+  const missing = io.flowRun?.finished ? undefined : unavailable(runtime, await deps.runtimes())
   if (missing) return missing
 
   if (!fs.existsSync(path.join(ws.board, 'config.md'))) {
@@ -306,6 +328,7 @@ async function setUp(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Prom
     if (pulled.failure?.level === 1) io.diagnostic = pulled.failure.reason
     else if (pulled.code !== 'board_content_conflict') return refusedSync(job, pulled)
   }
+  if (io.flowRun?.finished) return null
   const used = await akb(['raw', 'agent', 'use', runtime])
   if (used.code !== 0) return refusal(used)
   // The runtime's settings on the board's Global default, each one set or cleared (#2135); the
@@ -371,18 +394,31 @@ export function pickRow(job: Job, r: AgentRuntime, machine: string, reports: Run
   return { id: r.id, name: r.name, harness: runtime, settings, secrets: Object.fromEntries(secretKeys(runtime).flatMap((k) => (secrets[k] ? [[k, secrets[k]]] : []))) }
 }
 
+function recoveryArgs(run: NonNullable<FlowIo['flowRun']>): string[] {
+  return run.finished ? ['raw', 'run', 'log', run.id] : ['raw', 'run', 'resume', run.id, '--require-session']
+}
+
+function runsSpent(runs: Run[], since: number, job: Job, io: FlowIo): Run[] {
+  const source = job.flow?.historical_recovery ? undefined : job.flow?.sync_recovery_of ?? job.syncRecoveryOf ?? io.flowRun?.from
+  const current = runs.filter(r => r.cloudExecution?.job === job.id || !!source && r.cloudExecution?.job === source
+    || !job.flow?.historical_recovery && r.sessionId === io.flowRun?.id || !r.cloudExecution && (r.startedAt ?? 0) >= since)
+  // The CLI replaces an interrupted run record when it opens the resumed attempt.
+  return [...new Map([...(job.flow?.historical_recovery ? [] : io.flowRun?.priorSpend ?? []), ...current].map(run => [run.sessionId, run])).values()]
+}
+
 /** A review of these archived tasks, each `<task>:<card>` (#2065, #165), on the project's board. */
 export async function runReview(job: Job, ws: TaskFolder, tasks: string[], deps: FlowDeps, io: FlowIo): Promise<FlowEnd> {
   const since = Date.now()
   const failed = await setUp(job, ws, deps, io)
   if (failed) return { ok: false, reason: failed }
   const akb = boardAkb(job, ws, deps, io)
-  const ran = await akb(['raw', 'memory', 'review', '--task', ...tasks, '--follow', '--events', '--json'], true)
+  const args = io.flowRun ? recoveryArgs(io.flowRun) : ['raw', 'memory', 'review', '--task', ...tasks]
+  const ran = await akb([...args, '--follow', '--events', '--json'], true)
   if (io.lost()) return { ok: false, reason: '' }
   const answer = answerOf<{ result?: string; error?: { message?: string } }>(ran)
   if (ran.code !== 0) return { ok: false, reason: reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran) }
   const runs = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--all', '--json']))?.runs ?? []
-  return { ok: true, report: { ...(answer?.result?.trim() ? { reply: answer.result.trim() } : {}), ...spentBy(runs.filter((r) => (r.startedAt ?? 0) >= since), job) } }
+  return { ok: true, report: { ...(answer?.result?.trim() ? { reply: answer.result.trim() } : {}), ...spentBy(runsSpent(runs, since, job, io), job) } }
 }
 
 /** What the workspace's rejection review has not learned (#2067), laid out on the board,
@@ -390,7 +426,7 @@ export async function runReview(job: Job, ws: TaskFolder, tasks: string[], deps:
 async function reviewRejections(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo, refreshReview?: () => Promise<string | undefined>): Promise<{ runs: Run[]; failure?: string; laid?: Laid; session?: string }> {
   const workspace = workspaceOf(ws)
   if (!workspace) return { runs: [] }
-  const read = await deps.api.readRejections(workspace)
+  const read = await attemptSync(io, 'prepare', () => deps.api.readRejections(workspace))
   if (!read.ok) return { runs: [], failure: read.error }
   if ((!read.value.tasks.length && !read.value.triage.length) || stopping(io)) return { runs: [] }
   const since = Date.now()
@@ -422,41 +458,40 @@ async function learnRejections(job: Job, ws: TaskFolder, deps: FlowDeps, io: Flo
   return runs
 }
 
-async function scheduledEnv(ws: TaskFolder, deps: FlowDeps): Promise<NodeJS.ProcessEnv> {
-  const read = await deps.api.readAgents(deps.machineId, ws.project)
-  if (!read.ok) {
-    console.error(`runner: scheduled agents not read: ${read.error}`)
-    return {}
-  }
-  const names = read.value.agents.filter((a) => a.studio).map((a) => a.name)
-  return { [SCHEDULED_AGENTS_ENV]: [...new Set(names)].join(',') }
-}
-
 /** A project's periodic agent (#2068): its command on the project's board, followed to its end. */
 export async function runAgent(job: Job & { agent: AgentJob }, ws: TaskFolder, deps: FlowDeps, io: FlowIo): Promise<FlowEnd> {
+  const { name, studio, tasks } = job.agent
+  if (studio) return { ok: false, reason: 'Studio roles no longer run on their own.' }
   const since = Date.now()
   const failed = await setUp(job, ws, deps, io)
   if (failed) return { ok: false, reason: failed }
-  const { name, studio, tasks } = job.agent
+  if (io.flowRun) {
+    const args = recoveryArgs(io.flowRun)
+    const akb = boardAkb(job, ws, deps, io)
+    const ran = await akb([...args, '--follow', '--events', '--json'], true)
+    if (ran.code !== 0 || stopping(io)) return { ok: false, reason: refusal(ran) }
+    const answer = answerOf<{ result?: string; agentSession?: string }>(ran)
+    const runs = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--all', '--json']))?.runs ?? []
+    return { ok: true, report: { reply: answer?.result, session: answer?.agentSession,
+      ...spentBy(runsSpent(runs, since, job, io), job) } }
+  }
   if (name === 'review-dismissals') {
     const { runs, failure, laid, session } = await reviewRejections(job, ws, deps, io)
     if (io.lost()) return { ok: false, reason: '' }
     return failure ? { ok: false, reason: failure } : { ok: true, report: { session, ...spentBy(runs, job) }, reviewed: laid }
   }
   if (name === 'reflect' && !tasks?.length) return { ok: true, report: {} }
-  const args = studio ? ['raw', 'agent', 'run', studioName(studio), name]
-    : name === 'reflect' ? ['raw', 'reflect', '--cards', ...tasks!.map((t) => String(t.number))]
+  const args = name === 'reflect' ? ['raw', 'reflect', '--cards', ...tasks!.map((t) => String(t.number))]
     : ['raw', ...(name === 'prune-memory' ? ['memory', 'prune'] : [name])]
   const akb = boardAkb(job, ws, deps, io, ws.cloudTask ?? undefined)
   // Listing reaps a run a stopped Runner left recorded as live, which would hold the agent for good.
   await akb(['raw', 'run', 'list', '--all', '--json'])
-  const env = name === 'reflect' && !studio ? await scheduledEnv(ws, deps) : undefined
-  const ran = await akb([...args, '--follow', '--events', '--json'], true, env)
+  const ran = await akb([...args, '--follow', '--events', '--json'], true)
   if (io.lost()) return { ok: false, reason: '' }
   const answer = answerOf<{ result?: string; agentSession?: string; error?: { message?: string } }>(ran)
   if (ran.code !== 0) return { ok: false, reason: reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran) }
   const runs = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--all', '--json']))?.runs ?? []
-  return { ok: true, report: { ...(answer?.agentSession ? { session: answer.agentSession } : {}), ...(answer?.result?.trim() ? { reply: answer.result.trim() } : {}), ...spentBy(runs.filter((r) => (r.startedAt ?? 0) >= since), job) } }
+  return { ok: true, report: { ...(answer?.agentSession ? { session: answer.agentSession } : {}), ...(answer?.result?.trim() ? { reply: answer.result.trim() } : {}), ...spentBy(runsSpent(runs, since, job, io), job) } }
 }
 
 /** The discussion a task came from (#2146), written in `dir` for the agent to read; its path. */
@@ -505,11 +540,18 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
   }
 
   if (flow.verb === 'discard') return discardBuilds()
+  if (io.flowRun?.failure) {
+    const failure = io.flowRun.failure
+    return { ok: false, reason: failure.reason, failure, report: spentBy(runsSpent([], since, job, io), job) }
+  }
 
   const hasReview = !!job.taskReview || flow.review_stages !== undefined
   const initial = job.taskReview && reviewAuthorization(job.taskReview, flow.review_stages)
   const skipPlan = initial ? initial.kind === 'unreviewed' : flow.skip_plan
   const verb = flow.verb === 'create' ? (skipPlan ? 'implement' : 'refine') : flow.verb
+  const coding = verb === 'implement' && studioName(ws.studio ?? flow.studio ?? '') === 'coding'
+
+  let currentTask: Extract<Awaited<ReturnType<typeof api.readTask>>, { ok: true }>['value'] | undefined
 
   async function refreshReview(): Promise<string | undefined> {
     if (!hasReview) return
@@ -520,23 +562,68 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       return 'This execution no longer has review authorization.'
     }
     const authorization = reviewAuthorization(review, flow.review_stages, flow.review_revision)
-    if (authorization.kind === 'pending') return 'This execution no longer has review authorization.'
     if (authorization.kind === 'changed' || verb === 'refine' && !reviewAllows(authorization, verb)) {
       return 'Review authorization changed. Read the task again.'
     }
     if (verb === 'implement' && !reviewAllows(authorization, verb)) return 'Finish the agreed review stages before delivery.'
     job.taskReview = review
+    currentTask = current.value
   }
 
-  async function launch(...args: Parameters<typeof akb>): Promise<Ran & { reviewRefused?: string }> {
+  let previewDirectory: string | undefined
+  let stagedUiRevision: number | undefined
+
+  async function launch(args: string[], show = false, env?: NodeJS.ProcessEnv): Promise<Ran & { reviewRefused?: string }> {
     const denied = await refreshReview()
-    return denied || stopping(io) ? { code: 1, out: '', last: denied || 'Task preparation stopped.', reviewRefused: denied } : akb(...args)
+    const refuse = (reason: string) => ({ code: 1, out: '', last: reason, reviewRefused: reason })
+    if (denied || stopping(io)) return { code: 1, out: '', last: denied || 'Task preparation stopped.', reviewRefused: denied }
+    const review = job.taskReview
+    const task = currentTask
+    const startsDelivery = ['delivery resume', 'run resume', 'card implement'].includes(args.slice(1, 3).join(' '))
+    if (review && verb === 'implement' && startsDelivery) {
+      const inputs = task?.preview_inputs
+      const previews = coding ? approvedUiPreviews(review) : []
+      let saved: string | undefined
+      if (inputs || previews.length) {
+        previewDirectory ??= fs.mkdtempSync(path.join(os.tmpdir(), 'wildcrane-previews-'))
+        const directory = previewDirectory
+        if (previews.length) {
+          const uiDirectory = path.join(directory, 'approved-ui')
+          if (stagedUiRevision !== review.revision) {
+            const staged = await attemptSync(io, 'review', () => stageApprovedUi(uiDirectory, previews, () => stopping(io), cloudLanguage(job) === 'zh'))
+            if (!staged.ok) {
+              const reason = refusedSync(job, staged)
+              return refuse(reason && staged.error)
+            }
+            stagedUiRevision = review.revision
+          }
+          env = { ...env, [APPROVED_UI_DIR_ENV]: uiDirectory }
+        }
+        if (inputs) {
+          const staged = await attemptSync(io, 'review', () => stageSavedPreviews(directory, inputs, review.plan, () => stopping(io),
+            review.preview_definitions?.map(p => p.id), previews.map(preview => preview.id)))
+          if (!staged.ok) return refuse(refusedSync(job, staged))
+          saved = staged.value
+        }
+      }
+      if (saved || previews.length) {
+        const changed = await refreshReview()
+        if (changed) return refuse(changed)
+        if (job.taskReview?.revision !== review.revision) return refuse('Review authorization changed. Read the task again.')
+        if (saved && (currentTask?.card_version !== task?.card_version || !isDeepStrictEqual(currentTask?.preview_inputs, inputs))) {
+          return refuse('The saved Previews changed. Read the task again.')
+        }
+        if (saved) env = { ...env, [SAVED_PREVIEW_FILE_ENV]: saved }
+      }
+    }
+    return akb(args, show, env)
   }
 
   const failed = await setUp(job, ws, deps, io)
   if (failed) return fail(failed)
 
   let id = akbCardOf(ws)
+  const existedBeforeCreate = flow.verb !== 'create' || !!id
   // An unplanned build (#2139) has no plan for the review to inform.
   const learned = flow.verb === 'create' && !id && !skipPlan ? await learnRejections(job, ws, deps, io, refreshReview) : []
   if (io.lost()) return fail('')
@@ -584,21 +671,101 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
   if (!id) return fail('This task has no card on this computer.')
   return onCard(id)
 
+  async function reconcileDelivery(card: number): Promise<
+    | { kind: 'running'; deliveryId?: string; sessionId: string; action?: string }
+    | { kind: 'completed'; deliveryId: string; sessionId?: string; commit?: string; branch?: string }
+    | { kind: 'resumable'; deliveryId: string; status?: string; sessionId?: string; hasSession?: boolean }
+    | { kind: 'none' }
+    | { kind: 'unverified'; deliveryId?: string; diagnostic: string }
+  > {
+    const MAX_ATTEMPTS = 3
+    let attempt = io.reconcileRetry?.get()?.attempt ?? 0
+    for (;;) {
+      const ran = await akb(['raw', 'delivery', 'reconcile', String(card), '--json'])
+      if (stopping(io)) return { kind: 'none' }
+      const parsed = answerOf<{
+        kind?: string
+        deliveryId?: string
+        sessionId?: string
+        action?: string
+        commit?: string
+        branch?: string
+        status?: string
+        hasSession?: boolean
+        diagnostic?: string
+        error?: { message?: string }
+      }>(ran)
+      if (ran.code === 0 && parsed?.kind && ['running', 'completed', 'resumable', 'none'].includes(parsed.kind)) {
+        io.reconcileRetry?.set(undefined)
+        return parsed as
+          | { kind: 'running'; deliveryId?: string; sessionId: string; action?: string }
+          | { kind: 'completed'; deliveryId: string; sessionId?: string; commit?: string; branch?: string }
+          | { kind: 'resumable'; deliveryId: string; status?: string; sessionId?: string; hasSession?: boolean }
+          | { kind: 'none' }
+      }
+      const diagnostic = parsed?.diagnostic ?? parsed?.error?.message ?? refusal(ran)
+      attempt += 1
+      if (attempt >= MAX_ATTEMPTS) {
+        io.reconcileRetry?.set(undefined)
+        return { kind: 'unverified', deliveryId: parsed?.deliveryId, diagnostic }
+      }
+      const delay = Math.min(5_000, (io.syncBackoff ?? syncBackoff)(attempt))
+      const at = Date.now() + delay
+      io.reconcileRetry?.set({ attempt, at })
+      if (delay > 0) await wait(delay)
+      if (stopping(io)) return { kind: 'none' }
+    }
+  }
+
   async function onCard(card: number): Promise<FlowEnd> {
     // Held before the sweep, so a job here that starts meanwhile never sweeps this one's runs.
     const key = workKey(ws, card)
     const held = working.get(key) ?? 0
     working.set(key, held + 1)
     try {
-      if (!held && !await stopRuns(deps.akb, ws, card, 0, deps.stopMs)) {
+      const reconciled = !io.flowRun && !held && existedBeforeCreate ? await reconcileDelivery(card) : undefined
+      if (io.lost()) return fail('')
+      if (reconciled?.kind === 'unverified') {
+        io.show(`[recovery] delivery reconciliation unverified${reconciled.deliveryId ? ` (delivery ${reconciled.deliveryId})` : ''}: ${reconciled.diagnostic}\n`)
+        const runs = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--card', String(card), '--all', '--json']))?.runs ?? []
+        return {
+          ok: false,
+          reason: 'task_recovery_unverified',
+          failure: { code: 'task_recovery_unverified', level: 1, source: 'validation', reason: 'task_recovery_unverified' },
+          report: spentBy([...new Map([...learned, ...runsSpent(runs, since, job, io)].map(r => [r.sessionId, r])).values()], job),
+        }
+      }
+      if (reconciled?.kind === 'completed') {
+        const denied = await refreshReview()
+        if (denied) return fail(denied)
+        if (io.lost()) return fail('')
+        const runs = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--card', String(card), '--all', '--json']))?.runs ?? []
+        const spent = spentBy([...new Map([...learned, ...runsSpent(runs, since, job, io)].map(r => [r.sessionId, r])).values()], job)
+        return {
+          ok: true,
+          report: {
+            ...spent,
+            card,
+            deliveryCompleted: true,
+            deliveryId: reconciled.deliveryId,
+            ...(reconciled.commit ? { landing: { commit: reconciled.commit, branch: reconciled.branch ?? '' } } : {}),
+          },
+        }
+      }
+      if (reconciled?.kind === 'running') {
+        const denied = await refreshReview()
+        if (denied) return fail(denied)
+        if (io.lost()) return fail('')
+      } else if (!held && !await stopRuns(deps.akb, ws, card, 0, deps.stopMs)) {
         return fail('未能停止上次运行，请等待其停止后续跑。')
       }
       if (io.lost()) return fail('')
-      const ended = await workOn(card)
-      if (ended.ok && flow.verb === 'create' && verb === 'implement' && job.taskReview &&
+      const ended = await workOn(card, reconciled)
+      if (ended.ok && !coding && flow.verb === 'create' && verb === 'implement' && job.taskReview &&
         reviewAuthorization(job.taskReview).kind === 'unreviewed' && !ended.report.review) ended.report.deliveryCompleted = true
       return ended
     } finally {
+      if (previewDirectory) fs.rmSync(previewDirectory, { recursive: true, force: true })
       fs.rmSync(path.join(ws.board, '.sync', `${ws.task}.discussion`), { recursive: true, force: true })
       const left = working.get(key)! - 1
       if (left) working.set(key, left)
@@ -606,38 +773,45 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     }
   }
 
-  async function workOn(id: number): Promise<FlowEnd> {
+  async function workOn(id: number, reconciled?: Awaited<ReturnType<typeof reconcileDelivery>>): Promise<FlowEnd> {
     io.onStop(async () => {
       if (!await stopRuns(deps.akb, ws, id, since, deps.stopMs)) throw new Error('未能确认原执行已停止。')
     })
 
     const text = flow.verb === 'create' ? '' : (flow.text ?? '').trim()
     // A resume follows where the card actually is, not the step the last job was on.
-    if (flow.resume && isArchived(ws, id)) return { ok: true, report: { card: id } }
-    if (flow.resume && verb === 'refine' && !hasReview) {
+    const archived = !io.flowRun && flow.resume && isArchived(ws, id)
+    if (archived && (!coding || parseFrontmatter(fs.readFileSync(cardFile(ws), 'utf8')).meta?.rejected)) {
+      return { ok: true, report: { card: id, ...(coding ? { deliveryCompleted: false } : {}) } }
+    }
+    if (!io.flowRun && flow.resume && verb === 'refine' && !hasReview && (!reconciled || reconciled.kind === 'none')) {
       const review = reviewOf(cardFile(ws))
       if (review) return { ok: true, report: { card: id, ...(review === true ? {} : { review }) } }
     }
-    if (verb === 'revise' && !text) return fail('Say what to change.')
     // A build held on a question carries on with the answer: resolved first, else handed to the
     // build as its note. A resumed one (#2128) resolved it already, and puts an ended delivery
     // back to work first.
     let note = verb === 'resolve' || verb === 'revise' ? text : ''
-    let rejected = false
+    const isRejected = () => isArchived(ws, id) && parseFrontmatter(fs.readFileSync(cardFile(ws), 'utf8')).meta?.rejected === true
     let ran: Awaited<ReturnType<typeof launch>> | undefined
     let continuation: string[] | undefined
     let expectedDelivery: string | undefined
-    if (verb === 'implement' && flow.resume) {
+    let effectiveVerb = verb
+    let effectiveCoding = coding
+    const resumeExistingDelivery = async () => {
       const restored = await launch(['raw', 'delivery', 'resume', String(id), '--json'])
       if (restored.reviewRefused) return fail(restored.reviewRefused)
-      const resumed = answerOf<{ landed?: boolean; deliveryId?: string; sessionId?: string; error?: { message?: string; reason?: string; args?: { id?: string } } }>(restored)
+      const resumed = answerOf<{ landed?: boolean; deliveryId?: string; sessionId?: string; delivery?: Delivery; error?: { message?: string; reason?: string; args?: { id?: string } } }>(restored)
       if (io.lost()) return fail('')
-      if (resumed?.landed) return { ok: true, report: { card: id } }
+      if (restored.code === 0 && resumed?.landed && resumed.deliveryId) {
+        return { ok: true as const, report: { card: id, ...(effectiveCoding ? { deliveryCompleted: true, deliveryId: resumed.deliveryId, ...landingOf(resumed.delivery) } : {}) } }
+      }
       const reason = restored.code === 0 ? undefined : resumed?.error?.reason
       // No delivery left to carry on: build afresh, and the builder picks up what is on disk.
       if (reason && reason !== 'deliveryActive' && !FRESH_BUILD.has(reason)) {
         return fail(RESUME_REFUSED[reason] ?? resumed?.error?.message ?? refusal(restored))
       }
+      if (archived && reason && FRESH_BUILD.has(reason)) return { ok: true as const, report: { card: id, deliveryCompleted: false } }
       const deliveryId = reason && reason !== 'deliveryActive' ? undefined : resumed?.deliveryId ?? resumed?.error?.args?.id
       expectedDelivery = deliveryId
       if (resumed?.sessionId) {
@@ -651,26 +825,58 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
           continuation = ['raw', 'run', 'resume', previous.sessionId, '--require-session']
         }
       }
+      return undefined
+    }
+    if (io.flowRun) {
+      continuation = io.repairDelivery ? ['raw', 'run', 'resume', io.flowRun.id, '--require-session'] : recoveryArgs(io.flowRun)
+    } else if (reconciled?.kind === 'running') {
+      expectedDelivery = reconciled.deliveryId
+      continuation = ['raw', 'run', 'log', reconciled.sessionId]
+    } else if (reconciled?.kind === 'resumable') {
+      const denied = hasReview ? await refreshReview() : undefined
+      if (denied) return fail(denied)
+      const reviewAllowsImplement = !hasReview || (!!currentTask?.review && reviewAllows(reviewAuthorization(currentTask.review, flow.review_stages, flow.review_revision), 'implement'))
+      const hasOpenQuestions = asks(cardFile(ws))
+      const continueDelivery = verb === 'implement' || (!flow.replan && ['refine', 'revise', 'create'].includes(verb) && reviewAllowsImplement && !hasOpenQuestions)
+      if (continueDelivery) {
+        effectiveVerb = 'implement'
+        effectiveCoding = studioName(ws.studio ?? flow.studio ?? '') === 'coding'
+        const done = await resumeExistingDelivery()
+        if (done) return done
+      } else {
+        const released = await akb(['raw', 'delivery', 'release', String(id), '--json'])
+        if (released.code !== 0) {
+          io.show(`[recovery] failed to release delivery lock${reconciled.deliveryId ? ` (delivery ${reconciled.deliveryId})` : ''}: ${refusal(released)}\n`)
+          return {
+            ok: false,
+            reason: 'task_recovery_unverified',
+            failure: { code: 'task_recovery_unverified', level: 1, source: 'validation', reason: 'task_recovery_unverified' },
+          }
+        }
+      }
+    } else if (verb === 'implement' && flow.resume) {
+      const done = await resumeExistingDelivery()
+      if (done) return done
     } else if (verb === 'implement' && text) {
       const resolved = await launch(['raw', 'card', 'resolve', String(id), '--follow', '--events', '--json', '--', text], true)
       if (resolved.reviewRefused) return fail(resolved.reviewRefused)
       if (io.lost()) return fail('')
-      const file = findCard(ws.board, id)
-      rejected = !!file && path.relative(ws.board, file).split(path.sep)[0] === '.archive'
-        && parseFrontmatter(fs.readFileSync(file, 'utf8')).meta?.rejected === true
-      if (rejected) ran = resolved
+      if (isRejected()) ran = resolved
       else if (resolved.code !== 0) note = text
+      else if (asks(cardFile(ws))) {
+        const review = reviewOf(cardFile(ws), hasReview)
+        return { ok: true, report: { card: id, ...(coding ? { deliveryCompleted: false } : {}), ...(review && review !== true ? { review } : {}) } }
+      }
     }
-    // `implement` returns once the delivery landed and the card is archived.
+    if (effectiveVerb === 'revise' && !text) return fail('Say what to change.')
     const fresh = () => {
-      const carry = carryArgs(verb)
+      const carry = carryArgs(effectiveVerb)
       const costFrom = carry.includes('--session') && typeof job.resumeCostUsd === 'number' ? { [SESSION_COST_ENV]: String(job.resumeCostUsd) } : undefined
-      return launch(['raw', 'card', verb, String(id), '--follow', '--events', '--json', ...carry, ...(note ? ['--', note] : [])], true, costFrom)
+      return launch(['raw', 'card', effectiveVerb, String(id), '--follow', '--events', '--json', ...carry, ...(note ? ['--', note] : [])], true, costFrom)
     }
     ran ??= await (continuation ? launch([...continuation, '--follow', '--events', '--json'], true) : fresh())
     if (ran.reviewRefused) return fail(ran.reviewRefused)
     if (io.lost()) return fail('')
-    type Delivery = { id?: string; status?: DeliveryStatus; commit?: string; branch?: string; ending?: DeliveryEnding }
     type Ended = {
       ok?: boolean
       result?: string
@@ -680,31 +886,41 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       error?: { message?: string; result?: string; lastSessionId?: string; agentSession?: string; delivery?: Delivery }
     }
     const answer = answerOf<Ended>(ran)
-    if (expectedDelivery && answer?.delivery?.id && answer.delivery.id !== expectedDelivery) {
+    const delivery = answer?.delivery ?? answer?.error?.delivery
+    if (expectedDelivery && delivery?.id && delivery.id !== expectedDelivery) {
       return fail('续跑返回了其他交付的结果，原交付保持未完成。')
-    }
-    if (verb === 'implement' && !rejected) {
-      const ending = (answer?.delivery ?? answer?.error?.delivery)?.ending
-      if (ending?.kind === 'stopped') return { ok: false, reason: '', stopped: true }
-      if (ending?.kind === 'discarded') return fail('The build was discarded.')
-      if (ending?.kind === 'blocked') return fail(ending.reason)
-    }
-    const asked = verb === 'implement' && !rejected && asks(cardFile(ws))
-    const waiting = rejected ? null : reviewOf(cardFile(ws), hasReview)
-    const review = waiting && waiting !== true ? waiting : undefined
-    // A build held on the user's question is reported as one, like a plan's.
-    if (!rejected && ran.code !== 0 && !(verb === 'refine' && waiting) && !(answer?.error && asked)) {
-      return fail(reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran))
     }
     const last = answer?.lastSessionId ?? answer?.error?.lastSessionId
     const runs = answerOf<{ runs?: Run[] }>(await akb(['raw', 'run', 'list', '--card', String(id), '--all', '--json']))?.runs ?? []
+    const recent = runs.find(r => r.sessionId === last) ?? runs.filter(r => !r.parentId && r.cloudExecution?.job === job.id).at(-1)
+    const spent = spentBy([...new Map([...learned, ...runsSpent(runs, since, job, io)].map(run => [run.sessionId, run])).values()], job)
+    const rejected = isRejected()
+    if (effectiveVerb === 'implement' && !rejected) {
+      const ending = delivery?.ending
+      if (ending?.kind === 'stopped') return { ok: false, reason: '', stopped: true }
+      if (ending?.kind === 'discarded') return fail('The build was discarded.')
+      if (ending?.kind === 'blocked') return { ok: false, reason: ending.reason, report: spent }
+    }
+    const asked = effectiveVerb === 'implement' && !rejected && asks(cardFile(ws))
+    const completed = !rejected && !asked && delivery?.status === 'finished' ? delivery.id : undefined
+    const waiting = rejected ? null : reviewOf(cardFile(ws), hasReview)
+    const review = waiting && waiting !== true ? waiting : undefined
+    // A build held on the user's question is reported as one, like a plan's.
+    if (!rejected && ran.code !== 0 && !(effectiveCoding && completed) && !(effectiveVerb === 'refine' && waiting) && !(answer?.error && asked)) {
+      const failure = recent?.failure
+      return { ok: false, reason: failure?.reason ?? reasonOf(answer?.error?.message?.replace(/^run \S+ ended \w+: /, '')) ?? refusal(ran),
+        failure: recent?.retryPause === 'limit' && failure?.level === 2 ? { ...failure, code: 'retry_exhausted' } : failure, report: spent }
+    }
+    if (effectiveCoding && !rejected && !completed && !asked && !waiting && delivery) {
+      const reason = 'The Coding run exited without a delivery receipt. Verify the saved work and finish the original delivery.'
+      return { ok: false, reason, failure: { code: 'delivery_incomplete', level: 1, source: 'validation', reason }, report: spent }
+    }
     const said = ((last ? runs.find((r) => r.sessionId === last)?.result : undefined) ?? answer?.result ?? answer?.error?.result)?.trim()
-    const spent = spentBy([...learned, ...runs.filter((r) => (r.startedAt ?? 0) >= since)], job)
-    const commit = !rejected && ran.code === 0 ? answer?.delivery?.commit : undefined
-    const pending = verb === 'implement' && answer?.delivery?.status === 'active' ? { review: {} } : {}
-    const landing = commit ? { landing: { commit, branch: answer?.delivery?.branch ?? '' } } : {}
+    const state = effectiveCoding ? { deliveryCompleted: !!completed, ...(completed ? { deliveryId: completed } : {}) }
+      : effectiveVerb === 'implement' && delivery?.status === 'active' ? { review: {} } : {}
+    const landing = (effectiveCoding ? completed : !rejected && ran.code === 0) ? landingOf(delivery) : {}
     const session = answer?.agentSession ?? answer?.error?.agentSession
-    return { ok: true, report: { ...(said ? { reply: said } : {}), ...(session ? { session } : {}), ...spent, card: id, ...pending, ...(review ? { review } : {}), ...landing } }
+    return { ok: true, report: { ...(said ? { reply: said } : {}), ...(session ? { session } : {}), ...spent, card: id, ...state, ...(review ? { review } : {}), ...landing } }
   }
 
   /** A discarded build (#61): every delivery on the card still holding a checkout gives it up. */
@@ -720,9 +936,13 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     return { ok: true, report: { card } }
   }
 
-  /** Only planning carries the discussion's session and transcript. */
+  /** Planning carries the discussion's session and transcript; an immediate build carries only the transcript. */
   function carryArgs(verb: string): string[] {
     if (flow.replan) return ['--new-session']
+    if (verb === 'implement' && flow.verb === 'create') {
+      const transcript = writeTranscript(job, path.join(ws.board, '.sync', `${ws.task}.discussion`))
+      return transcript ? ['--transcript', transcript] : []
+    }
     if (!['refine', 'resolve', 'revise'].includes(verb)) return []
     const transcript = writeTranscript(job, path.join(ws.board, '.sync', `${ws.task}.discussion`))
     return [
@@ -732,6 +952,10 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
   }
 }
 
+function landingOf(delivery?: Delivery): Pick<JobReport, 'landing'> {
+  return delivery?.commit ? { landing: { commit: delivery.commit, branch: delivery.branch ?? '' } } : {}
+}
+
 export async function confirmFlowStopped(ws: TaskFolder, job: Job, deps: FlowDeps): Promise<boolean> {
   const id = akbCardOf(ws) ?? job.number
   if (!id) return false
@@ -739,4 +963,37 @@ export async function confirmFlowStopped(ws: TaskFolder, job: Job, deps: FlowDep
   const runs = answerOf<{ runs?: { sessionId: string; status?: string; startedAt?: number; agentPid?: number; agentStartedAt?: number; managedProcess?: boolean; agentIdentity?: string }[] }>(ran)?.runs
   return !!runs && runs.every((r) => r.status !== 'running' && (r.managedProcess ? connectionStopped(r.agentPid ? { pid: r.agentPid, identity: r.agentIdentity } : undefined) : processesStopped(runMark(r.sessionId, r.startedAt),
     r.agentPid && r.agentStartedAt ? { pid: r.agentPid, since: r.agentStartedAt } : undefined)))
+}
+
+export async function flowRunEvidence(ws: TaskFolder, job: Job, deps: FlowDeps, execution = job.id,
+  prior?: FlowIo['flowRun']): Promise<{ stopped: boolean; run?: FlowIo['flowRun'] }> {
+  const id = job.flow && (akbCardOf(ws) ?? job.number)
+  if (job.flow && !id) return { stopped: false }
+  const akb = boardAkb(job, ws, deps, { show() {}, event() {}, track() {}, onStop() {}, lost: () => false })
+  const ran = await akb(['raw', 'run', 'list', '--all', '--json', ...(id ? ['--card', String(id)] : [])])
+  const runs = answerOf<{ runs?: Run[] }>(ran)?.runs
+    ?.filter(run => run.cloudExecution?.machine === deps.machineId
+      && (run.cloudExecution.job === execution || run.sessionId === prior?.id && run.cloudExecution.job === prior.from))
+  if (!runs?.every(run => run.status !== 'running' && (run.managedProcess
+    ? connectionStopped(run.agentPid ? { pid: run.agentPid, identity: run.agentIdentity } : undefined)
+    : processesStopped(runMark(run.sessionId, run.agentStartedAt ?? run.startedAt),
+      run.agentPid && run.agentStartedAt ? { pid: run.agentPid, since: run.agentStartedAt } : undefined)))) return { stopped: false }
+  const candidates = runs
+    .filter(run => !run.parentId && (job.agent || job.review || run.action === job.flow?.verb
+      || job.flow?.verb === 'create' && ['implement', 'refine', 'spec'].includes(run.action ?? '')
+      || !!run.deliveryId && (job.flow?.verb === 'create' || job.flow?.verb === 'implement') && ['conflict', 'hook'].includes(run.action ?? '')
+      || job.flow?.verb === 'refine' && run.action === 'spec'))
+    .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
+  const previous = candidates.find(run => run.cloudExecution?.job === execution) ?? candidates.find(run => run.sessionId === prior?.id)
+  if (!previous) return { stopped: true }
+  const terminal = job.flow && previous.status === 'error' && previous.retryPause ? previous.failure : undefined
+  const failure = terminal?.level === 2 && previous.retryPause === 'limit' ? { ...terminal, code: 'retry_exhausted' } : terminal
+  const recovery = agentRecovery({ stopped: true, completed: previous.status === 'done' || !!failure,
+    session: previous.resumeId, unconfirmedCleanup: previous.pendingWrites || previous.cleanup?.status === 'unconfirmed' })
+  if (recovery === 'unsafe') return { stopped: true }
+  const { sessionId, runtime, startedAt, usage, costUsd, costIncomplete, context } = previous
+  const priorSpend = new Map(prior?.priorSpend?.map(spend => [spend.sessionId, spend]))
+  priorSpend.set(sessionId, { sessionId, runtime, startedAt, usage, costUsd, costIncomplete, context })
+  return { stopped: true, run: { id: sessionId, finished: recovery === 'report', from: previous.cloudExecution?.job,
+    ...(failure ? { failure } : {}), priorSpend: [...priorSpend.values()] } }
 }

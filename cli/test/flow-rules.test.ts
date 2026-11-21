@@ -7,7 +7,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
-import { cmdSpec } from '../src/commands/spec.ts'
 import { readRuns } from '../src/lib/agent/sessions.ts'
 import { cmdStartRun } from '../src/commands/run.ts'
 import { activeDelivery } from '../src/lib/agent/deliveries.ts'

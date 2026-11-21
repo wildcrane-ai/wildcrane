@@ -30,7 +30,7 @@ function serve(refuse?: { status: number; code: string; message: string }): void
     if (route === '/v1/tasks/WC-3' && !body) return Response.json({ id: 'task_3', key: 'WC-3', review: { revision: 4 } })
     if (route === '/v1/tasks/WC-3/decisions') {
       if (refuse) return Response.json({ error: { code: refuse.code, message: refuse.message } }, { status: refuse.status })
-      return Response.json({ id: 'dec_1' }, { status: 201 })
+      return Response.json({ id: 'dec_1', decision: 'approve' }, { status: 201 })
     }
     throw new Error(`unexpected ${init?.method ?? 'GET'} ${route}`)
   }) as typeof fetch

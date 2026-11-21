@@ -33,8 +33,14 @@ not an approval sequence. Get approval before costly generation when the plan re
   requires visual content; propose a fitting format from supplied templates when available.
 - **Revision**: reuse saved copy, suitable assets and render sources; update only affected
   outputs, and do not generate images for a copy-only edit.
-- **Delivery**: keep requested files and reproducible sources in the task's asset folder;
-  deliver without publishing or maintaining cross-task memory unless explicitly requested.
+
+## Land
+
+Keep the requested files and reproducible sources in the task's asset folder. Check the final copy
+and any rendered pages. Record the asset folder and exact re-render command for rendered media.
+Publish or retain cross-task memory only when requested.
+
+## Previews
 
 <Preview id="post-draft">
 
@@ -83,7 +89,6 @@ Render carousel pages only when requested; captions alone require no pages.
   page order, each PNG as its preview, and no speaker notes. Validate with
   [the validator](references/carousel-renderer/scripts/validate-storyboard.mjs), then show
   one Storyboard per ratio using `.assets/<card id>/pages-<ratio>.json`.
-- **Handoff**: include the asset folder and exact re-render command with the delivered sources;
-  on revision, render only affected pages and ratios and retain unchanged media.
+- **Revision**: render only affected pages and ratios and retain unchanged media.
 
 </Preview>

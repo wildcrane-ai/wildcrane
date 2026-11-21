@@ -20,7 +20,5 @@ export function switchStudio(id: number, meta: Meta, asked: string): boolean {
   meta.studio = next
   meta.status = 'todo'
   delete meta.previews
-  meta.stages = 0
-  meta.phase = 0
   return true
 }

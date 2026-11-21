@@ -1,6 +1,7 @@
 // What a card finishing in planning has to carry before it is archived (#1057, #1117, #1126, #1692): a
 // finished video, template render, deck or article, or a carousel's pages as a `<Storyboard>` of `pages-*.json`.
 
+import { cmdRemove } from '../src/commands/remove.ts'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -38,7 +39,7 @@ describe('explicit archival after agent checks (#735)', () => {
       for (const [index, studio] of ['carousel-post', 'blog-post', 'video-clone'].entries()) {
         const id = index + 1
         await move(root, ['create', '--id', String(id), '--title', 'Explicit completion', '--studio', studio])
-        await move(root, ['archive', String(id)])
+        cmdRemove(id, 'completed')
         assert.equal(fs.existsSync(path.join(root, `docs/kanban/.archive/${id}-explicit-completion.md`)), true)
       }
     } finally { fs.rmSync(root, { recursive: true, force: true }) }

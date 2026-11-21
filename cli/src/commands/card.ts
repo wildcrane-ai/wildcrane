@@ -10,16 +10,15 @@ import { die, warn, rel, TODO } from '../lib/paths'
 import { say } from '../lib/io'
 import { countBoardEvent, type BoardCount } from '../lib/machine/usage'
 import { slugify, validModules, parseIdList, dependencyCycle } from '../lib/validate'
-import { cardStages, knownStudio, noStudioMessage, previewAgents, studioById, studioFor, studios } from '../lib/agent/studios'
+import { knownStudio, noStudioMessage, studioById, studioFor, studios } from '../lib/agent/studios'
 import { readAllDismissed, readArchived, readInbox } from '../lib/signals/inbox'
 import { collectQuestions, readQuestionOps, type QuestionOpsInput } from '../lib/questions'
-import { applyQuestionOps, QuestionOpError, type QuestionOpsResult } from '../lib/question-ops'
+import { applyQuestionOps, QuestionOpError, type QuestionOp, type QuestionOpsResult } from '../lib/question-ops'
 import { serializeFrontmatter, parseFrontmatter } from '../lib/frontmatter'
 import { locate, locateArchived, enclosingGroupRoot } from '../lib/cards'
 import { sourceRefFrom } from '../lib/source'
-import { cardCreation, readStore } from '../lib/agent/store'
+import { cardCreation } from '../lib/agent/store'
 import { switchStudio } from '../lib/agent/studio-cards'
-import { insideRun } from '../lib/agent/env'
 import { workspaceTask } from '../lib/cloud/tasks'
 import { activeDelivery } from '../lib/agent/deliveries'
 import { findSpecAgent } from '../lib/agents'
@@ -146,17 +145,16 @@ export function validateCreate(opts: CreateOptions) {
   const studio = studioFlag(opts.studio ?? (triage ? itemStudio(triage) : undefined))
   const flow = studioFor(studio)
   const previews = opts.previews === undefined ? undefined : previewsFlag(opts.previews, flow)
-  const stages = previews ? cardStages({ previews }, flow).length : 0
   const source = sourceFlag(opts.source ?? [], 'source')
   if (opts.fromTask && !source.includes(opts.fromTask)) source.unshift(opts.fromTask)
   const questions = collectQuestions(opts.asked ?? [])
   const draft = bodyFromFile(opts)
   const written = draft ? normalizeBody(draft) : null
-  return { title, priority, blocked_by, related, modules, triage, studio, previews, stages, source, questions, written }
+  return { title, priority, blocked_by, related, modules, triage, studio, previews, source, questions, written }
 }
 
 export function cmdCreate(opts: CreateOptions): MoveResult {
-  const { title, priority, blocked_by, related, modules, triage, studio, previews, stages, source, questions, written } = validateCreate(opts)
+  const { title, priority, blocked_by, related, modules, triage, studio, previews, source, questions, written } = validateCreate(opts)
   if (opts.id === undefined) die('请通过 `akb raw create` 创建卡片，由 Cloud 分配编号', { kind: 'needs-cloud' })
   const start = opts.id
   const slug = slugify(opts.slug !== undefined ? opts.slug : title)
@@ -174,7 +172,7 @@ export function cmdCreate(opts: CreateOptions): MoveResult {
 
   // validation passed → write
   countBoardEvent(triage ? 'cards_created_proposed' : 'cards_created_asked')
-  const meta: Partial<Meta> = { title, priority, status: 'todo', blocked_by, related, modules, studio, previews, stages, triage, source, questions }
+  const meta: Partial<Meta> = { title, priority, status: 'todo', blocked_by, related, modules, studio, previews, triage, source, questions }
   const scaffolded = !written && opts.body !== false
   const body = written ?? (scaffolded ? defaultBody() : '')
   fs.writeFileSync(file, serializeFrontmatter(meta) + '\n\n' + body)
@@ -203,7 +201,6 @@ export interface UpdateOptions {
   slug?: string
   source?: string[]
   addSource?: string[]
-  phase?: string
   /** `--previews`: the Preview IDs the card chose (#2154); `""` chooses none. */
   previews?: string[]
   /** `--studio`: move the card to another studio; `""` is the default (#1849). */
@@ -244,7 +241,7 @@ function itemStudio(sourceId: string): string | undefined {
 
 // `--previews`: the chosen Preview IDs, in their Studio's order; `""` chooses none.
 function previewsFlag(said: string[], flow: ReturnType<typeof studioFor>): string[] {
-  const offered = flow ? previewAgents(flow).map((h) => h.id) : []
+  const offered = flow?.previews.map((preview) => preview.id) ?? []
   const asked = new Set(said.map((name) => name.trim()).filter(Boolean))
   const unknown = [...asked].filter((name) => !offered.includes(name))
   if (unknown.length) {
@@ -332,15 +329,6 @@ export function cmdUpdate(id: number, flags: UpdateOptions): MoveResult {
     meta.previews = previewsFlag(flags.previews, flow)
     changes.push('previews')
   }
-  // Derived, for whatever reads the card without the board's agents (Cloud).
-  meta.stages = meta.previews ? cardStages(meta, flow).length : 0
-  if (flags.phase !== undefined) {
-    const n = Number(flags.phase)
-    const stages = cardStages(meta, flow).length
-    if (!Number.isInteger(n) || n < 1 || n > stages) die(`--phase must be 1 to ${stages}, the approvals its previews make (got "${flags.phase}")`)
-    meta.phase = n
-    changes.push('phase')
-  }
   // A `ready` card has no open questions by definition (see STATUSES). Open questions
   // mean the plan is not settled, so a `--status ready` with them pending lands as
   // `todo`. This holds the invariant no matter who set the status.
@@ -380,13 +368,11 @@ export function cmdUpdate(id: number, flags: UpdateOptions): MoveResult {
   return { id, changes, file: rel(dest) }
 }
 
-// Patch a card's open-question list. Every op edits in place — append one, rewrite
-// one by position, drop answered ones, clear the list — so handing a single question
-// to the user never means re-passing its siblings (wholesale rewrites silently lost
-// options that weren't re-typed). Ops apply in the order they were typed, and a
-// position is read against the list as it stands when its op runs.
 export function cmdUpdateQuestions(id: number, input: QuestionOpsInput): MoveResult {
-  const ops = readQuestionOps(input.ops ?? [])
+  return updateCardQuestions(id, readQuestionOps(input.ops ?? [], true), true)
+}
+
+export function updateCardQuestions(id: number, ops: QuestionOp[], compatibility = false): MoveResult {
   const found = locate(id)
   if (!found) die(`no task with id ${id} under ${rel(TODO)}`, { kind: 'card-not-found', id })
   const file = found.kind === 'group' ? path.join(found.target, 'root.md') : found.target
@@ -394,14 +380,14 @@ export function cmdUpdateQuestions(id: number, input: QuestionOpsInput): MoveRes
   if (!meta) die(`${rel(file)} has no frontmatter — recreate it with \`akb raw create\``)
 
   for (const op of ops) {
-    if (!op.question?.agent) continue
+    if (!compatibility || !op.question?.agent) continue
     const agent = findSpecAgent(op.question.agent)
     if (!agent) die(`--agent "${op.question.agent}" is not an agent on this board`, { kind: 'no-such-spec-agent', specAgent: op.question.agent })
     op.question.agent = agent.name
   }
   let done: QuestionOpsResult
   try {
-    done = applyQuestionOps(meta.questions, ops, specRunAgent())
+    done = applyQuestionOps(meta.questions, ops)
   } catch (e) {
     if (e instanceof QuestionOpError) die(`#${id}: ${e.message}`)
     throw e
@@ -419,12 +405,4 @@ export function cmdUpdateQuestions(id: number, input: QuestionOpsInput): MoveRes
   for (const _ of done.closed) countBoardEvent(closed)
   say(`updated #${id} questions: ${changes.join(', ')} (${open} open)`)
   return { id, changes, open, file: rel(file) }
-}
-
-// A question a spec agent's own run appends is about that agent's section (#782).
-function specRunAgent(): string | undefined {
-  const id = insideRun()
-  if (!id) return undefined
-  const run = readStore().runs.find((r) => r.sessionId === id)
-  return run?.action === 'spec' ? run.specAgent : undefined
 }

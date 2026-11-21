@@ -154,8 +154,8 @@ describe('task recovery after a local Codex service exits (#724)', () => {
         return { error: 'test stops after confirming automatic recovery' }
       })
       assert.equal(resumed, mode === 'recover' ? 1 : 0)
-      if (mode === 'pending operation') assert.equal(peekRun(opened.run.sessionId)?.retryPause, 'unsafe')
       assert.equal(peekRun(opened.run.sessionId)?.status, 'error')
+      if (mode === 'pending operation') assert.equal(peekRun(opened.run.sessionId)?.retryPause, 'unsafe')
     })
   }
 })

@@ -16,7 +16,7 @@ const refuses = (root: string, argv: string[], why: RegExp) => assert.rejects(()
 
 const API = 'https://api.example.test'
 const OWN = 'wf_01own'
-const STUDIO = '---\nname: Layout\ndescription: Learns a page layout.\n---\n\nThe card says which page.\n'
+const STUDIO = '---\nname: Layout\ndescription: Learns a page layout.\n---\n\nThe card says which page.\n\n## Land\n\nCheck and save the page.\n'
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 255])
 
 let root = ''
@@ -78,6 +78,16 @@ it('pulls screenshots back as bytes and refuses to push a built-in', async () =>
   assert.deepEqual(note(dir), { id: 'wf_builtin_coding', version: 3 })
   await refuses(root, ['studio', 'pull', 'coding', dir], /not empty/)
   await refuses(root, ['studio', 'push', dir], /Copy this studio/)
+})
+
+it('refuses to create or push files without a Land section before a publication request', async () => {
+  const dir = pulled(3)
+  fs.writeFileSync(path.join(dir, 'STUDIO.md'), STUDIO.split('## Land')[0]!)
+  const why = /STUDIO\.md:\d+:1: Missing ## Land section. Add ## Land/
+  await refuses(root, ['studio', 'create', dir, '--request-id', 'invalid'], why)
+  await refuses(root, ['studio', 'push', dir], why)
+  assert.deepEqual(note(dir), { id: OWN, version: 3 })
+  assert.equal(patched.length, 0)
 })
 
 it('pushes only a change, and refuses once Cloud moved on', async () => {
@@ -156,4 +166,19 @@ it('validates an unregistered local studio and detects a changed baseline or dra
   const baseline = cmdStudioValidate(dir).fingerprint
   fs.appendFileSync(path.join(dir, 'STUDIO.md'), 'Unreviewed change.\n')
   assert.notEqual(cmdStudioValidate(dir).fingerprint, baseline)
+})
+
+it('does not write a local Studio version when Cloud omits its confirmation', async () => {
+  const dir = pulled(3)
+  fs.appendFileSync(path.join(dir, 'STUDIO.md'), '\nName the breakpoint.\n')
+  const fetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => init?.method === 'PATCH' ? Response.json({ id: OWN }) : fetch(url, init)
+  await refuses(root, ['studio', 'push', dir], /confirmation of the saved Studio version/)
+  assert.deepEqual(note(dir), { id: OWN, version: 3 })
+  const create = path.join(root, 'new-studio')
+  fs.mkdirSync(create)
+  fs.writeFileSync(path.join(create, 'STUDIO.md'), STUDIO)
+  globalThis.fetch = async () => Response.json({ version: 1 })
+  await refuses(root, ['studio', 'create', create, '--workspace', 'ws_1', '--request-id', 'create-no-receipt'], /confirmation of the saved Studio version/)
+  assert.equal(fs.existsSync(path.join(create, 'version.json')), false)
 })

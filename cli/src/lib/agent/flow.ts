@@ -17,7 +17,7 @@ import { taskChatsToReview, type ChatToReview } from './memory-review'
 import { dismissalsToReview, rejectionsToReview, withdrawnSources } from './dismissal-review'
 import { buildAsk, frozenRules, reflectedCards, settingsBlock, studioRulesBlock } from './prompts'
 import { ruleFor, ruleOwner, ruleOwnerSays } from './rules'
-import { cardStage, cardStages, studioFor } from './studios'
+import { studioFor } from './studios'
 import { isRetired, type AgentRequest, type DeliveryRecord, type StartableAction } from './types'
 
 // The run id an agent works under. It lives in agent/env.ts, which imports nothing, so
@@ -281,21 +281,6 @@ function questionsField(meta: Meta): string[] {
   return field('questions', [`${meta.questions.length} open:`, ...lines.map((s) => `  ${s}`)])
 }
 
-// The approval a card is on, when its previews make several (#2154).
-function stageField(meta: Meta): string[] {
-  const flow = studioFor(meta.studio)
-  const stages = cardStages(meta, flow).length
-  return stages > 1 ? field('stage', `${cardStage(meta, flow)} of ${stages}`) : []
-}
-
-// A stage before the last ends on the board's Approve, never on a question (#1790).
-const stageClose = (meta: Meta): string[] => {
-  const flow = studioFor(meta.studio)
-  return cardStage(meta, flow) < cardStages(meta, flow).length
-    ? ["end the stage with its previews; ask no question about approving it — the board's Approve moves the card on"]
-    : []
-}
-
 function committingClose(delivery: DeliveryRecord | undefined): string[] {
   if (!delivery) return []
   return [
@@ -323,8 +308,6 @@ interface Flow {
 /** Guides supplied upfront, general rules before the action's own flow. */
 const GUIDES_FOR: Record<StartableAction, string[]> = {
   implement: ['board', 'archive', 'implement'],
-  // Nor a scheduled agent's pass (#1401), nor a sub-run (#1421).
-  scheduled: [],
   sub: [],
   // One planning session (#1203): the page that plans, and the two it writes the card by.
   clarify: ['refine', 'writing', 'update-questions'],
@@ -342,8 +325,6 @@ const GUIDES_FOR: Record<StartableAction, string[]> = {
   'review-dismissals': ['review-rejections'],
   'describe-project': ['describe-project'],
   reflect: ['reflect'],
-  // The prompt names `preview-agent`; the agent reads it if it has not already.
-  spec: [],
 }
 
 // Each conversation carries its own Studio/Preview facts and transcript.
@@ -416,7 +397,7 @@ function buildFlow(req: AgentRequest, program: string): Flow {
         `record the delivered outcome and verification on the task — \`akb guide archive\``,
         delivery
           ? `${self} raw delivery complete ${delivery.deliveryId} — finish your step and follow its handoff; software steps in a git project supply --commit <full-sha> --branch <target>`
-          : `${raw} archive ${req.id} — once every box is ticked and the card's goal is met`,
+          : `${self} task archive ${req.id} — once every box is ticked and the card's goal is met`,
       )
       if (card.meta.questions.length) {
         next.push(
@@ -426,29 +407,32 @@ function buildFlow(req: AgentRequest, program: string): Flow {
       break
     }
     case 'clarify': {
-      facts.push(...stepsField(card!), ...questionsField(card!.meta), ...stageField(card!.meta))
+      facts.push(...stepsField(card!), ...questionsField(card!.meta))
       close.push(
         'settle and write the card as `akb guide refine` says',
-        ...stageClose(card!.meta),
         `${raw} update ${req.id} --status ready — once the card validates`,
       )
       break
     }
     case 'resolve': {
-      facts.push(...questionsField(card!.meta), ...stageField(card!.meta))
+      facts.push(...questionsField(card!.meta))
       // The build these answers land on top of, where there is one (#637).
       const building = activeDelivery(req.id!)
       if (building) {
         facts.push(...answeringField(building, self))
         facts.push(...notesField(card!))
+        close.push(
+          answeredClose(building, self),
+          'do not run `refine` while a delivery is in flight — even if requirements changed, the build carries on in execution once all questions are dropped',
+        )
+      } else {
+        close.push('once no question is left, refine the card as `akb guide refine` says; if any question remains open, leave it waiting')
       }
-      if (building) close.push(answeredClose(building, self))
-      close.push(...stageClose(card!.meta))
+      close.push(`if the user chose to discard the task, follow \`akb guide resolve\` and use ${self} task remove ${req.id} "<why>" --discard`)
       break
     }
     case 'approve': {
-      facts.push(...stageField(card!.meta))
-      close.push(...stageClose(card!.meta), `${raw} update ${req.id} --status ready — once the card validates`)
+      close.push(`${raw} update ${req.id} --status ready — once the card validates`)
       break
     }
     case 'edit': {
@@ -468,12 +452,8 @@ function buildFlow(req: AgentRequest, program: string): Flow {
       facts.push(...stepsCount(card!))
       close.push(
         'record the delivered outcome and verification on the task',
-        `${raw} archive ${req.id} — it files the card, drops it from the index, and prints what still mentions it`,
+        `${self} task archive ${req.id} — follow the archive result`,
       )
-      break
-    }
-    case 'spec': {
-      next.push('Return to the studio that requested this preview and continue it in this session. No background follow-up is scheduled.')
       break
     }
     // Squeezing the memory back down (#514). The facts are the files, because the files
@@ -576,8 +556,7 @@ function leadLine(req: AgentRequest, program: string): string {
       : req.deliveryId
         ? `delivery ${req.deliveryId}`
           : ''
-  const action = req.action === 'spec' ? 'previews' : req.action
-  return `${action}${what ? ` ${what}` : ''} — printed, not started. Do it here, in this session (${program}).`
+  return `${req.action}${what ? ` ${what}` : ''} — printed, not started. Do it here, in this session (${program}).`
 }
 
 // ---- printing it -----------------------------------------------------------
@@ -618,8 +597,6 @@ export function printFlow(rawReq: AgentRequest, program = 'akb'): MoveResult {
     say('')
     say(section.head)
     say('')
-    // A line that carries its own block — the ask's spec-agent catalog — is indented all
-    // the way through, or the block falls out of the section it belongs to.
     for (const line of section.lines) say(indent(line))
   }
   const guides = flow.guides

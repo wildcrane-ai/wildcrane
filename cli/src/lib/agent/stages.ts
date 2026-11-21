@@ -1,29 +1,5 @@
-// The three stages a card goes through, and the flows that are not one of them (#714, #1203).
-//
-// Discussion, planning and execution used to be words in the prose and
-// nothing in the program: which agent ran a flow was a list on the ROLE (./roles.ts), so
-// the only thing the code knew about a stage was who happened to run it.
-//
-// A contract says the rest. Each stage declares what it is handed, what it leaves behind,
-// when it is over, the agent that leads it and the hooks that follow it — as DATA, read by
-// the flow, not an interface anything implements. Two of those fields are what the machine
-// acts on: `lead` is how a flow finds its agent, and `requires` is what the stage cannot end
-// without. `input`, `output` and `done` are written down for the reader and for #715, which
-// is where they reach a prompt.
-//
-// The contract sits ON TOP of the roles rather than replacing them. A lead is a name off the
-// roster, and rules, runtimes and switches all still resolve by agent name.
-//
-// Everything else the board can start is a shared node: an EVENT entry something on the
-// board starts (a sort, a reflection, a complaint, a prune). None belongs to a stage
-// and none is open to be hooked — they are listed here so the classification is a total one:
-// every flow this board has is a stage's or an event, and never both.
+const STAGES = ['discuss', 'plan', 'build'] as const
 
-import { landAgents, previewAgents, studioFor, studios } from './studios'
-
-export const STAGES = ['discuss', 'plan', 'build'] as const
-
-/** One of the three stages. */
 export type Stage = (typeof STAGES)[number]
 
 /** What one stage is answerable for. */
@@ -39,12 +15,6 @@ export interface StageContract {
   done: string
   /** The agent that runs it and writes the one conclusion; empty when nobody does. */
   lead: string
-  /** The agents the stage calls in, by name: planning's previews (#2152); `build` has none. */
-  helpers: string[]
-  /** The hooks this stage cannot end without. The lead is always required and is never
-   *  listed here. Empty on everything the command ships: until a board can write its own
-   *  contracts (#716), a required hook would change when a card finishes. */
-  requires: string[]
 }
 
 /** What a flow that is no stage's is: work something on the board starts rather than a
@@ -68,8 +38,6 @@ const BOARD_STAGES: StageContract[] = [
     output: 'a direction worth a card, or the finding that there is nothing to build',
     done: 'the user has what they came for — a card was written, or the idea was let go',
     lead: 'discussion-helper',
-    helpers: [],
-    requires: [],
   },
   {
     stage: 'plan',
@@ -78,8 +46,6 @@ const BOARD_STAGES: StageContract[] = [
     output: 'a card someone can build from without asking anything else',
     done: "nothing is left open on it but the calls that are the user's to make",
     lead: 'planner',
-    helpers: [],
-    requires: [],
   },
   {
     stage: 'build',
@@ -88,15 +54,9 @@ const BOARD_STAGES: StageContract[] = [
     input: 'the approved card and the rules its delivery froze',
     output: "the approved outcome and its recorded results",
     done: 'the task has recorded completion and the card is archived',
-    // The card studio's first land agent; none without one.
     lead: '',
-    helpers: [],
-    requires: [],
   },
 ]
-
-// The contracts a studio's agents are laid over: planning calls in its previews, and its
-// first land agent leads the build. Everything else on a contract is the kernel's.
 
 // The nodes that are no stage's work, started by something happening rather than by a
 // stage reaching them: a card finishing, a cadence coming
@@ -109,18 +69,9 @@ const BOARD_NODES: FlowNode[] = [
   { flow: 'describe-project', kind: 'event', agent: 'project-writer' },
 ]
 
-/** The three stage contracts one card runs under, in the order it goes through them, under
- *  `studio` — the card's own (./studios.ts). */
-export function stageContracts(studio?: string): StageContract[] {
-  return BOARD_STAGES
-
-}
-
-/** One stage's contract, under one card's studio. */
-export const stageContract = (stage: Stage, studio?: string): StageContract =>
-  stageContracts(studio).find((c) => c.stage === stage)!
-
 /** This board's shared nodes — everything it can start that is no stage's. */
+export const stageContracts = (): StageContract[] => BOARD_STAGES
+
 export const flowNodes = (): FlowNode[] => BOARD_NODES
 
 /** The stage a flow belongs to, or undefined when it is a shared node or this board has no
@@ -135,23 +86,16 @@ export const nodeOfFlow = (flow: string): FlowNode | undefined =>
 
 /** The agent that runs one flow — the one mapping from a flow to who does it. A stage's
  *  flow resolves to its lead; a shared node's to the agent on the node. */
-export const agentForFlow = (flow: string, studio?: string): string | undefined => {
+export const agentForFlow = (flow: string): string | undefined => {
   if (!flow) return undefined
-  const stage = stageContracts(studio).find((c) => c.flows.includes(flow))
+  const stage = BOARD_STAGES.find((c) => c.flows.includes(flow))
   return stage ? stage.lead || undefined : nodeOfFlow(flow)?.agent
 }
 
 /** The flows one agent runs here, stages first and then its nodes. */
-export const flowsOfAgent = (name: string, studio?: string): string[] => [
-  ...new Set([
-    // Across every studio this board has, unless one is named: the same agent leads the build
-    // in one studio and nothing in another, and a rule written for it has to reach every
-    // flow it runs anywhere. A caller that names a studio is asking about that one alone.
-    ...(studio !== undefined ? [studio] : studios().map((w) => w.id)).flatMap((id) =>
-      stageContracts(id).filter((c) => c.lead && c.lead === name).flatMap((c) => c.flows),
-    ),
-    ...flowNodes().filter((n) => n.agent === name).map((n) => n.flow),
-  ]),
+export const flowsOfAgent = (name: string): string[] => [
+  ...BOARD_STAGES.filter((stage) => stage.lead === name).flatMap((stage) => stage.flows),
+  ...flowNodes().filter((node) => node.agent === name).map((node) => node.flow),
 ]
 
 /** Every reason a contract names somebody this board does not have. `roster` is the names
@@ -164,13 +108,6 @@ export function contractProblems(roster: readonly string[]): string[] {
       problems.push(
         `the ${contract.stage} stage is led by \`${contract.lead}\`, and no agent on this board answers to that name.`,
       )
-    }
-    for (const helper of [...contract.helpers, ...contract.requires]) {
-      if (!has(helper)) {
-        problems.push(
-          `the ${contract.stage} stage calls for \`${helper}\`, and no agent on this board answers to that name.`,
-        )
-      }
     }
   }
   for (const node of flowNodes()) {

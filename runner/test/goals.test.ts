@@ -5,16 +5,18 @@ import os from 'node:os'
 import path from 'node:path'
 import { shimDir } from '../src/akb'
 import { cardFlags } from '../src/flow'
-import { goalsOf, writeGoals, readGoals } from '../src/goals'
+import { writeGoals, readGoals } from '../src/goals'
+import { decodeGoals } from '../../cli/src/lib/shared/goal'
 
 it('新旧读取协议指向同一组目标，缺失和不一致均拒绝', () => {
-  const goals = [{ id: 'idea_old', outcome: '原结果', acceptance: ['原验收'] }]
-  assert.deepEqual(goalsOf({ ideas: goals }), goals)
-  assert.deepEqual(goalsOf({ goals }), goals)
-  assert.deepEqual(goalsOf({ goals, ideas: structuredClone(goals) }), goals)
-  assert.throws(() => goalsOf({ goals: null } as never), { message: 'The goals array is missing or invalid.' })
-  assert.throws(() => goalsOf({}), { message: 'The goals array is missing or invalid.' })
-  assert.throws(() => goalsOf({ goals, ideas: [] }), { message: 'goals and ideas do not match.' })
+  const old = { id: 'idea_old', title: 'Goal', outcome: 'Result', acceptance: ['Check'], workflow: 'wf_custom', previews: ['custom'], task: 'task_1' }
+  const goal = { id: old.id, title: old.title, outcome: old.outcome, acceptance: old.acceptance, studio: old.workflow,
+    review_plan: [{ id: 'review', after: [], previews: ['custom'] }], task: { id: 'task_1' } }
+  assert.deepEqual(decodeGoals({ ideas: [old] }), { field: 'ideas', value: { goals: [goal] } })
+  assert.deepEqual(decodeGoals({ goals: [goal], ideas: structuredClone([goal]) }), { field: 'goals', value: { goals: [goal] } })
+  assert.throws(() => decodeGoals({ goals: null } as never), { message: 'The goals array is missing or invalid.' })
+  assert.throws(() => decodeGoals({}), { message: 'The goals array is missing or invalid.' })
+  assert.throws(() => decodeGoals({ goals: [goal], ideas: [] }), { message: 'goals and ideas do not match.' })
 })
 
 it('讨论元数据跨分页保留目录与已选要点，落卡显式传递空列表', async () => {
@@ -22,21 +24,22 @@ it('讨论元数据跨分页保留目录与已选要点，落卡显式传递空�
   const before = process.env.WILDCRANE_HOME
   process.env.WILDCRANE_HOME = home
   try {
-    const goal = { id: 'idea_1', title: 'Goal', outcome: 'Result', acceptance: [], studio: 'wf_custom', previews: ['custom'] }
+    const review_plan = [{ id: 'custom', after: [], previews: ['custom'] }]
+    const goal = { id: 'idea_1', title: 'Goal', outcome: 'Result', acceptance: [], studio: 'wf_custom', review_plan, task: null }
     const catalog = [{ id: 'custom', title: { zh: '审阅' }, instructions: 'The requested output.' }]
     const pages: (string | null | undefined)[] = []
-    const result = await writeGoals({ id: 'job_1', discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [goal] } } as never, async (_workspace, after) => {
+    const result = await writeGoals({ id: 'job_1', discussion: { id: 'dsc_1', workspace: 'ws_1', goals: [goal] } } as never, async (_workspace, after) => {
       pages.push(after)
       return { ok: true, value: { data: [{ id: after ? 'wf_custom' : 'wf_first', name: 'Custom', previews: catalog }], next: after ? null : 'wf_first' } }
     })
     assert.ok('file' in result)
     const data = JSON.parse(fs.readFileSync(result.file, 'utf8'))
     assert.equal(data.workspace, 'ws_1')
-    assert.deepEqual(data.studios[1].previews, [{ id: "custom", instructions: "The requested output." }])
+    assert.deepEqual(data.studios[1].previews, [{ id: "custom", title: { zh: "审阅" }, instructions: "The requested output." }])
     assert.deepEqual(pages, [null, 'wf_first'])
     const revised = { ...goal, title: 'Unsaved local goal' }
     fs.writeFileSync(result.file, JSON.stringify({ workspace: 'ws_1', studios: [], ideas: [revised] }))
-    await writeGoals({ id: 'job_1', discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [goal] } } as never, async () => ({ ok: true, value: { data: [], next: null } }), true)
+    await writeGoals({ id: 'job_1', discussion: { id: 'dsc_1', workspace: 'ws_1', goals: [goal] } } as never, async () => ({ ok: true, value: { data: [], next: null } }), true)
     assert.deepEqual(readGoals(result.file), [revised])
     assert.equal(fs.existsSync(result.file), false)
     assert.deepEqual(cardFlags({ number: 1 } as never, { previews: [] }), ['--previews', ''])
@@ -75,14 +78,14 @@ it('同版本并发目录只读一次，跨账号、版本或缺失版本均不�
     writeFakeSession(home)
     clearStudioSnapshots()
     const account = readSession()!.subject
-    const job = { id: 'j1', discussion: { id: 'd1', workspace: 'ws1', ideas: [], catalog: { account, version: 'v1' } } } as never
+    const job = { id: 'j1', discussion: { id: 'd1', workspace: 'ws1', goals: [], catalog: { account, version: 'v1' } } } as never
     let reads = 0
     const list = async () => { reads++; return { ok: true as const, value: { data: [{ id: 'wf1', name: 'One' }], next: null, catalogVersion: 'v1' } } }
     await Promise.all([writeGoals(job, list), writeGoals(job, list)])
     assert.equal(reads, 1)
     await writeGoals(job, list)
     assert.equal(reads, 1)
-    const other = { id: 'j2', discussion: { id: 'd2', workspace: 'ws1', ideas: [], catalog: { account: 'other', version: 'v1' } } } as never
+    const other = { id: 'j2', discussion: { id: 'd2', workspace: 'ws1', goals: [], catalog: { account: 'other', version: 'v1' } } } as never
     await writeGoals(other, list)
     assert.equal(reads, 2)
     clearStudioSnapshots()

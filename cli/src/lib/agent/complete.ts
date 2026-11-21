@@ -13,8 +13,6 @@ import { answerOutcome } from './answers'
 import { insideRun } from './env'
 import type { MoveResult } from '../types'
 import { readStore, withStore } from './store'
-import { landAgents, noStudioMessage, studioFor } from './studios'
-import { specAgentCatalog } from '../agents/catalog'
 import type { DeliveryCompletion, DeliveryRecord } from './types'
 
 export function completeDelivery(named: string, result: { commit?: string; branch?: string } = {}): MoveResult & { deliveryId: string; finished: boolean } {

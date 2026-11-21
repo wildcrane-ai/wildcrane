@@ -42,6 +42,13 @@ than treating this catalogue as a fixed sequence.
   in the title, H1 and SEO title; flag a mismatch, never stuff keywords or add a meta keywords
   tag. With none supplied, write metadata from the topic without keyword research.
 
+## Land
+
+Keep the requested files and assets in the task's asset folder. Check final article copies in their
+destination formats and record the delivered paths in a checked todo. Publish externally only when requested.
+
+## Previews
+
 <Preview id="article-outline">
 
 Show a brief and outline for the requested post or revision:
@@ -84,7 +91,6 @@ research and available images; missing unrequested Previews do not require creat
   each other destination's canonical field, or explain how to set it when publishing.
 - **Check**: inspect the finished article in its destination format, checking metadata,
   image paths, alt text and links; keep affected delivered copies consistent.
-- **Delivery**: show an Asset per destination copy and list delivered paths in a checked
-  todo. Deliver the files without publishing to an external service unless requested.
+Show an Asset per destination copy.
 
 </Preview>

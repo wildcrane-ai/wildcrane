@@ -27,6 +27,8 @@
 // kanban-ui/lib/frontmatter.ts and kanban-ui/lib/questions.ts.
 
 import { die } from './paths'
+import { AGENT_NAME } from './agents/parse'
+import { QUESTION_EDIT_LIMITS } from './question-ops'
 import type { Typed } from './cli/shared'
 import type { Question, QuestionDraft } from './types'
 
@@ -130,7 +132,7 @@ export interface QuestionOpsInput {
 //
 // `--update` is the one that takes two values — the position, then the new text — so it is
 // declared variadic and lands here as two entries in a row.
-export function readQuestionOps(typed: Typed[]): QuestionOp[] {
+export function readQuestionOps(typed: Typed[], compatibility = false): QuestionOp[] {
   const ops: QuestionOp[] = []
   for (let i = 0; i < typed.length; i++) {
     const [key, value] = typed[i]!
@@ -156,11 +158,26 @@ export function readQuestionOps(typed: Typed[]): QuestionOp[] {
   if (!ops.length) {
     die('update-questions needs at least one op: --append ".." | --update <n> ".." | --drop n[,n...] | --clear')
   }
+  if (!compatibility && ops.length > QUESTION_EDIT_LIMITS.operations) {
+    die(`Submit at most ${QUESTION_EDIT_LIMITS.operations} edits at a time.`)
+  }
   for (const op of ops) {
     if (op.draft) {
+      if (!compatibility) validateQuestionEdit(op.draft)
       op.question = finalizeDraft(op.draft)
       delete op.draft
     }
   }
   return ops
+}
+
+function validateQuestionEdit(draft: QuestionDraft): void {
+  const { text, option, options } = QUESTION_EDIT_LIMITS
+  if (Buffer.byteLength(draft.question) > text) die(`Question text must be at most ${text} bytes.`)
+  if (draft.options.length > options) die(`A question can have at most ${options} choices.`)
+  if (draft.options.some(choice => Buffer.byteLength(choice) > option)) die(`Each choice must be at most ${option} bytes.`)
+  if (draft.recommended.length > 1) die('A question takes at most one --recommended-option.')
+  if (draft.agent && (draft.agent.length > 64 || !AGENT_NAME.test(draft.agent))) {
+    die('--agent must be at most 64 characters with lowercase letters or digits joined by hyphens.')
+  }
 }

@@ -64,7 +64,7 @@ async function lock(dir, interrupted) {
 
 const entries = process.argv.slice(2).map(file => path.resolve(file))
 if (!entries.length) {
-  console.error('Usage: node check-mockup.mjs <entry.html|entry.tsx> [<entry> ...]')
+  console.error('Usage: node check-mockup.mjs <entry.html|entry.htm|entry.tsx> [<entry> ...]')
   process.exitCode = 1
 } else {
   let work

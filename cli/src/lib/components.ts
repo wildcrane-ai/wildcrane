@@ -7,7 +7,7 @@ import shared from '../components/shared.md'
 import { findSpecAgent } from './agents'
 import { BoardError } from './io'
 import { boardText } from './paths'
-import { studioById, previewMembers, scheduledMembers } from './agent/studios'
+import { studioById } from './agent/studios'
 
 const DOCUMENTS: Record<string, string> = { Asset: asset, Compare: compare, Storyboard: storyboard, Set: set, Studio: studio }
 

@@ -20,8 +20,9 @@ import { SWEEP_MS, removeLegacy, sweepCache, sweepStudios } from './cache'
 import { pruneChats, reviewChats } from './chats'
 import { watchBoards, type BoardWatch } from './board-watch'
 import { answerHint } from './diff'
-import { stopLeftBehind } from './flow'
-import { replySpent, readCheckpoint, replayable, saveCheckpoint, stopReply, syncing, UNCERTAIN } from './recovery'
+import { answerOf, runAkb } from './akb'
+import { flowRunEvidence, stopLeftBehind } from './flow'
+import { clearCheckpoint, readCheckpoint, recoverInterruptedJob, saveCheckpoint, stopReply, usesBoardRun } from './recovery'
 import { status, t } from './i18n'
 import { holdMachine, type Holder } from './lock'
 import { STOP_MS, defaultDeps, folderFor, runJob, type Deps } from './jobs'
@@ -29,7 +30,7 @@ import { keepPresence, type Presence } from './presence'
 import { modelLists, refreshModels } from './runtimes'
 import { MODEL_REFRESH_MS } from './model-list'
 import { codexServer } from './codex-server'
-import { akbCardOf, openTaskFolder } from './task-folder'
+import { akbCardOf, openAgentFolder, openTaskFolder } from './task-folder'
 import { logSync } from './sync-debug'
 import { canKeepFlow, reclaimFlowWorkerAfterExit, retireSyncWorker, reclaimFlowWorkers, flowWorkerEntry, hasFlowWorker, launchFlowWorker, stopFlowWorker, watchFlowWorker } from './flow-worker'
 
@@ -288,6 +289,7 @@ export function startRunner(options: Options): Runner {
         }
       },
       onReady: () => {
+        void sweep()
         void readJobs('reconnected')
         boards?.pullAll()
       },
@@ -318,11 +320,9 @@ export function startRunner(options: Options): Runner {
       for (const id of attempted) if (!listed.has(id) && !running.has(id)) attempted.delete(id)
       for (const job of list.value.jobs) {
         if (closed || preparing) break
-        const waitingToSync = !!job.task && syncing(readCheckpoint(job.id))
-        const syncSource = job.flow?.sync_recovery_of
-        if (syncSource && syncing(readCheckpoint(syncSource))
+        const syncSource = job.flow?.sync_recovery_of ?? job.syncRecoveryOf
+        if (syncSource
             && (running.has(syncSource) || !retireSyncWorker(syncSource, registration.machineId))) continue
-        if (waitingToSync && !running.has(job.id) && hasFlowWorker(job.id)) retireSyncWorker(job.id, registration.machineId)
         if (workerEntry && canKeepFlow(job) && !running.has(job.id)
             && (job.state === 'waiting' || job.state === 'claimed') && !attempted.has(job.id)) {
           let keep = hasFlowWorker(job.id)
@@ -334,43 +334,43 @@ export function startRunner(options: Options): Runner {
           }
           if (keep) { startWorker(job); continue }
         }
-        // 本地运行停止后，由 Cloud 自动恢复重启遗留的任务一次。
-        if ((job.state === 'claimed' || job.state === 'interrupted') && !running.has(job.id) && (waitingToSync || !attempted.has(job.id) || !job.flow && !!(job.chat || job.discussion))) {
-          const failure = await stopLeftOn(job)
-          if (closed || preparing) break
+        if (job.flow && hasFlowWorker(job.id)) {
+          if (!running.has(job.id)) {
+            await reclaimFlowWorkers(registration.machineId, options.deps, job.id)
+            if (!hasFlowWorker(job.id)) { attempted.delete(job.id); readAgain = true }
+          }
+          continue
+        }
+        // Cloud may have accepted the result after the local owner went away.
+        if (job.test && attempted.has(job.id)) continue
+        if ((job.state === 'claimed' || job.state === 'interrupted') && !running.has(job.id)) {
+          const valid = () => !closed && !preparing && validAccount()
+          const current = await api.readJob(job.id)
+          if (!valid()) break
+          if (!current.ok || current.value.job.id !== job.id) continue
+          const original = current.value.job
+          if (original.state === 'finished' && (original.outcome === 'done' || original.outcome === 'stopped')) {
+            clearCheckpoint(job.id)
+          }
+          if (original.state !== 'claimed' && original.state !== 'interrupted') continue
+          const step = deps()
+          const failure = await stopLeftOn(original)
           const checkpoint = readCheckpoint(job.id)
-          const reply = !job.flow && !!(job.chat || job.discussion)
-          const processesStopped = reply ? await stopReply(job.id, deps().stopMs) : false
-          const uncertain = !!checkpoint && (checkpoint.updating || reply) && !checkpoint.completed
-            && (checkpoint.launching || checkpoint.pending.length > 0 || checkpoint.opaque
-              || checkpoint.cleanup?.status === 'unconfirmed'
-              || (!job.flow && checkpoint.started && !checkpoint.session && !(reply && replayable(checkpoint))))
-          const safeFork = checkpoint?.forkSource && replayable(checkpoint)
-          const preserveSync = waitingToSync && (!reply || processesStopped)
-          if (checkpoint && (preserveSync || reply && (checkpoint.retry?.pending || safeFork) && processesStopped && !uncertain)
-              && !checkpoint.updating && !failure) {
-            const prepared = await api.finishJob(registration.machineId, job.id, 'update_prepare')
-            if (prepared.ok && prepared.value.prepared) {
-              checkpoint.updating = true
-              saveCheckpoint(job.id, checkpoint)
-            } else if (prepared.ok && prepared.value.finished || preserveSync) {
-              continue
-            }
+          let stopped = !failure && await stopReply(job.id, step.stopMs)
+          if (!valid()) break
+          if (checkpoint && stopped && usesBoardRun(original, checkpoint) && checkpoint.started !== false && !checkpoint.completed) {
+            const folder = original.projectDir ? folderFor(original) : null
+            if (folder && 'refused' in folder) continue
+            const ws = original.agent && folder
+              ? openAgentFolder(original, folder.cwd)
+              : openTaskFolder({ ...original, task: original.task ?? original.review?.tasks[0] }, folder?.cwd ?? null)
+            const evidence = await flowRunEvidence(ws, original, { ...step, akb: step.akb() }, job.id, checkpoint.flowRun)
+            checkpoint.flowRun = evidence.run
+            stopped = evidence.stopped
           }
-          if (checkpoint?.updating) status(uncertain ? UNCERTAIN : '正在恢复更新前的任务…')
-          const outcome = failure || uncertain ? 'failed' : checkpoint?.updating ? 'update_resume' : 'interrupted'
-          const canContinue = reply && processesStopped && !!checkpoint?.session && !checkpoint.opaque
-          const reason = failure ?? (uncertain ? canContinue ? 'operation_unconfirmed' : 'recovery_unsafe' : '')
-          const report = { ...(checkpoint?.session ? { session: checkpoint.session } : {}),
-            ...(reply && checkpoint && uncertain ? { ...replySpent(checkpoint, job.runtime), ...(checkpoint.partialReply ? { reply: checkpoint.partialReply } : {}),
-              recovery: { safe: false, stopped: processesStopped, resumable: canContinue } } : {}),
-            ...(processesStopped ? { processesStopped: true } : {}) }
-          const recovered = await api.finishJob(registration.machineId, job.id, outcome, reason, report)
-          if (checkpoint && uncertain && recovered.ok && recovered.value.finished) {
-            checkpoint.completed = { outcome: 'failed', reason, report }
-            saveCheckpoint(job.id, checkpoint)
-          }
-          if (recovered.ok && (recovered.value.resumed || processesStopped && recovered.value.finished)) readAgain = true
+          const recovered = await recoverInterruptedJob(registration.machineId, original, checkpoint, stopped, valid, failure)
+          if (recovered?.resumed) attempted.delete(job.id)
+          if (recovered?.resumed || stopped && recovered?.finished) readAgain = true
           continue
         }
         // Cloud lists only the jobs the plan's running limit lets start (#2209).
@@ -390,13 +390,21 @@ export function startRunner(options: Options): Runner {
 
   /** The board runs a flow job left on its card when the Runner was force-quit under it (#2120). */
   const stopLeftOn = async (job: api.Job): Promise<string | undefined> => {
-    if (!job.flow || !job.task) return
+    if (!job.review && (!job.flow || !job.task)) return
     try {
       const folder = job.projectDir ? folderFor(job) : null
       if (folder && 'refused' in folder) return folder.refused
-      const ws = openTaskFolder(job, folder?.cwd ?? null)
+      const ws = openTaskFolder({ ...job, task: job.task ?? job.review?.tasks[0] }, folder?.cwd ?? null)
       const card = akbCardOf(ws)
-      if (card) await stopLeftBehind(deps().akb(), ws, card, deps().stopMs)
+      if (card) {
+        if (job.flow && job.flow.verb !== 'discard') {
+          const reconciled = answerOf<{ kind?: string; deliveryId?: string }>(
+            await runAkb(deps().akb(), ['raw', 'delivery', 'reconcile', String(card), '--json', '--board', ws.board], { cwd: ws.cwd, board: ws.board }),
+          )
+          if (reconciled?.kind === 'running' && reconciled.deliveryId) return
+        }
+        await stopLeftBehind(deps().akb(), ws, card, deps().stopMs)
+      }
     } catch (e) {
       return e instanceof Error ? e.message : String(e)
     }
@@ -448,30 +456,19 @@ export function startRunner(options: Options): Runner {
       try {
         if (!hasFlowWorker(id)) launchFlowWorker(id, registration!.machineId, workerEntry)
         await watchFlowWorker(id, registration!.machineId, () => closed)
-        if (!closed) {
-          const left = await api.listJobs(registration!.machineId)
-          if (left.ok && left.value.jobs.some((j) => j.id === id)) {
-            throw new Error('原执行已退出，但未确认最终结果，已有成果已保留，请检查后续跑。')
-          }
-        }
-      } catch (e) {
-        if (syncing(readCheckpoint(id))) return
-        const held = !closed && validAccount() ? await api.renewJob(registration!.machineId, id) : null
-        const claimed = held?.ok && !held.value.renewed && validAccount() ? await api.claimJob(registration!.machineId, id) : null
-        if (held?.ok && held.value.renewed || claimed?.ok && claimed.value.claimed) {
-          const failure = await stopLeftOn(job)
-          await api.finishJob(registration!.machineId, id, 'failed', failure ?? (e instanceof Error ? e.message : String(e)))
-        }
+      } catch {
+        // The exit sweep checks the same job in Cloud after proving the worker stopped.
       }
     })().finally(() => {
       jobs.delete(watched)
       running.delete(id)
       workers.delete(id)
-      void reclaimFlowWorkerAfterExit(id, registration!.machineId, options.deps)
-      if (!closed) {
-        if (syncing(readCheckpoint(id)) && !retireSyncWorker(id, registration!.machineId)) return
-        boards?.look(); status(idle()); void readJobs()
-      }
+      void reclaimFlowWorkerAfterExit(id, registration!.machineId, options.deps).finally(() => {
+        if (!closed) {
+          if (!hasFlowWorker(id)) attempted.delete(id)
+          boards?.look(); status(idle()); void readJobs()
+        }
+      })
     })
     jobs.add(watched)
   }

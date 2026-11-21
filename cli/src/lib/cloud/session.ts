@@ -55,29 +55,41 @@ export const sessionFile = (): string => path.join(machineHome(), 'session.json'
 const lockDir = (): string => path.join(machineHome(), 'session.lock')
 const lockOwner = (): string => path.join(lockDir(), 'owner')
 const retryFile = (): string => path.join(machineHome(), 'session-refresh.json')
-interface RefreshRetry { key: string; until: number; attempt: number; error: string }
+interface RefreshRetry { key: string; until: number; attempt: number; error: string; source?: 'cloud' }
+let transportRetry: (RefreshRetry & { file: string }) | undefined
 const refreshKey = (session: CloudSession) => createHash('sha256')
   .update(JSON.stringify([cloudEndpoints().api, session.subject, session.refreshToken])).digest('hex')
 
 function readRetry(session: CloudSession): RefreshRetry | undefined {
   try {
     const retry = JSON.parse(fs.readFileSync(retryFile(), 'utf8')) as RefreshRetry
+    // Older processes write local connection failures to this shared file.
+    if (!retry.source && ['fetch failed', 'The operation was aborted due to timeout'].includes(retry.error)) return
     if (retry.key === refreshKey(session) && Number.isFinite(retry.until)
         && Number.isInteger(retry.attempt) && retry.attempt > 0 && typeof retry.error === 'string') return retry
   } catch {}
 }
 
-function deferRefresh(session: CloudSession, error: string, after?: string | null): TokenResult {
+function readTransportRetry(session: CloudSession): RefreshRetry | undefined {
+  if (transportRetry?.file === retryFile() && transportRetry.key === refreshKey(session)) return transportRetry
+}
+
+function deferRefresh(session: CloudSession, error: string, { after, transport = false }: { after?: string | null; transport?: boolean } = {}): TokenResult {
   const current = readSession()
   if (current?.subject === session.subject && current.refreshToken === session.refreshToken) {
-    const attempt = Math.min((readRetry(session)?.attempt ?? 0) + 1, 4)
+    const previous = transport ? readTransportRetry(session) : readRetry(session)
+    const attempt = Math.min((previous?.attempt ?? 0) + 1, 4)
     const seconds = after?.trim() ? Number(after) : NaN
     const serverDelay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(after ?? '') - Date.now()
-    const delay = Math.max(Math.min(REFRESH_BACKOFF_MS * 2 ** (attempt - 1), 300_000), Number.isFinite(serverDelay) ? serverDelay : 0)
+    const backoff = (transport ? 5_000 : REFRESH_BACKOFF_MS) * 2 ** (attempt - 1)
+    const delay = Math.max(Math.min(backoff, transport ? 30_000 : 300_000), Number.isFinite(serverDelay) ? serverDelay : 0)
     const retry: RefreshRetry = { key: refreshKey(session), until: Date.now() + delay, attempt, error }
-    const temporary = `${retryFile()}.${process.pid}.tmp`
-    fs.writeFileSync(temporary, JSON.stringify(retry), { mode: 0o600 })
-    fs.renameSync(temporary, retryFile())
+    if (transport) transportRetry = { ...retry, file: retryFile() }
+    else {
+      const temporary = `${retryFile()}.${process.pid}.tmp`
+      fs.writeFileSync(temporary, JSON.stringify({ ...retry, source: 'cloud' }), { mode: 0o600 })
+      fs.renameSync(temporary, retryFile())
+    }
   }
   return { ok: false, reason: 'unreachable', error }
 }
@@ -110,10 +122,12 @@ export function writeSession(session: CloudSession): void {
   fs.writeFileSync(tmp, `${JSON.stringify(session, null, 2)}\n`, { mode: 0o600 })
   fs.renameSync(tmp, sessionFile())
   if (!expiringSoon(session) || !readRetry(session)) fs.rmSync(retryFile(), { force: true })
+  if (transportRetry?.file === retryFile() && (!expiringSoon(session) || !readTransportRetry(session))) transportRetry = undefined
 }
 
 /** Forget the sign-in. This machine stops reaching Cloud; nothing on any board is touched. */
 export function clearSession(): void {
+  if (transportRetry?.file === retryFile()) transportRetry = undefined
   try {
     fs.rmSync(sessionFile())
     fs.rmSync(retryFile(), { force: true })
@@ -134,13 +148,13 @@ export type TokenResult =
 /**
  * A token good to send right now, refreshing it first when it is about to run out.
  *
- * Temporary refresh failures preserve the session and share a cooldown across processes.
+ * Cloud responses share a cooldown across processes. A transport failure only delays its caller.
  */
-export async function accessToken(): Promise<TokenResult> {
+export async function accessToken({ retryTransport = false }: { retryTransport?: boolean } = {}): Promise<TokenResult> {
   const held = readSession()
   if (!held) return { ok: false, reason: 'signed-out' }
   if (!expiringSoon(held)) return { ok: true, token: held.accessToken, session: held }
-  return refresh()
+  return refresh(retryTransport)
 }
 
 const expiringSoon = (session: CloudSession): boolean =>
@@ -154,7 +168,7 @@ const expiringSoon = (session: CloudSession): boolean =>
  * taking it is what keeps two readers from spending the same refresh token and signing the
  * user out between them.
  */
-async function refresh(): Promise<TokenResult> {
+async function refresh(retryTransport: boolean): Promise<TokenResult> {
   const lock = await takeLock()
   if (!lock) return { ok: false, reason: 'unreachable', error: 'Cloud sign-in refresh is busy. Try again shortly.' }
   try {
@@ -163,6 +177,8 @@ async function refresh(): Promise<TokenResult> {
     if (!expiringSoon(now)) return { ok: true, token: now.accessToken, session: now }
     const retry = readRetry(now)
     if (retry && retry.until > Date.now()) return { ok: false, reason: 'unreachable', error: retry.error }
+    const localRetry = retryTransport ? undefined : readTransportRetry(now)
+    if (localRetry && localRetry.until > Date.now()) return { ok: false, reason: 'unreachable', error: localRetry.error }
     const { api, anonKey } = cloudEndpoints()
     let response: Response
     try {
@@ -176,12 +192,12 @@ async function refresh(): Promise<TokenResult> {
     } catch (e) {
       // Unreachable is not expired. The file is left exactly as it is, so the sign-in is
       // still there when the network comes back.
-      return deferRefresh(now, e instanceof Error ? e.message : String(e))
+      return deferRefresh(now, e instanceof Error ? e.message : String(e), { transport: true })
     }
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as { error_description?: string; msg?: string; message?: string } | null
       const error = body?.error_description ?? body?.msg ?? body?.message
-      if (![400, 401, 403].includes(response.status)) return deferRefresh(now, error ?? `Cloud answered ${response.status}`, response.headers.get('retry-after'))
+      if (![400, 401, 403].includes(response.status)) return deferRefresh(now, error ?? `Cloud answered ${response.status}`, { after: response.headers.get('retry-after') })
       return { ok: false, reason: 'expired', error }
     }
     const fresh = sessionFrom(await response.json().catch(() => null), now)

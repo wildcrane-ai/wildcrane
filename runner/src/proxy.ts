@@ -9,7 +9,6 @@ const LOOPBACK = 'localhost,127.0.0.1,[::1]'
 /** The host's own proxy variables, handed to an akb the Runner starts (#435): its env also
  *  carries the system's, which must stay re-readable. */
 export const HOST_PROXY_ENV = 'WILDCRANE_HOST_PROXY'
-// Taken on first use, after `proxy.env` is loaded.
 let HOST: NodeJS.ProcessEnv | null = null
 let current: NodeJS.ProcessEnv = {}
 let applied: string | null = null

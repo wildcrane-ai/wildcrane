@@ -1,5 +1,7 @@
+import { APPROVED_UI_DIR_ENV, APPROVED_UI_RULE, approvedUiPrompt } from './approved-ui'
+import { studioForRun } from './runner'
 import { reviewBoundary } from '../shared/review-plan'
-import { taskReviewContext } from './env'
+import { SAVED_PREVIEW_FILE_ENV, taskReviewContext } from './env'
 import { connectionIdentity, connectionStopped, endConnection } from './connection-process'
 import { boardCommandFor } from './command'
 import { findDelivery } from './deliveries'
@@ -25,7 +27,7 @@ import { KANBAN, REPO_ROOT, SESSIONS_DIR } from '../paths'
 import { eventsPathOf, readRuns, withStore } from './store'
 import { lastSessionTotal, ownCost, reportsSessionTotal } from './own-cost'
 import { cleanupDiscardedCards } from '../../commands/remove'
-import { discardedCardsPrompt } from './prompts'
+import { discardedCardsPrompt, studioRulesBlock } from './prompts'
 import { contextLimit, refreshCatalog } from './catalog'
 import { runEnv } from './flow'
 import { spawnable } from './spawnable'
@@ -38,7 +40,7 @@ import { restartPrompt, resumePrompt } from './prompts'
 import { openPlan } from './resolve'
 import { createIdleWatchdog, IDLE_FAILURE, IDLE_MS } from './idle'
 import { idleStopConfirmed } from './wire/codex-background-types'
-import { backoffMs, pauseLine, planRetry, retryLine, syncRepairPrompt, type ExecutionFailure, type RetryPause } from './retry'
+import { agentRecovery, backoffMs, pauseLine, planRetry, retryLine, syncRepairPrompt, type ExecutionFailure, type RetryPause } from './retry'
 import { executionFailure } from './wire/failures'
 import { executionHeld, executionOf } from '../cloud/execution'
 import {
@@ -156,8 +158,12 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   const pendingOperations = new Set<string>()
   const event = (e: RunEvent) => {
     observeActivity(e)
+    const hadPending = pendingOperations.size > 0
     if (e.kind === 'tool_call' && !['read', 'search', 'fetch'].includes(e.data.kind) && !['completed', 'failed'].includes(e.data.status)) pendingOperations.add(e.data.toolCallId)
     if ((e.kind === 'tool_call' || e.kind === 'tool_call_update') && ['completed', 'failed'].includes(e.data.status ?? '')) pendingOperations.delete(e.data.toolCallId)
+    if (record.cloudExecution && hadPending !== (pendingOperations.size > 0)) {
+      patch(sessionId, run => { run.pendingWrites = pendingOperations.size > 0 })
+    }
     eventsFile.write(`${JSON.stringify(e)}\n`)
   }
   const log = {
@@ -170,9 +176,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       logFile.end(closed)
     },
   }
-  // What the board settled before the agent said a word — a spec agent's setting whose saved
-  // value it no longer offers, and what it ran at instead. It goes above the output so the
-  // reason sits before the work it changed.
+  // Runtime notes precede the agent's output.
   for (const note of spec.notes ?? []) log.write(`[board] ${note}\n`)
 
   // The keys are read here and nowhere else: the plan on disk carries the command and the
@@ -182,11 +186,30 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   // Resume the recorded action, not another phase of the same delivery. A resume that could
   // only open a new session (#1321) brings the whole ask instead.
   const basePrompt = record.resumedFrom ? spec.prompt || resumePrompt(record.deliveryId, record.action) : spec.prompt
+  const resumedStudio = record.resumedFrom ? studioRulesBlock({
+    action: record.action,
+    id: record.cardId ?? undefined,
+    deliveryId: record.deliveryId,
+    studio: record.studio,
+  }) : ''
   const recoveryPrompt = record.harness === 'antigravity' && record.resumedFrom
     ? 'First verify existing progress and operation results. Preserve user decisions and completed work; do not repeat completed operations. Check actual state before continuing any operation whose result is uncertain.' : ''
   const reviewContext = taskReviewContext()
-  const boundary = reviewContext ? reviewBoundary(reviewContext.review, reviewContext.assigned) : ''
-  const prompt = [process.env.AI4KANBAN_SYNC_DIAGNOSTIC ? syncRepairPrompt(process.env.AI4KANBAN_SYNC_DIAGNOSTIC) : '', record.retry ? `Previous execution failed: ${record.retry.reason}. Check existing results before continuing; do not repeat completed operations.` : '', conflictPrompt(KANBAN), boundary, basePrompt, recoveryPrompt, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n')
+  const savedPreviews = record.action === 'implement' && process.env[SAVED_PREVIEW_FILE_ENV]
+  const review = reviewContext?.review
+  const boundary = review && reviewBoundary(savedPreviews
+    ? { ...review, stages: review.stages.map(stage => ({ ...stage, snapshot: null })) }
+    : review, reviewContext.assigned)
+  const coding = record.action === 'implement' && studioForRun({ id: record.cardId ?? undefined, deliveryId: record.deliveryId }) === 'coding'
+  const uiDirectory = process.env[APPROVED_UI_DIR_ENV]
+  const approvedUi = review && coding && (!savedPreviews || uiDirectory) ? approvedUiPrompt(review, uiDirectory, !!savedPreviews) : ''
+  const savedPrompt = savedPreviews
+    ? [
+        `Read the saved task Previews and their pinned files in \`${savedPreviews}\`. Use these saved versions for the requirements they cover and verify the delivery against them.`,
+        ...(coding && !approvedUi && review?.plan?.some(node => node.previews.includes('ui-design')) ? [APPROVED_UI_RULE] : []),
+      ].join('\n')
+    : ''
+  const prompt = [process.env.AI4KANBAN_SYNC_DIAGNOSTIC ? syncRepairPrompt(process.env.AI4KANBAN_SYNC_DIAGNOSTIC) : '', record.retry ? `Previous execution failed: ${record.retry.reason}. Check existing results before continuing; do not repeat completed operations.` : '', conflictPrompt(KANBAN), boundary, basePrompt, resumedStudio, savedPrompt, approvedUi, recoveryPrompt, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n')
 
   // The board as it was the moment before the agent touched it. The difference between this
   // and the same read at the close is what this run could be answerable for; which of it
@@ -237,6 +260,11 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
     letGo()
     return 1
   }
+  if (record.retry?.launching) patch(sessionId, (r) => {
+    if (!r.retry?.launching) return
+    r.retry.attempt++
+    delete r.retry.launching
+  })
   try {
     const start = spawnable(cmd!, client || stdinPrompt ? args : [...args, prompt], {
       // Where this run works: the project, or — inside a delivery with a worktree of its
@@ -268,10 +296,6 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   const agentStartedAt = Date.now()
   if (child.pid) {
     patch(sessionId, (r) => {
-      if (r.retry?.launching) {
-        r.retry.attempt++
-        delete r.retry.launching
-      }
       r.agentPid = child.pid
       r.agentStartedAt = agentStartedAt
       r.managedProcess = client?.managedProcess
@@ -484,18 +508,22 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       let retrying = false
       if (failure && !sub && !taskCompleted) {
         const attempt = held.retry?.attempt ?? 1
-        const decision = planRetry(failure, attempt, Date.now(), retryBackoff)
+        const decision = planRetry(failure, attempt, Date.now(), retryBackoff, !!held.cloudExecution)
         if ('pause' in decision) retryPause = decision.pause
-        else if (blocker || pendingOperations.size || !structured || !resumeSessionId(held)
-          || spoken?.cleanup?.status === 'unconfirmed'
-          || client?.managedProcess && silent && (uncertainAtIdle || !idleStopConfirmed(spoken?.cleanup, resumeSessionId(held)))) retryPause = 'unsafe'
         else {
           const mark = runMark(sessionId, agentStartedAt)
           const root = child.pid ? { pid: child.pid, since: agentStartedAt, identity: held.agentIdentity } : undefined
           const stopped = () => client?.managedProcess ? connectionStopped(root) : processesStopped(mark, root)
           const until = Date.now() + STOP_GRACE_MS + STOP_CLOSE_MS
           while (!stopped() && Date.now() < until) await sleep(100)
-          if (!stopped()) retryPause = 'unsafe'
+          const session = structured && !spawnFailure ? resumeSessionId(held) : undefined
+          const recovery = agentRecovery({
+            stopped: stopped(), session,
+            replayable: held.unspawned === true && !pendingOperations.size,
+            unconfirmedCleanup: pendingOperations.size > 0 || !!blocker || spoken?.cleanup?.status === 'unconfirmed'
+              || client?.managedProcess && silent && (uncertainAtIdle || !idleStopConfirmed(spoken?.cleanup, session)),
+          })
+          if (recovery === 'unsafe') retryPause = 'unsafe'
           else {
             const pending = decision.plan
             patch(sessionId, r => {
@@ -559,7 +587,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       })
       // The refines themselves are only for a run that finished. One that failed or was
       // ended left the board half-written, and a refine of half a card is a refine you throw
-      // away — and a spec agent sent at half a plan would answer the wrong plan.
+      // away.
       //
       // Worked out BEFORE the record closes, so anything watching for the run to end sees
       // the note it ended with rather than catching the record a beat too early.
@@ -764,14 +792,14 @@ function settleBoard(
   before: BoardMarks,
 ): RefinementFollowUp | null {
   try {
-    return refinementRunsAfter(run, changed, before, false, [])
+    return refinementRunsAfter(run, changed, before)
   } catch {
     // an unreadable board — the run it followed is done either way
     return null
   }
 }
 
-// What follows this run: the spec agents and refinements it asked for by name, and
+// What follows this run: the refinements it requested, and
 // refinement on each card it wrote, changed, or set free. Each one is an ordinary run of its
 // own, so it shows in the panel with its own log and can be stopped.
 //
@@ -787,16 +815,13 @@ async function followUp(
   sessionId: string,
   flowId: string | undefined,
   runs: AgentRequest[],
-  landing: AgentRequest | null = null,
 ): Promise<void> {
   // A request that already names its flow keeps it — a refinement pass carries its loop's
   // id, and that loop is this flow anyway.
   const join = (req: AgentRequest): AgentRequest =>
     req.flowId || !flowId ? req : { ...req, flowId }
   try {
-    const asked = [
-      ...refineRunsAfter(readRefineAsks(sessionId)),
-    ]
+    const asked = refineRunsAfter(readRefineAsks(sessionId))
     for (const req of asked) await startRun(join(req))
     clearAsks(sessionId)
     for (const req of runs) await startRun(join(req))

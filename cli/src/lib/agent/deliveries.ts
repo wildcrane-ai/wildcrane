@@ -3,7 +3,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { locate, locateArchived } from '../cards'
+import { cardFile } from '../board/revision'
 import { parseFrontmatter } from '../frontmatter'
+import { approvedCardRequirements } from '../shared/delivery-evidence'
 import { DELIVERIES, REPO_ROOT, rel } from '../paths'
 import { candidateBase } from './candidate'
 import { boardCommand } from './command'
@@ -11,11 +13,12 @@ import { newDeliveryId, type DeliveryStart } from './commit-mode'
 import { insideRun } from './env'
 import { DELIVERY_FLOWS } from './flows'
 import { deliveryState, type DeliveryState } from './pause'
-import { deliveryRules, readRule } from './rules'
+import { deliveryRules } from './rules'
 import { cardStudioId, frozenStudio } from './studios'
 import { logPathOf, readDeliveryRow, readStore, runIsLive, withStore, type Store } from './store'
 import {
   refusal,
+  retiredStudioRun,
   type AgentRequest,
   type DeliveryCarryOn,
   type DeliveryRecord,
@@ -158,6 +161,17 @@ function allAudits(): DeliveryAudit[] {
   return out
 }
 
+/** Every permanent record on disk for one card, oldest first. */
+export function cardAudits(cardId: number): DeliveryRecord[] {
+  return allAudits()
+    .filter((a) => a.cardId === cardId)
+    .flatMap((a) => {
+      const row = auditRow(a)
+      return row ? [row] : []
+    })
+    .sort((a, b) => a.startedAt - b.startedAt)
+}
+
 /** One landing that left a commit on the target branch. */
 export interface LandedDelivery {
   cardId: number
@@ -290,6 +304,7 @@ export function endedDelivery(id: string): DeliveryRecord | undefined {
 }
 
 export function resumeRefusal(delivery: DeliveryRecord, store?: Store): RunRefusal | undefined {
+  if (delivery.scheduled) return retiredStudioRun('scheduled')
   const id = delivery.deliveryId
   const what = delivery.cardId === null ? 'the build' : `#${delivery.cardId}`
   const task = delivery.cardId === null ? '' : String(delivery.cardId)
@@ -352,15 +367,19 @@ export const isResumable = (delivery: DeliveryRecord): boolean => !resumeRefusal
 export function resumeRecord(id: string, execution?: CloudExecution): { ok: true; delivery: DeliveryRecord } | ({ ok: false } & RunRefusal) {
   const found = namedDelivery(id) ?? endedDelivery(id)
   if (!found) return { ok: false, ...unknownDelivery(id) }
+  const file = found.cardId === null ? null : cardFile(found.cardId)
+  const restored = file && parseFrontmatter(fs.readFileSync(file, 'utf8')).meta?.restored
+  if (restored && Date.parse(restored) > found.startedAt) return { ok: false, ...unknownDelivery(id) }
   if (found.status === 'finished') return { ok: true, delivery: found }
   const refused = resumeRefusal(found)
-  if (refused && found.status !== 'active') return { ok: false, ...refused }
+  if (refused && (found.scheduled || found.status !== 'active')) return { ok: false, ...refused }
   const out = withStore<{ ok: true; delivery: DeliveryRecord } | ({ ok: false } & RunRefusal)>((store) => {
     const audit = wholeAudit(auditPath(found.deliveryId))
     const live = store.deliveries.find((d) => d.deliveryId === found.deliveryId)
     const row = live?.status === 'active' ? live : (audit && auditRow(audit)) ?? live
     if (!row) return { ok: false, ...unknownDelivery(id) }
     const again = resumeRefusal(row, store)
+    if (again && row.scheduled && row.status !== 'finished') return { ok: false, ...again }
     if (row.status === 'active') {
       if (store.runs.some((r) => r.deliveryId === row.deliveryId && runIsLive(r))) {
         return { ok: false, ...refusal('deliveryRunGoing', 'the delivery still has a running agent; stop it before continuing') }
@@ -393,20 +412,6 @@ export function carryOnFrom(_deliveryId: string): DeliveryCarryOn {
 
 // ---- the approved requirements ----------------------------------------------
 
-// What a delivery is approved to build. Everything else on the card — `## Todo` and its
-// ticks, status, questions, the notes a delivery leaves as it works — sits
-// outside, so a delivery writing to its own card is never a change to its requirements.
-const APPROVED = [
-  /^##\s+Worth noting\s*$/i,
-  /^##\s+Scope\s*$/i,
-  /^##\s+Scope out\s*$/i,
-  // `skill` is the word a spec section carries now; `agent` is the word it carried before
-  // #403, and a card written by an older release still has to travel whole.
-  /^##\s+By\s+`[^`]+`\s+(skill|agent)\s*$/i,
-]
-
-const isApproved = (heading: string): boolean => APPROVED.some((re) => re.test(heading))
-
 export function approvedRequirements(cardId: number): string {
   const found = locate(cardId)
   if (!found) return ''
@@ -417,31 +422,7 @@ export function approvedRequirements(cardId: number): string {
   } catch {
     return ''
   }
-  const { meta, body } = parseFrontmatter(text)
-  const out: string[] = []
-  if (meta?.title) out.push(`# ${meta.title}`, '')
-  // The opening paragraph is everything before the first heading. The `<!-- agent -->`
-  // boundary is a marker, not content, so it never travels.
-  const opening: string[] = []
-  const sections: string[] = []
-  let keeping = false
-  let started = false
-  for (const line of body.split('\n')) {
-    if (/^##(?!#)\s/.test(line)) {
-      started = true
-      keeping = isApproved(line)
-      if (keeping) sections.push('', line)
-      continue
-    }
-    if (line.trim() === '<!-- agent -->') continue
-    if (!started) opening.push(line)
-    else if (keeping) sections.push(line)
-  }
-  out.push(opening.join('\n').trim())
-  out.push(sections.join('\n').trim())
-  // A dropped section leaves the blank lines that framed it, so the copy is squeezed back
-  // to one blank line between blocks — it is read by a person as well as by an agent.
-  return out.filter(Boolean).join('\n\n').replace(/\n{3,}/g, '\n\n').trim() + '\n'
+  return approvedCardRequirements(text)
 }
 
 // The card's frontmatter as it stands, or nothing when there is no reading it.
@@ -560,15 +541,8 @@ export function joinDelivery(
       // stage this delivery itself put there. There is no stage to hold with no card.
       priorStatus: cardId === null ? undefined : cardStatus(cardId),
       planned: start?.planned,
-      rules: {
-        ...deliveryRules(cardId === null ? direct?.scheduled?.studio : cardStudioId(cardId)),
-        ...(direct?.scheduled && readRule(direct.scheduled.agent) ? { [direct.scheduled.agent]: readRule(direct.scheduled.agent) } : {}),
-      },
-      // And the one read of the studio it builds under (#715) — its name and all three
-      // stages' assignments, frozen the way the rules are. Reassigning a stage, renaming the
-      // studio or deleting it changes the next delivery and never this one.
-      studio: frozenStudio(cardId === null ? direct?.scheduled?.studio ?? '' : cardStudioId(cardId)),
-      scheduled: direct?.scheduled,
+      rules: deliveryRules(),
+      studio: frozenStudio(cardId === null ? run.studio ?? '' : cardStudioId(cardId)),
       targetBranch: start?.targetBranch,
 
     }
@@ -607,36 +581,6 @@ export function adoptDirectCard(sessionId: string, cardId: number): boolean {
     writeAudit(delivery, store.runs)
     return true
   })
-}
-
-/** Put a conflict run into the delivery already in flight on its card. Unlike
- *  `joinDelivery` it opens nothing: undefined when the card has no active delivery, and the
- *  caller refuses. Starting one also clears the stop it may be waiting at. */
-export function joinActive(
-  store: Store,
-  run: RunRecord,
-  step: string,
-  deliveryId?: string,
-): DeliveryRecord | undefined {
-  // By the delivery the caller named, or by the card when it named none — the same delivery
-  // either way, and the only one a build with no card can be found by (#428).
-  const delivery = deliveryId
-    ? store.deliveries.find((d) => d.status === 'active' && d.deliveryId === deliveryId)
-    : run.cardId === null
-      ? undefined
-      : activeIn(store, run.cardId)
-  if (!delivery) return undefined
-  delivery.sessions.push(run.sessionId)
-  delivery.steps.push({ step, at: run.startedAt })
-  if (delivery.review?.stopped) delivery.review.stopped = undefined
-  // The run the answers asked for is this one, so what they concluded has had its effect
-  // (#637). Taken here rather than where it was read, so a conclusion that never started
-  // anything is still waiting on the next pass.
-  const now = Date.now()
-  for (const answer of delivery.answers ?? []) if (!answer.actedAt) answer.actedAt = now
-  joinFlow(run, delivery)
-  writeAudit(delivery, store.runs)
-  return delivery
 }
 
 function joinFlow(run: RunRecord, delivery: DeliveryRecord): void {

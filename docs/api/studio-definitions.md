@@ -18,7 +18,15 @@ previews:
     description: {en: Review changes to instructions., zh: 审阅指令变更。}
 ---
 
+## Work
+
 Produce only the requested work. Keep outputs concise.
+
+## Land
+
+Check the approved changes, merge them into the target branch, and record the commit and branch.
+
+## Previews
 
 <Preview id="prompts">
 
@@ -41,6 +49,10 @@ or Set for more than two files.
   keys, unknown fields, invalid locale values and invalid icons. `when`, `file`, `components`,
   `format`, `land`, `scheduled`, `memoryFiles`, `runtime`, `session`, `after` and `stages`
   do not belong in the new definition. YAML is checked before constructing its map.
+- **Land**: new and updated definitions require one nonempty `## Land` heading in the
+  Studio body. Describe what to deliver, where it goes, what to check and what to record.
+  Headings in code examples and Preview blocks are ignored. Existing task pins and
+  published review baselines remain readable. Place optional Preview blocks under `## Previews`.
 - **Blocks**: opening `<Preview id="<id>">` and closing `</Preview>` each occupy their own
   line, with optional indentation. Require exactly one quoted `id` attribute and a nonempty
   Markdown body. Reject missing or stray closing tags, malformed reserved tags, nested or
@@ -51,7 +63,7 @@ or Set for more than two files.
   Every block needs one map entry. An unused metadata entry fails. Without
   blocks, omit `previews` or use `{}`. Block order determines result order; YAML key order
   does not. Renaming a title or icon leaves the explicit ID unchanged.
-- **Context**: the app parses the complete file and provides only the work instructions,
+- **Context**: the app parses the complete file and provides the work and delivery instructions,
   block IDs and short bodies to the model, together with all supported component usage
   once per Studio session. Display metadata is excluded from generated prompt context.
   References and AKB Guides are read when needed, not eagerly expanded. Direct authoring
@@ -86,6 +98,9 @@ inside the existing `bad_request` error details and create no version.
 | --- | --- | --- |
 | yaml-syntax / yaml-duplicate-key | Invalid YAML or repeated key | Correct the indicated YAML location |
 | studio-schema | Unknown field, wrong type, invalid icon or locale title | Correct the field against its expected schema |
+| studio-land-missing | Studio body has no `## Land` section | Add the heading and describe delivery |
+| studio-land-empty | The section has no instructions | Describe delivery, checks and what to record |
+| studio-land-duplicate | Studio body has multiple `## Land` headings | Combine instructions under one heading |
 | preview-tag | Malformed, nested, self-closing or extra-attribute tag | Use one non-nested Preview block with only id |
 | preview-unclosed | An opening tag has no closing tag | Add `</Preview>` after this block |
 | preview-unexpected-close | A closing tag has no opening tag | Remove it or restore its opening tag |
@@ -112,7 +127,7 @@ No command below starts an Agent or creates an approval.
 
 ### `akb raw studio validate <folder> --json`
 
-Reads STUDIO.md, its YAML display map, Preview delimiters and linked references. Returns
+Reads STUDIO.md, its YAML display map, Land section, Preview delimiters and linked references. Returns
 `{folder, problems: [], fingerprint}`. Validation never looks up Agents.
 Invalid definitions exit nonzero with `studio-problems`, including each file, field path, source line and reason.
 For example, `STUDIO.md:16:1 previews.prompts: preview-unclosed — add </Preview>`. An unreadable folder is `bad-args`.

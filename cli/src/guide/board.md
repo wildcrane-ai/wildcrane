@@ -30,7 +30,7 @@ id 4): its Cloud task's number (`WC-4`). Only Cloud assigns one.
 
 ## Never hand-write a card's frontmatter
 
-`akb raw update`, `update-questions` and `akb raw conflict resolve` manage an existing card's frontmatter,
+`akb raw update`, `akb task update-questions` and `akb raw conflict resolve` manage a card's frontmatter,
 including its `previews`. Edit only the card's **body** by hand. `akb raw help`
 lists all operations; `akb raw help <move>` explains one operation.
 

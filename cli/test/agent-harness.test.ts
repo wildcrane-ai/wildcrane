@@ -121,12 +121,6 @@ describe('an agent with a runtime of its own', () => {
     assert.ok(plan({ action: 'clarify', refineRound: 1 }).argv.includes('claude-opus-5'))
   })
 
-  it('runs a spec agent as itself, on its own row', () => {
-    assert.equal(agentForRun({ action: 'spec', specAgent: 'ui-designer' }), 'ui-designer')
-    assert.equal(plan({ action: 'spec', specAgent: 'ui-designer' }).runtime, 'cheap')
-    assert.equal(plan({ action: 'spec', specAgent: 'tech-stack-advisor' }).runtime, 'global')
-  })
-
   it('keeps the spec agent’s runtime out of its entry, and its switch a switch', () => {
     // A key the board no longer reads is carried, not acted on (#1003).
     assert.deepEqual(specAgentEntries()['ui-designer'], { enabled: true, extra: { mockupStyle: 'ascii' } })

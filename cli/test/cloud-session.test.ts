@@ -206,6 +206,33 @@ describe('the token a request carries', () => {
     assert.equal(readSession()?.refreshToken, 'refresh-1')
   })
 
+  it('allows an explicit retry after a transport failure', async () => {
+    writeSession(session({ expiresAt: Date.now() - 1 }))
+    globalThis.fetch = async (url) => { calls.push(String(url)); throw new TypeError('fetch failed') }
+    assert.equal((await accessToken()).ok, false)
+    assert.equal((await accessToken()).ok, false)
+    assert.equal(calls.length, 1)
+    assert.equal(fs.existsSync(path.join(home, 'session-refresh.json')), false)
+
+    globalThis.fetch = async () => jsonResponse({ access_token: 'recovered', refresh_token: 'rotated', expires_in: 3600 })
+    const result = await accessToken({ retryTransport: true })
+    assert.equal(result.ok && result.token, 'recovered')
+  })
+
+  it('ignores a transport failure written by an older process', async () => {
+    writeSession(session({ expiresAt: Date.now() - 1 }))
+    globalThis.fetch = async () => jsonResponse({ msg: 'Slow down' }, 429)
+    await accessToken()
+    const file = path.join(home, 'session-refresh.json')
+    const retry = JSON.parse(fs.readFileSync(file, 'utf8'))
+    delete retry.source
+    fs.writeFileSync(file, JSON.stringify({ ...retry, error: 'fetch failed' }))
+
+    globalThis.fetch = async () => jsonResponse({ access_token: 'recovered', refresh_token: 'rotated', expires_in: 3600 })
+    const result = await accessToken()
+    assert.equal(result.ok && result.token, 'recovered')
+  })
+
   it('shares rate-limit cooldown between concurrent callers and keeps the session', async () => {
     writeSession(session({ expiresAt: Date.now() - 1 }))
     globalThis.fetch = async (url, options) => {
@@ -218,7 +245,8 @@ describe('the token a request carries', () => {
     for (const result of results) assert.deepEqual(result, { ok: false, reason: 'unreachable', error: 'Request rate limit reached' })
     writeSession({ ...readSession()!, avatar: { url: 'avatar', data: 'updated' } })
     assert.equal((await accessToken()).ok, false)
-    assert.equal(calls.length, 1, 'profile updates must not clear authentication cooldown')
+    assert.equal((await accessToken({ retryTransport: true })).ok, false)
+    assert.equal(calls.length, 1, 'profile updates and manual retries must respect the cloud cooldown')
     assert.equal(readSession()?.refreshToken, 'refresh-1')
     assert.equal(fs.statSync(path.join(home, 'session-refresh.json')).mode & 0o777, 0o600)
   })
@@ -236,7 +264,7 @@ describe('the token a request carries', () => {
     })
   }
 
-  it('persists cooldown across process restarts and resumes refresh after it expires', () => {
+  it('keeps transport failures local and persists cloud cooldown across processes', () => {
     writeSession(session({ expiresAt: Date.now() - 1 }))
     const module = path.join(home, 'session.mjs')
     const built = spawnSync(process.execPath, ['-e', `require('esbuild').buildSync({entryPoints:['src/lib/cloud/session.ts'],outfile:process.argv[1],bundle:true,platform:'node',format:'esm'})`, module], { encoding: 'utf8' })
@@ -247,6 +275,7 @@ describe('the token a request carries', () => {
       if(process.argv[3]) Date.now=()=>Number(process.argv[3]);
       globalThis.fetch=async()=>{
         fs.appendFileSync(process.env.AI4KANBAN_HOME+'/requests','1');
+        if (process.argv[2]==='offline') throw new TypeError('fetch failed');
         return process.argv[2]==='success'
           ? Response.json({access_token:'recovered',refresh_token:'rotated',expires_in:3600})
           : Response.json({msg:'Rate limited'},{status:429});
@@ -258,15 +287,17 @@ describe('the token a request carries', () => {
       assert.equal(child.status, 0, child.stderr)
       return JSON.parse(child.stdout)
     }
+    assert.equal(run('offline').reason, 'unreachable')
+    assert.equal(fs.existsSync(path.join(home, 'session-refresh.json')), false)
     assert.equal(run('limited').reason, 'unreachable')
     assert.equal(run('success').reason, 'unreachable')
-    assert.equal(fs.readFileSync(path.join(home, 'requests'), 'utf8'), '1')
+    assert.equal(fs.readFileSync(path.join(home, 'requests'), 'utf8'), '11')
     const retry = JSON.parse(fs.readFileSync(path.join(home, 'session-refresh.json'), 'utf8'))
     assert.equal(run('limited', String(retry.until + 1)).reason, 'unreachable')
     const next = JSON.parse(fs.readFileSync(path.join(home, 'session-refresh.json'), 'utf8'))
     assert.ok(next.until >= retry.until + 120_000)
     assert.equal(run('success', String(next.until + 1)).token, 'recovered')
-    assert.equal(fs.readFileSync(path.join(home, 'requests'), 'utf8'), '111')
+    assert.equal(fs.readFileSync(path.join(home, 'requests'), 'utf8'), '1111')
     assert.equal(readSession()?.refreshToken, 'rotated')
     assert.equal(fs.existsSync(path.join(home, 'session-refresh.json')), false)
   })

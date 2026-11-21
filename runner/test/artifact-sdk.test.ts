@@ -85,6 +85,29 @@ describe('SDK 资源声明与依赖图', () => {
     assert.deepEqual(p.problems.map(x => x.src), ['gone.png', 'gone-bg.png'])
   })
 
+  it('collects external stylesheets and their relative imports and images', () => {
+    const files: Record<string, string> = {
+      '/c/page.html': '<link rel="stylesheet" href="styles/main.css">',
+      '/c/styles/main.css': '@import "theme/skin.css"; /* url(missing.png) */',
+      '/c/styles/theme/skin.css': 'main { background: url(../../images/cover.svg#detail) }',
+      '/c/images/cover.svg': '<svg />',
+    }
+    const graph = collect('<Asset src="page.html" />', '/c/card.md', {
+      resolve: (src, owner) => {
+        const key = new URL(src, `file://${owner}`).pathname
+        if (!(key in files)) throw new Error(`file not found: ${key}`)
+        return { key, file: key }
+      },
+      read: file => files[file]!,
+      retained: () => [],
+    })
+    assert.deepEqual(graph.map(node => node.key), Object.keys(files).reverse())
+    assert.deepEqual(graph.map(node => [...node.dependencies.keys()]), [
+      [], ['../../images/cover.svg#detail'], ['theme/skin.css'], ['styles/main.css'],
+    ])
+    assert.ok(graph.every(node => !node.error))
+  })
+
   it('本机缺少已有云端分镜时，仍保留依赖的用途和嵌套资源', () => {
     const graph = collect('<Storyboard src="remote.json" />', 'card.md', {
       resolve: src => ({ key: src, file: src === 'remote.json' ? null : src }),

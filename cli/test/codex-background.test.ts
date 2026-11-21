@@ -54,6 +54,25 @@ it('finishes ordinary turns on old servers without inventing background work', a
   assert.equal(s.client.background?.(), 0)
 })
 
+for (const { model, provider, hasUsage, expected } of [
+  { model: 'gpt-6.2-sol', provider: 'openai', hasUsage: true, expected: 0.71 },
+  { model: 'gpt-6.2-astra', provider: 'openai-api', hasUsage: true, expected: 2.84 },
+  { model: 'gpt-6.2-sol', provider: 'openai', hasUsage: false },
+  { model: 'gpt-6.2-astra', provider: 'endpoint', hasUsage: true },
+]) {
+  it(`reports the cost for ${model} (${provider}, ${hasUsage ? 'with' : 'without'} usage)`, async () => {
+    const s = server(method => method === 'thread/start' ? { thread: { id: 'main', modelProvider: provider }, model } : {})
+    await tick()
+    if (hasUsage) s.notify('thread/tokenUsage/updated', { threadId: 'main', tokenUsage: {
+      total: { inputTokens: 200_000, cachedInputTokens: 100_000, outputTokens: 50_000 },
+    } })
+    s.reply('DONE', 'reply'); s.complete()
+    const end = await s.end
+    assert.equal(end.ok, true)
+    assert.equal(end.costUsd, expected)
+  })
+}
+
 it('leaves announced provider retries with Codex and clears waiting on current-turn output (#885)', async () => {
   const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : {})
   await tick()

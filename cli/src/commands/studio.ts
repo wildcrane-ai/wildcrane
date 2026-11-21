@@ -11,26 +11,22 @@ import { findSpecAgent } from '../lib/agents'
 import { locate } from '../lib/cards'
 import { say } from '../lib/io'
 import { ASSETS, die } from '../lib/paths'
-import { NEEDS_CLOUD, boardProject, cloudFlows, studiosOffline, studiosReachable, type StudioFiles } from '../lib/agent/cloud-studios'
+import { NEEDS_CLOUD, boardProject, cloudFlows, isStudioFiles, isStudioVersion, studioVerification, studiosReachable, type StudioFiles } from '../lib/agent/cloud-studios'
 import {
   studioPurpose,
   studioWhen,
-  agentAfter,
-  previewMembers,
-  scheduledMembers,
-  listedScheduled,
   studioById,
   studioFileProblems,
   studioProblems,
   studios,
-  type StudioHelper,
 } from '../lib/agent/studios'
 import type { MoveResult } from '../lib/types'
 import { readStudioFolder } from '../lib/agent/studio-folder'
-import { checkStudioFiles, isAboutFile, VERSION_FILE, versionText, STUDIO_FILE, studioFilesProblems, hashInput, diagramFrom } from '../lib/shared/studio-files'
+import { checkStudioFiles, isAboutFile, VERSION_FILE, versionText, STUDIO_FILE, studioFilesProblems, hashInput, diagramFrom, formatStudioProblem } from '../lib/shared/studio-files'
 import { parseStudioFile } from '../lib/agent/studio-def'
 import { studioName } from '../lib/shared/board-files'
 import { call, type CloudCall } from '../lib/cloud/tasks'
+import { cloudError, hasText, requireResponse, temporaryCloudFailure } from '../lib/cloud/response'
 
 const found = (id: string) => {
   const flow = studioById(id)
@@ -46,8 +42,14 @@ const found = (id: string) => {
 export function cmdStudioList(): MoveResult {
   if (!studiosReachable().ok) die(NEEDS_CLOUD, 'needs-cloud')
   const rows = studios()
-  for (const flow of rows) say(`${flow.id}  ${flow.name}  ${flow.previews.map(p => p.id).join(', ')}`)
-  return { studios: rows.map(({ id, name, names, icon, needsArtifact, previews, description, builtIn }) => ({ id, name, names, icon, needsArtifact, previews, description, builtIn })), problems: studioFileProblems(), ...(studiosOffline() ? { offline: true } : {}) }
+  const result = { studios: rows.map(({ id, name, names, icon, needsArtifact, previews, description, builtIn }) =>
+    ({ id, name, names, icon, needsArtifact, previews, description, builtIn })), problems: studioFileProblems() }
+  const { cached, problem } = studioVerification()
+  if (!problem || cached) for (const flow of rows) say(`${flow.id}  ${flow.name}  ${flow.previews.map(p => p.id).join(', ')}`)
+  if (problem) throw cloudError({ ...problem, message: `Cloud Studio verification failed. ${cached ? 'Showing cached Studios.' : 'No cached Studio list is available.'} ${problem.message}` },
+    { details: { ...result, cached, offline: problem.retryable } })
+  return result
+
 }
 
 export function cmdStudioDiagram(_id: string, _card: string, _folder?: string): MoveResult {
@@ -75,12 +77,16 @@ const cloudIdOf = (id: string): string | undefined => cloudFlows().find((f) => s
 /** `akb studio pull <id> [folder]` (#544): the studio's current version as a folder. */
 export async function cmdStudioPull(id: string, folder?: string): Promise<MoveResult> {
   const cloudId = cloudIdOf(id)
-  if (!cloudId) found(id)
+  if (!cloudId) {
+    const { problem } = studioVerification()
+    if (problem) throw cloudError(problem)
+    found(id)
+  }
   const dir = path.resolve(folder ?? id)
   if (fs.existsSync(dir) && fs.readdirSync(dir).length) die(`${folder ?? id} is not empty`, 'bad-args')
   const read = await call<{ id: string; version: number; files: StudioFiles }>('GET', `/v1/studios/${encodeURIComponent(cloudId!)}`)
-  if (!read.ok) die(read.error, read.code === 'not_found' ? 'no-such-studio' : 'cloud-refused')
-  const { version, files } = read.value
+  const { version, files } = requireResponse(cloudOk(read, read.ok || read.code !== 'not_found' ? undefined : 'no-such-studio'),
+    'the Studio version and files', value => value.id === cloudId && isStudioVersion(value.version) && isStudioFiles(value.files))
   for (const [file, text] of Object.entries({ ...files, [VERSION_FILE]: versionText(cloudId!, version) })) {
     const full = path.join(dir, ...file.split('/'))
     fs.mkdirSync(path.dirname(full), { recursive: true })
@@ -96,7 +102,7 @@ interface PublishOptions { dryRun?: boolean; requestId?: string; workspace?: str
 
 function publicationFiles(dir: string): StudioFiles {
   const checked = checkStudioFiles(readStudioFolder(dir))
-  if (!checked.ok) die(`${checked.file} ${checked.reason}`, { kind: 'bad-studio', problems: checked.problems })
+  if (!checked.ok) die(formatStudioProblem(checked), { kind: 'bad-studio', problems: checked.problems })
   return (checked as { files: StudioFiles }).files
 }
 
@@ -119,8 +125,9 @@ async function publishFolder(dir: string, route: string, body: Publication['body
   const pending: Publication = replay ? held! : { requestId: requestId ?? crypto.randomUUID(), hash, body, route }
   fs.writeFileSync(pendingFile, JSON.stringify(pending, null, 2) + '\n')
   const res = await call<{ id: string; version: number }>(route === '/v1/studios' ? 'POST' : 'PATCH', route, pending.body, pending.requestId)
-  if (!res.ok) die(res.error, res.code === 'version_conflict' || res.code === 'conflict' ? 'studio-moved' : 'cloud-refused')
-  const { id, version } = res.value
+  const { id, version } = requireResponse(cloudOk(res, !res.ok && ['version_conflict', 'conflict'].includes(res.code ?? '') ? 'studio-moved' : undefined),
+    'confirmation of the saved Studio version', value => hasText(value.id) && /^wf_[\w-]+$/.test(value.id) && isStudioVersion(value.version)
+      && (pending.body.expectedVersion === undefined || (route === `/v1/studios/${encodeURIComponent(value.id)}` && value.version === pending.body.expectedVersion + 1)))
   pending.resultVersion = version
   fs.writeFileSync(pendingFile, JSON.stringify(pending, null, 2) + '\n')
   fs.writeFileSync(path.join(dir, VERSION_FILE), versionText(id, version))
@@ -148,13 +155,14 @@ export async function cmdStudioPush(folder: string, opts: PublishOptions): Promi
   const files = publicationFiles(dir)
   if (!fs.existsSync(path.join(dir, '.publication.json')) && !opts.requestId) {
     const now = await call<{ version: number; files: StudioFiles }>('GET', `/v1/studios/${encodeURIComponent(id)}`)
-    if (now.ok && now.value.version === version && JSON.stringify(files) === JSON.stringify(Object.fromEntries(Object.entries(now.value.files).filter(([f]) => f !== VERSION_FILE).sort()))) {
+    if (now.ok && now.value.version === version && isStudioFiles(now.value.files) && JSON.stringify(files) === JSON.stringify(Object.fromEntries(Object.entries(now.value.files).filter(([f]) => f !== VERSION_FILE).sort()))) {
       say(`${studioName(id)} is unchanged (v${version}).`)
       return { id: studioName(id), version, changed: false, ...(opts.dryRun ? { dryRun: true } : {}) }
     }
   }
   if (opts.dryRun) {
-    const now = cloudOk(await call<{ version: number }>('GET', `/v1/studios/${encodeURIComponent(id)}`))
+    const now = requireResponse(cloudOk(await call<{ version: number }>('GET', `/v1/studios/${encodeURIComponent(id)}`)),
+      'the current Studio version', value => isStudioVersion(value.version))
     if (now.version !== version) die(`The studio is at v${now.version}; pull again.`, 'studio-moved')
     say(`${studioName(id)} would push v${version + 1}.`)
     return { id: studioName(id), version: version + 1, changed: true, dryRun: true }
@@ -182,9 +190,10 @@ function noteText({ file, text }: NoteOptions): string | undefined {
   return text?.trim()
 }
 
-function cloudOk<T>(res: CloudCall<T>): T {
-  if (!res.ok) die(res.error, res.code === 'unauthenticated' ? 'needs-cloud' : 'cloud-refused')
-  return (res as { value: T }).value
+function cloudOk<T>(res: CloudCall<T>, kind?: string): T {
+  if (!res.ok) throw cloudError({ code: res.code ?? 'unreachable', message: res.error, status: res.status,
+    retryable: res.retryable ?? temporaryCloudFailure(res) }, { kind })
+  return res.value
 }
 
 const enc = encodeURIComponent
@@ -193,7 +202,7 @@ async function cloudScope(): Promise<{ project: string; workspace: string }> {
   const project = boardProject()
   if (!project) die('This board is not linked to a Cloud project.', 'needs-cloud')
   const held = cloudOk(await call<{ workspace: string }>('GET', `/v1/projects/${enc(project)}`))
-  return { project, workspace: held.workspace }
+  return { project, workspace: requireResponse(held, 'the Studio workspace', value => hasText(value.workspace)).workspace }
 }
 
 interface WorkspaceRules {
@@ -204,7 +213,8 @@ interface WorkspaceRules {
 export async function cmdStudioRule(name: string, opts: NoteOptions): Promise<MoveResult> {
   const rule = noteText(opts)
   const { workspace } = await cloudScope()
-  const held = cloudOk(await call<WorkspaceRules>('GET', `/v1/workspaces/${enc(workspace)}/studio-rules`))
+  const held = requireResponse(cloudOk(await call<WorkspaceRules>('GET', `/v1/workspaces/${enc(workspace)}/studio-rules`)),
+    'the workspace’s Studio rules', value => Array.isArray(value.studios))
   const flow = held.studios.find((w) => studioName(w.id) === name)
   if (!flow) {
     die(`no studio called "${name}" here. There are: ${held.studios.map((w) => studioName(w.id)).join(', ')}.`, {
@@ -217,7 +227,8 @@ export async function cmdStudioRule(name: string, opts: NoteOptions): Promise<Mo
     say(now || `${name} has no rules`)
     return { studio: name, rule: now }
   }
-  cloudOk(await call('PUT', `/v1/workspaces/${enc(workspace)}/studios/${enc(flow!.id)}/rule`, { rule }))
+  requireResponse(cloudOk(await call<{ id: string; rule: string }>('PUT', `/v1/workspaces/${enc(workspace)}/studios/${enc(flow!.id)}/rule`, { rule })),
+    'the saved Studio rules', value => value.id === flow!.id && value.rule === rule)
   say(`${rule ? 'saved' : 'cleared'} the rules of ${name}`)
   return { studio: name, rule }
 }
@@ -227,7 +238,8 @@ export async function cmdStudioInstructions(agent: string, opts: NoteOptions): P
   const rule = noteText(opts)
   const project = boardProject()
   if (!project) die('This board is not linked to a Cloud project.', 'needs-cloud')
-  const own = cloudOk(await call<{ board: string[]; data: { agent: string; rule?: string }[] }>('GET', `/v1/projects/${enc(project)}/agents`))
+  const own = requireResponse(cloudOk(await call<{ board: string[]; data: { agent: string; rule?: string }[] }>('GET', `/v1/projects/${enc(project)}/agents`)),
+    'the project’s agent instructions', value => Array.isArray(value.board) && Array.isArray(value.data))
   if (!own.board.includes(agent)) {
     die(`no agent called "${agent}" here. There are: ${own.board.join(', ')}.`, { kind: 'no-such-agent', agent })
   }
@@ -236,7 +248,8 @@ export async function cmdStudioInstructions(agent: string, opts: NoteOptions): P
     say(now || `${agent} has no instructions`)
     return { agent, rule: now, scope: 'project' }
   }
-  cloudOk(await call('PUT', `/v1/projects/${enc(project)}/agents/${enc(agent)}`, { rule }))
+  requireResponse(cloudOk(await call<{ agent: string; rule: string }>('PUT', `/v1/projects/${enc(project)}/agents/${enc(agent)}`, { rule })),
+    'the saved instructions', value => value.agent === agent && value.rule === rule)
   say(rule ? `saved ${agent}'s instructions (this project)` : `cleared ${agent}'s instructions`)
   return { agent, rule, scope: 'project' }
 }

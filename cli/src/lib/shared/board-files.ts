@@ -71,46 +71,26 @@ export const studioRuleFile = (id: string) => `rules/studios/${studioName(id)}.m
 export interface CardFront {
   title?: string
   status?: string
-  phase?: number
-  /** The previews the card chose and how many approvals they make (#2154). */
   previews?: string[]
-  stages?: number
 }
 
 const unquote = (value: string) => value.trim().replace(/^(["'])(.*)\1$/, '$2')
 
-/** The frontmatter fields Cloud's task index keeps: title, status, the previews it chose and the
- *  approval it is on. */
+/** The frontmatter fields indexed by Cloud. */
 export function cardFront(body: string): CardFront {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(body)
   if (!match) return {}
   const out: CardFront = {}
   for (const line of match[1]!.split(/\r?\n/)) {
-    const field = /^(title|status|phase|stages|previews):\s*(.*)$/.exec(line)
+    const field = /^(title|status|previews):\s*(.*)$/.exec(line)
     if (!field) continue
     const [, key, value = ''] = field
     if (key === 'title' && value.trim()) out.title = unquote(value)
     else if (key === 'status' && value.trim()) out.status = unquote(value)
-    else if (key === 'phase' && Number.isInteger(Number(value)) && value.trim()) out.phase = Number(value)
-    else if (key === 'stages' && Number.isInteger(Number(value)) && value.trim()) out.stages = Number(value)
     else if (key === 'previews') {
       const flow = /^\[(.*)\]\s*$/.exec(value.trim())
       if (flow) out.previews = flow[1]!.split(',').map(unquote).filter(Boolean)
     }
   }
   return out
-}
-
-/** A board file written before #645, under its Studio names: its folder, its definition file, a
- *  card's or triage item's field, a card's diagram tag and the two icons. `path` is the one
- *  inside a project's board. */
-export function studioRenamed(path: string, content: string): { path: string; content: string } {
-  const to = path.replace(/^(rules\/)?workflows\//, '$1studios/').replace(/^(studios\/[^/]+)\/WORKFLOW\.md$/, '$1/STUDIO.md')
-  if (!to.endsWith('.md')) return { path: to, content }
-  if (to.startsWith('studios/')) return { path: to, content: content.replace(/^(icon:\s*["']?)workflow(-kit)?(["']?\s*)$/gm, '$1studio$2$3') }
-  const front = /^(?:todo|triage)\//.test(to) ? /^---\r?\n[\s\S]*?\r?\n---/.exec(content)?.[0] : undefined
-  if (!front) return { path: to, content }
-  const body = content.slice(front.length).replace(/^<Workflow(?=[\s/>])/gm, '<Studio')
-  const renamed = front.replace(/^workflow:[ \t]*(.*)$/m, (_, id: string) => `studio: ${id === 'workflow-builder' ? 'studio-builder' : id}`)
-  return { path: to, content: renamed + body }
 }

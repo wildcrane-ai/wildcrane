@@ -4,9 +4,8 @@ import path from 'node:path'
 import { RULES } from '../paths'
 import { DELIVERY_FLOWS, FLOWS, flowByAction, flowByCommand, type Flow } from './flows'
 import { hiddenRole, roleForFlow, roleNamed, type AgentRole } from './roles'
-import { agentForRun, studioForRun } from './runner'
-import { landAgents, studioFor } from './studios'
-import { REFINE_ACTIONS, SPECIALIST_ACTIONS } from './types'
+import { agentForRun } from './runner'
+import { REFINE_ACTIONS } from './types'
 import type { AgentRequest } from './types'
 
 const rulePath = (agent: string): string => path.join(RULES, `${agent}.md`)
@@ -22,7 +21,7 @@ function ruleFile(agent: string): string {
 }
 
 /** One agent's rule as it stands on disk — empty when there is no file, it can't be read,
- *  or it holds nothing but whitespace. `agent` is a role or a specialist's name. */
+ *  or it holds nothing but whitespace. */
 export function readRule(agent: string): string {
   return ruleFile(agent)
 }
@@ -31,19 +30,14 @@ export function readRule(agent: string): string {
  *  agents a delivery's flows are run by, read once, the way it reads the card it was
  *  approved to build. Editing a rule afterwards changes the next delivery, never one in
  *  flight. */
-export function deliveryRules(studio?: string): Record<string, string> {
+export function deliveryRules(): Record<string, string> {
   const rules: Record<string, string> = {}
   for (const flow of FLOWS) {
     if (flow.action === 'refine' || !DELIVERY_FLOWS.has(flow.action)) continue
-    const role = roleForFlow(flow.command, studio)
+    const role = roleForFlow(flow.command)
     if (!role || rules[role.name] !== undefined) continue
     const rule = ruleFile(role.name)
     if (rule) rules[role.name] = rule
-  }
-  const flow = studioFor(studio)
-  for (const { agent } of flow ? landAgents(flow) : []) {
-    const rule = ruleFile(agent)
-    if (rule) rules[agent] = rule
   }
   return rules
 }
@@ -65,14 +59,14 @@ function ownerOf(req: AgentRequest): RuleOwner | null {
     const name = agentForRun(req)
     return name ? { name, role: roleNamed(name) } : null
   }
-  if (SPECIALIST_ACTIONS.has(req.action) || req.action === 'sub') {
+  if (req.action === 'sub') {
     const name = req.specAgent ?? ''
     return name ? { name } : null
   }
   // A reflection is the proposer's (#534) and is no flow a person types under `akb raw card`,
   // so it names itself here.
   const flow = req.action === 'reflect' ? req.action : flowForRequest(req)?.command
-  const role = roleForFlow(flow ?? '', studioForRun(req))
+  const role = roleForFlow(flow ?? '')
   return role ? { name: role.name, role } : null
 }
 
@@ -80,15 +74,11 @@ export function ruleFor(req: AgentRequest, frozen?: Record<string, string>): str
   const owner = ownerOf(req)
   if (!owner) return ''
   if (frozen && DELIVERY_FLOWS.has(req.action)) return frozen[owner.name] ?? ''
-  if (frozen && SPECIALIST_ACTIONS.has(req.action)) {
-    return frozen[owner.name] ?? ''
-  }
   return readRule(owner.name)
 }
 
 /** Whose rule a run reads, as a caption says it out loud: the agent's name, and whether the
- *  rule carries across every flow that agent runs — it does for a role, and a specialist has
- *  no flows. The ask and a printed flow both name it, so they name it the same way. */
+ *  rule carries across that role's flows. */
 export function ruleOwner(req: AgentRequest): { name: string; role: boolean } | null {
   const owner = ownerOf(req)
   return owner ? { name: owner.name, role: Boolean(owner.role) } : null

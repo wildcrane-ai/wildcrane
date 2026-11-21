@@ -19,18 +19,14 @@ import { readRuns } from './store'
 import { buildRun } from './prompts'
 import { NEEDS_CLOUD, NOT_DOWNLOADED, pinMissing, studiosReachable } from './cloud-studios'
 import { archivesOnApproval, cardStudioId, noStudioMessage, studioFor } from './studios'
-import { cancelDelivery, carriedSession, closeRun, markSpawned, openResume, openRun, peekRun, type ResumeOptions } from './sessions'
+import { carriedSession, closeRun, markSpawned, openResume, openRun, peekRun, type ResumeOptions } from './sessions'
 import { runtimeById } from './runtimes'
-import { scheduledBusy, stalePasses } from './scheduled'
-import { refusal, type AgentRequest, type RunRecord, type RunRefusal } from './types'
+import { refusal, retiredStudioRun, type AgentRequest, type RunRecord, type RunRefusal } from './types'
 
 /** Open a run and spawn its watcher. `spawned` false means nothing is watching it — the
  *  record is there but no process will ever report on it, which is the caller's to raise. */
 export async function startRun(req: AgentRequest): Promise<{ run: RunRecord; spawned: boolean } | RunRefusal> {
-  if (req.action === 'spec') return refusal('agentNotListed', 'Prepare Preview outputs in the task session.')
-  const sessionId = randomUUID()
-  const cardId = Number.isInteger(req.id) ? (req.id as number) : null
-  const short = studioRefusal(req) ?? (await scheduledRefusal(req))
+  const short = retiredStudioRun(req.action) ?? studioRefusal(req)
   if (short) return short
   const delivery = req.action === 'implement' ? deliveryFor(req) : undefined
   if (delivery && req.session !== 'new') {
@@ -41,7 +37,7 @@ export async function startRun(req: AgentRequest): Promise<{ run: RunRecord; spa
     if (previous && !delivery.completions?.some((c) => c.sessionId === previous.sessionId || c.resumedSessions?.includes(previous.sessionId))) return startResume(previous.sessionId, { deliveryId: delivery.deliveryId, notes: req.notes })
   }
   // Approve moves the card on only once its run is cleared to start (#1790).
-  return open(req, sessionId)
+  return open(req, randomUUID())
 }
 
 export function studioRefusal(req: AgentRequest): RunRefusal | null {
@@ -56,18 +52,6 @@ export function studioRefusal(req: AgentRequest): RunRefusal | null {
   if (archivesOnApproval(flow) && req.action === 'implement') {
     return refusal('planDelivered', `#${req.id} lands nothing, so its last approval archives it rather than building it.`, { card: String(req.id) })
   }
-  return null
-}
-
-// Why a scheduled agent's new pass cannot start (#1401): its last pass is still running or
-// landing. One that stopped short is given up here — the new pass
-// replaces it — so a failing agent never piles up worktrees.
-async function scheduledRefusal(req: AgentRequest): Promise<RunRefusal | null> {
-  if (req.action !== 'scheduled' || req.deliveryId || !req.studio || !req.specAgent) return null
-  const pass = { studio: req.studio, agent: req.specAgent }
-  const refused = scheduledBusy(pass)
-  if (refused) return refused
-  for (const id of stalePasses(pass)) await cancelDelivery(id)
   return null
 }
 

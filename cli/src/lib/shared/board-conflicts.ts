@@ -164,7 +164,7 @@ function resolutionOf(record: ConflictRecord, value: unknown): { path: string; c
       if (!meta?.title?.trim() || !['todo', 'ready', 'implementing'].includes(meta.status) || !['high', 'med', 'low'].includes(meta.priority)) refuse(record, `Invalid card metadata: ${f.path}`, 'invalid-usage')
       if (meta.status === 'ready' && meta.questions.length) refuse(record, 'A ready card cannot have open questions.', 'invalid-usage')
       const remote = parseFrontmatter(record.files.find(x => x.path === f.path)!.remote.content ?? '').meta
-      for (const key of ['preview_approved', 'restored', 'archived', 'rejected', 'phase'] as const) {
+      for (const key of ['preview_approved', 'restored', 'archived', 'rejected'] as const) {
         const supplied = meta[key]
         const local = parseFrontmatter(record.files.find(x => x.path === f.path)!.local.content ?? '').meta
         if (supplied !== remote?.[key] && supplied !== local?.[key]) refuse(record, `Use the card operation to change ${key}.`, 'cloud-refused')

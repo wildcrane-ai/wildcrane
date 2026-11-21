@@ -1,7 +1,7 @@
 import { Ajv } from 'ajv'
 import { LineCounter, parseDocument } from 'yaml'
 import { ICON_COLORS, ICON_NAMES, type AgentIcon } from '../agents/icon.ts'
-import { parsePreviewBlocks, sourcePosition, PREVIEW_ID, type SourceProblem } from '../shared/preview-blocks.ts'
+import { parsePreviewBlocks, sourcePosition, withoutCode, PREVIEW_ID, type PreviewBlock, type SourceProblem } from '../shared/preview-blocks.ts'
 import { yamlScalar } from '../yaml.ts'
 
 export interface StudioPreview {
@@ -43,7 +43,30 @@ export const STUDIO_SCHEMA = {
 } as const
 const validate = new Ajv({ allErrors: true, meta: false, validateSchema: false }).compile(STUDIO_SCHEMA)
 
-export function parseStudioFile(id: string, source: string, from: string, requirePreviewCopy = false): { def: StudioDef } | { problem: string; problems: SourceProblem[] } {
+function landSections(body: string, previews: PreviewBlock[]) {
+  const blank = (text: string) => text.replace(/[^\r\n]/g, ' ')
+  let visible = '', at = 0
+  for (const { start, end } of previews) {
+    visible += body.slice(at, start) + blank(body.slice(start, end))
+    at = end
+  }
+  visible += body.slice(at)
+
+  const comments = /<!--[^]*?(?:-->|$)/g
+  const markdown = withoutCode(visible).replace(comments, blank)
+  const headings = [...markdown.matchAll(/^ {0,3}#{1,2}(?=[ \t\r\n]|$)[^\r\n]*/gm)]
+  return headings.flatMap((heading, index) => {
+    const start = heading.index
+    const end = start + heading[0].length
+    if (!/^ {0,3}##[ \t]+Land(?:[ \t]+#+)?[ \t]*$/.test(visible.slice(start, end))) return []
+    return [{
+      offset: start + heading[0].indexOf('#'),
+      empty: !visible.slice(end, headings[index + 1]?.index).replace(comments, '').trim(),
+    }]
+  })
+}
+
+export function parseStudioFile(id: string, source: string, from: string, { requirePreviewCopy = false, requireLand = false } = {}): { def: StudioDef } | { problem: string; problems: SourceProblem[] } {
   const problems: SourceProblem[] = []
   const fail = (offset: number, path: string, code: string, message: string, hint: string) => problems.push({ file: from, ...sourcePosition(source, offset), path, code, message, hint })
   const result = () => ({ problem: problems.map(p => `${p.file}:${p.line}:${p.column} ${p.path}: ${p.code} — ${p.message}. ${p.hint}`).join('\n'), problems })
@@ -80,6 +103,14 @@ export function parseStudioFile(id: string, source: string, from: string, requir
       if (metadata[field]?.[lang]) continue
       fail(bodyOffset + block.start, `previews.${block.id}.${field}.${lang}`, 'preview-display-missing',
         `Preview ${block.id} needs a ${lang} ${field}`, 'Add non-blank en and zh display text in the Preview metadata.')
+    }
+  }
+  if (requireLand) {
+    const sections = landSections(body, parsed.blocks)
+    if (!sections.length) fail(bodyOffset, 'Land', 'studio-land-missing', 'Missing ## Land section', 'Add ## Land to the Studio body and describe delivery, checks and what to record.')
+    for (const [index, { offset, empty }] of sections.entries()) {
+      if (index) fail(bodyOffset + offset, 'Land', 'studio-land-duplicate', 'Repeated ## Land section', 'Combine delivery instructions under one ## Land heading.')
+      if (empty) fail(bodyOffset + offset, 'Land', 'studio-land-empty', 'The ## Land section is empty', 'Describe delivery, checks and what to record under ## Land.')
     }
   }
   if (problems.length) return result()

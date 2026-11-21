@@ -82,7 +82,6 @@ const MOVES: Record<string, RunMove> = {
   update: ({ args, opts }) => cmdUpdate(Number(args[0]), as<UpdateOptions>(opts)),
   'update-questions': ({ args, opts }) => cmdUpdateQuestions(Number(args[0]), as<QuestionOpsInput>(opts)),
   list: ({ opts }) => cmdList(as<ListOptions>(opts)),
-  archive: ({ args }) => cmdRemove(Number(args[0]), 'completed'),
   reject: ({ args, opts }) => cmdRemove(Number(args[0]), 'rejected', as<RemoveOptions>(opts)),
   'agent-file': ({ args }) => cmdAgentFile(args[0] ?? '', args[1] ?? ''),
   file: ({ args }) => cmdStudioFile(args[0] ?? '', args[1] ?? ''),

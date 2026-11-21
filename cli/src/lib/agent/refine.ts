@@ -11,16 +11,15 @@
 import { createHash } from 'node:crypto'
 
 import { allCards, findCard } from '../view/read'
-import { awaitingApproval, byDispatchOrder, canRefine, planDeliveryGap } from '../view/rules'
+import { byDispatchOrder, canRefine, planDeliveryGap } from '../view/rules'
 import type { Card } from '../view/types'
 import { reviewAllows, reviewAuthorization } from '../shared/review-plan'
+import { activeDelivery } from './deliveries'
 import { taskReviewContext } from './env'
 import { startRun } from './start'
-import { endOfStage, shortLine, stageOfAction, type StageShort } from './stage-end'
-import { stageContract } from './stages'
 import { withStore } from './store'
 import { holdsCard } from './types'
-import type { AgentAction, AgentRequest, CommandRequest, RunReason, RunRecord, RunRefusal } from './types'
+import type { AgentAction, AgentRequest, CommandRequest, RunReason, RunRecord } from './types'
 
 export type RefinementStep = 'clarify' | 'done'
 
@@ -109,9 +108,7 @@ export function claimChanges(before: BoardMarks, sessionId: string): number[] {
   const now = markBoard()
   try {
     return withStore((store) => {
-      // A card another run is working on is that run's to account for when it closes. A
-      // specialist run holds nothing (`holdsCard`) — it fills one section while the card's
-      // own loop carries on around it.
+      // A card another run holds is that run's to account for when it closes.
       const held = new Set(
         store.runs
           .filter((r) => r.status === 'running' && r.sessionId !== sessionId && holdsCard(r.action))
@@ -181,15 +178,15 @@ export function refinementAfter(
 ): AgentRequest | null {
   const card = currentCard(cardId)
   if (!card || card.isGroup || card.openBlockers.length > 0) return null
+  if (action === 'resolve' && activeDelivery(cardId)) return null
   if (card.questions.length > 0 || action === 'clarify' || card.deliversIn !== 'plan') return null
   if (planDeliveryGap(card) === null) return null
   // A stage before the last waits on the user's Approve (#1790).
-  if (awaitingApproval(card)) return null
   return { action: 'clarify', id: card.id, title: card.title, refineRound: 1, ...(flowId ? { flowId } : {}) }
 }
 
 // Actions that follow only the cards they CREATED. Each of them just exercised its own
-// judgment on the card it names — a refine pass, a build, a revise, a resolve, a spec agent —
+// judgment on the card it names — a refine pass, a build, a revise, a resolve —
 // so a refine of a card one of them merely edited spends a run re-doing what has just
 // closed. A card one of them split off is another matter: it is as rough as any other
 // newborn card, and nothing else comes for it.
@@ -199,7 +196,6 @@ const FOLLOWS_CREATED = new Set<AgentAction>([
   'clarify',
   'resolve',
   'approve',
-  'spec',
 ])
 
 /** Cards this run left worth refining — its own claims and no one else's. `before` is the
@@ -239,69 +235,26 @@ function stalledLine(cardId: number | null, next: AgentRequest | null): string |
 }
 
 export interface RefinementFollowUp {
-  /** Every refinement session to start after a completed run, with the current loop first
-   *  removed from the ordinary changed-card candidates to prevent a duplicate start. */
   runs: AgentRequest[]
-  /** One plain line for a loop that ended without settling its card — unrefined, or short of
-   *  a helper the planning stage's contract requires (#714). */
   stalled?: string
-  /** `stalled` by kind (#1241). */
   stalledWhy?: RunReason[]
-}
-
-// The planning stage's own completion check (#714). It runs when a planning run closes and
-// the loop has nothing else to do: the card is settled, so the only thing that could still
-// hold the stage open is a helper its contract requires and nobody wrote.
-//
-// Null means there is nothing to check — the run was no planning run, its card is gone, or
-// the card is still moving. Everything the command ships requires no helper, so this is
-// `{ done: true }` today.
-function planStageEnd(run: RunRecord): ReturnType<typeof endOfStage> | null {
-  if (run.cardId === null || stageOfAction(run.action) !== 'plan') return null
-  const card = currentCard(run.cardId)
-  if (!card || card.isGroup || card.openBlockers.length > 0 || card.questions.length > 0) return null
-  if (refinementStep(card) !== 'done') return null
-  return endOfStage(stageContract('plan'), card)
 }
 
 export function refinementRunsAfter(
   run: RunRecord,
   changed: readonly number[],
   before: BoardMarks,
-  waitingForSpec = false,
-  refused: RunRefusal[] = [],
 ): RefinementFollowUp {
-  const next =
-    waitingForSpec || run.cardId === null || !['clarify', 'resolve', 'edit', 'approve'].includes(run.action)
-      ? null
-      : refinementAfter(run.action, run.cardId, run.flowId)
+  const next = run.cardId !== null && ['clarify', 'resolve', 'edit', 'approve'].includes(run.action)
+    ? refinementAfter(run.action, run.cardId, run.flowId)
+    : null
   const starts = refinesAfter(run.action, changed, before).filter(
-    (req) =>
-      req.id !== run.cardId || (run.refineRound === undefined && run.action !== 'spec'),
+    (req) => req.id !== run.cardId || run.refineRound === undefined,
   )
-  // A helper that would not start is the planner's to ask for again.
-  const refusedNote = waitingForSpec || !refused.length ? '' : `Preview agents not started: ${refused.map((r) => r.error).join(' ')}`
-  const carryOn = next && refusedNote
-    ? { ...next, notes: [next.notes, refusedNote].filter(Boolean).join('\n\n') }
-    : next
-  // Nothing else follows this run, so the stage it belonged to is over — unless its contract
-  // requires a helper that wrote nothing (#714).
-  const end = waitingForSpec || carryOn || starts.length ? null : planStageEnd(run)
-  const short: StageShort | null = end && 'missing' in end ? end : null
-  // A refinement pass can leave the loop unfinished; so can a required helper nobody could
-  // get an answer out of.
-  const stalled =
-    (short ? shortLine(short, run.cardId!) : undefined) ??
-    (waitingForSpec ? undefined : (run.refineRound !== undefined && stalledLine(run.cardId, next)) || undefined)
-  const stalledWhy: RunReason[] = [
-    ...(refusedNote ? [{ kind: 'specRefused' as const, refusals: refused }] : []),
-    ...(!stalled ? []
-      : short ? [{ kind: 'stageShort' as const, args: { stage: short.stage, card: String(run.cardId), agents: short.missing.join(', ') } }]
-      : [{ kind: 'refineStalled' as const, args: { card: String(run.cardId) } }]),
-  ]
+  const stalled = (run.refineRound !== undefined && stalledLine(run.cardId, next)) || undefined
   return {
-    runs: [...starts, ...(carryOn ? [carryOn] : []), ...(end && 'ask' in end ? [end.ask] : [])],
-    stalled: [refusedNote, stalled].filter(Boolean).join('\n') || undefined,
-    ...(stalledWhy.length ? { stalledWhy } : {}),
+    runs: next ? [...starts, next] : starts,
+    stalled,
+    ...(stalled ? { stalledWhy: [{ kind: 'refineStalled', args: { card: String(run.cardId) } }] } : {}),
   }
 }

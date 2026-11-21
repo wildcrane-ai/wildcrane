@@ -15,10 +15,6 @@ import type { TaskReview } from '../shared/review-plan'
  *  run a user deliberately asked for. */
 export const RUN_ENV = 'KANBAN_RUN'
 
-/** Set by the Runner on a reflection (#277): Cloud's switched-on scheduled agents, by name and
- *  comma-separated. Even empty, it stands over what the studios list. */
-export const SCHEDULED_AGENTS_ENV = 'AI4KANBAN_SCHEDULED_AGENTS'
-
 /** Set by the Runner beside `--session` (#627): that session's last recorded cost total. */
 export const SESSION_COST_ENV = 'AI4KANBAN_SESSION_COST'
 
@@ -32,6 +28,8 @@ export function insideRun(): string | null {
 export function runEnv(env: NodeJS.ProcessEnv, value: string): NodeJS.ProcessEnv {
   return { ...env, [RUN_ENV]: value }
 }
+
+export const SAVED_PREVIEW_FILE_ENV = 'AI4KANBAN_SAVED_PREVIEW_FILE'
 
 export function taskReviewContext() {
   const { AI4KANBAN_TASK_REVIEW: review, AI4KANBAN_REVIEW_STAGES: assigned } = process.env

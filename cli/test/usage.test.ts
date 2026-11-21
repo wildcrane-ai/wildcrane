@@ -5,6 +5,7 @@
 // card, the queue is capped, and the sender goes out at most once a day, clears only what
 // it sent, and never turns a bad day at the endpoint into a retry loop.
 
+import { cmdRemove } from '../src/commands/remove.ts'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -347,7 +348,7 @@ describe("a board's own counts", () => {
     })
     await akb('update-questions', '2', '--drop', '1')
 
-    await akb('archive', '3')
+    await quietly(async () => { cmdRemove(3, 'completed'); return 0 })
     await akb('reject', '1')
 
     assert.deepEqual(board().counts, {

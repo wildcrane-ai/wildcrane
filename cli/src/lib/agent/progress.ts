@@ -1,5 +1,5 @@
 import { answerOutcome } from './answers'
-import { approvedRequirements, syncAudit } from './deliveries'
+import { approvedRequirements, openQuestions, syncAudit } from './deliveries'
 import { readStore, withStore } from './store'
 import type { AgentRequest, DeliveryRecord } from './types'
 
@@ -16,6 +16,7 @@ export function nextDeliveryRun(deliveryId?: string): AgentRequest | undefined {
   for (const delivery of store.deliveries) {
     if (deliveryId && delivery.deliveryId !== deliveryId) continue
     if (delivery.status !== 'active' || delivery.cardId === null) continue
+    if (openQuestions(delivery.cardId) > 0) continue
     if (store.runs.some((r) => r.deliveryId === delivery.deliveryId && r.status === 'running')) continue
     if (answerOutcome(delivery) === 'changed') {
       const superseded = withStore((live) => {
@@ -48,6 +49,6 @@ export function nextDeliveryRun(deliveryId?: string): AgentRequest | undefined {
   // A failed spawn after superseding still owes the approved card a fresh delivery.
   const owed = store.deliveries.find((d) => d.cardId !== null && d.steps.some((s) => s.step === 'superseded') &&
     !d.steps.some((s) => s.step === 'dropped') && !store.deliveries.some((other) => other.cardId === d.cardId && other.deliveryId !== d.deliveryId && other.startedAt >= (d.endedAt ?? 0)) &&
-    !store.runs.some((r) => r.cardId === d.cardId && r.status === 'running') && approvedRequirements(d.cardId!))
+    !store.runs.some((r) => r.cardId === d.cardId && r.status === 'running') && openQuestions(d.cardId!) === 0 && approvedRequirements(d.cardId!))
   return owed ? { action: 'implement', id: owed.cardId!, title: owed.title, session: 'new' } : undefined
 }

@@ -100,12 +100,12 @@ function App() {
     } catch { setPageError(t.offline) }
   }, [t])
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (retry = false) => {
     const now = live.current
     if (now.refreshing || now.disconnected || now.saving) return
     now.refreshing = true
     try {
-      const next = (await api('state')) as State
+      const next = (await api('state', { retry })) as State
       const prev = stateRef.current
       let tools = live.current.tools
       if (next.error && next.account?.id === prev.account?.id) stateRef.current = { ...prev, ...next }
@@ -282,7 +282,7 @@ function App() {
     {(state.error || pageError) && (
       <div className={cn(ERROR, 'mt-4 flex items-center gap-2.5')}>
         <span>{pageError || message(state.error)}</span>
-        <Button variant="link" size="inline" className="text-[12px]" onClick={() => { setPageError(''); void refresh() }}>{t.retry}</Button>
+        <Button variant="link" size="inline" className="text-[12px]" onClick={() => { setPageError(''); void refresh(true) }}>{t.retry}</Button>
       </div>
     )}
 

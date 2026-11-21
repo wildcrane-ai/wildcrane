@@ -275,7 +275,7 @@ describe('akb template', () => {
     const pages = ['01.png', { image: '02.png', video: '02.mp4' }]
     fs.writeFileSync(path.join(dir, 'showcase.json'), JSON.stringify({ cover: '01.png', pages }))
     for (const f of ['01.png', '02.png', '02.mp4']) fs.writeFileSync(path.join(dir, f), f)
-    serve({ '/long-read/showcase': json({ name: 'long-read', files: 2 }) })
+    serve({ '/long-read/showcase': json({ name: 'long-read', files: 3 }) })
     const { code, out } = await akb(['template', 'showcase', 'long-read', dir])
     assert.equal(code, 0, out)
     const fields: string[] = []
@@ -328,4 +328,39 @@ describe('template.md frontmatter', () => {
     assert.equal(meta.access, 'pro')
     assert.deepEqual(meta.source, { original: true })
   })
+})
+
+it('refuses incomplete downloads and missing template receipts', async () => {
+  signIn()
+  const name = 'hero-tilted-screen'
+  const to = path.join(home, 'absent')
+  const entries = [{ path: 'first.png', size: 3 }, { path: 'second.png', size: 4 }]
+  serve({
+    [`/${name}/previews`]: json({ previews: entries }),
+    [`/${name}/previews/first.png`]: () => new Response('png'),
+    [`/${name}/previews/second.png`]: () => new Response('png'),
+    [`/${name}/source`]: json({ source: { original: true }, evidence: entries }),
+    [`/${name}/evidence/first.png`]: () => new Response('png'),
+    [`/${name}/evidence/second.png`]: () => new Response('png'),
+    [`/${name}/showcase`]: json({ name }),
+    [`/${name}`]: json({ name, deleted: false }),
+    '': json({ name }),
+  })
+  for (const command of ['preview', 'source']) {
+    const failed = await akb(['template', command, name, '--to', to])
+    assert.equal(failed.code, 1)
+    assert.match(failed.err, /invalid_response/)
+    assert.equal(fs.existsSync(to), false)
+  }
+  const dir = path.join(home, 'showcase')
+  fs.mkdirSync(dir)
+  fs.writeFileSync(path.join(dir, 'showcase.json'), '{}')
+  fs.writeFileSync(path.join(dir, 'template.md'), TEMPLATE_MD.replace(/source:[\s\S]*?---/, 'source:\n  original: true\n---'))
+  for (const args of [['delete', name], ['showcase', name, dir], ['publish', dir]]) {
+    const failed = await akb(['template', ...args])
+    assert.equal(failed.code, 1)
+    assert.match(failed.err, /invalid_response/)
+  }
+  serve({ [`/${name}`]: json({ name, deleted: true }) })
+  assert.equal((await akb(['template', 'delete', name])).code, 0)
 })

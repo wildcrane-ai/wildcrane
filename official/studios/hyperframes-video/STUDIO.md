@@ -31,10 +31,18 @@ previews:
 
 Make or revise only the requested product-video outputs. Reuse existing work and change only affected shots, narration or assets; the catalog below is optional, not a checklist. A script-only request does not call for voice samples, a video or a cover. HyperFrames is the default production framework; read its installed skill when creating or editing a composition, and load other skills only as needed.
 
-- **Approval**: propose the review points the request needs, normally approving script and storyboard before making and showing a new video. Use the Task's saved review plan; Preview IDs describe outputs, not stages. Await the required script and storyboard approvals before downstream paid generation or final production; changing the agreed plan requires user confirmation.
+- **Approval**: set the review points the request needs, normally approving script and storyboard before making and showing a new video. Use the Task's saved review plan; Preview IDs describe outputs, not stages. Await the required script and storyboard approvals before downstream paid generation or final production.
 - **Review references**: use this definition's Preview IDs in the saved review plan. When switching an existing Task to this definition, use the existing plan-revision flow for affected references and approvals; do not transfer old approvals to renamed outputs. Preserve pinned versions and historical outputs.
 - **Resume**: continue from saved outputs and current authorization. An answer or an old approval does not approve changed content; leave affected downstream production waiting for the system to unlock it.
 - **Resources**: read linked references only when needed. Reuse task assets and explicit project or Studio rules; do not read or maintain independent role memories or replace Studio examples automatically.
+
+## Land
+
+For a video delivery, watch and check the rendered MP4. Put its absolute path in code format on
+its own line below the card's opening paragraph, with one playable Asset beneath it. Update both
+in place and record the re-render command once the playable file passes its checks.
+
+## Previews
 
 <Preview id="video-script">
 
@@ -137,12 +145,10 @@ Use the first available source for each file:
 - **Words stand**: keep the scripted narration and on-screen text; fit timing and sound around them, with narration clear over music and in sync.
 - **Render locally**: keep a project command that re-renders the same video from a clean checkout plus the asset folder. Do not use hosted rendering. Report a failed render without claiming delivery.
 - **Review**: watch the rendered film and listen to its audio; check factual claims, readability, pacing, section flow, complete interactions, sound and private data. Fix defects, re-render and recheck; report checks you could not run.
-- **Record it**: put the finished video's absolute path in code format on its own line below the card's opening paragraph, with one playable `<Asset src=".assets/<card id>/<short-name>.mp4" label="..." />` beneath it, updating both in place. Record the re-render command with the delivery evidence using the current task format.
 
 ## Rules
 
 - **No code bar**: tests, diff size and code review do not apply.
-- **Done**: the playable MP4 exists at the recorded path, its checks pass, and the render command is recorded. A run that renders nothing has not delivered.
 
 </Preview>
 

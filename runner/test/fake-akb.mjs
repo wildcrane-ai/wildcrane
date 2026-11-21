@@ -48,6 +48,24 @@ const fail = (message) => {
 }
 
 const [a, b, c] = words
+const capturedFiles = directory => Object.fromEntries(fs.readdirSync(directory, { withFileTypes: true, recursive: true })
+  .filter(file => file.isFile()).map(file => {
+    const target = path.join(file.parentPath, file.name)
+    return [path.relative(directory, target), fs.readFileSync(target, 'utf8')]
+  }))
+const approvedUi = process.env.AI4KANBAN_APPROVED_UI_DIR
+if (approvedUi) write('approved-ui.json', {
+  directory: approvedUi,
+  files: capturedFiles(approvedUi),
+})
+const savedPreviews = process.env.AI4KANBAN_SAVED_PREVIEW_FILE
+if (savedPreviews) {
+  const directory = path.dirname(savedPreviews)
+  write('saved-previews.json', {
+    directory,
+    files: capturedFiles(directory),
+  })
+}
 if (a === 'raw' && b === 'init') {
   fs.mkdirSync(path.join(board, 'todo'), { recursive: true })
   fs.mkdirSync(path.join(board, '.archive'), { recursive: true })
@@ -102,6 +120,9 @@ if (a === 'raw' && b === 'init') {
     fs.writeFileSync(path.join(board, at), content)
   }
   let card = fs.readFileSync(file, 'utf8')
+  if (b === 'resolve' && !how.question && !how.failed && !how.reject) {
+    card = card.replace(/^questions:\s*\n(?:[ \t]+.*\n)*/m, 'questions: []\n')
+  }
   if (how.status) card = card.replace('questions:', `status: ${how.status}\nquestions:`)
   if (how.question) card = card.replace('questions: []', `questions:\n  - Which tone?\n  - question: "${how.question}"\n    mode: single\n    options:\n      - Monthly\n      - Yearly\n    recommend: [1]`)
   fs.writeFileSync(file, `${card}\n${b} ${text}`.trimEnd() + '\n')
@@ -131,7 +152,9 @@ if (a === 'raw' && b === 'init') {
     }
   }
   if (how.gates?.length) runs.pop()
-  runs.push({ sessionId, cardId: id, result: how.result, ...spent }, ...(last !== sessionId ? [{ sessionId: last, cardId: id, result: how.landed ?? 'Landed it.', ...spent }] : []))
+  const evidence = how.trackExecution && { action: b, status: 'done', deliveryId: how.delivery?.id, resumeId: how.agentSession,
+    cloudExecution: JSON.parse(process.env.AI4KANBAN_EXECUTION), pendingWrites: false }
+  runs.push({ sessionId, cardId: id, result: how.result, ...spent, ...evidence }, ...(last !== sessionId ? [{ sessionId: last, cardId: id, result: how.landed ?? 'Landed it.', ...spent }] : []))
   write('runs.json', runs)
   if (how.reject) {
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('questions:', 'rejected: true\nquestions:'))
@@ -142,9 +165,38 @@ if (a === 'raw' && b === 'init') {
     console.log(JSON.stringify({ ok: false, error: { kind: 'run-failed', message: `run ${last.slice(0, 8)} ended error: ${how.failed}`, lastSessionId: last, ...delivery } }))
     process.exit(1)
   }
-  if (b === 'implement' && !how.delivery?.ending) fs.renameSync(file, path.join(board, '.archive', path.basename(file)))
+  const delivery = b !== 'implement' || how.delivery === null
+    ? how.delivery
+    : { id: 'd1', status: how.question ? 'active' : 'finished', ...how.delivery }
+  if (delivery?.status === 'finished') {
+    fs.renameSync(file, path.join(board, '.archive', path.basename(file)))
+    write(`delivery-${id}.json`, delivery)
+  }
   console.log(JSON.stringify({ ok: true, status: 'done', result: how.result, lastSessionId: last, ...(how.agentSession ? { agentSession: how.agentSession } : {}),
-    ...(how.delivery ? { delivery: how.delivery } : {}) }))
+    ...(delivery ? { delivery } : {}) }))
+} else if (a === 'delivery' && b === 'reconcile') {
+  const id = Number(c)
+  const how = plan.reconcile
+  if (how) {
+    const attempt = (read('reconcile-attempts.json', 0) || 0) + 1
+    write('reconcile-attempts.json', attempt)
+    const step = Array.isArray(how) ? how[Math.min(attempt - 1, how.length - 1)] : how
+    if (step?.refuse) fail(step.refuse)
+    console.log(JSON.stringify({ ok: true, ...step }))
+  } else {
+    const runs = read('runs.json', [])
+    const live = runs.find((r) => r.cardId === id && r.status === 'running' && r.deliveryId)
+    if (live) {
+      console.log(JSON.stringify({ ok: true, kind: 'running', sessionId: live.sessionId, deliveryId: live.deliveryId, action: live.action }))
+    } else {
+      console.log(JSON.stringify({ ok: true, kind: 'none' }))
+    }
+  }
+} else if (a === 'delivery' && b === 'release') {
+  const how = plan.release ?? {}
+  if (how.refuse) fail(how.refuse)
+  write('released.json', { card: Number(c), deliveryId: how.deliveryId ?? 'd1' })
+  console.log(JSON.stringify({ ok: true, released: true, deliveryId: how.deliveryId ?? 'd1' }))
 } else if (a === 'delivery' && b === 'resume') {
   // `delivery` in FAKE_AKB: how carrying the card's ended delivery on goes (#2128).
   const how = plan.delivery ?? {}
@@ -152,8 +204,14 @@ if (a === 'raw' && b === 'init') {
     console.log(JSON.stringify({ ok: false, error: { kind: 'run-refused', message: how.refuse, reason: how.reason, args: how.args } }))
     process.exit(1)
   }
-  if (how.landed) fs.renameSync(cardOf(Number(c)), path.join(board, '.archive', path.basename(cardOf(Number(c)))))
-  console.log(JSON.stringify({ ok: true, deliveryId: 'd1', ...(how.landed ? { landed: true } : { carryOn: how.carryOn ?? 'build' }) }))
+  const file = cardOf(Number(c))
+  const archived = file?.includes(`${path.sep}.archive${path.sep}`)
+  if (how.landed && file && !archived) fs.renameSync(file, path.join(board, '.archive', path.basename(file)))
+  const delivery = how.landed ? { id: 'd1', status: 'finished', ...how.result }
+    : archived ? read(`delivery-${c}.json`, null) : null
+  console.log(JSON.stringify({ ok: true, deliveryId: how.deliveryId ?? delivery?.id ?? 'd1', ...(delivery
+    ? { landed: true, delivery }
+    : { carryOn: how.carryOn ?? 'build' }) }))
 } else if (a === 'run' && (b === 'resume' || b === 'log')) {
   const runs = read('runs.json', [])
   const previous = runs.find((r) => r.sessionId === c)
@@ -167,14 +225,14 @@ if (a === 'raw' && b === 'init') {
   const sessionId = b === 'resume' ? `resumed-${c}` : c
   if (b === 'resume') {
     runs.splice(runs.indexOf(previous), 1)
-    runs.push({ ...previous, sessionId, resumedFrom: c, status: 'done', startedAt: Date.now(), result: 'Continued it.' })
+    runs.push({ ...previous, ...how.spent, sessionId, resumedFrom: c, status: 'done', startedAt: Date.now(), result: 'Continued it.' })
     write('runs.json', runs)
   }
   if (words.includes('--events')) console.log(JSON.stringify({ kind: 'message', data: { text: 'Continued the original conversation.' } }))
   const file = cardOf(previous.cardId)
   if (file && file.includes(`${path.sep}todo${path.sep}`)) fs.renameSync(file, path.join(board, '.archive', path.basename(file)))
   console.log(JSON.stringify({ ok: true, sessionId, status: 'done', result: 'Continued it.', agentSession: previous.resumeId,
-    delivery: { id: how.deliveryId ?? previous.deliveryId, commit: 'abc123', branch: 'main' } }))
+    delivery: { id: how.deliveryId ?? previous.deliveryId, status: 'finished', commit: 'abc123', branch: 'main' } }))
 } else if (a === 'delivery' && b === 'cancel') {
   // A discarded build (#61): its record keeps no checkout.
   const file = path.join(board, 'deliveries', `${c}.json`)

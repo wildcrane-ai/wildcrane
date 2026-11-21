@@ -1,19 +1,13 @@
-import path from 'node:path'
 
-import { rawMove } from '../agent/command'
-import { agentRun } from '../agent/resolve'
 import { specAgentEntries } from '../agent/settings'
 import { stageContractProblems, type AgentRole } from '../agent/roles'
 import type { SpecAgentEntry } from '../agent/settings'
 import type { SpecAgentSetting } from '../agent/types'
 import { readLanguage } from '../machine/settings'
 import type { Language } from '../machine/types'
-import { agentMemoryDir, readAgentMemory } from '../memory'
-import { rel } from '../paths'
 import { specAgentCatalog } from './catalog'
-import { agentKeyProblems, agentStudio, cardStage, cardStages, previewAgents, studioFor, studioFileProblems } from '../agent/studios'
+import { studioFileProblems } from '../agent/studios'
 import type { SpecAgent } from './parse'
-import type { Meta } from '../types'
 
 export { specAgentCatalog } from './catalog'
 export type { SpecAgent } from './parse'
@@ -36,7 +30,6 @@ export function agentLines(
 export const specAgentProblems = (): string[] => [
   ...specAgentCatalog().problems,
   ...studioFileProblems(),
-  ...agentKeyProblems(),
   ...stageContractProblems(),
 ]
 
@@ -46,14 +39,6 @@ export const specAgentNamesOnBoard = (): string[] => specAgents().map((a) => a.n
 export const findSpecAgent = (name: string): SpecAgent | null => {
   return specAgents().find((a) => a.name === name) ?? null
 }
-
-/** The heading a spec agent's section carries on a card. Its name is in it, so a reader can
- *  see who is answerable for that part of the spec and a rerun knows what to replace. */
-export const specHeading = (name: string): string => '## By `' + name + '` agent'
-
-/** Matches an agent's section heading. */
-export const specHeadingRe = (name: string): RegExp =>
-  new RegExp('^##\\s+By\\s+`' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '`\\s+agent\\s*$', 'i')
 
 /** What one of the board's roles is set to (#1469): every setting on its page, carrying the
  *  saved value or its own default. `notes` holds a line for each value that had to fall back —
@@ -97,95 +82,4 @@ export function roleSettingsBlock(role: AgentRole, entries = specAgentEntries())
     .map((setting) => setting.choices.find((c) => c.value === values[setting.key])?.prompt)
     .filter((line): line is string => Boolean(line))
   return lines.length ? ['Your settings on this board:', ...lines.map((line) => `- ${line}`)].join('\n') : ''
-}
-
-/** The instructions and support-file paths for one preview run. */
-export function specAgentInstructions(agent: SpecAgent): { instructions: string; files: string } {
-  return {
-    instructions: agent.body.trim(),
-    files: agentFilesBlock(agent),
-  }
-}
-
-export function agentFilesBlock(agent: SpecAgent): string {
-  if (!agent.files.length) return ''
-  const dir = agent.dir
-  const studio = dir ? '' : agentStudio(agent.name)
-  return [
-    'Read one only when the work calls for it:',
-    '',
-    ...agent.files.map((f) =>
-      dir
-        ? `- \`${rel(path.join(dir, f))}\``
-        : `- \`${f}\` — \`${rawMove(studio ? `file ${studio} agents/${agent.name}/${f}` : `agent-file ${agent.name} ${f}`)}\``,
-    ),
-  ].join('\n')
-}
-
-/** An agent's memory folder, and every file in it (#421, #833) — read as the run starts. Its
- *  own instructions say what those files are for; an empty folder is only named. */
-export function agentMemoryBlock(agent: SpecAgent): string {
-  const dir = rel(agentMemoryDir(agent.name))
-  const files = readAgentMemory(agent.name)
-  if (!files.length) return `Your memory folder is \`${dir}/\`. Nothing is in it yet.`
-  return [
-    `Your memory, from \`${dir}/\` — what you kept on this board in earlier runs. Follow it here:`,
-    ...files.map((file) => `### \`${file.name}\`\n\n${file.text || '_(empty)_'}`),
-  ].join('\n\n')
-}
-
-const agentsOf = (names: string[]): SpecAgent[] => {
-  const all = specAgents()
-  return names.map((name) => all.find((a) => a.name === name)).filter((a): a is SpecAgent => !!a)
-}
-
-/** Whether one studio runs this agent as a preview — the one gate `akb raw previews`
- *  and every ask written mid-run are checked against (#749). */
-export const specAgentAssigned = (_name: string, _studio?: string): boolean => false
-
-export function specAgentSelector(id: number | string, studio: string | undefined, meta: Pick<Meta, 'previews' | 'phase'> | null): string {
-  const flow = studioFor(studio)
-  if (process.env.AI4KANBAN_TASK_REVIEW || !flow || meta?.previews) return ''
-  return `Choose only the Preview IDs needed by the task and save them with akb raw update ${id} --previews <ids>. Prepare them in this task session.`
-}
-
-export const notAnAgent = (name: string): string => {
-  const there = specAgents().map((a) => a.name)
-  return there.length
-    ? `"${name}" is not an agent on this board. It has: ${there.join(', ')}.`
-    : `"${name}" is not an agent on this board, and this board has none.`
-}
-
-/** Where a studio agent is switched on or off — the one answer to whether it runs (#749). */
-export const SPEC_ASSIGN_HOME =
-  'it is switched on in its studio, in the board UI under Configuration → Studios'
-
-/** Where a project puts an agent of its own. */
-export const SPEC_AGENT_HOME = 'docs/kanban/agents/<name>/AGENT.md'
-
-/** The list of agents, one entry each — what `akb raw previews` with no agent named prints. Every one
- *  on the board: this is typed with no card in hand, and which of them a card may ask for is
- *  its own studio's answer (`specAgentSelector`). */
-export function specAgentList(program: string, forPerson = false): string {
-  const problems = specAgentProblems()
-  const agents = specAgents()
-  return [
-    `${program} raw previews <agent> <id> [note] — put a preview agent on a card.`,
-    '',
-    "A preview agent writes one part of a card from the card, your note and its instructions.",
-    '',
-    'Agents',
-    ...(agents.length
-      ? agents.flatMap((a) => ['', `  ${a.name}`, `    ${a.description}`, ...harnessLine(a, forPerson)])
-      : ['', 'This board has no preview agent. Ask for none.']),
-    '',
-    `The flow one follows is \`${program} guide preview-agent\`.`,
-    ...(forPerson ? [`This project adds its own in \`${SPEC_AGENT_HOME}\`.`] : []),
-    ...(problems.length ? ['', 'Problems on this board:', ...problems.map((p) => `  ${p}`)] : []),
-  ].join('\n')
-}
-
-function harnessLine(agent: SpecAgent, forPerson: boolean): string[] {
-  if (!forPerson) return []
-  return [`    Runs on: ${agentRun(agent.name).harness}`]
 }

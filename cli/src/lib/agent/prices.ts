@@ -24,10 +24,10 @@ interface Price {
   output: number
 }
 
-// OpenAI's list rates, from developers.openai.com/api/docs/pricing (checked 2026-10-03).
-// The models Codex offers, plus the API-only ids a user can name in the Model box. Where a
-// model has no cache discount, a cache hit bills as fresh input.
+// OpenAI Standard short-context rates: https://developers.openai.com/api/docs/pricing.
 const OPENAI: Record<string, Price> = {
+  'gpt-6.2-astra': { input: 8, cachedInput: 0.4, output: 40 },
+  'gpt-6.2-sol': { input: 2, cachedInput: 0.1, output: 10 },
   'gpt-6.1-sol': { input: 2, cachedInput: 0.1, output: 10 },
   'gpt-6-astra': { input: 10, cachedInput: 1, output: 50 },
   'gpt-6-sol': { input: 2, cachedInput: 0.2, output: 10 },
@@ -52,13 +52,14 @@ const OPENAI: Record<string, Price> = {
 }
 
 // Global standard API-equivalent rates, not Antigravity subscription/credit charges.
-// https://cloud.google.com/model-garden/pricing (2026-11-17); output includes thinking.
+// https://cloud.google.com/model-garden/pricing (2026-11-20); output includes thinking.
 function antigravityPrices(at: number): Record<string, Price> {
   const pro = at < Date.parse('2026-12-01T00:00:00Z') ? 2 : 4
   const flash = at < Date.parse('2027-01-01T00:00:00Z') ? 0.75 : 1.5
   return {
     'gemini-4-carbon': { input: pro, cachedInput: pro / 20, output: pro * 5 },
     'gemini-4-argon': { input: pro, cachedInput: pro / 20, output: pro * 5 },
+    'gemini-4-neon': { input: 3, cachedInput: 0.15, output: 15 },
     'gemini-4-hydrogen': { input: 1.5, cachedInput: 0.075, output: 7.5 },
     'gemini-3.8-flash': { input: flash, cachedInput: flash / 10, output: flash * 5 },
   }

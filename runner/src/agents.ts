@@ -45,8 +45,8 @@ export async function askDueAgents(machineId: string, now = Date.now()): Promise
   for (const { project } of folders.value.folders) {
     const read = await api.readAgents(machineId, project)
     if (!read.ok) continue
-    for (const agent of read.value.agents.filter((a) => agentDue(a, now))) {
-      const asked = await api.requestAgent(machineId, project, agent.name, agent.studio ?? null, agent.lastSuccess)
+    for (const agent of read.value.agents.filter((a) => !a.studio && agentDue(a, now))) {
+      const asked = await api.requestAgent(machineId, project, agent.name, agent.lastSuccess)
       if (!asked.ok) console.error(`runner: ${agent.name} was not started on ${project}: ${asked.error}`)
       else if (asked.value.job) started = true
     }

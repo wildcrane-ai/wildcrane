@@ -13,7 +13,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { forgetFileMemos } from '../file-memo'
 
-import { forgetStudioAgent, landAgents, previewAgents, scheduledMembers, studios } from '../agent/studios'
 import { forgetAgentRuntime } from '../agent/runtimes'
 import { forgetSpecAgent } from '../agent/settings'
 import { agentMemoryDir } from '../memory'
@@ -67,6 +66,5 @@ export function deleteAgent(name: string): WriteResult & { removed?: string[] } 
   // says, and refusing here would leave the pane reporting a failure it cannot undo.
   forgetSpecAgent(name)
   forgetAgentRuntime(name)
-  forgetStudioAgent(name)
   return { ok: true, removed }
 }

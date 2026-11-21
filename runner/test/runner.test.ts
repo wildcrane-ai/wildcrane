@@ -1,3 +1,6 @@
+import { zipSync, strToU8 } from 'fflate'
+import { PDFDocument } from 'pdf-lib'
+import { documentPreviewKey } from '../../artifact-sdk/src/internal/document'
 import { numberOfCard } from '../../cli/src/lib/shared/board-files'
 import { taskPreviewProblems } from '../../cli/src/lib/shared/task-preview-validation'
 import { IDLE_TIMEOUT } from '../../cli/src/lib/agent/idle'
@@ -37,7 +40,7 @@ import { AKB_CONTRACT } from '../src/protocol'
 import { agentDue, nextHour } from '../src/agents'
 import { sharedMemory } from '../src/memory-files'
 import { projectStateDir } from '../../cli/src/lib/machine/project'
-import { NO_FOLDER, keptBoard, mergeFile, openTaskFolder, pull, pullChanges, push, pushBoard, readHead, withBoard, workspaceOf, taskStudioContext } from '../src/task-folder'
+import { NO_FOLDER, keptBoard, mergeFile, openAgentFolder, openTaskFolder, pull, pullChanges, push, pushBoard, readHead, withBoard, workspaceOf, taskStudioContext } from '../src/task-folder'
 import { watchBoards } from '../src/board-watch'
 import { hold, unsent } from '../src/cache'
 import { FILE_BYTES, diffOf } from '../src/diff'
@@ -581,19 +584,84 @@ process.stdin.on('data', () => { if (read) return; read = true;
     })
 
     it('does not give AGy a task or discussion ring from another provider’s window (#824)', async () => {
-      const output = fs.readFileSync(path.join(process.cwd(), '../cli/test/fixtures/antigravity/cached.ndjson'), 'utf8')
-      const task = cloud.dispatch({ id: 'agy-task-context', runtime: 'antigravity', model: 'known-model' })
-      const discussion = cloud.dispatch({ id: 'agy-discussion-context', runtime: 'antigravity', model: 'known-model',
-        discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
-      start('', { plan: (runtime, prompt, cwd, resume) => ({
-        ...fakeRuntime(`process.stdout.write(${JSON.stringify(output)})`)(runtime, prompt, cwd, resume),
-        renderer: createAntigravityRenderer(), model: () => 'known-model',
-      }) })
-      await until(() => task.state === 'finished' && discussion.state === 'finished')
-      assert.equal(task.outcome, 'done')
-      assert.equal(discussion.outcome, 'done')
-      assert.equal(used(task), undefined)
-      assert.equal(used(discussion), undefined)
+      const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-agy-empty-'))
+      const homeKey = process.platform === 'win32' ? 'USERPROFILE' : 'HOME'
+      const previous = process.env[homeKey]
+      process.env[homeKey] = empty
+      try {
+        const output = fs.readFileSync(path.join(process.cwd(), '../cli/test/fixtures/antigravity/cached.ndjson'), 'utf8')
+        const task = cloud.dispatch({ id: 'agy-task-context', runtime: 'antigravity', model: 'known-model' })
+        const discussion = cloud.dispatch({ id: 'agy-discussion-context', runtime: 'antigravity', model: 'known-model',
+          discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
+        start('', { plan: (runtime, prompt, cwd, resume) => ({
+          ...fakeRuntime(`process.stdout.write(${JSON.stringify(output)})`)(runtime, prompt, cwd, resume),
+          renderer: createAntigravityRenderer(), model: () => 'known-model',
+        }) })
+        await until(() => task.state === 'finished' && discussion.state === 'finished')
+        assert.equal(task.outcome, 'done')
+        assert.equal(discussion.outcome, 'done')
+        assert.equal(used(task), undefined)
+        assert.equal(used(discussion), undefined)
+      } finally {
+        if (previous === undefined) delete process.env[homeKey]
+        else process.env[homeKey] = previous
+        fs.rmSync(empty, { recursive: true, force: true })
+      }
+    })
+
+    it('reports AGy task and discussion context limits from local session metadata (#956)', async (t) => {
+      const sqlite = process.getBuiltinModule?.('node:sqlite') as typeof import('node:sqlite') | undefined
+      if (!sqlite) return t.skip('Node SQLite is unavailable')
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-agy-ctx-'))
+      const homeKey = process.platform === 'win32' ? 'USERPROFILE' : 'HOME'
+      const previous = process.env[homeKey]
+      process.env[homeKey] = home
+      try {
+        const session = '61fdb9f9-a7b8-444a-9b9c-ff60acd817c8'
+        const folder = path.join(home, '.gemini', 'antigravity-cli', 'conversations')
+        fs.mkdirSync(folder, { recursive: true })
+        const db = new sqlite.DatabaseSync(path.join(folder, `${session}.db`))
+        db.exec('CREATE TABLE steps (idx INTEGER, metadata BLOB); CREATE TABLE gen_metadata (data BLOB)')
+        const varint = (value: number) => {
+          const bytes: number[] = []
+          let n = value
+          do {
+            let b = n & 0x7f
+            n = Math.floor(n / 128)
+            if (n > 0) b |= 0x80
+            bytes.push(b)
+          } while (n > 0)
+          return Buffer.from(bytes)
+        }
+        const field = (tag: number[], value: Buffer) => Buffer.concat([Buffer.from(tag), varint(value.length), value])
+        const promptId = Buffer.from('00000000-0000-4000-8000-000000000956')
+        db.prepare('INSERT INTO steps VALUES (?, ?)').run(2, field([0x62], promptId))
+        const f10 = Buffer.concat([Buffer.from([0x20]), varint(256_000)])
+        db.prepare('INSERT INTO gen_metadata VALUES (?)').run(Buffer.concat([
+          field([0x12], varint(4)),
+          field([0x22], promptId),
+          field([0x0a], field([0x4a], field([0x52], f10))),
+        ]))
+        db.close()
+
+        const output = fs.readFileSync(path.join(process.cwd(), '../cli/test/fixtures/antigravity/cached.ndjson'), 'utf8')
+        const task = cloud.dispatch({ id: 'agy-task-local-limit', runtime: 'antigravity', model: 'known-model' })
+        const discussion = cloud.dispatch({ id: 'agy-discussion-local-limit', runtime: 'antigravity', model: 'known-model',
+          discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
+        start('', { plan: (runtime, prompt, cwd, resume) => ({
+          ...fakeRuntime(`process.stdout.write(${JSON.stringify(output)})`)(runtime, prompt, cwd, resume),
+          renderer: createAntigravityRenderer(), model: () => 'known-model',
+        }) })
+        await until(() => task.state === 'finished' && discussion.state === 'finished')
+        assert.equal(task.outcome, 'done')
+        assert.equal(discussion.outcome, 'done')
+        assert.deepEqual(used(task), { used: 11_102, limit: 256_000 })
+        assert.deepEqual(used(discussion), { used: 11_102, limit: 256_000 })
+      } finally {
+        if (previous === undefined) delete process.env[homeKey]
+        else process.env[homeKey] = previous
+        fs.rmSync(home, { recursive: true, force: true })
+      }
     })
 
     it('takes the model a talking runtime names over its own connection', async () => {
@@ -802,6 +870,54 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal(job.outcome, 'done')
     assert.deepEqual((job.report as { goals: unknown[] }).goals, [{ ...ideas[0], start: true }])
     assert.equal(fs.existsSync(path.join(runnerHome(), 'ideas', 'j1.json')), false)
+  })
+
+  for (const failure of ['retry', 'conflict', 'unavailable']) it(`网页讨论目标保存及回复状态 (${failure}, #982)`, async () => {
+    const ideas = [{ id: 'idea_1', title: 'Existing', outcome: 'Before', acceptance: [], studio: 'wf_builtin_coding', task: null }]
+    const job = cloud.dispatch({ id: 'job_web', language: 'zh', discussion: { id: 'dsc_web', workspace: 'ws_1', version: 4, ideas, goals: ideas } })
+    const attempts: { id: string; outcome: string; report?: api.JobReport }[] = []
+    const akb = path.join(process.env.RUNNER_DIST!, 'akb', 'bin', 'ai4kanban.mjs')
+    const body = path.join(runnerHome(), 'goal-body.md')
+    start(`
+      const assert = require('node:assert/strict');
+      const fs = require('node:fs');
+      const { spawnSync } = require('node:child_process');
+      const run = (...args) => spawnSync(process.execPath, [${JSON.stringify(akb)}, 'goal', ...args], {
+        encoding: 'utf8', env: { ...process.env, CODEX_THREAD_ID: 'web-codex-thread' },
+      });
+      const body = ${JSON.stringify(body)};
+      const create = () => run('new', '--title', 'New goal', '--body-file', body);
+      assert.notEqual(create().status, 0);
+      fs.writeFileSync(body, 'Deliver the goal.');
+      const saved = create();
+      assert.equal(saved.status, 0, saved.stderr);
+      assert.match(saved.stdout, /when this turn ends/);
+      const edited = run('save', '--id', 'idea_1', '--title', 'Edited');
+      assert.equal(edited.status, 0, edited.stderr);
+    `, {
+      api: { ...api, finishJob: async (...args) => {
+        const [, id, outcome, , report] = args
+        attempts.push({ id, outcome, report })
+        if (attempts.length === 1 || failure === 'unavailable' && outcome === 'done') return { ok: false, code: 'service_unavailable', error: 'Try again.', status: 503 }
+        if (failure === 'conflict' && outcome === 'done') return { ok: false, code: 'version_conflict', error: 'The goals changed.', status: 409 }
+        return api.finishJob(...args)
+      } },
+    })
+    await until(() => job.state === 'finished')
+    const rejected = failure !== 'retry'
+    assert.equal(cloud.discussions.length, 0)
+    assert.deepEqual(attempts.map(attempt => [attempt.id, attempt.outcome]), rejected
+      ? [[job.id, 'done'], [job.id, 'done'], [job.id, 'failed']] : [[job.id, 'done'], [job.id, 'done']])
+    assert.deepEqual(attempts[0]!.report, attempts[1]!.report)
+    assert.equal(attempts[1]!.report?.goalsVersion, 4)
+    assert.deepEqual(attempts[1]!.report?.goals?.map(goal => [goal.id, goal.title]), [['idea_1', 'Edited'], ['new_1', 'New goal']])
+    assert.equal(job.outcome, rejected ? 'failed' : 'done')
+    if (rejected) {
+      assert.match(String(job.report?.reply), /^目标未能保存到当前讨论。/)
+      assert.equal(job.report?.goals, undefined)
+    } else {
+      assert.deepEqual(job.report?.goals, attempts[1]!.report?.goals)
+    }
   })
 
   it('reports a failing runtime as failed', async () => {
@@ -1066,7 +1182,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       assert.ok(planned.every(p => p.prompt.includes('shot.png') && p.prompt.includes('原消息与上下文')))
       await until(() => readCheckpoint(job.id) === null)
       assert.equal(readCheckpoint(job.id), null)
-      assert.equal(job.report?.recovery && (job.report.recovery as { safe: boolean }).safe, true)
+      assert.deepEqual(planned.map(p => p.resume), [null, 'fresh-session'])
     })
   }
 
@@ -1116,7 +1232,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal(planned.length, 2)
     assert.equal(planned[1]!.resume, session)
     assert.match(planned[1]!.prompt, /用户决定：保留 Cedar830/)
-    assert.match(planned[1]!.prompt, /不要重复已经执行的操作/)
+    assert.match(planned[1]!.prompt, /Do not repeat an operation/)
     assert.equal(job.report?.session, session)
     assert.equal(job.report?.reply, 'Cedar830 preserved.')
   })
@@ -1137,7 +1253,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
         chat: { message: 'm1', body: '继续' } })
       const usage = { input: 10, cacheCreation: 1, cacheRead: 2, output: 3 }
       saveCheckpoint(job.id, { updating: true, mark: stopMark(), pending: [], effects: resumed, started: true,
-        session: 'kept', retry: { since: Date.now(), attempt: 1, pending: { at: Date.now(), of: 4, failure: overload } },
+        session: resumed ? 'kept' : undefined, retry: { since: Date.now(), attempt: 1, pending: { at: Date.now(), of: 4, failure: overload } },
         attempts: [{ session: 'kept', usage, costUsd: 0.5 }] })
       start('', { plan: (...args) => {
         const p = fakeRuntime('console.log("done")')(...args)
@@ -1214,10 +1330,11 @@ process.stdin.on('data', () => { if (read) return; read = true;
         return p
       } })
       await until(() => job.state === 'finished')
-      assert.equal(planned.length, (state === 'completed') ? 2 : 1)
-      if ((state === 'completed')) {
+      const resumable = state === 'completed' || state === 'pending'
+      assert.equal(planned.length, resumable ? 2 : 1)
+      if (resumable) {
         assert.equal(planned[1]?.resume, 'fresh-session')
-        assert.match(planned[1]!.prompt, /不要重复已经执行的操作/)
+        assert.match(planned[1]!.prompt, /Do not repeat an operation/)
       } else assert.equal(job.reason, 'recovery_unsafe')
     })
   }
@@ -1326,13 +1443,13 @@ process.stdin.on('data', () => { if (read) return; read = true;
   })
 
   for (const checkpoint of [null, { pending: ['write'], effects: true, started: true, session: 's1' }, { pending: [], effects: false, started: true }]) {
-    it(`手动续跑把缺失或未确认进度交给 Agent 核对 ${JSON.stringify(checkpoint)}`, async () => {
+    it(`手动续跑验证保留的执行证据 ${JSON.stringify(checkpoint)}`, async () => {
       if (checkpoint) saveCheckpoint('old-turn', checkpoint)
       const job = cloud.dispatch({ id: 'manual-turn', recoveryOf: 'old-turn', manualRecovery: true, chat: { message: 'm1', body: '修改' } })
       start()
       await until(() => job.state === 'finished')
-      assert.equal(planned.length, 1)
-      assert.equal(job.outcome, 'done', job.reason)
+      assert.equal(planned.length, checkpoint ? 1 : 0)
+      assert.equal(job.outcome, checkpoint ? 'done' : 'failed', job.reason)
     })
   }
 
@@ -1355,7 +1472,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       assert.equal(job.outcome, 'done', job.reason)
       assert.equal(planned.length, 1)
       assert.equal(planned[0]?.resume, 'original-session')
-      assert.match(planned[0]!.prompt, /不要重复已经执行的操作/)
+      assert.match(planned[0]!.prompt, /Do not repeat an operation/)
     })
   }
 
@@ -1396,6 +1513,27 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal(planned.length, 0)
     assert.equal(job.reason, 'quota exceeded')
     assert.equal(readCheckpoint(job.id)?.retry?.attempt, 3)
+  })
+
+  it('manual recovery resets an exhausted budget and clears obsolete blockers (#903)', async () => {
+    saveCheckpoint('exhausted-turn', { mark: stopMark(), pending: ['write'], started: true, session: 'saved-session',
+      effects: true, retry: { since: 0, attempt: 4, at: Date.now() }, failure: disconnect, retryPause: 'limit', launching: true,
+      completed: { outcome: 'failed', report: { session: 'saved-session' } } })
+    const job = cloud.dispatch({ id: 'manual-after-exhaustion', manualRecovery: true, recoveryOf: 'exhausted-turn',
+      chat: { message: 'm1', body: 'Continue' } })
+    let launches = 0
+    start('', { plan: (...args) => {
+      const first = ++launches === 1
+      const p = fakeRuntime(first ? 'process.exit(1)' : 'console.log("Recovered")')(...args)
+      p.renderer!.events = () => []
+      p.renderer!.executionFailure = () => first ? disconnect : undefined
+      return p
+    } })
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(launches, 2)
+    assert.equal(planned[0]!.resume, 'saved-session')
+    assert.match(planned[0]!.prompt, /Check the current state/)
   })
 
   it('手动重试不重复计入已上报失败作业的消耗', async () => {
@@ -1445,7 +1583,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'done', job.reason)
     assert.equal(planned[0]?.resume, 'original-session')
-    assert.match(planned[0]!.prompt, /不要重复已经执行的操作/)
+    assert.match(planned[0]!.prompt, /Do not repeat an operation/)
     assert.match(planned[0]!.prompt, /图.png/)
   })
 
@@ -1565,7 +1703,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal(job.claims, 3)
     assert.equal(job.outcome, 'done', job.reason)
     assert.equal(planned.at(-1)?.resume, 'fresh-session')
-    assert.match(planned.at(-1)!.prompt, /不要重复/)
+    assert.match(planned.at(-1)!.prompt, /Do not repeat an operation/)
     assert.equal(readCheckpoint(job.id), null)
   })
 
@@ -1610,7 +1748,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     await current.close()
   })
 
-  it('真实执行中的未决写操作只执行一次，重启后要求检查', async () => {
+  it('重启后自动回到原会话核对未决写操作且只写入一次', async () => {
     const effect = path.join(runnerHome(), 'external-effect')
     const job = cloud.dispatch({ id: 'update-effect' })
     const current = start('', { plan: (...args) => {
@@ -1627,9 +1765,11 @@ process.stdin.on('data', () => { if (read) return; read = true;
     await current.update()
     start()
     await until(() => job.state === 'finished')
-    assert.equal(job.reason, 'recovery_unsafe')
+    assert.equal(job.outcome, 'done', job.reason)
     assert.equal(fs.readFileSync(effect, 'utf8'), 'x')
-    assert.equal(planned.length, 1)
+    assert.equal(planned.length, 2)
+    assert.equal(planned[1]?.resume, 'fresh-session')
+    assert.match(planned[1]!.prompt, /Check the current state/)
   })
 
   it('更新停止整个执行进程树，再交接机器锁', async () => {
@@ -1654,12 +1794,12 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal(planned.length, 0)
   })
 
-  it('更新中断了未决操作时显示待检查原因，不自动重复执行', async () => {
+  it('更新中断且缺少原会话时暂停，不自动重复未决操作', async () => {
     const job = cloud.dispatch({ id: 'update-unknown', state: 'claimed', machine: MACHINE })
-    saveCheckpoint(job.id, { updating: true, session: 's1', started: true, pending: ['external-call'] })
+    saveCheckpoint(job.id, { updating: true, started: true, pending: ['external-call'] })
     start()
     await until(() => job.state === 'finished')
-    assert.equal(job.reason, 'recovery_unsafe')
+    assert.match(job.reason!, /previous execution could not be verified/)
     assert.equal(planned.length, 0)
   })
 
@@ -1669,7 +1809,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     start()
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'failed')
-    assert.match(job.reason!, /restarted/)
+    assert.match(job.reason!, /previous execution could not be verified/)
   })
 
   it('keeps the computer connected when another process takes over', async () => {
@@ -1730,10 +1870,10 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.deepEqual(stop, { reason: 'elsewhere', machine: 'laptop' })
   })
 
-  it('registers with protocol 27', async () => {
+  it('registers with the recovery protocol', async () => {
     start()
     await until(() => cloud.registrations > 0)
-    assert.equal(cloud.protocol, 27)
+    assert.equal(cloud.protocol, 30)
   })
 
   it('stops as outdated when Cloud no longer takes its protocol', async () => {
@@ -1790,6 +1930,48 @@ describe('a task’s folder (#2037)', () => {
     const result = await pull(openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1')), MACHINE)
     assert.equal(result.ok, true, JSON.stringify(result))
   }
+
+  it('pairs Office previews with the uploaded source version and preserves failed originals (#907)', { skip: process.platform === 'win32' }, async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-office-test-'))
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+    const pdf = await PDFDocument.create()
+    pdf.addPage()
+    fs.writeFileSync(path.join(dir, 'example.pdf'), await pdf.save())
+    fs.writeFileSync(path.join(dir, 'soffice'), '#!/bin/sh\nfor input do :; done\ncp "$(dirname "$0")/example.pdf" "${input%/*}/source.pdf"\n', { mode: 0o755 })
+    const previousPath = process.env.PATH
+    process.env.PATH = `${dir}${path.delimiter}${previousPath}`
+    t.after(() => { process.env.PATH = previousPath })
+
+    const source = (text: string) => Buffer.from(zipSync({
+      'word/document.xml': strToU8(text),
+      '_rels/.rels': strToU8('<Relationships/>'),
+    }))
+    const file = 'report.docx'
+    const writeDoc = (bytes: Buffer) => `require('fs').writeFileSync('todo/${file}', Buffer.from('${bytes.toString('base64')}', 'base64'));`
+    const index = () => JSON.parse(cloud.file('assets/task_1.json')!) as api.Assets
+    const tag = JSON.stringify(`\n<Asset src="${file}" />\n`)
+    const first = await runTask('office-1', writeDoc(source('one')) + `require('fs').appendFileSync('${CARD}', ${tag})`)
+    assert.equal(first.outcome, 'done', first.reason)
+    const original = index()[file]!
+    const firstKey = documentPreviewKey(original.artifact, 1)
+    const firstPdf = index()[firstKey]!
+    assert.deepEqual(original.dependencies, [firstKey])
+    assert.equal(cloud.task.artifacts.get(firstPdf.artifact)![0]!.subarray(0, 5).toString(), '%PDF-')
+
+    const second = await runTask('office-2', writeDoc(source('two')))
+    assert.equal(second.outcome, 'done', second.reason)
+    const secondKey = documentPreviewKey(original.artifact, 2)
+    assert.deepEqual(index()[file], { artifact: original.artifact, version: 2, dependencies: [secondKey] })
+    assert.equal(index()[firstKey], undefined)
+    assert.notEqual(index()[secondKey]!.artifact, firstPdf.artifact)
+
+    const broken = Buffer.from('invalid Office file')
+    const failed = await runTask('office-3', writeDoc(broken))
+    assert.equal(failed.outcome, 'done', failed.reason)
+    assert.deepEqual(index()[file], { artifact: original.artifact, version: 3 })
+    assert.equal(index()[secondKey], undefined)
+    assert.deepEqual(cloud.task.artifacts.get(original.artifact)![2], broken)
+  })
 
   for (const copy of ['empty', 'existing']) {
     it(`syncs an ${copy} current copy without conversion state (#749)`, async () => {
@@ -2175,6 +2357,32 @@ describe('a task’s folder (#2037)', () => {
     assert.ok(fs.existsSync(path.join(board(), '.sync/task_unknown.json')))
   })
 
+  it('starts a task chat with fresh content before checking unrelated orphan records (#928)', async () => {
+    await prepareBoard()
+    const orphan = path.join(board(), '.sync/task_orphan.json')
+    fs.writeFileSync(orphan, JSON.stringify({ task: 'task_orphan', number: 99, assets: {} }))
+    cloud.taskStatus.task_orphan = 'done'
+    fs.writeFileSync(path.join(board(), 'rules/project-writer.md'), 'Unsent board edit')
+    cloud.task.artifacts.get('art_1')!.push(Buffer.from('hero-2'))
+    cloud.put({
+      [CARD]: BODY + 'Updated task.',
+      'assets/task_1.json': JSON.stringify({ 'hero.png': { artifact: 'art_1', version: 2 }, 'shots/a.png': { artifact: 'art_2', version: 1 } }),
+      'memory/readme.md': 'Updated board context',
+    })
+
+    start('', { plan: (...args) => {
+      assert.ok(!cloud.log.includes('GET /v1/tasks/task_orphan'))
+      assert.match(read(CARD), /Updated task/)
+      assert.equal(read('memory/readme.md'), 'Updated board context')
+      assert.equal(read('todo/hero.png'), 'hero-2')
+      assert.equal(cloud.file('rules/project-writer.md'), 'Unsent board edit')
+      return fakeRuntime('')(...args)
+    } })
+    const job = await runTask('fresh-chat', '', { chat: { message: 'm1', body: 'What changed?' } })
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(fs.existsSync(orphan), true)
+  })
+
   it('keeps a card archived outside a job archived on the next job (#59)', async () => {
     await runTask('j1')
     fs.mkdirSync(path.join(board(), '.archive'), { recursive: true })
@@ -2242,6 +2450,80 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(cloud.file('memory/readme.md'), 'one')
     assert.equal(cloud.file('rules/proposer.md'), 'two')
     assert.ok(!cloud.board.has('projects/prj_1/todo/README.md'), 'a generated file went up')
+  })
+
+  it('reconciles an already synced archive and retries without rewriting the board (#971)', async () => {
+    await prepareBoard()
+    const ws = keptBoard(cached())!
+    const archive = '.archive/1-task-1.md'
+    const card = '---\ntitle: Pricing\narchived: 2026-11-19\n---\n\nTiers.\n'
+    const manifest = 'assets/task_1.json'
+    cloud.put({ [CARD]: null, [archive]: card, [manifest]: '{}' })
+    assert.ok((await pullChanges(ws)).ok)
+    cloud.taskStatus.task_1 = 'waiting_review'
+    let attempts = 0
+    cloud.completeArchives = ({ cards }) => {
+      attempts++
+      assert.deepEqual(cards, [{ task: 'task_1', path: archive,
+        seq: cloud.board.get('projects/prj_1/' + archive)!.seq,
+        assets_seq: cloud.board.get('projects/prj_1/' + manifest)!.seq }])
+      if (attempts === 1) return null
+      cloud.taskStatus.task_1 = 'done'
+      return { receipts: [{ task: 'task_1', status: 'confirmed' }] }
+    }
+    const unavailable = await pushBoard(ws, MACHINE)
+    assert.equal(unavailable.ok, false)
+    if (!unavailable.ok) assert.equal(unavailable.code, 'service_unavailable')
+    assert.equal(cloud.taskStatus.task_1, 'waiting_review')
+    assert.ok(unsent(cached()))
+    const before = commits().length
+    assert.ok((await pushBoard(ws, MACHINE, [])).ok)
+    assert.equal(cloud.taskStatus.task_1, 'done')
+    assert.equal(commits().length, before)
+    assert.ok((await pushBoard(ws, MACHINE, [])).ok)
+    assert.equal(attempts, 2)
+    assert.equal(unsent(cached()), false)
+  })
+
+  it('sends a new archive after its assets and drops the pending check on restore or rejection (#971)', async () => {
+    await prepareBoard()
+    const ws = keptBoard(cached())!
+    const archive = '.archive/1-task-1.md'
+    const archived = '---\ntitle: Pricing\narchived: 2026-11-19\n---\n\n![](hero.png)\n'
+    fs.mkdirSync(path.join(board(), '.archive'), { recursive: true })
+    fs.renameSync(path.join(board(), CARD), path.join(board(), archive))
+    fs.writeFileSync(path.join(board(), archive), archived)
+    fs.writeFileSync(path.join(board(), '.archive/hero.png'), 'archived image')
+    let attempts = 0
+    cloud.completeArchives = ({ cards }) => {
+      attempts++
+      assert.equal(cards.length, 1)
+      assert.equal(cloud.file(archive), archived)
+      assert.equal(cloud.file(CARD), null)
+      const pin = JSON.parse(cloud.file('assets/task_1.json')!)['hero.png']
+      assert.equal(cloud.task.artifacts.get(pin.artifact)![pin.version - 1]!.toString(), 'archived image')
+      return { receipts: [{ task: 'task_1', status: 'pending', code: 'conflict', message: 'Finish the active job before archiving.' }] }
+    }
+    cloud.serviceUnavailableUploads = true
+    assert.equal((await pushBoard(ws, MACHINE, [CARD, archive])).ok, false)
+    assert.equal(attempts, 0)
+    assert.equal(cloud.file(archive), null)
+    cloud.serviceUnavailableUploads = false
+    assert.ok((await pushBoard(ws, MACHINE, [CARD, archive])).ok)
+    assert.equal(attempts, 1)
+    assert.ok(unsent(cached()))
+
+    fs.renameSync(path.join(board(), archive), path.join(board(), CARD))
+    fs.writeFileSync(path.join(board(), CARD), '---\ntitle: Pricing\nrestored: 2026-11-20\n---\n\nTiers.\n')
+    assert.ok((await pushBoard(ws, MACHINE, [CARD, archive])).ok)
+    assert.equal(attempts, 1)
+    assert.equal(unsent(cached()), false)
+
+    fs.renameSync(path.join(board(), CARD), path.join(board(), archive))
+    fs.writeFileSync(path.join(board(), archive), archived.replace('archived:', 'rejected: true\narchived:'))
+    assert.ok((await pushBoard(ws, MACHINE, [CARD, archive])).ok)
+    assert.equal(attempts, 1)
+    assert.match(cloud.file(archive)!, /rejected: true/)
   })
 
   for (const count of [300, 3000]) {
@@ -2389,6 +2671,43 @@ describe('a task’s folder (#2037)', () => {
     const complete = cloud.log.findIndex((line) => line.endsWith('/complete'))
     const version = cloud.log.findIndex((line) => line === `POST /v1/artifacts/${ref.artifact}/versions`)
     assert.ok(complete >= 0 && version > complete)
+  })
+
+  it('publishes the applied answer and closed question in the same Runner card write', async () => {
+    const content = '---\ntitle: Pricing\nstudio: coding\nstatus: implementing\nquestions: []\n---\n\nTwo tiers.\n'
+    cloud.put({ [CARD]: content, 'assets/task_1.json': null })
+    await prepareBoard()
+    const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1'))
+    const job = { id: '00000000-0000-4000-8000-000000000001', machineId: MACHINE }
+    const claimed = cloud.dispatch({ id: job.id, task: 'task_1', project: 'prj_1', number: 1 })
+    claimed.state = 'claimed'
+    claimed.machine = MACHINE
+    const akb = { ...fakeAkb(), args: [path.join(process.env.RUNNER_DIST!, 'akb/bin/ai4kanban.mjs')] }
+    const edit = async (...args: string[]) => {
+      const out = await runAkb(akb, ['task', 'update-questions', 'task_1', ...args, '--json'], {
+        cwd: ws.cwd, board: ws.board, task: 'task_1',
+        env: { AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: MACHINE }) },
+      })
+      assert.equal(out.code, 0, out.out || out.last)
+      return JSON.parse(out.out)
+    }
+    assert.equal((await edit('--append', 'Which tier?', '--recommended-option', 'Pro', '--option', 'Free')).open, 1)
+    assert.equal(cloud.file(CARD), content)
+    const sent = await push(ws, job)
+    assert.equal(sent.ok, true, JSON.stringify(sent))
+    const asked = cloud.file(CARD)!
+    assert.match(asked, /question: Which tier\?/)
+    const before = commits().length
+    fs.appendFileSync(path.join(ws.board, CARD), '\nUse the Pro tier.\n')
+    assert.equal((await edit('--drop', '1')).open, 0)
+    const answered = read(CARD)
+    assert.equal(cloud.file(CARD), asked)
+    const closed = await push(ws, job)
+    assert.equal(closed.ok, true, JSON.stringify(closed))
+    assert.equal(commits().length, before + 1)
+    assert.equal(cloud.file(CARD), answered)
+    assert.match(answered, /questions: \[\]/)
+    assert.match(answered, /Use the Pro tier\./)
   })
 
   it('takes a folder’s writes in turn: the same change goes once (#59)', async () => {
@@ -2580,21 +2899,38 @@ describe('a task’s folder (#2037)', () => {
     const assets = path.join(projectStateDir(board()), 'assets/1')
     const local = path.join(runnerHome(), '.cache/wildcrane/mockup-check')
     fs.mkdirSync(assets, { recursive: true })
-    fs.writeFileSync(path.join(assets, 'page.html'), '<img alt="Preview" src="picture.png">')
-    fs.writeFileSync(path.join(assets, 'picture.png'), 'preview image')
+    const page = `<link rel="stylesheet" href="style.css">
+<img alt="Preview" src="picture.svg">
+<button>Open preview</button>
+<script>
+  const button = document.querySelector('button');
+  button.addEventListener('click', () => { button.textContent = 'Preview opened'; });
+  const unreferenced = 'unreferenced.png';
+</script>`
+    for (const name of ['page.htm', 'page.html']) fs.writeFileSync(path.join(assets, name), page)
+    fs.writeFileSync(path.join(assets, 'style.css'), 'body { color: rgb(9, 80, 110); background-image: url("picture.svg") }')
+    const picture = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><circle cx="20" cy="20" r="12" fill="teal"/></svg>'
+    fs.writeFileSync(path.join(assets, 'picture.svg'), picture)
     const cacheFiles = ['env/node_modules/pkg/index.js', 'env/browsers/shell', 'work/source.tsx']
     for (const name of cacheFiles) {
       fs.mkdirSync(path.dirname(path.join(local, name)), { recursive: true })
       fs.writeFileSync(path.join(local, name), 'LOCAL_CHECKER_CACHE')
     }
-    fs.writeFileSync(path.join(board(), CARD), '# Mockup\n\n<Asset src=".assets/1/page.html" />\n')
+    fs.writeFileSync(path.join(board(), CARD), '# Mockup\n\n<Asset src=".assets/1/page.html" />\n\n<Asset src=".assets/1/page.htm" />\n')
     assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
     const refs = JSON.parse(cloud.file('assets/task_1.json')!)
-    assert.deepEqual(Object.keys(refs).sort(), ['.assets/1/page.html', '.assets/1/picture.png'])
+    assert.deepEqual(Object.keys(refs).sort(), ['.assets/1/page.htm', '.assets/1/page.html', '.assets/1/picture.svg'])
+    const html = (name: string) => {
+      const { artifact, version } = refs[`.assets/1/${name}`]
+      assert.equal(cloud.types.get(artifact), 'html')
+      return cloud.task.artifacts.get(artifact)![version - 1]!.toString()
+    }
+    assert.equal(html('page.htm'), html('page.html'))
+    assert.match(html('page.htm'), /<style>body \{ color: rgb\(9, 80, 110\); background-image: url\("art_/)
     const uploaded = Object.values(refs as api.Assets).flatMap(ref => cloud.task.artifacts.get(ref.artifact) ?? [])
-    assert.equal(uploaded.length, 2)
-    assert.match(uploaded.find(bytes => bytes.toString().includes('<img'))!.toString(), new RegExp(refs['.assets/1/picture.png'].artifact))
-    assert.ok(uploaded.some(bytes => bytes.toString() === 'preview image'))
+    assert.equal(uploaded.length, 3)
+    assert.match(html('page.htm'), new RegExp(`src="${refs['.assets/1/picture.svg'].artifact}"`))
+    assert.ok(uploaded.some(bytes => bytes.toString() === picture))
     assert.ok(uploaded.every(bytes => !bytes.toString().includes('LOCAL_CHECKER_CACHE')))
     const puts = () => cloud.log.filter(line => line.startsWith('PUT /v1/uploads/')).length
     const storedBytes = () => [...cloud.task.artifacts.values()].flat().reduce((sum, file) => sum + file.byteLength, 0)
@@ -4023,12 +4359,25 @@ describe('flow jobs (#2020)', () => {
   })
 
   it('implements an explicit empty review plan once and reports delivery (#818)', async () => {
-    const taskReview = { plan: [], stages: [], pending_plan: null, revision: 0 }
+    const taskReview = { plan: [], stages: [], revision: 0 }
     cloud.task.review = taskReview
     const job = await flowJob('j818', { verb: 'create', review_stages: [] }, { taskReview })
     assert.equal(job.outcome, 'done', job.reason)
     assert.equal(job.report?.deliveryCompleted, true)
+    assert.equal(job.report?.deliveryId, 'd1')
     assert.deepEqual(cardCalls(), [`card implement 2 --follow --events --json --board ${board()}`])
+  })
+
+  it('syncs the results of a direct build that exits without a delivery record (#918)', async () => {
+    const taskReview = { plan: [], stages: [], revision: 0 }
+    cloud.task.review = taskReview
+    process.env.FAKE_AKB = JSON.stringify({ implement: { delivery: null, writes: { 'memory/progress.md': 'Saved progress.' } } })
+    const job = await flowJob('j918', { verb: 'create', review_stages: [] }, { taskReview })
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(job.report?.deliveryCompleted, false)
+    assert.match(cloud.file('todo/2-pricing-page.md')!, /implement$/m)
+    assert.equal(cloud.file('memory/progress.md'), 'Saved progress.')
+    assert.equal(cardCalls().length, 1)
   })
 
   const stagePlan = [
@@ -4037,7 +4386,7 @@ describe('flow jobs (#2020)', () => {
     { id: 'c', after: [], previews: ['api-docs'] },
   ]
   const makeReview = (plan: NonNullable<FakeJob['taskReview']>['plan'], stages: NonNullable<FakeJob['taskReview']>['stages'] = []) =>
-    ({ plan, stages, pending_plan: null, revision: 3 })
+    ({ plan, stages, revision: 3 })
   const readyCard = '---\ntitle: Pricing\nstudio: coding\nstatus: ready\nquestions: []\n---\n'
   const available = { id: 'b', status: 'available' as const, revision: 3, snapshot: null }
 
@@ -4049,13 +4398,13 @@ describe('flow jobs (#2020)', () => {
     assert.deepEqual(cardCalls(), [`card refine 2 --follow --events --json --board ${board()}`])
   })
 
-  it('holds planning and its preparatory agent while the plan awaits confirmation', async () => {
+  it('keeps a planning job from starting work on a newly assigned review plan', async () => {
     const taskReview = makeReview(null)
     cloud.rejections = { tasks: [{ id: 'task_9', number: 9, title: 'Mobile app', request: '', reason: 'never', cancelled_at: '2026-10-20T09:00:00.000Z' }], triage: [] }
-    cloud.task.review = { ...taskReview, revision: 4, pending_plan: { revision: 4, snapshot: { kind: 'plan', plan: [] } } }
-    const pending = await flowJob('pending', { verb: 'create', review_stages: [] }, { taskReview })
-    assert.equal(pending.outcome, 'failed')
-    assert.match(pending.reason ?? '', /no longer has review authorization/)
+    cloud.task.review = makeReview(stagePlan, [available])
+    const job = await flowJob('reassigned', { verb: 'create', review_stages: [] }, { taskReview })
+    assert.equal(job.outcome, 'failed')
+    assert.match(job.reason ?? '', /Review authorization changed/)
     assert.ok(!calls().some(c => c[0] === 'review-dismissals'))
     assert.deepEqual(cardCalls(), [])
   })
@@ -4098,6 +4447,123 @@ describe('flow jobs (#2020)', () => {
     assert.deepEqual(cardCalls(), [])
   })
 
+  it('stages the frozen UI files for delivery and uses the latest approval on resume', async () => {
+    const card = 'todo/2-pricing.md'
+    const src = '.assets/2/pages/screen.html'
+    const css = '.assets/2/styles/main.css'
+    const theme = '.assets/2/styles/theme/colors.css'
+    const image = '.assets/2/images/cover photo.svg'
+    const contract = '.assets/2/contract.md'
+    const body = `<Asset src="${src}" label="Pricing" device="desktop" />`
+    const pins = (version: number | undefined) => ({
+      [src]: { artifact: 'art_page', version: 1 },
+      [css]: { artifact: 'art_css', version: 1 },
+      [theme]: { artifact: 'art_theme', version: 1 },
+      [image]: { artifact: 'art_image', version },
+    })
+    const taskReviewAt = (revision: number, version: number | undefined) => ({
+      ...makeReview([{ id: 'b', after: [], previews: ['ui-design', 'api-docs'] }], [{
+        id: 'b', status: 'approved', revision, snapshot: {
+          evidence: { content: { 'ui-design': { body } }, assets: { [src]: pins(version)[src] }, dependencies: pins(version) },
+        },
+      }]), revision,
+    })
+    const taskReview = taskReviewAt(3, 1)
+    for (const [id, versions] of Object.entries({
+      art_page: ['<link rel="stylesheet" href="art_css"><img src="../images/cover photo.svg#detail">', 'Draft HTML'],
+      art_css: ['@import "art_theme";', 'Draft CSS'],
+      art_theme: ['body { background-image: url(art_image); }', 'Draft theme'],
+      art_image: ['Approved image', 'Draft image', 'Approved again'],
+      art_contract: ['Saved contract'],
+    })) cloud.task.artifacts.set(id, versions.map(text => Buffer.from(text)))
+    cloud.task.previewInputs = {
+      sections: {
+        'ui-design': { body: 'Unapproved draft', sources: [src, css, theme, image] },
+        'api-docs': { body: `<Asset src="${contract}" />`, sources: [contract] },
+      },
+      assets: { ...pins(2), [css]: { artifact: 'art_css', version: 2 }, [contract]: { artifact: 'art_contract', version: 1 } },
+    }
+    cloud.task.review = taskReview
+    cloud.put({ [card]: readyCard + '\nCurrent draft.' })
+    process.env.FAKE_AKB = JSON.stringify({ implement: { failed: 'Interrupted', delivery: { id: 'd1' } } })
+    const failed = await flowJob('approved-start', { verb: 'implement', review_stages: [] }, { taskReview })
+    assert.equal(failed.outcome, 'failed')
+    const staged = () => JSON.parse(fs.readFileSync(path.join(board(), '.fake/approved-ui.json'), 'utf8'))
+    const files = (revision: number, approvedImage: string) => Object.fromEntries(Object.entries({
+      [src]: '<link rel="stylesheet" href="../styles/main.css"><img src="../images/cover%20photo.svg#detail">',
+      [css]: '@import "theme/colors.css";',
+      [theme]: 'body { background-image: url(../../images/cover%20photo.svg); }',
+      [image]: approvedImage,
+    }).map(([name, text]) => [`review-${revision}-0/ui-design/files-0/${name}`, text]))
+    assert.deepEqual(staged().files, files(3, 'Approved image'))
+    const saved = JSON.parse(fs.readFileSync(path.join(board(), '.fake/saved-previews.json'), 'utf8'))
+    assert.match(saved.files['previews.md'], /api-docs/)
+    assert.doesNotMatch(saved.files['previews.md'], /Unapproved draft|ui-design/)
+    assert.equal(fs.existsSync(staged().directory), false)
+
+    fs.writeFileSync(path.join(board(), '.fake/runs.json'), JSON.stringify([{
+      sessionId: 'old-build', cardId: 2, action: 'implement', status: 'stopped',
+      deliveryId: 'd1', resumeId: 'original-thread', startedAt: Date.now() - 1000,
+    }]))
+    const before = calls().filter(c => c[0] === 'delivery' && c[1] === 'resume').length
+    for (const version of [undefined, 4]) {
+      cloud.task.review = taskReviewAt(6, version)
+      const missing = await flowJob(`missing-approved-file-${version}`, { verb: 'implement', resume: true, review_stages: [] }, { taskReview })
+      assert.equal(missing.outcome, 'failed')
+      assert.ok(missing.reason?.includes(image), missing.reason)
+      assert.match(missing.reason ?? '', version ? /version 4/ : /Missing approved asset version/)
+    }
+    cloud.task.review = makeReview(taskReview.plan, [{ id: 'b', status: 'available', revision: 7, snapshot: null }])
+    const revoked = await flowJob('revoked-ui', { verb: 'implement', resume: true, review_stages: [] }, { taskReview })
+    assert.equal(revoked.outcome, 'failed')
+    assert.match(revoked.reason ?? '', /Finish the agreed review stages/)
+    assert.equal(calls().filter(c => c[0] === 'delivery' && c[1] === 'resume').length, before)
+
+    cloud.task.previewInputs = undefined
+    process.env.FAKE_AKB = '{}'
+    cloud.task.review = taskReviewAt(8, 1)
+    const resumed = await flowJob('approved-resume', { verb: 'implement', resume: true, review_stages: [] }, { taskReview })
+    assert.equal(resumed.outcome, 'done', resumed.reason)
+    assert.deepEqual(staged().files, files(8, 'Approved image'))
+    assert.equal(fs.existsSync(staged().directory), false)
+    assert.ok(calls().some(c => c[0] === 'run' && c[1] === 'resume'), 'the original run was resumed')
+
+    cloud.task.review = taskReviewAt(9, 3)
+    const replacement = await flowJob('reapproved', { verb: 'implement', review_stages: [] }, { taskReview })
+    assert.equal(replacement.outcome, 'done', replacement.reason)
+    assert.deepEqual(staged().files, files(9, 'Approved again'))
+    assert.ok(!cloud.log.some(request => /\/art_(page|css|theme|image)\/versions\/2/.test(request)))
+  })
+
+  it('implements the last synced Preview body and exact asset pins after chat updates', async () => {
+    const src = '.assets/2/contract.md'
+    const plan = [{ id: 'api', after: [], previews: ['api-docs'] }]
+    const taskReview = makeReview(plan, [{
+      id: 'api', status: 'approved', revision: 3, snapshot: {
+        evidence: { content: { 'api-docs': { body: 'Previous design' } }, assets: { [src]: { artifact: 'art_1', version: 1 } } },
+      },
+    }])
+    const body = `<Asset src="${src}" label="New contract" />`
+    cloud.task.artifacts.set('art_1', ['previous', 'saved after chat', 'unselected draft'].map(text => Buffer.from(text)))
+    cloud.task.review = taskReview
+    cloud.task.previewInputs = {
+      sections: { 'api-docs': { body, sources: [src] }, 'ui-design': { body: 'Unrelated Preview', sources: [] } },
+      assets: { [src]: { artifact: 'art_1', version: 2 } },
+    }
+    cloud.put({
+      'todo/2-pricing.md': readyCard + `\n<Preview id="api-docs">\n\n${body}\n\n</Preview>\n`,
+      'assets/task_1.json': JSON.stringify(cloud.task.previewInputs.assets),
+    })
+    const job = await flowJob('saved-preview', { verb: 'implement', review_stages: [] }, { taskReview })
+    assert.equal(job.outcome, 'done', job.reason)
+    const staged = JSON.parse(fs.readFileSync(path.join(board(), '.fake/saved-previews.json'), 'utf8'))
+    assert.equal(staged.files['1-art_1-2.md'], 'saved after chat')
+    assert.match(staged.files['previews.md'], /New contract/)
+    assert.doesNotMatch(staged.files['previews.md'], /Previous design|Unrelated Preview/)
+    assert.ok(!cloud.log.some(request => /\/art_1\/versions\/[13](?:\/|$)/.test(request)))
+    assert.equal(fs.existsSync(staged.directory), false)
+  })
+
   it('publishes a completed flow after the lease lapses without starting the Agent again (#892)', async () => {
     const card = 'todo/2-pricing.md'
     cloud.put({ [card]: readyCard })
@@ -4115,6 +4581,56 @@ describe('flow jobs (#2020)', () => {
     assert.equal(successor.report?.reply, 'Original reply')
     assert.match(cloud.file(card)!, /Saved by the original flow/)
     assert.equal(fs.existsSync(process.env.FAKE_AKB_LOG!), false)
+  })
+
+  it('recovers the original build phase and cost after losing the job lease', async () => {
+    const card = 'todo/2-pricing.md'
+    cloud.put({ [card]: readyCard })
+    const flow = { studio: 'wf_builtin_coding', verb: 'implement' } as const
+    const scope = { task: 'task_1', project: 'prj_1', number: 2, flow }
+    const prior = cloud.dispatch({ ...scope, id: 'lapsed-build', state: 'finished' })
+    const ws = openTaskFolder(scope, prior.projectDir)
+    assert.ok((await pull(ws, MACHINE)).ok)
+    const run = { cardId: 2, cloudExecution: { job: prior.id, machine: MACHINE }, deliveryId: 'd1', startedAt: Date.now() - 1000 }
+    fs.mkdirSync(path.join(ws.board, '.fake'), { recursive: true })
+    fs.writeFileSync(path.join(ws.board, '.fake/runs.json'), JSON.stringify([
+      { ...run, sessionId: 'original-implement', action: 'implement', status: 'done', costUsd: 0.25 },
+      { ...run, sessionId: 'original-conflict', startedAt: run.startedAt + 10, action: 'conflict', status: 'interrupted', resumeId: 'original-thread', costUsd: 0.5 },
+      { ...run, sessionId: 'other-build', status: 'done', costUsd: 9, cloudExecution: { job: 'other', machine: MACHINE } },
+    ]))
+    saveCheckpoint(prior.id, { pending: ['write'], started: true })
+    process.env.FAKE_AKB = JSON.stringify({ resume: { spent: { costUsd: 0.125 } } })
+    const job = cloud.dispatch({ ...scope, id: 'recovered-build', flow: { ...flow, resume: true, sync_recovery_of: prior.id } })
+    start()
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(job.report?.session, 'original-thread')
+    assert.equal(job.report?.costUsd, 0.875)
+    assert.deepEqual(cardCalls(), [])
+    assert.ok(!calls().some(c => c[0] === 'delivery' && c[1] === 'resume'))
+    assert.ok(calls().some(c => c[0] === 'run' && c[1] === 'resume' && c[2] === 'original-conflict'))
+  })
+
+  it('reports the original failure and spend after a restart with exhausted retries (#947)', async () => {
+    cloud.put({ 'todo/2-pricing.md': readyCard })
+    const flow = { studio: 'wf_builtin_coding', verb: 'implement' } as const
+    const scope = { task: 'task_1', project: 'prj_1', number: 2, flow }
+    const source = cloud.dispatch({ ...scope, id: 'exhausted-build', state: 'finished' })
+    const ws = openTaskFolder(scope, source.projectDir)
+    assert.ok((await pull(ws, MACHINE)).ok)
+    fs.mkdirSync(path.join(ws.board, '.fake'), { recursive: true })
+    fs.writeFileSync(path.join(ws.board, '.fake/runs.json'), JSON.stringify([{
+      cardId: 2, cloudExecution: { job: source.id, machine: MACHINE }, action: 'implement',
+      sessionId: 'original-run', resumeId: 'original-thread', status: 'error', startedAt: Date.now() - 1000,
+      retryPause: 'limit', failure: { code: 'service_overloaded', level: 2, reason: 'Service returned 503.' }, costUsd: 0.25,
+    }]))
+    const job = cloud.dispatch({ ...scope, id: 'recovered-exhausted', flow: { ...flow, sync_recovery_of: source.id } })
+    start()
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'failed')
+    assert.equal(job.reason, 'task_retry_exhausted: Service returned 503.')
+    assert.equal(job.report?.costUsd, 0.25)
+    assert.ok(!calls().some(c => c[0] === 'card' || c[0] === 'run' && c[1] === 'resume'))
   })
 
   it('builds a card made unplanned straight after writing it (#2139)', async () => {
@@ -4214,7 +4730,7 @@ describe('flow jobs (#2020)', () => {
       `card implement 2 --follow --events --json --board ${b}`,
     ])
     assert.equal(built.outcome, 'done', built.reason)
-    assert.deepEqual(flowReport(built), { reply: 'Landed it.', card: 2, landing: { commit, branch: 'main' } })
+    assert.deepEqual(flowReport(built), { reply: 'Landed it.', card: 2, deliveryCompleted: true, deliveryId: 'd1', landing: { commit, branch: 'main' } })
     assert.ok(fs.existsSync(path.join(b, '.archive', '2-pricing-page.md')))
     assert.match(cloud.file('.archive/2-pricing-page.md')!, /implement$/m, 'the archived card never reached Cloud')
     assert.equal(cloud.file('todo/2-pricing-page.md'), null, 'the card stayed in todo/ in Cloud')
@@ -4239,15 +4755,15 @@ describe('flow jobs (#2020)', () => {
     assert.equal(cardCalls()[2], `card approve 2 --follow --events --json --board ${b}`)
   })
 
-  it('starts a direct build without discussion context and skips the plan (#768)', async () => {
+  it('starts a direct build without discussion session, passing only the transcript (#768, #896)', async () => {
     process.env.FAKE_AKB = JSON.stringify({ implement: { result: 'Built.', agentSession: 'bs1' } })
     const transcript = 'User: Tiers?\n\nAgent: Two.'
     const built = await flowJob('j1', { verb: 'create', skip_plan: true }, { resume: 'ds1', fork: true, transcript, resumeCostUsd: 2 })
     assert.equal(built.outcome, 'done', built.reason)
     const b = board()
     const file = path.join(b, '.sync', 'task_1.discussion', 'discussion.md')
-    assert.deepEqual(cardCalls(), [`card implement 2 --follow --events --json --board ${b}`])
-    assert.ok(!fs.existsSync(path.join(b, '.fake', 'transcript')))
+    assert.deepEqual(cardCalls(), [`card implement 2 --follow --events --json --transcript ${file} --board ${b}`])
+    assert.equal(fs.readFileSync(path.join(b, '.fake', 'transcript'), 'utf8'), `${transcript}\n`)
     assert.equal(fs.readFileSync(path.join(b, '.fake', 'session-cost'), 'utf8'), '')
     assert.ok(!fs.existsSync(file), 'the discussion was left on the board')
     assert.equal((built.report as { session?: string }).session, 'bs1')
@@ -4343,6 +4859,7 @@ describe('flow jobs (#2020)', () => {
     assert.deepEqual(flowReport(held), {
       reply: 'Asked one thing.',
       card: 2,
+      deliveryCompleted: false,
       review: { question: 'Keep the old page?', options: ['Monthly', 'Yearly'], position: 2 },
     })
     process.env.FAKE_AKB = JSON.stringify({ implement: { result: 'Built it.', landed: 'Landed it.' } })
@@ -4366,7 +4883,7 @@ describe('flow jobs (#2020)', () => {
       } })
       const job = await flowJob('j2', { verb: 'implement', card: 2, text: 'Discard this card.' })
       assert.equal(job.outcome, 'done', job.reason)
-      assert.deepEqual(flowReport(job), { card: 2, reply: 'Discarded it.', ...spent, runtimeCosts: [{ runtimeId: null, runtime: 'claude-code', costUsd: spent.costUsd }] })
+      assert.deepEqual(flowReport(job), { card: 2, deliveryCompleted: false, reply: 'Discarded it.', ...spent, runtimeCosts: [{ runtimeId: null, runtime: 'claude-code', costUsd: spent.costUsd }] })
       assert.ok(!cardCalls().some((c) => c.startsWith('card implement')))
       assert.match(cloud.file('.archive/2-pricing-page.md')!, /rejected: true/)
       assert.equal(cloud.file('todo/2-pricing-page.md'), null)
@@ -4379,6 +4896,19 @@ describe('flow jobs (#2020)', () => {
     const job = await flowJob('j2', { verb: 'implement', card: 2, text: 'Keep it.' })
     assert.equal(job.outcome, 'done', job.reason)
     assert.equal(cardCalls().at(-1), `card implement 2 --follow --events --json --board ${board()} -- Keep it.`)
+  })
+
+  it('stays waiting when resolve leaves open questions before implement (#894)', async () => {
+    await flowJob('j1', { verb: 'create' })
+    process.env.FAKE_AKB = JSON.stringify({ resolve: { question: 'Still open?' } })
+    const job = await flowJob('j2', { verb: 'implement', card: 2, text: 'Answered one.' })
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.deepEqual(flowReport(job), {
+      card: 2,
+      deliveryCompleted: false,
+      review: { question: 'Still open?', options: ['Monthly', 'Yearly'], position: 2 },
+    })
+    assert.ok(!cardCalls().some((c) => c.startsWith('card implement')))
   })
 
   it('stops a build whose delivery was cancelled, and fails one discarded or blocked with its reason (#59)', async () => {
@@ -4398,6 +4928,20 @@ describe('flow jobs (#2020)', () => {
     assert.equal(blocked.outcome, 'failed')
     assert.equal(blocked.reason, reason)
     assert.ok(!fs.existsSync(path.join(board(), 'deliveries', 'd1.json')))
+  })
+
+  it('continues the original Coding session once when a clean exit has no delivery receipt (#947)', async () => {
+    await flowJob('j1', { verb: 'create' })
+    process.env.FAKE_AKB = JSON.stringify({
+      implement: { trackExecution: true, agentSession: 'original', spent: { costUsd: 0.25 }, delivery: { id: 'd1', status: 'active' } },
+      resume: { spent: { costUsd: 0.5 } },
+    })
+    const job = await flowJob('j2', { verb: 'implement', card: 2 })
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(job.report?.deliveryId, 'd1')
+    assert.equal(job.report?.costUsd, 0.75)
+    assert.equal(cardCalls().filter(c => c.startsWith('card implement')).length, 1)
+    assert.equal(calls().filter(c => c[0] === 'run' && c[1] === 'resume' && c.includes('--require-session')).length, 1)
   })
 
   it('reports a build left active on a card question as waiting, not unfinished (#504)', async () => {
@@ -4533,10 +5077,10 @@ describe('flow jobs (#2020)', () => {
       process.env.FAKE_AKB = JSON.stringify({ delivery: { refuse: 'delivery d2 has not ended — it is still in flight on #2.', reason: 'deliveryActive', args: { id: 'd2' } } })
       assert.equal((await flowJob('j2', { verb: 'implement', card: 2, resume: true })).outcome, 'done')
       assert.ok(calls().some((c) => c[0] === 'run' && c[1] === 'resume' && c[2] === 'old-build'))
-      process.env.FAKE_AKB = JSON.stringify({ delivery: { landed: true } })
+      process.env.FAKE_AKB = JSON.stringify({ delivery: { landed: true, result: { commit: 'a'.repeat(40), branch: 'main' } } })
       const landed = await flowJob('j4', { verb: 'implement', card: 2, resume: true })
       assert.equal(landed.outcome, 'done', landed.reason)
-      assert.deepEqual(flowReport(landed), { card: 2 })
+      assert.deepEqual(flowReport(landed), { card: 2, deliveryCompleted: true, deliveryId: 'd1', landing: { commit: 'a'.repeat(40), branch: 'main' } })
     })
 
     it('continues a cleanly ended build inside its existing delivery', async () => {
@@ -4569,7 +5113,7 @@ describe('flow jobs (#2020)', () => {
       assert.equal(missing.outcome, 'failed')
     })
 
-    it('says in a sentence why a resume cannot go on, and reports a finished card as done (#419)', async () => {
+    it('explains a held resume and checks the delivery even for an archived card (#419, #918)', async () => {
       await flowJob('j1', { verb: 'create' })
       process.env.FAKE_AKB = JSON.stringify({ delivery: { refuse: 'delivery d2 is building #2 now', reason: 'deliveryHeld', args: { id: 'd2' } } })
       const held = await flowJob('j2', { verb: 'implement', card: 2, resume: true })
@@ -4577,9 +5121,12 @@ describe('flow jobs (#2020)', () => {
       assert.match(held.reason ?? '', /「续跑」/)
       const file = fs.readdirSync(path.join(board(), 'todo')).find((n) => n.startsWith('2-'))!
       fs.renameSync(path.join(board(), 'todo', file), path.join(board(), '.archive', file))
-      const before = calls().length
-      assert.equal((await flowJob('j3', { verb: 'implement', card: 2, resume: true })).outcome, 'done')
-      assert.ok(!calls().slice(before).some((c) => c[0] === 'delivery' || c[0] === 'card'))
+      process.env.FAKE_AKB = JSON.stringify({ delivery: { refuse: 'no delivery here answers to "2"', reason: 'deliveryNotFound' } })
+      const before = cardCalls().length
+      const archived = await flowJob('j3', { verb: 'implement', card: 2, resume: true })
+      assert.equal(archived.outcome, 'done', archived.reason)
+      assert.equal(archived.report?.deliveryCompleted, false)
+      assert.equal(cardCalls().length, before)
     })
 
     it('refuses to complete a resumed task with another delivery’s landing', async () => {
@@ -4640,7 +5187,7 @@ describe('flow jobs (#2020)', () => {
       cloud.runner = { machineId: MACHINE, machineName: 'studio', live: true }
       start()
       await until(() => job.state === 'finished')
-      assert.match(job.reason!, /restarted/)
+      assert.match(job.reason!, /previous execution could not be verified/)
       assert.equal(runs().find((r) => r.sessionId === 'run-left')!.status, 'stopped')
     })
 
@@ -4694,9 +5241,17 @@ describe('flow jobs (#2020)', () => {
     assert.equal(missing.outcome, 'failed')
     assert.equal(missing.reason, 'Claude Code is not installed on this computer.')
     installed = [{ name: 'codex', installed: true }, { name: 'claude-code', installed: true, loggedIn: false }]
-    const signedOut = await flowJob('j3', { verb: 'approve', card: 2 })
-    assert.equal(signedOut.reason, 'Claude Code is not signed in on this computer.')
-    assert.equal(calls().filter((c) => c[0] === 'agent' && c[1] === 'use').length, 1, 'a missing connector was swapped for the other')
+    await runner!.close()
+    runner = null
+    start('', { syncBackoff: () => 100 })
+    const signedOut = cloud.dispatch({ id: 'j3', task: 'task_1', project: 'prj_1', number: 2,
+      runtime: 'claude-code', flow: { verb: 'approve', studio: 'wf_builtin_coding', card: 2 } })
+    await until(() => signedOut.state === 'claimed')
+    assert.equal(calls().filter((c) => c[0] === 'agent' && c[1] === 'use').length, 1)
+    installed = [{ name: 'claude-code', installed: true, loggedIn: true }]
+    await until(() => signedOut.state === 'finished')
+    assert.equal(signedOut.outcome, 'done', signedOut.reason)
+    assert.equal(calls().filter((c) => c[0] === 'agent' && c[1] === 'use').at(-1)?.[2], 'claude-code')
   })
 
   it('names the task’s studio to akb, a built-in and an account’s own, and keeps the version on this machine (#409)', async () => {
@@ -4838,6 +5393,27 @@ describe('periodic agents on the Runner (#2068)', () => {
     assert.equal(new Date(nextHour(Date.parse('2026-10-26T12:59:59'))).getHours(), 13)
   })
 
+  it('publishes a scheduled agent result after its lease lapses and honors a pending stop', async () => {
+    const note = 'memory/describe-project.md'
+    cloud.put({ 'config.md': '# Board\n', [note]: 'Before.\n' })
+    const scope = { project: 'prj_1', projectDir: project, agent: { name: 'describe-project' } }
+    const prior = cloud.dispatch({ ...scope, id: 'lapsed-agent', state: 'finished' })
+    assert.ok((await pull(openAgentFolder(prior, project), MACHINE)).ok)
+    fs.writeFileSync(path.join(board(), note), 'Saved by the original agent.\n')
+    saveCheckpoint(prior.id, { pending: ['write'], started: true,
+      completed: { outcome: 'done', report: { reply: 'Original result', costUsd: 0.25 } } })
+    const resumed = cloud.dispatch({ ...scope, id: 'recover-agent', syncRecoveryOf: prior.id })
+    const stopped = cloud.dispatch({ ...scope, id: 'stop-agent', syncRecoveryOf: prior.id, stop: true })
+    start()
+    await until(() => resumed.state === 'finished' && stopped.state === 'finished')
+    assert.equal(resumed.outcome, 'done', resumed.reason)
+    assert.equal(resumed.report?.costUsd, 0.25)
+    assert.equal(resumed.report?.reply, 'Original result')
+    assert.equal(stopped.outcome, 'stopped', stopped.reason)
+    assert.equal(cloud.file(note), 'Saved by the original agent.\n')
+    assert.equal(fs.existsSync(path.join(board(), '.fake/periodic')), false)
+  })
+
   it('resolves a scheduled agent’s saved three-way conflict without replaying its work (#885)', async () => {
     const note = 'memory/describe-project.md'
     cloud.put({ 'config.md': '# Board\n', [note]: 'Original description.\n' })
@@ -4881,7 +5457,11 @@ describe('periodic agents on the Runner (#2068)', () => {
   })
 
   it('asks for what is due, runs it on the project\'s board, and sends the memory back', async () => {
-    cloud.periodic = [agent({ name: 'prune-memory', fallback: '7d' }), agent({ name: 'describe-project', lastSuccess: new Date().toISOString() })]
+    cloud.periodic = [
+      agent({ name: 'prune-memory', fallback: '7d' }),
+      agent({ name: 'describe-project', lastSuccess: new Date().toISOString() }),
+      agent({ name: 'qa-manager', studio: 'wf_builtin_coding' }),
+    ]
     start()
     await until(() => cloud.jobs.get('agent-1')?.state === 'finished')
     const job = cloud.jobs.get('agent-1')!
@@ -4899,31 +5479,20 @@ describe('periodic agents on the Runner (#2068)', () => {
     start()
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'done', job.reason)
-    assert.deepEqual(periodic(), { args: [...periodic().args.slice(0, 1), '--cards', '7', '8', ...periodic().args.slice(4)], task: 'task_7', scheduled: '' })
+    assert.deepEqual(periodic(), { args: [...periodic().args.slice(0, 1), '--cards', '7', '8', ...periodic().args.slice(4)], task: 'task_7' })
     assert.match(cloud.file('triage/proposed.md')!, /title: Add a pricing FAQ\n[\s\S]*source_task: task_7\n/)
   })
 
-  it('tells a reflection the studio agents Cloud has on, and no other agent (#277)', async () => {
-    const row = (name: string, studio?: string) => agent({ name, studio, newWork: false, reads: 'archived-cards' })
-    cloud.periodic = [row('prune-memory'), row('night-auditor', 'coding'), row('night-auditor', 'wf_own'), row('seo-writer', 'wf_own')]
-    const job = cloud.dispatch({ id: 'r1', project: 'prj_1', projectDir: project, agent: { name: 'reflect', tasks: [{ id: 'task_7', number: 7 }] } })
+  it('refuses an old Studio job without dispatching a local run', async () => {
+    const job = cloud.dispatch({
+      id: 'old-studio-job', project: 'prj_1', projectDir: project,
+      agent: { name: 'qa-manager', studio: 'wf_builtin_coding' },
+    })
     start()
     await until(() => job.state === 'finished')
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(periodic().scheduled, 'night-auditor,seo-writer')
-
-    const other = cloud.dispatch({ id: 'p1', project: 'prj_1', projectDir: project, agent: { name: 'prune-memory' } })
-    await until(() => other.state === 'finished')
-    assert.equal(periodic().scheduled, undefined)
-  })
-
-  it('reflects without the list when Cloud cannot give it (#277)', async () => {
-    cloud.failAgents = true
-    const job = cloud.dispatch({ id: 'r1', project: 'prj_1', projectDir: project, agent: { name: 'reflect', tasks: [{ id: 'task_7', number: 7 }] } })
-    start()
-    await until(() => job.state === 'finished')
-    assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(periodic().scheduled, undefined)
+    assert.equal(job.outcome, 'failed')
+    assert.match(job.reason ?? '', /Studio roles no longer run on their own/)
+    assert.equal(fs.existsSync(path.join(board(), '.fake/periodic')), false)
   })
 
   it('starts a project discussion without board reads or uploads (#711)', async () => {
@@ -4940,13 +5509,10 @@ describe('periodic agents on the Runner (#2068)', () => {
     assert.ok(!cloud.log.some(line => line.includes('/board') || line.includes('/artifacts')), cloud.log.join('\n'))
   })
 
-  it('runs a studio\'s scheduled agent by its akb name, and fails a project with no folder here', async () => {
-    const audit = cloud.dispatch({ id: 'q1', project: 'prj_1', projectDir: project, agent: { name: 'night-auditor', studio: 'wf_builtin_coding' } })
+  it('refuses a project background job when the computer has no project folder', async () => {
     const away = cloud.dispatch({ id: 'q2', project: 'prj_1', projectDir: null, agent: { name: 'prune-memory' } })
     start()
-    await until(() => audit.state === 'finished' && away.state === 'finished')
-    assert.equal(audit.outcome, 'done', audit.reason)
-    assert.deepEqual(periodic().args.slice(0, 4), ['agent', 'run', 'coding', 'night-auditor'])
+    await until(() => away.state === 'finished')
     assert.equal(away.outcome, 'failed')
     assert.equal(away.reason, 'This project has no folder on this computer.')
   })
@@ -5002,16 +5568,26 @@ describe('chat memory reviewed on the Runner (#2065)', () => {
   for (const failure of ['conversation', 'decisions']) it(`leaves memory review retryable after ${failure} failure (#842)`, async () => {
     cloud.chats = [{ task: 'task_1', project: 'prj_1', number: 1, archivedAt: ARCHIVED }]
     cloud.taskChats.task_1 = [{ id: 'msg_1', role: 'user', body: 'Always use plain labels.', created_at: ARCHIVED }]
-    const readChat = async () => ({ ok: false as const, error: 'Unavailable' })
+    const readChat = async () => ({ ok: false as const, code: 'forbidden', error: 'Permission changed' })
     start('', { api: { ...api,
       ...(failure === 'conversation' ? { readChat } : {}),
-      ...(failure === 'decisions' ? { readDecisions: async () => ({ ok: false as const, error: 'Unavailable' }) } : {}),
+      ...(failure === 'decisions' ? { readDecisions: async () => ({ ok: false as const, code: 'forbidden', error: 'Permission changed' }) } : {}),
     } })
     await until(() => [...cloud.jobs.values()].some(j => j.review && j.state === 'finished'))
     const job = [...cloud.jobs.values()].find(j => j.review)!
     assert.equal(job.outcome, 'failed')
     const file = path.join(runnerHome(), 'chats', 'reviewed.json')
     assert.equal(fs.existsSync(file) ? reviewed().tasks.task_1 : undefined, undefined)
+  })
+  it('recovers a temporary conversation read before memory review starts (#903)', async () => {
+    cloud.chats = [{ task: 'task_1', project: 'prj_1', number: 1, archivedAt: ARCHIVED }]
+    let reads = 0
+    start('', { syncBackoff: () => 10, api: { ...api, readChat: async (task) => ++reads === 1
+      ? { ok: false, status: 503, error: 'Temporarily unavailable' } : api.readChat(task) } })
+    await until(() => [...cloud.jobs.values()].some(j => j.review && j.state === 'finished'))
+    const job = [...cloud.jobs.values()].find(j => j.review)!
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(reads, 2)
   })
   it('marks a review only after Preview memory is synchronized (#842)', async () => {
     await reviewOf()

@@ -3,17 +3,33 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { killMarked, processesStopped, type Mark } from '../../cli/src/lib/agent/stop'
-import { readFailure, readRetryPlan, type ExecutionFailure, type RetryPause, type RetryPlan } from '../../cli/src/lib/agent/retry'
+import { agentRecovery, readFailure, readRetryPlan, type ExecutionFailure, type RetryPause, type RetryPlan } from '../../cli/src/lib/agent/retry'
 import type { RunEvent } from '../../cli/src/lib/agent/wire'
-import type { JobReport } from './api'
+import { cloudLanguage } from '../../cli/src/lib/agent/language'
+import { idleStopConfirmed } from '../../cli/src/lib/agent/wire/codex-background-types'
+import * as api from './api'
+import type { Job, JobReport } from './api'
 import { runnerHome } from './home'
 import type { SyncStep } from './sync-retry'
 
-export const UNCERTAIN = '更新中断时有操作结果尚未确认，请检查已有结果后再续跑。'
+export const recoveryBlocked = (job: Job) => cloudLanguage(job) === 'zh'
+  ? '无法核对上次执行，已有成果已保留。' : 'The previous execution could not be verified. Saved work was preserved.'
+
+export interface BoardRunSpend extends Pick<JobReport, 'usage' | 'costUsd' | 'costIncomplete'> {
+  sessionId: string
+  runtime?: string
+  startedAt?: number
+  context?: Partial<NonNullable<JobReport['context']>>
+}
 
 export interface Checkpoint {
   syncRetry?: { step: SyncStep; attempt: number; at: number }
+  reconcileRetry?: { attempt: number; at: number }
+  taskRecovery?: api.TaskRecovery
+  boardRepair?: { reason: string; run: string }
+  flowRun?: { id: string; finished: boolean; from?: string; failure?: ExecutionFailure; priorSpend?: BoardRunSpend[] }
   forkSource?: string
+  reviewMarks?: ReturnType<typeof import('./chats').reviewMarks>
   reviewedRejections?: import('./triage').Laid
   boardContinuation?: { report: JobReport; facts: string; prompt: string; validation?: boolean }
   approvalRequested?: boolean
@@ -23,6 +39,8 @@ export interface Checkpoint {
   cleanup?: import('../../cli/src/lib/agent/wire/codex-background').Cleanup
   process?: { pid: number; since: number; identity?: string }
   updating?: boolean
+  interrupted?: true
+  flowResume?: boolean
   session?: string
   submitted?: boolean
   started?: boolean
@@ -73,7 +91,10 @@ export function clearCheckpoint(id: string): void {
 }
 
 export function checkpointEvent(checkpoint: Checkpoint, event: RunEvent): void {
-  if (event.kind === 'phase' && event.data.phase === 'submitted') checkpoint.submitted = true
+  if (event.kind === 'phase' && event.data.phase === 'submitted'
+    || event.kind === 'message' && event.data.text.trim() || event.kind === 'tool_call' || event.kind === 'plan') {
+    checkpoint.submitted = true
+  }
   if (event.kind === 'tool_call') {
     const { toolCallId, status, kind } = event.data
     if (!['read', 'search', 'fetch'].includes(kind)) checkpoint.effects = true
@@ -100,16 +121,76 @@ export async function stopReply(id: string, timeout: number): Promise<boolean> {
   return true
 }
 
-export function syncing(checkpoint: Checkpoint | null): boolean {
-  return !!checkpoint && (!!checkpoint.syncRetry || checkpoint.completed?.outcome === 'done')
-}
-
 export function replayable(checkpoint: Checkpoint): boolean {
-  return checkpoint.submitted !== true && (checkpoint.effects === false || checkpoint.started === false) && !checkpoint.pending.length && !checkpoint.opaque
+  return checkpoint.submitted !== true && checkpoint.effects !== true && (checkpoint.effects === false || checkpoint.started === false) && !checkpoint.pending.length && !checkpoint.opaque && !checkpoint.launching
 }
 
-export function resumable(checkpoint: Checkpoint): boolean {
-  return !!checkpoint.session && !checkpoint.pending.length && !checkpoint.opaque && checkpoint.cleanup?.status !== 'unconfirmed'
+export const isReply = (job: Job) => !job.flow && !!(job.chat || job.discussion)
+export const usesBoardRun = (job: Job, checkpoint: Checkpoint) =>
+  !checkpoint.boardContinuation && !!(job.flow || job.agent || job.review)
+
+export function checkpointRecovery(job: Job, checkpoint: Checkpoint, stopped: boolean, failure?: ExecutionFailure) {
+  const board = usesBoardRun(job, checkpoint)
+  return agentRecovery({
+    stopped,
+    completed: !!checkpoint.completed || board && checkpoint.flowRun?.finished,
+    session: board ? checkpoint.flowRun?.id : checkpoint.opaque && !checkpoint.boardContinuation ? undefined : checkpoint.session,
+    replayable: replayable(checkpoint) && (!board || checkpoint.started === false)
+      && (job.runtime !== 'antigravity' || checkpoint.started === false) && failure?.level !== 1,
+    unconfirmedCleanup: !!checkpoint.boardContinuation && checkpoint.pending.length > 0 || checkpoint.cleanup?.status === 'unconfirmed'
+      || checkpoint.managedProcess && failure?.code === 'idle_timeout' && !idleStopConfirmed(checkpoint.cleanup, checkpoint.session),
+  })
+}
+
+export function replyRecovery(job: Job, checkpoint: Checkpoint, stopped: boolean): NonNullable<JobReport['recovery']> {
+  const recovery = checkpointRecovery(job, checkpoint, stopped, checkpoint.failure)
+  return { safe: recovery === 'replay', stopped, resumable: recovery === 'resume' }
+}
+
+/** Both the Runner and a detached worker sweep use the same handoff after checking ownership and process exit. */
+export async function recoverInterruptedJob(machine: string, job: Job, checkpoint: Checkpoint | null,
+  stopped: boolean, valid: () => boolean, reason?: string) {
+  if (!valid()) return
+  const recovery = checkpoint ? checkpointRecovery(job, checkpoint, stopped, checkpoint.retry?.pending?.failure ?? checkpoint.failure) : 'unsafe'
+  const proof = stopped ? { processesStopped: true } : undefined
+  const reply = isReply(job)
+  const report = reply && checkpoint ? {
+    ...proof, session: checkpoint.session, reply: checkpoint.partialReply, ...replySpent(checkpoint, job.runtime),
+    recovery: replyRecovery(job, checkpoint, stopped),
+  } : proof
+  if (checkpoint && recovery !== 'unsafe') {
+    const prepared = await api.finishJob(machine, job.id, 'update_prepare', '', report)
+    if (!valid() || !prepared.ok) return
+    if (prepared.value.finished) {
+      clearCheckpoint(job.id)
+      return prepared.value
+    }
+    if (!prepared.value.prepared) return
+    if (!checkpoint.updating) checkpoint.interrupted = true
+    if (job.flow) checkpoint.flowResume ??= job.flow.resume === true
+    checkpoint.updating = true
+    saveCheckpoint(job.id, checkpoint)
+    const resumed = await api.finishJob(machine, job.id, 'update_resume', '', report && { ...report, session: undefined })
+    if (!valid() || !resumed.ok) return
+    if (resumed.value.finished) clearCheckpoint(job.id)
+    return resumed.value
+  }
+  // A failed renewal can still allow Cloud to settle a lapsed claim with proof of exit.
+  const renewed = await api.renewJob(machine, job.id)
+  if (!valid() || !renewed.ok) return
+  const requestedStop = renewed.value.stop
+  if (requestedStop && !stopped) return
+  const message = reason ?? (reply ? 'recovery_unsafe' : recoveryBlocked(job))
+  const result = await api.finishJob(machine, job.id, requestedStop ? 'stopped' : 'failed', requestedStop ? '' : message, report)
+  if (!valid() || !result.ok) return
+  if (result.value.finished && checkpoint) {
+    if (requestedStop) clearCheckpoint(job.id)
+    else if (reply && report && !checkpoint.completed) {
+      checkpoint.completed = { outcome: 'failed', reason: message, report }
+      saveCheckpoint(job.id, checkpoint)
+    }
+  }
+  return result.value
 }
 
 /** Tokens are per attempt; Claude's prices remain session totals for Cloud to subtract. */

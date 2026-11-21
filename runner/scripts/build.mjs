@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 import * as esbuild from 'esbuild'
 
 import { REQUIRE_SHIM } from '../../cli/scripts/shim.mjs'
+import { packageJsonPlugin } from './package-json.mjs'
 import { copySkills } from './plugin-skills.mjs'
 import { settingsClientPlugin } from './settings-client.mjs'
 
@@ -20,13 +21,6 @@ fs.rmSync(path.join(PKG_DIR, 'dist', 'codex-service-main.mjs'), { force: true })
 const VERSION = JSON.parse(fs.readFileSync(path.join(PKG_DIR, 'package.json'), 'utf8')).version
 const CLI_DIR = path.join(PKG_DIR, '..', 'cli')
 const { version: CLI_VERSION, akbContract: AKB_CONTRACT } = JSON.parse(fs.readFileSync(path.join(CLI_DIR, 'package.json'), 'utf8'))
-/** `.json` is text to the Runner's own imports; a package's (the MCP SDK's schemas) stays JSON. */
-const PACKAGE_JSON = {
-  name: 'package-json',
-  setup(build) {
-    build.onLoad({ filter: /[\\/]node_modules[\\/].*\.json$/ }, (args) => ({ contents: fs.readFileSync(args.path, 'utf8'), loader: 'json' }))
-  },
-}
 const PLUGINS_DIR = path.join(PKG_DIR, '..', 'plugins')
 const PLUGIN_DISTS = ['claude-code', 'codex', 'cursor', 'dsh', 'kimi-code', 'grok', 'opencode'].map((host) => path.join(PLUGINS_DIR, host, 'server', 'dist'))
 for (const dir of PLUGIN_DISTS) fs.rmSync(dir, { recursive: true, force: true })
@@ -54,7 +48,7 @@ for (const [entry, outfile] of [
     banner: { js: `// wildcrane-runner ${VERSION} — built by runner/scripts/build.mjs. Do not edit.\n${REQUIRE_SHIM}` },
     define: { __RUNNER_VERSION__: JSON.stringify(VERSION), __AKB_VERSION__: JSON.stringify(CLI_VERSION), __AKB_CONTRACT__: String(AKB_CONTRACT) },
     legalComments: 'none',
-    plugins: [PACKAGE_JSON, settingsClientPlugin],
+    plugins: [packageJsonPlugin, settingsClientPlugin],
   })
   process.stdout.write(`build: wrote ${path.relative(PKG_DIR, outfile)} — ${(fs.statSync(outfile).size / 1024).toFixed(1)} kB\n`)
 }

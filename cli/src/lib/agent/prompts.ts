@@ -1,48 +1,29 @@
+import { taskReviewContext } from './env'
+import { reviewPreviewIds } from '../shared/review-plan'
 import { deliveryStep } from './progress'
 // The one place a board action turns into words for an agent.
 //
 // Every prompt lives here, so a run started in a terminal and the same run started from a
 // button say exactly the same thing.
 
-import { agentComponents, studioComponents, componentDocsText } from '../components'
+import { studioComponents, componentDocsText } from '../components'
 import path from 'node:path'
 import { locate, locateArchived } from '../cards'
 import { memoryDirectories } from '../memory'
 import { globalMemoryBlock } from '../memories'
 import { ARCHIVE, boardText, KANBAN, rel, MEMORY, REPO_ROOT } from '../paths'
-import {
-  agentFilesBlock,
-  agentMemoryBlock,
-  findSpecAgent,
-  roleSettingsBlock,
-  specAgentInstructions,
-  specAgentSelector,
-} from '../agents'
+import { roleSettingsBlock } from '../agents'
 import { boardCommand, boardCommandFor, commandNote } from './command'
 import { activeDelivery, deliveryFor, endedDelivery, findDelivery, withStudio } from './deliveries'
-import { SCHEDULED_AGENTS_ENV } from './env'
 import { field } from './facts'
 import { recordedOutputs } from './outputs'
 import { readArchive } from '../view/archive'
 import { DELIVERY_FLOWS } from './flows'
 import { agentImages } from './resolve'
 import { agentForRun, studioForRun } from './runner'
-import { studioFiles, studioHoldsAgent, studioSections } from './studio-shared'
+import { studioFiles, studioSections } from './studio-shared'
 import { CARD_TEMPLATE_FILE } from '../shared/studio-files'
-import {
-  cardMeta,
-  cardStage,
-  cardStages,
-  landAgents,
-  listedScheduled,
-  previewMembers,
-  scheduledAgent,
-  studioById,
-  studioFor,
-  userStudioRules,
-  studios,
-} from './studios'
-import { specAgentCatalog } from '../agents/catalog'
+import { cardMeta, studioFor, userStudioRules } from './studios'
 import { roleNamed } from './roles'
 import { ruleBlock, ruleOwner } from './rules'
 import { readRuns } from './store'
@@ -112,8 +93,6 @@ const RESTARTABLE: ReadonlySet<AgentAction> = new Set<AgentAction>([
   'resolve',
   'approve',
   'archive',
-  'spec',
-  'scheduled',
 ])
 
 // What opens a restart. Everything the resume prompt leans on is gone, so the whole ask
@@ -131,7 +110,11 @@ export const restartable = (run: { action: AgentAction; cardId: number | null; d
 export function restartPrompt(req: AgentRequest, deliveryId?: string): string | undefined {
   // A run that names neither a card nor a delivery has no ask to write down again.
   if (req.id === undefined && !req.deliveryId && !deliveryId) return undefined
-  if (deliveryId && req.action === 'implement') return [RESTART_LEAD, `Continue delivery ${deliveryId}. ${deliveryRequirements(deliveryId, req.id ?? null)}`.trim()].join('\n\n')
+  if (deliveryId && req.action === 'implement') return [
+    RESTART_LEAD,
+    `Continue delivery ${deliveryId}. ${deliveryRequirements(deliveryId, req.id ?? null)}`.trim(),
+    studioRulesBlock({ ...req, deliveryId }),
+  ].filter(Boolean).join('\n\n')
   if (!RESTARTABLE.has(req.action)) return undefined
   return [RESTART_LEAD, buildPrompt(req)].join('\n\n')
 }
@@ -166,7 +149,7 @@ function componentsBlock(req: AgentRequest): string {
   return text ? `——— Preview Components ———\n\n${text}` : ''
 }
 
-// A scheduled or sub run's folder holds no board (#1352), so it is given the real places. Filled in
+// A sub-run's folder may hold no board (#1352), so it is given the real places. Filled in
 // after `boardText`, whose `docs/kanban` swap would rewrite an absolute path.
 const BOARD_FOLDER = '<board folder>'
 const CARD_FILE = '<card file>'
@@ -178,7 +161,7 @@ function cardFileOf(id: number | undefined): string {
 }
 
 function realPaths(text: string, req: AgentRequest): string {
-  if (req.action !== 'scheduled' && req.action !== 'sub') return text
+  if (req.action !== 'sub') return text
   return text
     .split(BOARD_FOLDER)
     .join(KANBAN)
@@ -194,13 +177,15 @@ export function studioRulesBlock(req: AgentRequest): string {
   if (!flow && !frozen) return ''
   const id = frozen?.id ?? flow!.id
   const meta = req.id !== undefined ? cardMeta(req.id) : null
+  const review = taskReviewContext()?.review
+  const selected = review ? reviewPreviewIds(review.plan) : meta?.previews
   const previews = frozen?.previews ?? flow?.previews ?? []
   const own = flow ? userStudioRules(flow) : ''
   const template = studioFiles(id)?.[CARD_TEMPLATE_FILE]?.trim()
   return [
     '<studio>', frozen?.rules ?? flow?.rules ?? '',
     'Prepare only the outputs requested by this task. Previews describe outputs, not agents or approval stages. Revise saved work in place; keep unrelated outputs unchanged.',
-    ...(meta?.previews ? [`Selected Preview IDs: ${JSON.stringify(meta.previews)}`] : []),
+    ...(selected?.length ? [`Selected Preview IDs: ${JSON.stringify(selected)}`] : []),
     ...previews.map(p => `<Preview id="${p.id}">\n${p.instructions}\n</Preview>`),
     'Write task results inside matching Preview tags. The app supplies display metadata. Review the plan and requested outputs together once; after approval, complete and record delivery even without Preview blocks.',
     '</studio>',
@@ -254,22 +239,6 @@ export function frozenRules(req: AgentRequest): Record<string, string> | undefin
   return deliveryFor(req)?.rules
 }
 
-// The specialists a pass may call in — the catalog, not a rule about any one of them.
-// Naming any of them in a flow instead would go stale the moment one is switched off or a
-// new one ships.
-//
-// The passes that rewrite a plan are the ones that can tell what it still has no answer for,
-// so they are the ones that pick the `spec` agents.
-//
-// A specialist run is given neither (#403): a roster belongs to the run doing the job, and
-// an agent handed the list of agents is an agent that can ask for itself.
-//
-// It goes after everything else because it is a block and the rest is prose.
-const SPEC_SELECTOR_FOR = new Set<AgentAction>(['clarify', 'resolve', 'approve', 'edit'])
-
-// What a reflection judges against on top of the card (#534): what the product is and
-// every module's decisions and rejections, none of which it writes back.
-
 // Where a completed card is now (#534). Named outright: the ordinary card read no longer
 // finds it.
 function archivedCardFile(id: number): string {
@@ -304,25 +273,6 @@ function reflectBlocks(ids: number[]): string[] {
   ])
 }
 
-// The scheduled agents switched on, whose own work a reflection leaves to them (#1494). Cloud
-// holds the switches, so a Runner passes them (#277); without it, every agent a studio lists.
-function scheduledBlock(): string[] {
-  const given = process.env[SCHEDULED_AGENTS_ENV]
-  const on = new Set(given === undefined ? studios().flatMap((flow) => listedScheduled(flow)) : given.split(','))
-  const lines = specAgentCatalog().agents.filter((a) => on.has(a.name)).map((a) => `${a.name} — ${a.description}`)
-  return lines.length ? ['<scheduled-agents>', ...lines, '</scheduled-agents>'] : []
-}
-
-function roster(req: AgentRequest): string {
-  if (req.id === undefined) return ''
-  // The card's own studio, not only the one the request carries (#749): the ask this block
-  // invites is checked against the card's, and a list that offered a different team would be
-  // a run told to ask for agents its card refuses.
-  if (!SPEC_SELECTOR_FOR.has(req.action)) return ''
-  const flow = studioFor(studioForRun(req))
-  return specAgentSelector(req.id, flow?.id, cardMeta(req.id))
-}
-
 export function buildRun(req: AgentRequest): { prompt: string; notes: string[] } {
   const notes: string[] = []
   let prompt = buildPrompt(req, notes)
@@ -350,6 +300,13 @@ function answeredNote(cardId: number | undefined, command: string): string {
 // What a run is told on a session it carried on (#1304): the ask beside it is the whole task,
 // and the card outranks whatever the session remembers of it.
 function carriedNote(req: AgentRequest): string {
+  if (req.action === 'implement') {
+    return req.carry?.transcript
+      ? `This card came out of a discussion. The card is the final word; the read-only transcript at \`${req.carry.transcript}\` ` +
+          `is background reference only — consult it on demand if the card leaves details out, using keyword search or ` +
+          `sectioned reads rather than reading the whole file.`
+      : ''
+  }
   // Nothing carried on, a Cloud task reads the discussion it came from (#2146).
   if (req.session !== 'resume' && req.session !== 'fork') {
     return req.carry?.transcript
@@ -385,6 +342,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
       }
       return [
         `Implement task ${req.id} ${named} following \`akb guide implement\`. Read its current card before starting.`,
+        carriedNote(req),
         req.notes ? `Extra notes: ${req.notes}` : '',
       ]
         .filter(Boolean)
@@ -458,14 +416,8 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
           `Don't ask me questions with human-in-the-loop.`,
         ].join(' '),
         ...reflectBlocks(ids),
-        ...scheduledBlock(),
       ].join('\n')
     }
-    // Name the shared contract; inject specialty instructions and selected references.
-    case 'spec':
-      throw new Error('Preview role sessions are retired. Prepare the requested Preview in the task session.')
-    case 'scheduled':
-      throw new Error('Studio role executions are retired.')
     case 'sub':
       return `You are a sub-run: run \`${req.parentId ?? ""}\` started you and works beside you in this same folder. Do only this task and report its result:\n\n${req.description ?? ""}`
     // The flow supplies conflict facts; the guide owns the procedure.

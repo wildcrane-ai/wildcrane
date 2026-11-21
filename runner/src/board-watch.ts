@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { projectStateDir } from '../../cli/src/lib/machine/project'
+import { taskOfRemoval } from '../../cli/src/lib/cloud/task-operation'
 import { isBoardPath } from '../../cli/src/lib/shared/board-files.ts'
 import { busy, cacheRoot, markUnsent, unsent } from './cache'
 import { allowedProjects } from './folders'
@@ -72,7 +73,7 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
 
   const send = async (ws: TaskFolder, paths?: string[]) => {
     const sent = await pushBoard(ws, machineId, paths)
-    if (!sent.ok && !sent.offline) console.error(`runner: the board in ${ws.cwd} was not sent: ${sent.error}`)
+    if (!sent.ok && !sent.offline) console.error(`runner: the board in ${ws.cwd} was not sent: ${sent.code ? `[${sent.code}] ` : ''}${sent.error}`)
     return sent
   }
 
@@ -122,7 +123,7 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
         if (closed || !p || !held) return
         if (!isBoardPath(p) && !/^(?:todo|\.archive|memory|assets|studios|triage|rules)(?:\/|$)/.test(p)
           && !assets.some(root => p.startsWith(root))
-          && !/^\.sync\/[\w-]+\.json$/.test(p)) return
+          && !taskOfRemoval(p) && !/^\.sync\/[\w-]+\.json$/.test(p)) return
         if (p === 'todo/README.md') return
         held.paths.add(p)
         const job = busy(ws.cwd)

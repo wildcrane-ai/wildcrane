@@ -32,8 +32,6 @@ export function serializeFrontmatter(m: Partial<Meta>): string {
   }
   // The previews the card chose and the approvals they make (#2154); the one it is on, past its first.
   if (m.previews) out.push(`previews: [${m.previews.join(', ')}]`)
-  if ((m.stages ?? 0) > 0) out.push(`stages: ${m.stages}`)
-  if ((m.phase ?? 0) > 1) out.push(`phase: ${m.phase}`)
   if (m.preview_approved) out.push('preview_approved: true')
   // The day the card was archived (`archive` stamps it on the way out). Written only when
   // the card carries one, so nothing on the board grows a field — and re-emitted whenever it
@@ -144,12 +142,11 @@ export function parseFrontmatter(text: string): { meta: Meta | null; body: strin
   meta.source = (Array.isArray(meta.source) ? meta.source : typeof meta.source === 'string' ? [meta.source] : [])
     .map((ref) => String(ref).trim())
     .filter(Boolean)
-  // A card written before #2152 named its stages; its previews' `after` replace them (#2154).
   delete meta.phases
+  delete meta.stages
+  delete meta.phase
   if (Array.isArray(meta.previews)) meta.previews = meta.previews.map((name: unknown) => String(name).trim()).filter(Boolean)
   else delete meta.previews
-  meta.stages = /^\d+$/.test(String(meta.stages ?? '').trim()) ? Number(meta.stages) : 0
-  meta.phase = /^\d+$/.test(String(meta.phase ?? '').trim()) ? Number(meta.phase) : 0
   meta.preview_approved = meta.preview_approved === 'true'
   // The day it was archived. Every card archived before this field existed carries none,
   // and nothing backfills them, so empty is the ordinary answer and reads as "no date".

@@ -66,6 +66,28 @@ describe('本机 Alpha 偏好', () => {
 })
 
 describe('本机设置服务', () => {
+  it('手动重试会重新发起网络失败的登录续期', async (t) => {
+    writeFakeSession(runnerHome())
+    writeSession({ ...readSession()!, expiresAt: Date.now() - 1 })
+    let refreshes = 0
+    t.mock.method(globalThis, 'fetch', async (url: string) => {
+      const route = new URL(url).pathname
+      if (route === '/auth/v1/token') {
+        if (++refreshes === 1) throw new TypeError('fetch failed')
+        return Response.json({ access_token: 'next', refresh_token: 'rotated', expires_in: 3600 })
+      }
+      if (route === '/v1/runner/folders') return Response.json({ folders: [] })
+      if (route === '/v1/runner') return Response.json({ runner: { connected: true } })
+      assert.equal(route, '/v1/workspaces')
+      return Response.json({ data: [], next: null })
+    })
+    const offline = await settingsAction('state', {}, {}) as { error?: string }
+    assert.equal(offline.error, 'offline')
+    assert.equal(refreshes, 1)
+    const state = await settingsAction('state', { retry: true }, {}) as { connected: boolean }
+    assert.equal(refreshes, 2)
+    assert.equal(state.connected, true)
+  })
   it('入口可重复打开，建立会话，复用同一随机端口且各入口保留上下文', async () => {
     const a = await browser({ path: '/a' }), b = await browser({ path: '/b' })
     assert.equal(a.origin, b.origin)

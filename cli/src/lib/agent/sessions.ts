@@ -3,7 +3,7 @@ import { connectionStopped, stopConnection } from './connection-process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { pauseLine } from './retry'
+import { agentRecovery, pauseLine, recoveryPrompt } from './retry'
 import { executionHeld, executionOf } from '../cloud/execution'
 
 import { boardCardIds, locate, locateArchived } from '../cards'
@@ -20,10 +20,11 @@ import { SKILL_VERSION } from '../../version'
 import { INDEX_LOCK, REPO_ROOT, SESSIONS_DIR } from '../paths'
 import {
   activeDelivery,
+  activeIn,
+  cardAudits,
   carryOnFrom,
   endDelivery,
   findDelivery,
-  joinActive,
   joinDelivery,
   namedDelivery,
   resumeRecord,
@@ -32,6 +33,7 @@ import {
   unknownDelivery,
   settleOrphanedDeliveries,
   syncAudit,
+  writeAudit,
 } from './deliveries'
 import { DELIVERY_FLOWS } from './flows'
 import { deliveryCwd, prepareDelivery, type DeliveryStart } from './commit-mode'
@@ -41,14 +43,13 @@ import { adoptsSessionId, harnessLabel, onOwnEndpoint, planFork, planResume, pla
 import { moveRunPictures } from './pictures'
 import { buildRun, restartPrompt, restartable, resumePrompt } from './prompts'
 import { agentForRun } from './runner'
-import { killMarked, killTreeOnWindows, killUnderOnWindows, processesStopped, runMark } from './stop'
+import { killMarked, killTreeOnWindows, killUnderOnWindows, probeProcesses, processesStopped, runMark } from './stop'
 import { readRuntimes, runtimeById } from './runtimes'
 import { dropReflected, stampMemoryPrune, stampMemoryReview, stampProjectDescription } from './settings'
-import { scheduledAgent, stampScheduledRun, studioById } from './studios'
 import { creationOf, eventsPathOf, logPathOf, noteRefineTried, readRuns, runIsLive, withRuns, withStore } from './store'
 import { withCreationLock } from './creation-lock'
 import { creationRefusal } from '../view/rules'
-import { holdsCard, isRetired, refusal, SPECIALIST_ACTIONS } from './types'
+import { holdsCard, isRetired, refusal, retiredStudioRun } from './types'
 import type {
   AgentAction,
   AgentRequest,
@@ -64,7 +65,6 @@ import type {
   RefusalArgs,
   RunStatus,
   RunView,
-  SpecAsk,
 } from './types'
 
 export { logPathOf, readAction, readRuns, withRuns } from './store'
@@ -154,7 +154,7 @@ export interface StartResult {
 // ---- the run's own files ---------------------------------------------------
 
 const specPathOf = (sessionId: string): string => path.join(SESSIONS_DIR, `${sessionId}.plan.json`)
-// The spec agents a run asked for while it went, waiting for its watcher to start them.
+// Refinements a run asked its watcher to start.
 const asksPathOf = (sessionId: string): string => path.join(SESSIONS_DIR, `${sessionId}.asks.json`)
 
 // ---- what is still alive ---------------------------------------------------
@@ -296,18 +296,6 @@ function recordReflection(run: RunRecord): void {
   }
 }
 
-// And a studio's scheduled agent (#1401): a pass that PASSED, by when its delivery began —
-// a resumed pass still covers everything since the first attempt started.
-function recordScheduledRun(run: RunRecord): void {
-  if (run.action !== 'scheduled' || run.status !== 'done' || !run.studio || !run.specAgent) return
-  try {
-    const began = (run.deliveryId ? findDelivery(run.deliveryId)?.startedAt : undefined) ?? run.startedAt
-    stampScheduledRun(run.studio, run.specAgent, new Date(began))
-  } catch {
-    // the settings file would not take the write — the run is over either way
-  }
-}
-
 // And the project description's (#1268): the commits since this pass began are the next one's.
 function recordProjectDescription(run: RunRecord): void {
   if (run.action !== 'describe-project' || run.status !== 'done') return
@@ -387,12 +375,10 @@ function retryAsk(r: RunRecord): AgentRequest | undefined {
     cards: r.cards,
   }
   switch (r.action) {
-    case 'implement':
-    case 'scheduled': {
+    case 'implement': {
       if (id !== undefined) return { ...base, notes: r.input }
       // A build with no card is named by its delivery (#428), and by what that was handed.
       if (!r.deliveryId) return undefined
-      if (r.action !== 'implement') return { ...base, deliveryId: r.deliveryId }
       const plan = findDelivery(r.deliveryId)?.plan
       return r.input || plan ? { ...base, deliveryId: r.deliveryId, description: r.input, plan } : undefined
     }
@@ -406,7 +392,7 @@ function retryAsk(r: RunRecord): AgentRequest | undefined {
 function toView(r: RunRecord, gone?: ReadonlySet<number>, refusals?: Map<string, RunRefusal | undefined>): RunView {
   const cardOffBoard = r.status !== 'done' && r.cardId !== null && !!gone?.has(r.cardId)
   // A sub-run is started again by its parent, never on its own (#1421).
-  const open = r.action !== 'sub' && canPickUp(r) && !endedDeliveryRefusal(r, refusals)
+  const open = r.action !== 'sub' && !retiredStudioRun(r.action) && canPickUp(r) && !endedDeliveryRefusal(r, refusals)
   const session = !lacksSession(r)
   return {
     ...r,
@@ -561,8 +547,7 @@ function lockedBy(
       })
     }
   }
-  // A card its creator has not finished writing takes no run at all (#564) — not the
-  // specialists either, since a section written onto half a plan answers the wrong plan.
+  // Wait until the card's creator has finished writing it.
   if (cardId !== null) {
     if (!(action === 'reject' && discard) && runs.some((r) => r.discardedCards?.some((c) => c.id === cardId))) {
       return refusal('cardDiscarded', `#${cardId} was discarded. Do not restore or recreate it.`, { card: String(cardId) })
@@ -613,22 +598,6 @@ function approvedDirect(req: AgentRequest): DirectBuild | RunRefusal | undefined
   return typed ? { title: typed, approved: typed } : undefined
 }
 
-/** What a scheduled agent's pass opens its delivery from (#1401): no requirement, only whose
- *  pass it is. Refused when the studio has no such agent. A switched-off one still runs
- *  when asked (#1435): only the scheduler passes over it. */
-function scheduledDirect(req: AgentRequest): DirectBuild | RunRefusal {
-  const flow = studioById(req.studio ?? '')
-  const agent = req.specAgent ?? ''
-  const one = flow ? scheduledAgent(flow.id, agent) : undefined
-  if (!flow || !one) {
-    return refusal('agentNotScheduled', `\`${agent}\` is not a scheduled agent of the \`${req.studio ?? ''}\` studio`, {
-      agent,
-      studio: req.studio ?? '',
-    })
-  }
-  return { title: `${agent}: scheduled run (${flow.name})`, approved: '', scheduled: { studio: flow.id, agent } }
-}
-
 export function openRun(
   req: AgentRequest,
   prompt: string,
@@ -637,6 +606,9 @@ export function openRun(
   /** The session this planning run carries on or forks (#1304), in place of a fresh one. */
   said?: CarriedSession,
 ): { run: RunRecord; spec: RunSpec } | RunRefusal {
+  const retired = retiredStudioRun(req.action)
+  if (retired) return retired
+  if (req.deliveryId && findDelivery(req.deliveryId)?.scheduled) return retiredStudioRun('scheduled')!
   const cardId = Number.isInteger(req.id) ? (req.id as number) : null
   // The runtime this one run was asked for (#518). Refused here rather than resolved away:
   // a pin nothing answers to would quietly run **Global default**, and a run on another
@@ -650,12 +622,11 @@ export function openRun(
       runtimes,
     })
   }
-  const pass = req.action === 'scheduled' && !req.deliveryId ? scheduledDirect(req) : undefined
-  const direct = pass ?? (req.action === 'implement' && cardId === null ? approvedDirect(req) : undefined)
+  const direct = req.action === 'implement' && cardId === null ? approvedDirect(req) : undefined
   if (direct && 'error' in direct) return direct
   const cardless = !!direct
   let start: DeliveryStart | undefined
-  if (pass || (req.action === 'implement' && (cardless || (cardId !== null && !activeDelivery(cardId))))) {
+  if (req.action === 'implement' && (cardless || (cardId !== null && !activeDelivery(cardId)))) {
     const prepared = prepareDelivery(cardId)
     // Whole, kind and paths included (#706): a screen that says this in its own language
     // reads the kind, and losing it here would leave every refusal generic.
@@ -688,6 +659,7 @@ export function openRun(
   if (plan.note) notes = [...notes, plan.note]
   const record: RunRecord = {
     sessionId,
+    cloudExecution: executionOf(),
     cardId,
     action: req.action,
     deliveryId: joining?.deliveryId,
@@ -714,13 +686,9 @@ export function openRun(
     ...(said?.continues ? { continues: { resumeId: said.continues, ...(said.fork ? { fork: true } : {}) } } : {}),
     ...(said?.continues && said.continues === req.carry?.resumeId && req.carry.costFrom !== undefined ? { sessionCostFrom: req.carry.costFrom } : {}),
     logPath: logPathOf(sessionId),
-    // Which agent this is, on the action that is one — so the run list can name it, and so
-    // a resume starts the same agent rather than a different one.
-    specAgent: SPECIALIST_ACTIONS.has(req.action) ? req.specAgent : undefined,
     ...(req.action === 'implement' && cardId === null
       ? { studio: req.studio?.trim() || undefined }
       : {}),
-    ...(req.action === 'scheduled' ? { studio: req.studio?.trim() || undefined } : {}),
     cards: req.action === 'reflect' ? req.cards : undefined,
     // Internal refinement sessions name their position in the request. A standalone
     // resolve carries no round.
@@ -737,19 +705,9 @@ export function openRun(
     }
     store.runs.push(record)
     if (req.action === 'clarify' && cardId !== null) noteRefineTried(store, cardId)
-    if (DELIVERY_FLOWS.has(req.action) && (cardId !== null || cardless || req.deliveryId)) {
-      if (req.action === 'implement' || pass) {
-        // A card-less delivery is titled and bounded by what it was handed (#428, #481): the
-        // typed sentence, or the plan the ask was answered on.
-        const title = cardId === null ? direct?.title ?? '' : req.title ?? cardNow(cardId)?.title ?? ''
-        joinDelivery(store, record, title, req.action, start, direct)
-      } else if (!joinActive(store, record, req.action, req.deliveryId)) {
-        store.runs.pop()
-        const on = req.deliveryId ? `delivery ${req.deliveryId}` : `#${cardId}`
-        return refusal('deliveryNone', `no delivery is in flight on ${on}, so there is nothing to ${req.action}`, {
-          on: req.deliveryId ?? `#${cardId}`,
-        })
-      }
+    if (req.action === 'implement' && (cardId !== null || cardless || req.deliveryId)) {
+      const title = cardId === null ? direct?.title ?? '' : req.title ?? cardNow(cardId)?.title ?? ''
+      joinDelivery(store, record, title, req.action, start, direct)
     }
     return { run: record }
   }))
@@ -762,7 +720,7 @@ export function openRun(
   const spec: RunSpec = {
     sessionId,
     plan,
-    prompt: req.action === 'scheduled' ? buildRun({ ...req, deliveryId: record.deliveryId }).prompt : prompt,
+    prompt,
     ...(notes.length ? { notes } : {}),
     ...(said?.continues ? { again: { ...req, session: 'new', flowId: record.flowId } } : {}),
   }
@@ -857,7 +815,7 @@ export function requestOf(record: RunRecord): AgentRequest {
     runtime: record.runtime,
     specAgent: record.specAgent,
     notes: record.input,
-    ...(record.action === 'scheduled' ? { studio: record.studio } : {}),
+    studio: record.studio,
     triage: record.triage,
     cards: record.cards,
     refineRound: record.refineRound,
@@ -879,6 +837,7 @@ export interface ResumeOptions { deliveryId?: string; notes?: string; fresh?: bo
 export async function openResume(id: string, options?: boolean | ResumeOptions): Promise<{ run: RunRecord; spec: RunSpec } | RunRefusal> {
   const build = typeof options === 'object' && options.deliveryId ? { deliveryId: options.deliveryId, notes: options.notes } : undefined
   const forced = typeof options === 'object' && options.fresh
+  const requireSession = options === true
   const restore: RunRecord[] = []
   const runs = withRuns((all) => {
     reap(all, [], restore)
@@ -889,6 +848,8 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   if (prev === null) return ambiguousRun(id)
   if (!prev) return unknownRun(id)
   if (prev.status === 'running') return refusal('runGoing', 'that run is still going')
+  const retired = retiredStudioRun(prev.action)
+  if (retired) return retired
   if (prev.action === 'sub') {
     return refusal('subRunResume', 'a sub-run cannot be continued on its own — the run that started it starts it again')
   }
@@ -902,14 +863,20 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   const automatic = typeof options === 'object' && options.automatic === true
   const pending = !forced && prev.status !== 'stopped' ? prev.retry?.pending : undefined
   if (automatic && !pending) return refusal('runContinued', 'The automatic retry is no longer pending.')
-  if (pending) {
+  const session = forced ? undefined : resumeSessionId(prev)
+  if (pending || requireSession) {
     const root = prev.agentPid ? { pid: prev.agentPid, since: prev.agentStartedAt ?? prev.startedAt, identity: prev.agentIdentity } : undefined
     const stopped = prev.managedProcess ? connectionStopped(root) : processesStopped(runMark(prev.sessionId, prev.agentStartedAt), root)
-    const session = resumeSessionId(prev)
-    if (!stopped || !session || prev.managedProcess && pending.failure.code === 'idle_timeout' && !idleStopConfirmed(prev.cleanup, session)) {
-      return retryRefusal(prev, 'unsafe')
+    const recovery = agentRecovery({
+      stopped, session, replayable: !requireSession && neverStarted(prev),
+      unconfirmedCleanup: prev.pendingWrites || prev.cleanup?.status === 'unconfirmed'
+        || prev.managedProcess && (pending?.failure ?? prev.failure)?.code === 'idle_timeout' && !idleStopConfirmed(prev.cleanup, session),
+    })
+    if (recovery === 'unsafe') {
+      if (pending) return retryRefusal(prev, 'unsafe')
+      return refusal('runNoSession', 'The original session cannot be safely resumed.')
     }
-    await new Promise(resolve => setTimeout(resolve, Math.max(0, pending.at - Date.now())))
+    if (pending) await new Promise(resolve => setTimeout(resolve, Math.max(0, pending.at - Date.now())))
     if (!await executionHeld(executionOf())) return retryRefusal(prev, 'authorization')
   }
   // Resumed where the run it continues worked: a delivery's own worktree, or the project
@@ -919,7 +886,6 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   const sessionId = randomUUID()
   let plan: RunPlan | null
   let fresh: FreshStart | undefined
-  const session = forced ? undefined : resumeSessionId(prev)
   if (!forced && prev.harness === 'antigravity' && !session && !neverStarted(prev)) {
     return refusal('runNoSession', 'Antigravity did not record a conversation ID before interruption. The original session cannot be resumed.')
   }
@@ -931,7 +897,7 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
     const started = await planRetry(prev, ask, sessionId, cwd)
     if ('error' in started) return started
     ;({ plan, fresh } = started)
-    const restart = prev.action === 'spec' ? undefined : restartPrompt({ ...requestOf(prev), runtime: plan.runtime }, prev.deliveryId)
+    const restart = restartPrompt({ ...requestOf(prev), runtime: plan.runtime }, prev.deliveryId)
     fresh.prompt = restart ?? ['Continue work.', fresh.prompt].join('\n\n')
     if (!lacksSession(prev) && !forced) fresh.retry = false
   }
@@ -946,7 +912,8 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   if ('error' in opened) return opened
   if (!opened.spec.prompt && buildResume) opened.spec.prompt = buildResume
   if (build?.notes?.trim()) opened.spec.prompt = [opened.spec.prompt || resumePrompt(prev.deliveryId, prev.action), build.notes.trim()].join('\n\n')
-  if (build || buildResume) writeSpec(opened.spec)
+  if (session && (pending || requireSession)) opened.spec.prompt = [recoveryPrompt, opened.spec.prompt].filter(Boolean).join('\n\n')
+  if (build || buildResume || pending || requireSession) writeSpec(opened.spec)
   return opened
 }
 
@@ -988,6 +955,7 @@ async function resumeHeld(
   const retry = fresh?.retry === true
   const record: RunRecord = {
     sessionId,
+    cloudExecution: executionOf(),
     cardId: prev.cardId,
     createdCardIds: prev.createdCardIds,
     triage: prev.triage,
@@ -1020,7 +988,6 @@ async function resumeHeld(
     retry: prev.retry ? { ...prev.retry, pending: undefined, launching: automatic ? true : undefined } : undefined,
     logPath: logPathOf(sessionId),
     specAgent: prev.specAgent,
-    ...(prev.action === 'scheduled' ? { studio: prev.studio } : {}),
     cards: prev.cards,
     refineRound: prev.refineRound,
     // The same refinement carried on, not a second one — the way a resume re-joins the
@@ -1061,7 +1028,7 @@ async function resumeHeld(
   // The asks the run being taken over collected come with it. It never got as far as
   // starting them — that is why it is being resumed — and the flow asked once.
   const inherited = readAsks(prev.sessionId)
-  if (inherited.asks.length || inherited.refines.length) writeAsks(sessionId, inherited)
+  if (inherited.refines.length) writeAsks(sessionId, inherited)
   clearAsks(prev.sessionId)
   if (retry && prev.pictures?.length) {
     record.pictures = moveRunPictures(prev.sessionId, sessionId, prev.pictures)
@@ -1098,16 +1065,6 @@ export function forgetRun(sessionId: string): void {
   }
 }
 
-export function askForSpec(sessionId: string, ask: SpecAsk): 'queued' | 'already' | 'no-run' {
-  const run = peekRun(sessionId)
-  if (!run) return 'no-run'
-  const file = readAsks(sessionId)
-  if (file.asks.some((a) => a.specAgent === ask.specAgent && a.cardId === ask.cardId)) return 'already'
-  file.asks.push(ask)
-  writeAsks(sessionId, file)
-  return 'queued'
-}
-
 export function askForRefine(sessionId: string, ask: RefineAsk): 'queued' | 'already' | 'no-run' {
   if (!peekRun(sessionId)) return 'no-run'
   const file = readAsks(sessionId)
@@ -1115,20 +1072,6 @@ export function askForRefine(sessionId: string, ask: RefineAsk): 'queued' | 'alr
   file.refines.push(ask)
   writeAsks(sessionId, file)
   return 'queued'
-}
-
-/** The spec agents this run has been asked for. */
-export const readSpecAsks = (sessionId: string): SpecAsk[] => readAsks(sessionId).asks
-
-/** Why helpers of this round would not start — carried to the planner when the round ends. */
-export const readSpecRefusals = (sessionId: string): RunRefusal[] => readAsks(sessionId).refused
-
-/** Hand the round's refusals to the helper that runs next. */
-export function noteSpecRefusals(sessionId: string, refused: RunRefusal[]): void {
-  if (!refused.length) return
-  const file = readAsks(sessionId)
-  file.refused.push(...refused.filter((r) => !file.refused.some((had) => had.error === r.error)))
-  writeAsks(sessionId, file)
 }
 
 /** The cards this run handed to a refinement. */
@@ -1144,25 +1087,16 @@ export function clearAsks(sessionId: string): void {
   }
 }
 
-type AsksFile = { asks: SpecAsk[]; refines: RefineAsk[]; refused: RunRefusal[] }
+type AsksFile = { refines: RefineAsk[] }
 
 function readAsks(sessionId: string): AsksFile {
   let data: unknown
   try {
     data = JSON.parse(fs.readFileSync(asksPathOf(sessionId), 'utf8'))
   } catch {
-    return { asks: [], refines: [], refused: [] }
+    return { refines: [] }
   }
-  const raw = (data ?? {}) as { asks?: unknown; refines?: unknown; refused?: unknown }
-  const asks = (Array.isArray(raw.asks) ? raw.asks : []).flatMap((entry) => {
-    const a = entry as Partial<SpecAsk>
-    if (!a || typeof a.specAgent !== 'string' || !a.specAgent || !Number.isInteger(a.cardId)) return []
-    return [{
-      specAgent: a.specAgent,
-      cardId: a.cardId as number,
-      notes: typeof a.notes === 'string' ? a.notes : undefined,
-    }]
-  })
+  const raw = (data ?? {}) as { refines?: unknown }
   const refines = (Array.isArray(raw.refines) ? raw.refines : []).flatMap((entry) => {
     const a = entry as Partial<RefineAsk>
     if (!a || !Number.isInteger(a.cardId)) return []
@@ -1171,13 +1105,8 @@ function readAsks(sessionId: string): AsksFile {
       notes: typeof a.notes === 'string' ? a.notes : undefined,
     }]
   })
-  // A plain string is a refusal written before its kind was kept (#1241).
-  const refused = (Array.isArray(raw.refused) ? raw.refused : []).flatMap((r): RunRefusal[] =>
-    typeof r === 'string' ? [{ error: r }]
-    : r && typeof r.error === 'string' ? [{ error: r.error, ...(typeof r.reason === 'string' ? { reason: r.reason } : {}), ...(r.args && typeof r.args === 'object' ? { args: r.args } : {}) }]
-    : [])
   const discarded = new Set(peekRun(sessionId)?.discardedCards?.map((c) => c.id) ?? [])
-  return { asks: asks.filter((a) => !discarded.has(a.cardId)), refines: refines.filter((a) => !discarded.has(a.cardId)), refused }
+  return { refines: refines.filter((a) => !discarded.has(a.cardId)) }
 }
 
 function writeAsks(sessionId: string, file: AsksFile): void {
@@ -1263,7 +1192,6 @@ export async function closeRun(
   recordMemoryReview(closed)
   recordReflection(closed)
   recordProjectDescription(closed)
-  recordScheduledRun(closed)
   if (closed.harness !== 'antigravity' || closed.status === 'done') dropSpec(sessionId)
   pruneLogs()
 }
@@ -1360,6 +1288,190 @@ async function runIsDown(sessionId: string): Promise<void> {
     if (!run || !runIsLive(run)) return
     await sleep(STOP_POLL_MS)
   }
+}
+
+export type ReconcileResult =
+  | { kind: 'running'; deliveryId?: string; sessionId: string; action: AgentAction }
+  | { kind: 'completed'; deliveryId: string; sessionId?: string; commit?: string; branch?: string }
+  | {
+      kind: 'resumable'
+      deliveryId: string
+      status: DeliveryRecord['status']
+      sessionId?: string
+      hasSession: boolean
+      worktree?: string
+      branch?: string
+      base?: string
+    }
+  | { kind: 'none' }
+  | { kind: 'unverified'; deliveryId?: string; diagnostic: string }
+
+function verifyDeliveryRunsStopped(
+  runs: RunRecord[],
+  deliveryId: string,
+  cardId: number,
+): string | undefined {
+  const related = runs.filter(
+    (r) =>
+      r.action !== 'sub' &&
+      (r.deliveryId === deliveryId || (r.cardId === cardId && holdsCard(r.action))),
+  )
+  for (const r of related) {
+    if (r.managedProcess) {
+      if (!connectionStopped(r.agentPid ? { pid: r.agentPid, identity: r.agentIdentity } : undefined)) {
+        return `Associated managed agent process for run ${r.sessionId} is still alive without an active watcher.`
+      }
+      continue
+    }
+    if (r.pid || r.agentPid) {
+      const probed = probeProcesses(
+        runMark(r.sessionId, r.agentStartedAt ?? r.startedAt),
+        r.agentPid && r.agentStartedAt ? { pid: r.agentPid, since: r.agentStartedAt } : undefined,
+      )
+      if (!probed.ok) return probed.error
+      if (probed.alive) {
+        return `Associated delivery process for run ${r.sessionId} is still alive without an active watcher.`
+      }
+    }
+  }
+  return undefined
+}
+
+export async function reconcileCardDelivery(cardId: number): Promise<ReconcileResult> {
+  const reaped: RunRecord[] = []
+  const restore: RunRecord[] = []
+  let result: ReconcileResult
+  try {
+    result = withStore<ReconcileResult>((store) => {
+      reap(store.runs, reaped, restore)
+      const file = cardFile(cardId)
+      const restoredRaw = file ? parseFrontmatter(fs.readFileSync(file, 'utf8')).meta?.restored : undefined
+      const restoredAt = restoredRaw ? Date.parse(restoredRaw) : Number.NaN
+      const merged = new Map<string, DeliveryRecord>()
+      for (const audit of cardAudits(cardId)) merged.set(audit.deliveryId, audit)
+      for (const row of store.deliveries) {
+        if (row.cardId === cardId) merged.set(row.deliveryId, row)
+      }
+      const deliveries = [...merged.values()]
+        .filter((d) => !(Number.isFinite(restoredAt) && restoredAt > d.startedAt))
+        .sort((a, b) => a.startedAt - b.startedAt)
+      const activeOrLatest =
+        deliveries.find((d) => d.status === 'active') ??
+        deliveries.filter((d) => d.status !== 'cancelled').pop()
+      const liveRun = store.runs.find(
+        (r) =>
+          r.status === 'running' &&
+          r.action !== 'sub' &&
+          !!r.deliveryId &&
+          (r.cardId === cardId || (activeOrLatest && r.deliveryId === activeOrLatest.deliveryId)),
+      )
+      if (liveRun) {
+        return {
+          kind: 'running',
+          deliveryId: liveRun.deliveryId ?? activeOrLatest?.deliveryId,
+          sessionId: liveRun.sessionId,
+          action: liveRun.action,
+        }
+      }
+      if (!activeOrLatest) return { kind: 'none' }
+      if (activeOrLatest.status === 'finished' || activeOrLatest.completions?.some((c) => c.finished)) {
+        const lastSession = activeOrLatest.sessions[activeOrLatest.sessions.length - 1]
+        const code = activeOrLatest.completions?.slice().reverse().find((c) => c.commit)
+        return {
+          kind: 'completed',
+          deliveryId: activeOrLatest.deliveryId,
+          sessionId: lastSession,
+          commit: activeOrLatest.landing?.commit ?? code?.commit,
+          branch: activeOrLatest.targetBranch ?? code?.branch,
+        }
+      }
+      const refused = resumeRefusal(activeOrLatest, store)
+      if (refused) {
+        return {
+          kind: 'unverified',
+          deliveryId: activeOrLatest.deliveryId,
+          diagnostic: refused.error,
+        }
+      }
+      const processError = verifyDeliveryRunsStopped(store.runs, activeOrLatest.deliveryId, cardId)
+      if (processError) {
+        return {
+          kind: 'unverified',
+          deliveryId: activeOrLatest.deliveryId,
+          diagnostic: processError,
+        }
+      }
+      const lastRun = store.runs
+        .filter((r) => r.deliveryId === activeOrLatest.deliveryId && r.action !== 'sub')
+        .sort((a, b) => a.startedAt - b.startedAt)
+        .pop()
+      return {
+        kind: 'resumable',
+        deliveryId: activeOrLatest.deliveryId,
+        status: activeOrLatest.status,
+        sessionId: lastRun?.sessionId,
+        hasSession: !!(lastRun && resumeSessionId(lastRun)),
+        worktree: activeOrLatest.worktree,
+        branch: activeOrLatest.branch,
+        base: activeOrLatest.base,
+      }
+    })
+  } catch (error) {
+    return {
+      kind: 'unverified',
+      diagnostic: error instanceof Error ? error.message : String(error),
+    }
+  }
+  for (const run of restore) await restoreCardStatus(run)
+  for (const run of reaped) await settleDelivery(run)
+  return result
+}
+
+export async function releaseCardDelivery(cardId: number): Promise<
+  { ok: true; released: boolean; deliveryId?: string } | { ok: false; error: string; deliveryId?: string }
+> {
+  const execution = executionOf()
+  if (execution && !(await executionHeld(execution))) {
+    return { ok: false, error: '无法确认当前执行的 Cloud 授权，无法释放原交付写锁。' }
+  }
+  const reaped: RunRecord[] = []
+  const restore: RunRecord[] = []
+  let releasedDelivery: DeliveryRecord | undefined
+  let outcome: { ok: true; released: boolean; deliveryId?: string } | { ok: false; error: string; deliveryId?: string }
+  try {
+    outcome = withStore((store) => {
+      reap(store.runs, reaped, restore)
+      const active = activeIn(store, cardId)
+      if (!active) return { ok: true, released: false }
+      const liveRun = store.runs.find(
+        (r) => r.status === 'running' && r.action !== 'sub' && (r.cardId === cardId || r.deliveryId === active.deliveryId),
+      )
+      if (liveRun) {
+        return {
+          ok: false,
+          deliveryId: active.deliveryId,
+          error: `原交付仍有运行中的进程 (${liveRun.sessionId})，无法释放写锁。`,
+        }
+      }
+      const processError = verifyDeliveryRunsStopped(store.runs, active.deliveryId, cardId)
+      if (processError) {
+        return { ok: false, deliveryId: active.deliveryId, error: processError }
+      }
+      const at = Date.now()
+      active.status = 'failed'
+      active.endedAt = at
+      active.steps.push({ step: 'released', at })
+      writeAudit(active, store.runs)
+      releasedDelivery = { ...active }
+      return { ok: true, released: true, deliveryId: active.deliveryId }
+    })
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+  for (const run of restore) await restoreCardStatus(run)
+  for (const run of reaped) await settleDelivery(run)
+  if (releasedDelivery) await releaseCard(releasedDelivery)
+  return outcome
 }
 
 export async function resumeDelivery(

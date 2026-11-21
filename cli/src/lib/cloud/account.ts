@@ -10,6 +10,7 @@ import { cloudConfigured, cloudEndpoints, NOT_CONFIGURED } from './config'
 import { forgetPro } from './pro'
 import { accessToken, clearSession, readSession, sessionFile } from './session'
 import type { CloudAccount } from './types'
+import { cloudProblem, invalidResponse, isRecord, readCloudJson, type CloudProblem } from './response'
 
 export type { CloudAccount, CloudMove, CloudState } from './types'
 
@@ -28,7 +29,7 @@ interface SessionBody {
 }
 
 /** Ask Cloud who this machine is. */
-export async function readCloudAccount(): Promise<CloudAccount> {
+export async function readCloudAccount(): Promise<CloudAccount & { verificationFailure?: CloudProblem }> {
   const blank: CloudAccount = {
     state: 'signed-out',
     handle: null,
@@ -43,49 +44,42 @@ export async function readCloudAccount(): Promise<CloudAccount> {
   }
   if (!blank.configured) return { ...blank, message: NOT_CONFIGURED }
 
+  const unverified = (problem: CloudProblem, state: CloudAccount['state'] = 'signed-in'): CloudAccount & { verificationFailure: CloudProblem } =>
+    ({ ...blank, ...held(), state, ...(state === 'signed-in' ? { error: problem.message } : { message: problem.message }),
+      verificationFailure: problem })
   const token = await accessToken()
   if (!token.ok) {
     if (token.reason === 'signed-out') return blank
     // Still signed in, just unable to prove it this minute.
     if (token.reason === 'unreachable') {
-      return { ...blank, ...held(), state: 'signed-in', error: token.error }
+      return unverified({ code: 'unreachable', message: token.error, retryable: true })
     }
     // Auth refused the refresh token, so the sign-in is over. `error` means Cloud could not
     // be reached and both screens say exactly that, so Auth's own words do not go in it.
-    return { ...blank, ...held(), state: 'expired' }
+    return unverified({ code: 'expired', message: token.error ?? 'Your Cloud sign-in has expired. Sign in again.', retryable: false }, 'expired')
   }
 
   let response: Response
   try {
     response = await fetch(`${cloudEndpoints().api}/v1/session`, {
       headers: { authorization: `Bearer ${token.token}` },
+      signal: AbortSignal.timeout(20_000),
     })
   } catch (e) {
-    // Signed in and unable to ask — say so rather than reporting a sign-in that ended.
-    return {
-      ...blank,
-      ...held(),
-      state: 'signed-in',
-      error: e instanceof Error ? e.message : String(e),
-    }
+    return unverified({ code: 'unreachable', message: e instanceof Error ? e.message : String(e), retryable: true })
   }
-
-  const body = (await response.json().catch(() => ({}))) as SessionBody & {
-    error?: { code?: string; message?: string }
+  const value = await readCloudJson(response)
+  const problem = cloudProblem(response, value)
+  if (problem) {
+    if (problem.code === 'unauthenticated') return unverified(problem, 'expired')
+    if (problem.code === 'not_admitted') return unverified(problem, 'not-admitted')
+    return unverified(problem)
   }
-  if (!response.ok) {
-    const refusal = body.error
-    // A sign-in the service will not accept is over, whatever this machine still holds.
-    if (refusal?.code === 'unauthenticated') {
-      return { ...blank, ...held(), state: 'expired', message: refusal.message ?? null }
-    }
-    if (refusal?.code === 'not_admitted') {
-      return { ...blank, ...held(), state: 'not-admitted', message: refusal.message ?? null }
-    }
-    return { ...blank, ...held(), state: 'signed-in', error: refusal?.message }
+  if (!isRecord(value) || !isRecord(value.session) || typeof value.session.admitted !== 'boolean') {
+    return unverified(invalidResponse('an account verification receipt'))
   }
-
-  const session = body.session ?? {}
+  const body = value as SessionBody
+  const session = body.session!
   const avatarUrl = session.avatar_url ?? session.avatarUrl ?? null
   const attested = {
     handle: session.handle ?? null,

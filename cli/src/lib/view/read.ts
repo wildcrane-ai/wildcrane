@@ -27,7 +27,7 @@ import {
   countTodos,
 } from '../board/assemble'
 import { revisionOf } from '../board/revision'
-import { archivesOnApproval, cardStage, cardStages, studioFor } from '../agent/studios'
+import { archivesOnApproval, studioFor } from '../agent/studios'
 import type {
   Card,
   CardLandingRetry,
@@ -55,7 +55,6 @@ function buildCard(id: number, file: string, relFromTodo: string): Card | null {
   const relPath = relFromTodo.split(path.sep).join('/')
   const flow = studioFor(meta.studio)
   const plan = !!meta.studio && archivesOnApproval(flow)
-  const stages = cardStages(meta, flow).length
   return {
     id,
     // Derived from the file exactly as it is on disk (lib/board/revision.ts), so a card
@@ -71,7 +70,6 @@ function buildCard(id: number, file: string, relFromTodo: string): Card | null {
     questions: meta.questions,
     studio: meta.studio,
     ...(plan ? { deliversIn: 'plan' as const } : {}),
-    ...(stages > 1 ? { stages, stage: cardStage(meta, flow) } : {}),
     modules: meta.modules,
     body: body.replace(/^\n+/, '').replace(/\s+$/, ''),
     todos: countTodos(body),

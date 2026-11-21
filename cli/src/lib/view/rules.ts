@@ -17,7 +17,7 @@ export function creationRefusal(id: number, creation: CardCreation | undefined |
   return creation.state === 'creating'
     ? `#${id} is still being created by run ${run} — \`${what}\` is refused until that run finishes.`
     : `#${id} was never finished being created: run ${run} stopped short. \`${what}\` is refused until ` +
-      'that run is picked back up from the board and finishes. Use reject --discard to discard it instead.'
+      'that run is picked back up from the board and finishes. Use akb task remove <id> --discard to discard it.'
 }
 
 // ---- questions -------------------------------------------------------------
@@ -58,15 +58,6 @@ export const planDeliverables = (body: string): string[] => [
   ...[...body.matchAll(/<Storyboard\s[^>]*src="([^"]+)"/gi)].map((m) => m[1]!).filter((src) => PAGES_STORYBOARD.test(src)),
 ]
 
-/** The stage whose previews wait on the user's Approve (#1790, #2154), or null: a stage before
- *  the last, planned (`ready`), with nothing left to answer. A run in flight is the caller's to
- *  rule out. */
-export function awaitingApproval(card: Pick<Card, 'stages' | 'stage' | 'questions' | 'status'>): number | null {
-  const { stages, stage } = card
-  if (!stages || !stage || stage >= stages || card.status !== 'ready') return null
-  return card.questions.length ? null : stage
-}
-
 /** A card finishing in planning with more to do before it is archived. */
 const planUnfinished = (card: Card): boolean => card.deliversIn === 'plan' && planDeliveryGap(card) !== null
 
@@ -93,10 +84,8 @@ export function byDispatchOrder(a: Card, b: Card): number {
 
 // ---- would a refine move this card? ----------------------------------------
 
-// Explicit refinement also checks an existing split. Questions and approvals still wait
-// for the user; blocked cards may be refined explicitly but are not followed automatically.
+// Blocked cards may be refined explicitly but are not followed automatically.
 export function canRefine(card: Card): boolean {
-  if (awaitingApproval(card)) return false
   const unfinished = !card.isGroup && planUnfinished(card)
   if (card.status !== 'todo' && !unfinished) return false
   const { total, done } = card.todos

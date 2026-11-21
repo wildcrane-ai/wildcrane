@@ -253,10 +253,6 @@ export interface Card {
   studio: string
   /** Its studio lands nothing (#1057, #2152): its last approval archives the card. */
   deliversIn?: 'plan'
-  /** The approvals its previews make and the one it is on, 1-based (#2154). Absent when it
-   *  has one. */
-  stages?: number
-  stage?: number
   /** The parts of the product this card touches (names from `docs/kanban/modules.md`). */
   modules: string[]
   /** The card body below the frontmatter (markdown). */

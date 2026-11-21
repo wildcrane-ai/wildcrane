@@ -7,6 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { after, afterEach, beforeEach, describe, it } from 'node:test'
 
+import { runAgent } from '../src/lib/agent-cli.ts'
 import { RUN_ENV } from '../src/lib/agent/env.ts'
 import { withStore } from '../src/lib/agent/store.ts'
 import { TASK_ENV } from '../src/lib/cloud/tasks.ts'
@@ -32,9 +33,13 @@ function serve(refuse?: { status: number; code: string; message: string }): void
     const headers = (init?.headers ?? {}) as Record<string, string>
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null
     sent.push({ route, method: init?.method ?? 'GET', body, key: headers['idempotency-key'] ?? null })
-    if (route === '/v1/projects/prj_1') return Response.json({ id: 'prj_1' })
-    if (route === '/v1/tasks/task_src') {
+    if (route === '/v1/projects/prj_1') return Response.json({ id: 'prj_1', prefix: 'WC' })
+    if (route === '/v1/tasks/task_src' || route === '/v1/tasks/WC-3') {
       return Response.json({ id: 'task_src', key: 'WC-3', project: 'prj_1', studio: { id: 'wf_builtin_coding' } })
+    }
+    if (route.endsWith('/archive') && init?.method === 'POST') {
+      if (refuse) return Response.json({ error: { code: refuse.code, message: refuse.message } }, { status: refuse.status })
+      return Response.json({ id: 'task_other', key: 'WC-4', status: 'done', card_version: 5 })
     }
     if (route === '/v1/tasks' && init?.method === 'POST') {
       if (refuse) return Response.json({ error: { code: refuse.code, message: refuse.message } }, { status: refuse.status })
@@ -77,6 +82,8 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = realFetch
   delete process.env[TASK_ENV]
+  delete process.env.AI4KANBAN_BOARD
+  delete process.env.AI4KANBAN_EXECUTION
   delete process.env.AI4KANBAN_SUPABASE_URL
   delete process.env.AI4KANBAN_CLOUD_URL
   fs.rmSync(home, { recursive: true, force: true })
@@ -165,10 +172,94 @@ describe('in a Runner workspace', () => {
 
   it('names the agent of the run making it as the task’s creator (#95)', async () => {
     withStore((store) => {
-      store.runs.push({ sessionId: 'run-qa', cardId: null, action: 'scheduled', specAgent: 'qa-manager', status: 'running', startedAt: Date.now(), pid: process.pid } as never)
+      store.runs.push({ sessionId: 'project-reflection', cardId: null, action: 'reflect', status: 'running', startedAt: Date.now(), pid: process.pid } as never)
     })
-    process.env[RUN_ENV] = 'run-qa'
+    process.env[RUN_ENV] = 'project-reflection'
     await create(['--title', 'Stutter'])
-    assert.deepEqual(sent.find((s) => s.method === 'POST')!.body!.source_context, { task: 'task_src', agent: 'qa-manager' })
+    assert.deepEqual(sent.find((s) => s.method === 'POST')!.body!.source_context, { task: 'task_src', agent: 'proposer' })
+  })
+})
+
+describe('task archive', () => {
+  const board = path.join(root, '.akb', 'kanban')
+  const current = path.join(board, 'todo', '3-current.md')
+  const archived = path.join(board, '.archive', '3-current.md')
+  const archive = async (ref: string) => {
+    const out: string[] = []
+    const errors: string[] = []
+    const say = process.stdout.write, warn = process.stderr.write
+    process.stdout.write = (line) => { out.push(String(line)); return true }
+    process.stderr.write = (line) => { errors.push(String(line)); return true }
+    try {
+      const code = await runAgent(['task', 'archive', ref, '--json'], { cwd: root })
+      return { code, value: JSON.parse(out.join('\n') || errors.join('\n')) }
+    } finally { process.stdout.write = say; process.stderr.write = warn }
+  }
+
+  beforeEach(() => {
+    fs.rmSync(path.join(root, '.akb'), { recursive: true, force: true })
+    fs.mkdirSync(path.join(board, '.sync'), { recursive: true })
+    fs.mkdirSync(path.dirname(current), { recursive: true })
+    fs.writeFileSync(path.join(board, '..', 'base.json'), JSON.stringify({ project: 'prj_1' }))
+    fs.writeFileSync(path.join(board, '.sync', 'task_src.json'), JSON.stringify({ task: 'task_src', number: 3 }))
+    fs.writeFileSync(current, '---\ntitle: Current\nstudio: coding\n---\n\nDelivered.\n')
+    process.env.AI4KANBAN_BOARD = board
+    process.env[TASK_ENV] = 'task_src'
+    process.env.AI4KANBAN_EXECUTION = JSON.stringify({ job: '11111111-1111-4111-8111-111111111111', machine: '22222222-2222-4222-8222-222222222222' })
+  })
+
+  it('archives only the current matched Runner task locally', async () => {
+    const first = await archive('WC-3')
+    assert.equal(first.code, 0)
+    assert.equal(first.value.task, 'task_src')
+    assert.equal(first.value.archive_status, 'pending_sync')
+    assert.match(fs.readFileSync(archived, 'utf8'), /^archived:/m)
+    assert.equal(fs.existsSync(current), false)
+    const repeated = await archive('3')
+    assert.equal(repeated.code, 0)
+    assert.equal(repeated.value.archive_status, 'pending_sync')
+    assert.deepEqual(sent.map(({ method, route }) => [method, route]), [['GET', '/v1/tasks/WC-3']])
+  })
+
+  it('reports the saved archive receipt only for the synchronized card version', async () => {
+    assert.equal((await archive('3')).value.archive_status, 'pending_sync')
+    const base = path.join(board, '..', 'base.json')
+    const file = '.archive/3-current.md'
+    const seq = 8
+    const content = fs.readFileSync(archived, 'utf8')
+    const save = (receipt: Record<string, unknown>) => fs.writeFileSync(base, JSON.stringify({
+      project: 'prj_1', files: { [`projects/prj_1/${file}`]: { seq, content } },
+      archiveReceipts: { task_src: { path: file, seq, assets_seq: 0, ...receipt } },
+    }))
+    save({ status: 'pending', code: 'service_unavailable', message: 'Cloud is unavailable.' })
+    const pending = await archive('3')
+    assert.equal(pending.value.archive_status, 'pending_sync')
+    assert.equal(pending.value.sync.code, 'service_unavailable')
+    save({ status: 'rejected', code: 'version_conflict', message: 'The card changed during archiving.' })
+    const rejected = await archive('3')
+    assert.equal(rejected.code, 1)
+    assert.equal(rejected.value.error.code, 'version_conflict')
+    save({ status: 'confirmed' })
+    assert.equal((await archive('3')).value.archive_status, 'archived')
+    fs.appendFileSync(archived, '\nEdited after synchronization.\n')
+    assert.equal((await archive('3')).value.archive_status, 'pending_sync')
+    assert.equal(sent.length, 0)
+  })
+
+  it('waits for Cloud when archiving another task and reports refusals', async () => {
+    let result = await archive('4')
+    assert.equal(result.code, 0)
+    assert.equal(result.value.task, 'task_other')
+    assert.equal(result.value.archive_status, 'archived')
+    assert.equal(sent.at(-1)?.route, '/v1/tasks/WC-4/archive')
+    assert.equal(sent.at(-1)?.body, null)
+    assert.ok(fs.existsSync(current))
+    delete process.env.AI4KANBAN_EXECUTION
+    serve({ status: 409, code: 'conflict', message: 'Finish the agreed review plan before archiving.' })
+    result = await archive('task_src')
+    assert.notEqual(result.code, 0)
+    assert.match(JSON.stringify(result.value), /Finish the agreed review plan before archiving/)
+    assert.equal(sent.at(-1)?.route, '/v1/tasks/task_src/archive')
+    assert.ok(fs.existsSync(current))
   })
 })

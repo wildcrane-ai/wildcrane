@@ -1,3 +1,4 @@
+import { cmdRemove } from '../src/commands/remove.ts'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -6,7 +7,7 @@ import { execFileSync } from 'node:child_process'
 import { afterEach, beforeEach, it } from 'node:test'
 import { buildAkbProgram } from '../src/lib/cli/akb.ts'
 import { buildBoardProgram } from '../src/lib/cli/board.ts'
-import { cmdLog, cmdResume } from '../src/commands/run.ts'
+import { cmdLog, cmdResume, cmdResumeDelivery } from '../src/commands/run.ts'
 import { completeDelivery } from '../src/lib/agent/complete.ts'
 import { activeDelivery, findDelivery, joinDelivery, settleOrphanedDeliveries } from '../src/lib/agent/deliveries.ts'
 import { RUN_ENV } from '../src/lib/agent/env.ts'
@@ -93,7 +94,7 @@ it('requires ownership and paired full software results', async () => {
   process.env[RUN_ENV] = 'stranger'
   assert.throws(() => completeDelivery(deliveryId, { commit: sha, branch: 'main' }), /own/)
   process.env[RUN_ENV] = 'first'
-  await refuses(root, ['archive', '1'], /delivery complete/)
+  assert.throws(() => cmdRemove(1, 'completed'), /delivery complete/)
 })
 it('lets the builder finish without a commit outside git', () => {
   assert.equal(findDelivery(deliveryId)?.base, undefined)
@@ -112,6 +113,15 @@ it('archives once and returns the same handoff on repeated completion', async ()
   const resumed = await cmdResume('first', {})
   assert.equal((resumed.delivery as { id: string }).id, deliveryId)
   assert.equal(withStore((store) => store.runs.length), 1)
+  withStore(store => { store.deliveries = [] })
+  const recovered = await cmdResumeDelivery('1')
+  assert.deepEqual(recovered.delivery, {
+    id: deliveryId, status: 'finished', line: 'landed as aaaaaaa', commit: sha, branch: 'main',
+  })
+  fs.renameSync(path.join(path.dirname(card), '../.archive', path.basename(card)), card)
+  const restored = new Date(Date.now() + 1000).toISOString()
+  fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replace('questions:', `restored: "${restored}"\nquestions:`))
+  await assert.rejects(cmdResumeDelivery('1'), /no delivery here answers to "1"/)
 })
 it('records explicit completion with open questions', async () => {
   await move(root, ['update-questions', '1', '--append', 'Grant deployment access?',
@@ -150,6 +160,20 @@ it('keeps questions open and supersedes changed approved requirements', async ()
   const next = nextDeliveryRun(deliveryId)
   assert.equal(next?.id, 1)
   assert.equal(next?.deliveryId, undefined)
+  assert.equal(findDelivery(deliveryId)?.status, 'cancelled')
+})
+it('waits on nextDeliveryRun while open questions remain and resumes implement once all are cleared', async () => {
+  await move(root, ['update-questions', '1', '--append', 'First?', '--recommended-option', 'A', '--option', 'B',
+    '--append', 'Second?', '--recommended-option', 'C', '--option', 'D'])
+  patch((d) => { d.answers = [{ outcome: 'changed', why: 'Updated scope', at: Date.now() }] })
+  await closeRun('first', { status: 'done' })
+  await move(root, ['update-questions', '1', '--drop', '1'])
+  assert.equal(nextDeliveryRun(deliveryId), undefined)
+  assert.equal(findDelivery(deliveryId)?.status, 'active')
+  await move(root, ['update-questions', '1', '--drop', '1'])
+  const next = nextDeliveryRun(deliveryId)
+  assert.equal(next?.action, 'implement')
+  assert.equal(next?.id, 1)
   assert.equal(findDelivery(deliveryId)?.status, 'cancelled')
 })
 

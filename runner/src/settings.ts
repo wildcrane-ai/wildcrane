@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { clearSession, readSession } from '../../cli/src/lib/cloud/session'
+import { accessToken, clearSession, readSession } from '../../cli/src/lib/cloud/session'
 import * as api from './api'
 import { clearAkb, kept } from './cache'
 import { adoptLegacy, allow, disallow, refusal } from './folders'
@@ -129,12 +129,13 @@ async function all<T>(route: string): Promise<api.Call<T[]>> {
   }
 }
 
-export async function settingsState(context: SettingsContext) {
+export async function settingsState(context: SettingsContext, retryTransport = false) {
   adoptLegacy()
   const session = readSession()
   const base = { machine: machineName(), machineId: machineId(), signedIn: !!session, signing, context, acceptAlphaUpdates: acceptAlphaUpdates() }
   if (await runnerSettingsSupport() === false) return { ...base, upgrade: true }
   if (!session) return base
+  if (retryTransport) await accessToken({ retryTransport: true })
   const account = { id: session.subject, name: session.name ?? session.handle, email: session.email }
   const subject = session.subject
   const [folders, workspaces, runner] = await Promise.all([api.listFolders(machineId()), all<Workspace>('/v1/workspaces'), api.readRunner()])
@@ -162,7 +163,7 @@ export async function settingsState(context: SettingsContext) {
 /** 文件夹只存在服务端上下文中，浏览器提交的路径不能成为授权。 */
 const selected = new WeakMap<SettingsContext, { path: string; subject: string; creation?: { key: string; name: string; workspace: string; project?: string } }>()
 export async function settingsAction(action: string, body: Record<string, unknown>, context: SettingsContext): Promise<unknown> {
-  if (action === 'state') return settingsState(context)
+  if (action === 'state') return settingsState(context, body.retry === true)
   if (action === 'updates') {
     if (typeof body.acceptAlphaUpdates !== 'boolean') return { error: 'bad_request' }
     try { saveAlphaUpdates(body.acceptAlphaUpdates); return { acceptAlphaUpdates: acceptAlphaUpdates() } }

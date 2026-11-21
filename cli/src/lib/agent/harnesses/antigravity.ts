@@ -10,6 +10,7 @@ import { home } from './models'
 import { namesFlag, type Harness } from './types'
 import { translating } from '../language'
 import { createAntigravityRenderer } from '../wire/antigravity'
+import { antigravityConversationFile } from '../wire/antigravity-session'
 
 const EFFORT_ID = /-(?:low|medium|high|xhigh|max)$/i
 const EFFORT_NAME = /\s*\((?:low|medium|high|xhigh|max)\)$/i
@@ -32,7 +33,10 @@ export function antigravityModels(output: string): { id: string; name: string }[
 function args(argv: string[], resume?: string): string[] {
   // Never let a saved raw argument select the latest or a different conversation.
   if (namesFlag(argv, ['--continue', '-c', '--conversation', '--remote-agent'])) throw new Error(translating() ? '请通过 WildCrane 选择 Antigravity 会话，不要在额外参数中指定会话或远程执行。' : 'Antigravity: select a session through WildCrane, not extra arguments.')
-  if (resume && (!/^[a-f0-9-]{36}$/i.test(resume) || !fs.existsSync(home('.gemini', 'antigravity-cli', 'conversations', `${resume}.db`)))) throw new Error(translating() ? 'Antigravity 会话不存在。请在本机恢复原会话后续接。' : 'Antigravity session not found. Restore the original conversation on this computer before resuming.')
+  if (resume) {
+    const file = antigravityConversationFile(resume)
+    if (!file || !fs.existsSync(file)) throw new Error(translating() ? 'Antigravity 会话不存在。请在本机恢复原会话后续接。' : 'Antigravity session not found. Restore the original conversation on this computer before resuming.')
+  }
   const extra = resume ? ['--conversation', resume] : []
   if (!namesFlag(argv, ['--output-format'])) extra.push('--output-format', 'stream-json')
   if (!namesFlag(argv, ['--dangerously-skip-permissions'])) extra.push('--dangerously-skip-permissions')

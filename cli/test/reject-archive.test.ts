@@ -234,7 +234,7 @@ describe('raw reject --reason', () => {
 
   it('leaves a finished card without one', async () => {
     const id = fresh()
-    await move(root, ['archive', String(id)])
+    cmdRemove(id, 'completed')
     assert.equal(archived(id)!.rejected_reason, '')
   })
 })

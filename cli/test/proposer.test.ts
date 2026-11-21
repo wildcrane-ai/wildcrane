@@ -12,7 +12,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
-import { SCHEDULED_AGENTS_ENV } from '../src/lib/agent/env.ts'
 import type { AgentRequest } from '../src/lib/agent/types.ts'
 import { printFlow } from '../src/lib/agent/flow.ts'
 import { buildAsk, buildRun } from '../src/lib/agent/prompts.ts'
@@ -22,7 +21,6 @@ import { closeRun, openRun } from '../src/lib/agent/sessions.ts'
 import { reflectQueue } from '../src/lib/agent/settings.ts'
 import { logPathOf, withStore } from '../src/lib/agent/store.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
-import { saveScheduled } from './helpers/board.ts'
 import { cmdTriageAdd, type TriageAddOptions } from '../src/commands/triage.ts'
 import { editStudio, resetOfficial } from './helpers/official.ts'
 import { readSignals } from '../src/lib/signals/index.ts'
@@ -61,7 +59,7 @@ const open = (id: number): void => {
   fs.writeFileSync(path.join(TODO(), `${id}-card.md`), cardText(`card ${id}`))
 }
 
-/** Move an open card into the archive, the way `raw archive` renames it. */
+/** Move an open card into the archive, the way `task archive` renames it. */
 const complete = (id: number): void => {
   fs.mkdirSync(ARCHIVE(), { recursive: true })
   fs.renameSync(path.join(TODO(), `${id}-card.md`), path.join(ARCHIVE(), `${id}-card.md`))

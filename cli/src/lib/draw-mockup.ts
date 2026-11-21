@@ -11,7 +11,7 @@ import { transform } from 'sucrase'
 import { compile } from 'tailwindcss'
 import TAILWIND from 'tailwindcss/index.css' with { type: 'text' }
 
-import { dressPage, head } from './dress-page'
+import { dressPage, head, isHtmlFile } from './dress-page'
 
 const DRAW_MS = 5000
 const MAX_FILES = 60
@@ -51,7 +51,7 @@ const NEXT_NAVIGATION = {
   notFound: NOTHING,
 }
 
-/** What ui-designer's rules say a mockup may import, each loaded only when asked for. */
+/** What a mockup may import, each loaded only when asked for. */
 const PACKAGES: Record<string, () => Promise<unknown>> = {
   'react-icons/fi': () => import('react-icons/fi'),
   'react-icons/fa': () => import('react-icons/fa'),
@@ -145,9 +145,9 @@ async function tailwindFor(markup: string, sheets: Graph['sheets'], folder: stri
   return compiler.build(classes.filter(Boolean))
 }
 
-/** The page a `.tsx` or `.html` mockup draws. Throws, with why, when it cannot be drawn. */
+/** Render a TSX or HTML mockup. */
 export async function drawMockup(entry: string): Promise<string> {
-  if (entry.toLowerCase().endsWith('.html')) return dressPage(entry)
+  if (isHtmlFile(entry)) return dressPage(entry)
   const graph = await readGraph(entry)
   const sandbox: Record<string, unknown> = { React, console: { log() {}, warn() {}, error() {}, info() {}, debug() {} } }
   const context = vm.createContext(sandbox)

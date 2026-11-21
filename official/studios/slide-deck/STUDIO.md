@@ -33,6 +33,14 @@ brand.
 - **Changes**: preserve existing slide IDs, content, notes and assets outside the requested
   change; update affected pages and previews without remaking unrelated media or exports.
 
+## Land
+
+Deliver the requested slide outputs from the task's asset folder. For finished slides, check the
+Storyboard and retain its render project. For PowerPoint, check slide order, one image per slide,
+aspect ratio and speaker notes, then record the output path and reproducible rebuild command.
+
+## Previews
+
 <Preview id="deck-draft">
 
 Show the wireframes or final-look samples the task requests.
@@ -70,9 +78,7 @@ recipe and any applicable approved wireframes and samples from Preview `deck-dra
   using a lowercase slug of the card title. Never use a PowerPoint-generation library.
 - **Existing images**: a task with approved image previews packs those images as they are;
   refresh any affected cached `slides/<slide id>.png` before packing.
-- **Delivery**: show the requested PowerPoint as an Asset beside the slide preview after
-  checking its slide order, one image per slide, aspect ratio and speaker notes; record the
-  output path and reproducible rebuild command with the result.
+- **Export preview**: show the requested PowerPoint as an Asset beside the slide preview.
 
   `<Asset src=".assets/<card id>/<short-name>.pptx" label="<card title>" />`
 

@@ -93,8 +93,9 @@ it('新旧命令拒绝缺失、无效或不一致的目标数组', () => {
     for (const held of [{ goals: [], studios }, { goals: [], ideas: [], studios }]) {
       fs.writeFileSync(file, JSON.stringify(held))
       cmd(['new'], { title: '目标', bodyFile: draft('结果') })
-      assert.equal(read().ideas.length, 1)
-      assert.equal(read().ideas[0].studio, 'wf_builtin_blog_post')
+      assert.equal(read().ideas, undefined)
+      assert.equal(read().goals.length, 1)
+      assert.equal(read().goals[0].studio, 'wf_builtin_blog_post')
     }
   }
 })
@@ -103,20 +104,24 @@ it('审核安排区分未定与空安排，保留依赖并拒绝静默删除 Pre
   const held = read()
   held.studios[0].previews = [{ id: 'ui-design', instructions: 'UI' }]
   held.studios[1].previews = []
+  held.ideas.push({ id: 'idea_b', title: 'Legacy', workflow: 'wf_builtin_coding', previews: ['ui-design'], task: null })
   fs.writeFileSync(file, JSON.stringify(held))
+  cmdGoal(['save'], { id: 'idea_b', title: 'Updated legacy draft' })
+  assert.deepEqual(read().ideas[1], { id: 'idea_b', title: 'Updated legacy draft', studio: 'wf_builtin_coding',
+    review_plan: [{ id: 'review', after: [], previews: ['ui-design'] }], task: null })
   const plan = [{ id: 'ui', after: [], previews: ['ui-design'] }]
   const reviewFile = path.join(dir, 'review.json'); fs.writeFileSync(reviewFile, JSON.stringify(plan))
   cmdGoal(['new'], { title: 'Review', bodyFile: draft('Deliver.'), reviewFile })
-  assert.deepEqual(read().ideas[1].review_plan, plan)
+  assert.deepEqual(read().ideas[2].review_plan, plan)
   cmdGoal(['new'], { title: 'Other', bodyFile: draft('Other.') })
-  assert.equal(read().ideas[2].review_plan, null)
+  assert.equal(read().ideas[3].review_plan, null)
   cmdGoal(['save'], { id: 'new_1', title: 'Changed' })
-  assert.deepEqual(read().ideas[1].review_plan, plan)
+  assert.deepEqual(read().ideas[2].review_plan, plan)
   const before = fs.readFileSync(file, 'utf8')
   assert.throws(() => cmdGoal(['save'], { id: 'new_1', studio: 'slide-deck' }), /Preview ui-design is not defined/)
   assert.equal(fs.readFileSync(file, 'utf8'), before)
   cmdGoal(['save'], { id: 'new_1', reviewFile: draft('[]') })
-  assert.deepEqual(read().ideas[1].review_plan, [])
+  assert.deepEqual(read().ideas[2].review_plan, [])
 })
 
 it('查询使用当前工作台的完整触发条件，旧 Runner 缺少目录时明确拒绝', () => {

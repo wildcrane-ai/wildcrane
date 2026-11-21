@@ -21,8 +21,7 @@ import { parseFrontmatter } from '../lib/frontmatter'
 import { walkMd, walkDirs, idPrefix, boardCardIds, isLegacyRecurring } from '../lib/cards'
 import { formatStamp, parseStamp } from '../lib/cadence'
 import { landedDeliveries } from '../lib/agent/deliveries'
-import { knownStudio, scheduledAgent } from '../lib/agent/studios'
-import { insideScheduledPass } from '../lib/agent/scheduled'
+import { knownStudio } from '../lib/agent/studios'
 import { cardAges, staleAfter, type Age } from '../lib/card-age'
 import { heldBy, type Hold } from '../lib/card-holds'
 import type { MoveResult, Question } from '../lib/types'
@@ -149,22 +148,8 @@ function archivedFiles(): Map<number, string> {
   return files
 }
 
-// What `--since` takes in place of a time inside a scheduled agent's pass (#1401).
-const LAST_RUN = 'last-run'
-
 function cmdArchived(opts: ListOptions): MoveResult {
   let since: Date | null = null
-  // Inside a scheduled agent's pass (#1401), `last-run` is when its last pass that passed began.
-  if (opts.since?.trim() === LAST_RUN) {
-    const pass = insideScheduledPass()
-    if (!pass) die(`--since ${LAST_RUN} only works inside a scheduled agent's run. Elsewhere, write the time as "YYYY-MM-DD HH:MM".`)
-    const last = scheduledAgent(pass!.studio, pass!.agent)?.lastRun ?? ''
-    if (!parseStamp(last)) {
-      say('this is the first run, so no cards are listed.')
-      return { cards: [], since: null, studio: opts.studio ?? null, firstRun: true }
-    }
-    opts = { ...opts, since: last }
-  }
   if (opts.since !== undefined) {
     since = parseStamp(opts.since)
     if (!since) die(`cannot read --since "${opts.since}". Write it as "YYYY-MM-DD HH:MM", e.g. --since "2026-08-02 14:31".`)

@@ -92,9 +92,8 @@ const run = (action: AgentAction, round: number, extra: Partial<RunRecord> = {})
 const closing = (
   record: RunRecord,
   before: BoardMarks,
-  waitingForSpec = false,
 ): ReturnType<typeof refinementRunsAfter> =>
-  refinementRunsAfter(record, claimChanges(before, record.sessionId), before, waitingForSpec)
+  refinementRunsAfter(record, claimChanges(before, record.sessionId), before)
 
 function afterSession(
   action: AgentAction,
@@ -136,7 +135,7 @@ describe('entering refinement', () => {
     writeCard({ status: 'ready' })
     const previous = [process.env.AI4KANBAN_TASK_REVIEW, process.env.AI4KANBAN_REVIEW_STAGES]
     const review = {
-      revision: 5, pending_plan: null,
+      revision: 5,
       plan: [{ id: 'design', title: 'Design', after: [], previews: [] }, { id: 'delivery', title: 'Delivery', after: ['design'], previews: [] }],
       stages: [{ id: 'design', status: 'approved', revision: 4, snapshot: {} }, { id: 'delivery', status: 'available', revision: 5, snapshot: null }],
     }
@@ -152,8 +151,6 @@ describe('entering refinement', () => {
       review.stages[1]!.status = 'running'
       process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify(review)
       assert.equal('error' in refinementRequest({ action: 'refine', id: 7 }), false)
-      process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify({ ...review, pending_plan: { revision: 6, snapshot: { kind: 'plan', plan: review.plan } } })
-      assert.equal('error' in refinementRequest({ action: 'refine', id: 7 }), true)
       process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify(review)
       process.env.AI4KANBAN_REVIEW_STAGES = JSON.stringify(['design'])
       assert.equal('error' in refinementRequest({ action: 'refine', id: 7 }), true)
@@ -235,13 +232,6 @@ describe('the planning session', () => {
     assert.equal(stalled, undefined)
   })
 
-  it('waits for requested spec agents', () => {
-    writeCard()
-    const before = markBoard()
-    const { runs, stalled } = closing(run('clarify', 1), before, true)
-    assert.deepEqual(runs, [])
-    assert.equal(stalled, undefined)
-  })
 })
 
 describe('applying user answers', () => {
@@ -271,6 +261,27 @@ describe('applying user answers', () => {
     const before = markBoard()
     writeCard({ body: 'The boundary is applied.', questions: [asked('Which layout?')] })
     const { runs, stalled } = closing(resolveRun(), before)
+    assert.deepEqual(runs, [])
+    assert.equal(stalled, undefined)
+  })
+
+  it('never triggers refine for resolve during an active delivery', () => {
+    writeCard({ questions: [asked('Which boundary?')] })
+    withStore((store) => {
+      store.deliveries.push({
+        deliveryId: 'd-resolve',
+        cardId: 1,
+        title: 'A card to refine',
+        approved: '',
+        status: 'active',
+        startedAt: Date.now(),
+        sessions: ['impl-1'],
+        steps: [{ step: 'started', at: Date.now() }],
+      })
+    })
+    const before = markBoard()
+    writeCard({ body: 'Updated requirements applied.' })
+    const { runs, stalled } = closing({ ...resolveRun(), deliveryId: 'd-resolve' }, before)
     assert.deepEqual(runs, [])
     assert.equal(stalled, undefined)
   })
@@ -465,20 +476,6 @@ describe('the refine a created card gets', () => {
   })
 })
 
-// A spec agent runs inside the planning session that asked for it, which carries on by
-// itself — so no pass follows the spec run (#1203).
-describe('specialized input', () => {
-  it('starts nothing after a spec agent writes its section', () => {
-    writeCard()
-    const before = markBoard()
-    writeCard({ body: 'A plan with its specialized section.' })
-    const { runs, stalled } = closing({ ...run('spec', 1), refineRound: undefined }, before)
-    assert.deepEqual(runs, [])
-    assert.equal(stalled, undefined)
-  })
-})
-
-
 describe('refining an existing group (#688)', () => {
   function split() {
     const group = path.join(root, 'docs', 'kanban', 'todo', '7-a-card-to-refine')
@@ -521,7 +518,7 @@ describe('refining an existing group (#688)', () => {
     assert.equal(fs.readFileSync(child, 'utf8'), original)
   })
 
-  it('keeps completion, implementation, question and approval boundaries', () => {
+  it('keeps completion, implementation and question boundaries', () => {
     writeCard()
     split()
     const card = findCard(7)!
@@ -530,6 +527,5 @@ describe('refining an existing group (#688)', () => {
     assert.equal(canRefine({ ...card, status: 'implementing' }), false)
     assert.equal(canRefine({ ...card, deliversIn: 'plan', todos: { total: 2, done: 2 } }), false)
     assert.equal(canRefine({ ...card, questions: [{ text: 'Choose?', options: ['A', 'B'] }] }), false)
-    assert.equal(canRefine({ ...card, status: 'ready', stage: 1, stages: 2 }), false)
   })
 })

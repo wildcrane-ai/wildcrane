@@ -3,7 +3,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, test } from 'node:test'
-import { cmdSpec } from '../src/commands/spec'
+import { runAgent } from '../src/lib/agent-cli'
+import { listRuns, openResume } from '../src/lib/agent/sessions'
+import { logPathOf, withStore } from '../src/lib/agent/store'
 import { cmdStudioFile } from '../src/commands/studio-file'
 import { buildPrompt } from '../src/lib/agent/prompts'
 import { startRun } from '../src/lib/agent/start'
@@ -36,8 +38,29 @@ test('planning, edits and delivery share the bound instructions without role fil
   assert.match(String(cmdStudioFile('coding', 'scripts/render.mjs').text), /react-email/i)
 })
 test('refuses the removed role execution entry rather than substituting another agent', async () => {
-  await assert.rejects(cmdSpec({ agent: 'api-designer', id: 1 }), /retired/)
+  assert.equal(await runAgent(['raw', 'previews', 'api-designer', '1'], { cwd: root }), 1)
+  assert.equal(await runAgent(['raw', 'agent', 'run', 'coding', 'qa-manager'], { cwd: root }), 1)
   assert.match((await startRun({ action: 'spec', id: 1, specAgent: 'api-designer' }) as {error: string}).error, /task session/)
+})
+test('keeps old Studio runs readable without offering to resume their role', async () => {
+  for (const [action, specAgent] of [['spec', 'api-designer'], ['scheduled', 'qa-manager']] as const) {
+    const logPath = logPathOf(action)
+    fs.mkdirSync(path.dirname(logPath), { recursive: true })
+    fs.writeFileSync(logPath, 'Saved run output.')
+    withStore(store => {
+      store.runs.push({
+        sessionId: action, action, specAgent, status: 'interrupted',
+        studio: 'coding', cardId: action === 'spec' ? 1 : null,
+        harness: 'claude-code', resumeId: 'saved-conversation', startedAt: 1, logPath,
+      })
+    })
+    const held = (await listRuns()).find(run => run.sessionId === action)
+    assert.equal(held?.specAgent, specAgent)
+    assert.equal(held?.canResume, false)
+    assert.equal(fs.readFileSync(logPath, 'utf8'), 'Saved run output.')
+    assert.ok('error' in await openResume(action))
+  }
+  assert.match(fs.readFileSync(path.join(root, 'docs/kanban/todo/1-task.md'), 'utf8'), /Saved API draft/)
 })
 test('validates stable task result IDs and admits only recorded migration history', () => {
   const result = '<Preview id="api-docs">Saved output.</Preview>'

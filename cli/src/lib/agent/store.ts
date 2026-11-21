@@ -127,6 +127,8 @@ function parseStore(): Store {
     if (!knownAction(entry.action)) continue
     runs.push({
       sessionId: entry.sessionId,
+      cloudExecution: executionOf(entry.cloudExecution ?? null),
+      pendingWrites: entry.pendingWrites === true || undefined,
       cardId: typeof entry.cardId === 'number' ? entry.cardId : null,
       createdCardIds: Array.isArray(entry.createdCardIds)
         ? [...new Set(entry.createdCardIds.filter((id): id is number => Number.isInteger(id) && id > 0))]
@@ -190,7 +192,7 @@ function parseStore(): Store {
         && typeof entry.formatRepair.errors === 'string'
         && [entry.formatRepair.cardIds, entry.formatRepair.changedIds, entry.formatRepair.existingIds].every((ids) => Array.isArray(ids) && ids.every(Number.isInteger))
         ? entry.formatRepair : undefined,
-      retry: readRetry(entry.retry),
+      retry: readRetry(entry.retry, !!executionOf(entry.cloudExecution ?? null)),
       priorStatus: typeof entry.priorStatus === 'string' ? entry.priorStatus : undefined,
       // The pictures the create sheet handed this run (#517), as paths in its own folder.
       pictures: readPictures(entry.pictures),
@@ -248,7 +250,7 @@ function readReasons(raw: unknown): RunReason[] | undefined {
   return reasons.length ? reasons : undefined
 }
 
-function readRetry(raw: unknown): RunRetry | undefined {
+function readRetry(raw: unknown, task: boolean): RunRetry | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const r = raw as Partial<RunRetry>
   const whole =
@@ -257,7 +259,7 @@ function readRetry(raw: unknown): RunRetry | undefined {
     typeof r.reason === 'string' && !!r.reason &&
     typeof r.at === 'number' && typeof r.since === 'number'
   return whole
-    ? { attempt: r.attempt as number, of: r.of as number, reason: r.reason as string, at: r.at as number, since: r.since as number, pending: readRetryPlan(r.pending, r.attempt as number), launching: r.launching === true || undefined }
+    ? { attempt: r.attempt as number, of: r.of as number, reason: r.reason as string, at: r.at as number, since: r.since as number, pending: readRetryPlan(r.pending, r.attempt as number, task), launching: r.launching === true || undefined }
     : undefined
 }
 

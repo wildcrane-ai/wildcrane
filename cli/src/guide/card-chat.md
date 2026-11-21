@@ -7,7 +7,7 @@ Read the task’s review plan and work only on unlocked stages. An empty plan ne
 
 - **Change requirements or drafts**: when the user changes the scope, expected behavior, or draft, use `akb raw card revise <id> --print "<change>"`.
 - **Record an answer**: when the user answers an open question on the card, use `akb raw card resolve <id> --print`.
-- **Manage open questions**: when a decision needs the user's input, follow `akb guide update-questions` and use `akb raw update-questions <id>` to edit the question list.
+- **Manage open questions**: when a decision needs the user's input, follow `akb guide update-questions` and use `akb task update-questions <task>` to edit the question list.
 - **Change card fields**: when the user changes metadata such as priority, modules, or dependencies, use `akb raw update <id>`.
 - **Previews**: prepare or revise only requested outputs, using the task-bound Studio’s Preview instructions and supplied component documentation. Before changing approved output, invalidate its stage with `akb task review <id> --revise-from <stage> --revision <n>`. Preserve unrelated work.
 - **Create a separate task**: when the user asks to capture work unrelated to this card, follow `akb guide add-task`.
@@ -18,5 +18,5 @@ Read the task’s review plan and work only on unlocked stages. An empty plan ne
 
 Reply in plain, natural language. Do not write memory, including through any flow this conversation starts.
 
-- **Approve**: only on an explicit request, use `akb task approve <id> --stage <stage> --revision <reviewed revision>`; omit `--stage` for a pending plan. In a reply this commits after successful synchronization. Finish the reply without further edits or waiting. Never substitute the latest revision for the one reviewed.
-- **Change the plan**: propose a complete replacement with `akb task review <id> --file <json> --revision <n>` and wait for confirmation. Answers to questions never approve work.
+- **Approve**: only on an explicit request, use `akb task approve <id> --stage <stage> --revision <reviewed revision>`. In a reply this commits after successful synchronization. Finish the reply without further edits or waiting. Never substitute the latest revision for the one reviewed.
+- **Change the plan**: submit a complete replacement with `akb task review <id> --file <json> --revision <n>`. It takes effect immediately. Answers to questions never approve work.

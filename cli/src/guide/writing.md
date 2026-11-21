@@ -49,5 +49,5 @@ Use this order and keep the English section titles and empty scaffold sections:
   half self-contained, and state each fact once.
 - **Agent half**: keep only implementation-critical information not stated elsewhere; omit
   process logs and routine implementation planning, and leave unneeded sections empty.
-- **Frontmatter**: never edit frontmatter by hand; use `akb raw update` or `update-questions`.
+- **Frontmatter**: never edit frontmatter by hand; use `akb raw update` or `akb task update-questions`.
 - **Validate**: run `akb raw validate <id>` after edits and fix every reported file and line.

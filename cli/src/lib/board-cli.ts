@@ -247,7 +247,8 @@ export function report(
   if (json) {
     answer({ ok: false, error: { kind: err.kind, message: err.message, ...err.details }, ...prose(box) })
   } else {
-    console.error(err.bare ? err.message : `${program}: ${err.message}`)
+    const code = typeof err.details.code === 'string' ? `[${err.details.code}] ` : ''
+    console.error(err.bare ? `${err.message}${code ? ` [${err.details.code}]` : ''}` : `${program}: ${code}${err.message}`)
   }
   return err.exitCode
 }

@@ -8,9 +8,10 @@ import path from 'node:path'
 
 import { cloudConfigured, cloudEndpoints, NOT_CONFIGURED } from './config'
 import { accessToken } from './session'
+import { cloudProblem, invalidResponse, isRecord, readCloudJson } from './response'
 
 /** A refusal with no `code` never reached the service. */
-export type CloudCall<T> = { ok: true; value: T } | { ok: false; error: string; code?: string }
+export type CloudCall<T> = { ok: true; value: T } | { ok: false; error: string; code?: string; status?: number; retryable?: boolean }
 
 export const TASK_ENV = 'AI4KANBAN_TASK'
 
@@ -42,7 +43,7 @@ export async function call<T>(method: 'GET' | 'POST' | 'PATCH' | 'PUT', route: s
   const token = await accessToken()
   if (!token.ok) {
     return token.reason === 'unreachable'
-      ? { ok: false, error: `Cloud could not be reached: ${token.error}` }
+      ? { ok: false, error: `Cloud could not be reached: ${token.error}`, code: 'unreachable', retryable: true }
       : { ok: false, error: token.reason === 'expired' ? 'Cloud sign-in has expired. Sign in again.' : 'This machine is not signed in to Cloud.', code: 'unauthenticated' }
   }
   let response: Response
@@ -58,11 +59,12 @@ export async function call<T>(method: 'GET' | 'POST' | 'PATCH' | 'PUT', route: s
       signal: AbortSignal.timeout(20_000),
     })
   } catch (e) {
-    return { ok: false, error: `Cloud could not be reached: ${e instanceof Error ? e.message : String(e)}` }
+    return { ok: false, error: `Cloud could not be reached: ${e instanceof Error ? e.message : String(e)}`, code: 'unreachable', retryable: true }
   }
-  const parsed = (await response.json().catch(() => ({}))) as T & { error?: { code?: string; message?: string } }
-  if (!response.ok) return { ok: false, code: parsed.error?.code ?? 'refused', error: parsed.error?.message ?? `Cloud answered ${response.status}.` }
-  return { ok: true, value: parsed, replayed: response.headers.get('idempotent-replayed') === 'true' }
+  const parsed = await readCloudJson(response)
+  const problem = cloudProblem(response, parsed) ?? (isRecord(parsed) ? null : invalidResponse('a valid JSON response'))
+  if (problem) return { ok: false, ...problem, error: problem.message }
+  return { ok: true, value: parsed as T, replayed: response.headers.get('idempotent-replayed') === 'true' }
 }
 
 export interface NewTask {

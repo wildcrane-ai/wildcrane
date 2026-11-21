@@ -40,15 +40,8 @@ export interface Meta {
   /** Where the card came from (#1306): `plan:<id>`, `#<id>` or an address each (./source.ts).
    *  A triage card carries none — `triage:` already names its item. */
   source: string[]
-  /** The preview agents this card chose (#2154), written by its first planning. Absent until
-   *  then. */
+  /** Selected Preview IDs, when recorded on the card. */
   previews?: string[]
-  /** How many approvals those previews make (#2154), derived from their `after` and written
-   *  beside them for Cloud to read; 0 when the card has chosen none. */
-  stages: number
-  /** The approval the card is on (#1790, #2154), 1-based; 0 when it has never been approved
-   *  past its first. */
-  phase: number
   /** A video card's shot previews were approved under the retired two-round flow (#991).
    *  Still read, never acted on: it authorizes nothing since #1057. */
   preview_approved: boolean

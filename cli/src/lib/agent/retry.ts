@@ -16,6 +16,24 @@ export interface RetryPlan {
 
 export type RetryPause = 'needs-review' | 'limit' | 'wait-too-long' | 'unsafe' | 'authorization'
 
+export type Recovery = 'report' | 'resume' | 'replay' | 'unsafe'
+
+export function agentRecovery(evidence: {
+  stopped: boolean
+  completed?: boolean
+  session?: string | null
+  replayable?: boolean
+  unconfirmedCleanup?: boolean
+}): Recovery {
+  if (!evidence.stopped) return 'unsafe'
+  if (evidence.completed) return 'report'
+  if (evidence.unconfirmedCleanup) return 'unsafe'
+  if (evidence.session) return 'resume'
+  return evidence.replayable ? 'replay' : 'unsafe'
+}
+
+export const recoveryPrompt = 'Continue the interrupted turn in this session. Check the current state and the results of previous operations first. Preserve completed work and user decisions. Do not repeat an operation whose result has already taken effect.'
+
 const BASE_MS = 15_000
 const CAP_MS = 120_000
 
@@ -25,7 +43,7 @@ export function backoffMs(attempt: number, random: () => number = Math.random): 
   return Math.round(step * (1 - 0.25 * random()))
 }
 
-export function planRetry(failure: ExecutionFailure, attempt: number, now = Date.now(), backoff = backoffMs):
+export function planRetry(failure: ExecutionFailure, attempt: number, now = Date.now(), backoff = backoffMs, task = false):
   { plan: RetryPlan } | { pause: RetryPause } {
   if (!Number.isSafeInteger(attempt) || attempt < 1 || failure.level === 3) return { pause: 'needs-review' }
   const of = failure.level === 1 ? 2 : 4
@@ -33,7 +51,8 @@ export function planRetry(failure: ExecutionFailure, attempt: number, now = Date
   const delay = failure.retryAfterMs
   const valid = delay !== undefined && !Number.isNaN(delay) && delay >= 0
   const wait = valid ? delay : failure.level === 1 ? 0 : backoff(attempt + 1)
-  if (wait > CAP_MS) return { pause: 'wait-too-long' }
+  const cap = task && failure.code === 'rate_limited' && valid ? 24 * 60 * 60_000 : CAP_MS
+  if (wait > cap) return { pause: 'wait-too-long' }
   return { plan: { at: now + wait, of, failure } }
 }
 
@@ -44,12 +63,12 @@ export function readFailure(raw: unknown): ExecutionFailure | undefined {
   return { code, level, reason, ...(['validation', 'provider', 'harness', 'invariant'].some(value => value === source) ? { source } : {}), ...(typeof retryAfterMs === 'number' && retryAfterMs >= 0 ? { retryAfterMs } : {}) }
 }
 
-export function readRetryPlan(raw: unknown, attempt: number): RetryPlan | undefined {
+export function readRetryPlan(raw: unknown, attempt: number, task = false): RetryPlan | undefined {
   if (!raw || typeof raw !== 'object') return
   const { at, of, failure: rawFailure } = raw as Partial<RetryPlan>
   const failure = readFailure(rawFailure)
   if (!failure || typeof at !== 'number' || !Number.isFinite(at)) return
-  const decision = planRetry(failure, attempt)
+  const decision = planRetry(failure, attempt, Date.now(), backoffMs, task)
   if ('plan' in decision && of === decision.plan.of) return { at, of, failure }
 }
 

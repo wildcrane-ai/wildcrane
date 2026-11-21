@@ -15,11 +15,9 @@ export interface ContextWindow {
   limit?: number
 }
 
-/** Every kind of agent session the board can start. */
+/** Current and historical run actions. */
 export type AgentAction =
   | 'implement'
-  /** Retired (#1414): one pass of a recurring card. Repeating work is a `scheduled` pass
-   *  now; this stays so the runs already recorded still read back as what they were. */
   | 'run'
   /** Retired (#1497): a rejection is filed on the spot. Stays so old runs read back. */
   | 'reject'
@@ -43,9 +41,6 @@ export type AgentAction =
   | 'writing'
   | 'gate'
   | 'decide'
-  /** One spec agent filling the part of a card's spec it owns (#187). It is named by
-   *  `specAgent`, it starts clean, and it writes one section of that card and nothing
-   *  else. A flow asks for one; the board starts it once that flow's own run has ended. */
   | 'spec'
   /** Retired (#1671) with releases. Kept so the runs already recorded still read back. */
   | 'changelog'
@@ -53,9 +48,6 @@ export type AgentAction =
   | 'review'
   /** Retired (#1507): nothing runs after a build any more. Kept for the runs recorded. */
   | 'hook'
-  /** One pass of a studio's scheduled agent (#1401): named by `specAgent` and `studio`, on
-   *  no card. The board starts it when its cadence comes round; it is a card-less delivery of
-   *  its own, so what it changes is committed and landed like a build. */
   | 'scheduled'
   /** A sub-run (#1421): a prompt another run handed off with `akb raw run start`, in that run's
    *  folder, as the same agent. Named by `parentId`; it holds no card and lands nothing. */
@@ -79,18 +71,9 @@ export type AgentAction =
   /** Retired (#1334): the sweeper is gone. Kept for the runs recorded. */
   | 'unstick'
 
-/** The actions a hook's agent runs as itself: one section of a card (`spec`), or a pass on
- *  its cadence (`scheduled`). Each is named by an agent rather than run by a role. The
- *  retired `hook` stays so its old records still name their agent. */
-export const SPECIALIST_ACTIONS: ReadonlySet<AgentAction> = new Set<AgentAction>(['spec', 'hook', 'scheduled'])
-
-/** The actions that do not hold the card they name: a spec agent, which works beside the loop
- *  that asked for it, and a reflection whose card has left the board altogether (#534). */
-const CARD_FREE_ACTIONS: ReadonlySet<AgentAction> = new Set<AgentAction>(['spec', 'reflect', 'sub'])
-
 /** Whether a run of this action holds the card it names. The one answer every lock reads,
  *  so a card-free run is exempt everywhere or nowhere. */
-export const holdsCard = (action: AgentAction): boolean => !CARD_FREE_ACTIONS.has(action)
+export const holdsCard = (action: AgentAction): boolean => action !== 'spec' && action !== 'reflect' && action !== 'sub'
 
 /** The action names used by refinement passes (`agent/refine.ts`). A pass carries its
  *  refine round; `resolve` without one is the standalone flow a user typed. */
@@ -146,8 +129,7 @@ export interface AgentRequest {
    *  run that joins a delivery takes the delivery's id instead, whatever is asked for
    *  here (#417). */
   flowId?: string
-  /** spec: which agent this run is — a name from the board's catalog (`lib/agents/`). It
-   *  decides the prompt the run is given and the section it is allowed to write. */
+  /** The parent agent's name on a sub-run. */
   specAgent?: string
   /** The runtime THIS run spawns on (#518) — the create sheet's pick, over the runtime its
    *  agent is set to. It applies to the one run and changes nothing in Configuration →
@@ -163,16 +145,22 @@ export interface AgentRequest {
 export type StartableAction = Exclude<AgentAction, RetiredAction>
 
 /** The actions no flow starts any more. */
-export type RetiredAction = 'propose' | 'writing' | 'gate' | 'decide' | 'review' | 'unstick' | 'run' | 'reject' | 'hook' | 'plan-release' | 'changelog' | 'triage'
+export type RetiredAction = 'propose' | 'writing' | 'gate' | 'decide' | 'review' | 'unstick' | 'run' | 'reject' | 'hook' | 'spec' | 'scheduled' | 'plan-release' | 'changelog' | 'triage'
 
-const RETIRED: ReadonlySet<AgentAction> = new Set<RetiredAction>(['propose', 'writing', 'gate', 'decide', 'review', 'unstick', 'run', 'reject', 'hook', 'plan-release', 'changelog', 'triage'])
+const RETIRED: ReadonlySet<AgentAction> = new Set<RetiredAction>(['propose', 'writing', 'gate', 'decide', 'review', 'unstick', 'run', 'reject', 'hook', 'spec', 'scheduled', 'plan-release', 'changelog', 'triage'])
+
+/** Refuse old Studio actions at an execution boundary while keeping their records readable. */
+export function retiredStudioRun(action: AgentAction): RunRefusal | undefined {
+  if (action === 'spec') return refusal('agentNotListed', 'Prepare Preview outputs in the task session using STUDIO.md.')
+  if (action === 'scheduled' || action === 'hook') return refusal('agentNotScheduled', 'Studio roles no longer run on their own.')
+}
 
 /** Whether nothing starts this action any more — it only reads back off an old record. */
 export const isRetired = (action: AgentAction): action is RetiredAction => RETIRED.has(action)
 
 /** Actions accepted by user-facing run commands. Internal refinement actions are absent. */
 export type CommandAction =
-  | Exclude<StartableAction, 'clarify' | 'spec' | 'scheduled' | 'sub'>
+  | Exclude<StartableAction, 'clarify' | 'sub'>
   | 'refine'
 
 /** A user-facing command request; `refine` is transformed before a session starts. */
@@ -336,6 +324,8 @@ export interface RunRecord {
   /** This run's id and the record's key — ours, always, generated before anything
    *  spawns. A harness that mints an id of its own keeps it in `resumeId`. */
   sessionId: string
+  cloudExecution?: import('../cloud/execution').CloudExecution
+  pendingWrites?: boolean
   cardId: number | null
   /** Cards this run created through `akb raw create`, held until it closes so an overlapping
    *  run cannot adopt and refine its half-written cards. */
@@ -742,19 +732,6 @@ export type DeliveryCommitMode = 'auto' | 'manual' | 'files'
  *  has already done. */
 export type DeliveryCarryOn = 'build'
 
-export interface SpecAsk {
-  /** The agent's name — a name from the board's catalog (`lib/agents/`). */
-  specAgent: string
-  cardId: number
-  /** What the flow wants looked at, in a line or two. Everything else the agent is given
-   *  is the card itself: the conversation that asked is deliberately not passed on. */
-  notes?: string
-}
-
-/** One ask for a refinement, written down by the run that asked for it with
- *  `akb raw card refine <id>`. Same handoff as `SpecAsk`, in the same file and started by the same
- *  watcher — and in the same flow, so the refinement reads as the next step of the job
- *  that handed the card over. */
 export interface RefineAsk {
   cardId: number
   notes?: string
@@ -795,8 +772,6 @@ export type ChatHandoff = AgentSession
 /** What a build with no card was handed, and everything its delivery is opened from: the
  *  sentence **Start now** typed (#428), or the plan the handoff was answered on (#481). */
 export interface DirectBuild {
-  /** On a scheduled agent's pass (#1401): whose it is, in place of a requirement. */
-  scheduled?: ScheduledPass
   /** The delivery's title — the sentence itself, or the plan's own title. */
   title: string
   /** And its frozen `approved` requirements — the same sentence, or the plan's words. */
@@ -1079,32 +1054,4 @@ export type ScheduleReason = 'archived-cards' | 'chats' | 'dismissals' | 'retryi
 export interface AutoSchedule {
   every: string
   reads?: 'archived-cards' | 'chats' | 'dismissals'
-}
-
-/** The three groups a studio lists its agents in. */
-export const STUDIO_GROUPS = ['previews', 'land', 'scheduled'] as const
-
-/** One of the three. */
-export type StudioGroup = (typeof STUDIO_GROUPS)[number]
-
-/** One agent of one studio, and what the studio asks of it on top of the agent's own
- *  instructions. An agent belongs to one studio (#1095); `off` keeps it there without
- *  running it. */
-export interface StudioHelper {
-  agent: string
-  extra: string
-  off?: boolean
-}
-
-/** The cadence a scheduled agent runs on until somebody sets one. */
-export const SCHEDULED_CADENCE = '1d'
-
-/** One scheduled agent of one studio (#1401): it runs by itself on `cadence`, on no card. */
-export interface StudioScheduled extends StudioHelper {
-  /** How often, in the grammar of `../cadence.ts`. */
-  cadence: string
-  /** When its last pass that PASSED began, as a minute stamp, or empty for "never run". */
-  lastRun: string
-  /** Where a cadence that never ran counts from — written by the scheduler's first look. */
-  since?: string
 }

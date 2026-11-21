@@ -1,8 +1,9 @@
 import { insideRun } from '../lib/agent/env'
 import { REPLY_APPROVAL_ENV } from '../lib/cloud/reply-approval'
+import { previewDefinitionsSchema } from '../lib/shared/preview-definitions'
 import { parseReviewPlan, type TaskReview } from '../lib/shared/review-plan'
 // `akb task`, `workspace`, `project`, `runner` (#550): the signed-in account's WildCrane tasks, read
-// and changed in Cloud from any chat. Nothing here reads or writes a board.
+// and changed from any chat.
 
 import { approveAfterReply } from '../lib/cloud/reply-approval'
 import fs from 'node:fs'
@@ -11,8 +12,20 @@ import path from 'node:path'
 
 import { cloudEndpoints } from '../lib/cloud/config'
 import { accessToken } from '../lib/cloud/session'
-import { cloudStudio, linkedProject } from '../lib/cloud/tasks'
-import { say } from '../lib/io'
+import { cloudStudio, linkedProject, numberOf, runnerProject, workspaceTask } from '../lib/cloud/tasks'
+import { executionOf } from '../lib/cloud/execution'
+import { resolveBoard, useBoard } from '../lib/board-cli'
+import { locate, locateArchived } from '../lib/cards'
+import { peekRun } from '../lib/agent/sessions'
+import { withCreationLock } from '../lib/agent/creation-lock'
+import { withBoardLock } from '../lib/lock'
+import { readRemoval, writeRemoval, type TaskOperationResult } from '../lib/cloud/task-operation'
+import { assetsFile } from '../lib/shared/board-files'
+import { withSyncLock } from '../lib/shared/board-conflicts'
+import { cmdRemove } from './remove'
+import { updateCardQuestions } from './card'
+import { BoardError, say } from '../lib/io'
+import { cloudError, cloudProblem, hasText, invalidResponse, isRecord, readCloudJson, requireResponse } from '../lib/cloud/response'
 import { die, projectRootOf } from '../lib/paths'
 import { parseFrontmatter } from '../lib/frontmatter'
 import { readQuestionOps } from '../lib/questions'
@@ -21,13 +34,14 @@ import type { Typed } from '../lib/cli/shared'
 import type { MoveResult } from '../lib/types'
 import { SAID } from './cloud'
 
-const refuse = (message: string, code: string): never => die(message, { kind: code, code })
+const refuse = (message: string, code: string): never => { throw cloudError({ code, message, retryable: false }) }
 
 /** One Cloud call as the signed-in account; every refusal ends the command with Cloud's words. */
 export async function cloud<T>(method: string, route: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   process.env.AI4KANBAN_HOME ??= process.env.WILDCRANE_HOME || path.join(os.homedir(), '.wildcrane')
   const token = await accessToken()
-  if (!token.ok) return refuse(SAID[token.reason].en, token.reason.replace('-', '_'))
+  if (!token.ok) throw cloudError({ code: token.reason.replace('-', '_'), message: ('error' in token ? token.error : undefined) ?? SAID[token.reason].en,
+    retryable: token.reason === 'unreachable' })
   let response: Response
   const request = new AbortController()
   const abort = () => request.abort()
@@ -43,12 +57,13 @@ export async function cloud<T>(method: string, route: string, body?: unknown, si
         signal: request.signal,
       })
     } catch {
-      refuse(SAID.unreachable.en, 'unreachable')
+      throw cloudError({ code: 'unreachable', message: SAID.unreachable.en, retryable: true })
     }
-    const value = (await response!.json().catch(() => ({}))) as T & { error?: { code?: string; message?: string } }
-    if (response!.status === 401) refuse(SAID.expired.en, 'expired')
-    if (!response!.ok) refuse(value.error?.message ?? `Cloud answered ${response!.status}.`, value.error?.code ?? 'refused')
-    return value
+    const value = await readCloudJson(response)
+    const problem = cloudProblem(response, value)
+    if (problem) throw cloudError(problem)
+    if (!isRecord(value)) throw cloudError(invalidResponse('a valid JSON response'))
+    return value as T
   } finally {
     clearTimeout(timeout)
     signal?.removeEventListener('abort', abort)
@@ -67,18 +82,24 @@ interface Task {
   key: string
   title: string
   status: string
+  project?: string
   studio: { id: string; name: string } | null
+  card_version?: number | null
   failure?: string | null
   review?: TaskReview | null
 }
 
 async function all<T>(route: string): Promise<T[]> {
   const rows: T[] = []
+  const cursors = new Set<string>()
   let after: string | null = null
   do {
     const page: Page<T> = await cloud('GET', `${route}${route.includes('?') ? '&' : '?'}limit=100${after ? `&after=${enc(after)}` : ''}`)
+    requireResponse(page, 'a valid results page', value => Array.isArray(value.data)
+      && (value.next === null || hasText(value.next) && !cursors.has(value.next)))
     rows.push(...page.data)
     after = page.next
+    if (after) cursors.add(after)
   } while (after)
   return rows
 }
@@ -136,11 +157,31 @@ export async function taskList(opts: { project?: string; workspace?: string; sta
 
 export async function taskShow(id: string, location: TaskLocation = {}): Promise<MoveResult> {
   const task = await cloud<Task>('GET', `/v1/tasks/${enc(await taskRef(id, location))}`)
-  const card = task.studio ? await cloud<{ body: string }>('GET', `/v1/tasks/${enc(task.id)}/card`).catch(() => null) : null
+  requireTask(task)
+  if (task.studio != null && (!isRecord(task.studio) || !hasText(task.studio.name))) {
+    throw cloudError(invalidResponse('the task’s Studio'))
+  }
+  let card: { body: string } | null = null
+  if (task.studio) {
+    try {
+      card = requireResponse(await cloud<{ body: string }>('GET', `/v1/tasks/${enc(task.id)}/card`),
+        'the card body', value => hasText(value.body))
+    } catch (error) {
+      if (!(error instanceof BoardError) || error.details.code !== 'not_found' || (task.card_version ?? 0) > 0) throw error
+    }
+  }
+  const board = linkedBoard(location)
+  const removal = board && /^task_[\w-]+$/.test(task.id) ? readRemoval(board, task.id) : null
+  const archive = board ? archiveReceipt(board, task.id) : null
+  const sync = removal && (removal.status !== 'confirmed' || task.status === 'cancelled')
+    ? { kind: 'remove', ...operationStatus(removal) }
+    : archive && (archive.status === 'confirmed') === (task.status === 'done') ? { kind: 'archive', ...operationStatus(archive) } : null
   say(`${task.key}  ${task.title}`)
   say(`${task.status}${task.studio ? `  ${task.studio.name}` : ''}  ${taskUrl(task.key)}`)
-  if (card?.body) say(`\n${card.body.trim()}`)
-  return { ...task, card }
+  if (card) say(`\n${card.body.trim()}`)
+  else if (task.studio) say('The card has not been generated yet.')
+  if (sync) say(`${sync.kind === 'remove' ? 'Removal' : 'Archive'}: ${sync.status}${'code' in sync && sync.code ? ` [${sync.code}] ${sync.message ?? ''}` : ''}.`)
+  return { ...task, card, card_read_status: card ? 'available' : task.studio ? 'not_generated' : 'no_studio', ...(sync ? { sync } : {}) }
 }
 
 export async function taskCreate(request: string, opts: { project?: string; studio?: string }, location: TaskLocation = {}): Promise<MoveResult> {
@@ -163,15 +204,19 @@ export async function taskCreate(request: string, opts: { project?: string; stud
   return { ...task }
 }
 
-/** The step names a task; each says what it did in one line. */
-async function act(id: string, route: string, body: unknown, done: (key: string) => string, location: TaskLocation = {}): Promise<MoveResult> {
+function requireTask(task: Task): Task {
+  return requireResponse(task, 'a task receipt', value => hasText(value.id) && hasText(value.key) && hasText(value.status))
+}
+
+async function act(id: string, route: string, body: unknown, done: (key: string, value: Record<string, unknown>) => string,
+  location: TaskLocation): Promise<MoveResult> {
   const ref = await taskRef(id, location)
   const value = await cloud<Record<string, unknown>>('POST', `/v1/tasks/${enc(ref)}/${route}`, body)
-  say(done(ref))
+  say(done(ref, value))
   return value
 }
 
-export interface ReviewOptions { stage?: string; revision?: string; file?: string; status?: string; reviseFrom?: string }
+export interface ReviewOptions { previewDefinitionsFile?: string; stage?: string; revision?: string; review?: string; file?: string; status?: string; reviseFrom?: string }
 
 function reviewRevision(value?: string): number {
   if (value === undefined || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) die('--revision must name the version you read.')
@@ -179,20 +224,28 @@ function reviewRevision(value?: string): number {
 }
 
 export async function taskReview(id: string, opts: ReviewOptions = {}, location: TaskLocation = {}): Promise<MoveResult> {
+  const count = [opts.review, opts.file, opts.status, opts.reviseFrom].filter(v => v !== undefined).length
+  if (count > 1 || opts.stage !== undefined && opts.status === undefined) die('Use one of --review, --file, --stage with --status, or --revise-from.')
   const ref = await taskRef(id, location)
-  const count = [opts.file, opts.status, opts.reviseFrom].filter(v => v !== undefined).length
-  if (count > 1 || opts.stage && !opts.status) die('Use one of --file, --stage with --status, or --revise-from.')
   let task: Task
-  if (!count) task = await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`)
+  if (opts.previewDefinitionsFile !== undefined && (opts.status !== undefined || opts.reviseFrom !== undefined)) die('Preview definitions can only change with a review plan.')
+  if (!count && opts.previewDefinitionsFile === undefined) task = await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`)
   else {
     const review_revision = reviewRevision(opts.revision)
     let fields: Record<string, unknown>
-    if (opts.file) fields = { operation: 'plan', review_plan: parseReviewPlan(JSON.parse(fs.readFileSync(opts.file, 'utf8'))) }
-    else if (opts.reviseFrom) fields = { operation: 'revise', stage: opts.reviseFrom }
-    else {
+    if (opts.review !== undefined) {
+      fields = { operation: 'plan', review_flow: opts.review }
+    } else if (opts.file !== undefined) {
+      fields = { operation: 'plan', review_plan: parseReviewPlan(JSON.parse(fs.readFileSync(opts.file, 'utf8'))) }
+    } else if (opts.reviseFrom !== undefined) {
+      fields = { operation: 'revise', stage: opts.reviseFrom }
+    } else if (opts.previewDefinitionsFile !== undefined) {
+      fields = { operation: 'plan' }
+    } else {
       if (!opts.stage || !['running', 'done'].includes(opts.status!)) die('--stage and --status running|done are required.')
       fields = { operation: 'status', stage: opts.stage, status: opts.status }
     }
+    if (opts.previewDefinitionsFile !== undefined) fields.preview_definitions = previewDefinitionsSchema.parse(JSON.parse(fs.readFileSync(opts.previewDefinitionsFile, 'utf8')))
     task = await cloud<Task>('POST', `/v1/tasks/${enc(ref)}/review`, { ...fields, review_revision })
   }
   say(JSON.stringify(task.review, null, 2))
@@ -206,19 +259,51 @@ export async function taskApprove(id: string, comment?: string, opts: ReviewOpti
   const deferred = await approveAfterReply(ref, comment, { stage: opts.stage, review_revision })
   if (deferred) return deferred
   return act(ref, 'decisions', { decision: 'approve', review_revision, ...(opts.stage ? { stage: opts.stage } : {}),
-    ...(comment?.trim() ? { comment: comment.trim() } : {}) }, k => `Approved ${k}.`, location)
+    ...(comment?.trim() ? { comment: comment.trim() } : {}) }, (key, value) => {
+    requireResponse(value, 'an approval receipt', receipt => hasText(receipt.id) && receipt.decision === 'approve')
+    return `Approved ${key}.`
+  }, location)
 }
 
-/** `raw update-questions` on a Cloud task's card (#620), checked here first against the card read. */
 export async function taskUpdateQuestions(id: string, typed: Typed[], location: TaskLocation = {}): Promise<MoveResult> {
   const ops = readQuestionOps(typed)
+  const current = executionOf() ? workspaceTask() : null
   const ref = await taskRef(id, location)
-  const card = await cloud<{ version: number; body: string }>('GET', `/v1/tasks/${enc(ref)}/card`)
-  const questions = parseFrontmatter(card.body).meta?.questions ?? []
+  const selected = current && !ref.startsWith('task_')
+    ? requireTask(await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`))
+    : null
+  const target = selected?.id ?? ref
+  if (current && target === current) {
+    const board = runnerTaskBoard(location)
+    const unavailable = () => refuse('Cannot find the current task’s local card on its Runner board.', 'local_card_unavailable')
+    if (!board) return unavailable()
+    return withSyncLock(board, async () => {
+      const project = runnerProject(board)
+      const mapped = localTaskRecord(board, current)
+      if (!mapped || !project || (selected && (selected.project !== project || numberOf(selected.key) !== mapped.number))) {
+        return unavailable()
+      }
+      const root = projectRootOf(board)
+      useBoard({ board, root, named: true }, false, true)
+      return withBoardLock(() => {
+        const run = insideRun()
+        const runCard = run ? peekRun(run)?.cardId : null
+        if ((runCard != null && runCard !== mapped.number) || !fs.existsSync(path.join(board, 'todo')) || !locate(mapped.number)) {
+          return unavailable()
+        }
+        return updateCardQuestions(mapped.number, ops)
+      })
+    })
+  }
+
+  const card = requireResponse(await cloud<{ version: number; body: string }>('GET', `/v1/tasks/${enc(target)}/card`),
+    'the card body and version', value => hasText(value.body) && Number.isSafeInteger(value.version) && value.version >= 0)
+  const meta = parseFrontmatter(card.body).meta
+  if (!meta) return refuse('The card has no frontmatter.', 'bad_request')
   let changes: string[]
   let open: number
   try {
-    const done = applyQuestionOps(questions, ops)
+    const done = applyQuestionOps(meta.questions, ops)
     changes = done.changes
     open = done.questions.length
   } catch (e) {
@@ -230,25 +315,212 @@ export async function taskUpdateQuestions(id: string, typed: Typed[], location: 
     if (op.kind === 'append') return { append: q }
     if (op.kind === 'update') return { update: op.n, question: q }
     if (op.kind === 'drop') return { drop: questionPositions(op.ns, Infinity, 'drop') }
-    if (op.kind === 'clear') return { clear: true }
-    return die(`akb task update-questions has no --${op.kind}; --drop removes a question`)
+    return { clear: true }
   })
-  const task = await cloud<Task>('PATCH', `/v1/tasks/${enc(ref)}/questions`, { base_version: card.version, ops: body })
+  const task = await cloud<Task>('PATCH', `/v1/tasks/${enc(target)}/questions`, { base_version: card.version, ops: body })
   say(`updated ${task.key} questions: ${changes.join(', ')} (${open} open)`)
   return { ...task, changes, open }
 }
 
-export const taskChat = (id: string, message: string, location: TaskLocation = {}) => act(id, 'chat', { body: message }, (k) => `Sent to ${k}.`, location)
-export const taskRemove = (id: string, reason: string, location: TaskLocation = {}) =>
-  act(id, 'cancel', reason.trim() ? { reason: reason.trim() } : undefined, (k) => `Removed ${k}. Restore it with akb task restore ${k}.`, location)
+export const taskChat = (id: string, message: string, location: TaskLocation = {}) =>
+  act(id, 'chat', { body: message }, (key, chat) => {
+    requireResponse(chat, 'a chat message receipt', value => Array.isArray(value.messages)
+      && value.messages.some(msg => isRecord(msg) && hasText(msg.id) && msg.role === 'user' && msg.body === message.trim()))
+    if (hasText(chat.failure) || ['failed', 'conflict', 'runner_offline', 'stopped'].includes(String(chat.status))) {
+      return refuse(hasText(chat.failure) ? chat.failure : `Chat reply: ${chat.status}.`, 'reply_failed')
+    }
+    return ['queued', 'replying'].includes(String(chat.status)) ? `Sent to ${key}. Reply pending.` : `Sent to ${key}.`
+  }, location)
+
+function runnerTaskBoard(location: TaskLocation): string | null {
+  const runnerBoard = process.env.AI4KANBAN_BOARD?.trim()
+  if (!runnerBoard) return null
+  const cwd = location.cwd ?? process.cwd()
+  try {
+    const board = path.resolve(cwd, location.board ?? runnerBoard)
+    return fs.realpathSync(board) === fs.realpathSync(path.resolve(cwd, runnerBoard)) && runnerProject(board) ? board : null
+  } catch { return null }
+}
+
+// The Runner's sync record maps a task ID to its card number.
+function localTaskRecord(board: string, task: string) {
+  if (!/^task_[\w-]+$/.test(task)) return null
+  try {
+    const record = JSON.parse(fs.readFileSync(path.join(board, '.sync', task + '.json'), 'utf8'))
+    if (record.task === task && Number.isSafeInteger(record.number) && record.number > 0 && !record.deleted) {
+      return { board, task, number: record.number as number }
+    }
+  } catch { /* The task has no local sync record. */ }
+  return null
+}
+
+function localTaskTarget(location: TaskLocation) {
+  const task = workspaceTask()
+  if (!task || !executionOf()) return null
+  const board = runnerTaskBoard(location)
+  return board ? localTaskRecord(board, task) : null
+}
+
+function linkedBoard(location: TaskLocation): string | null {
+  const cwd = location.cwd ?? process.cwd()
+  const named = location.board ?? process.env.AI4KANBAN_BOARD
+  if (named) {
+    const board = path.resolve(cwd, named)
+    return runnerProject(board) ? board : null
+  }
+  for (let dir = path.resolve(cwd, location.dir ?? '.'); ; dir = path.dirname(dir)) {
+    const board = path.join(dir, '.akb', 'kanban')
+    if (runnerProject(board)) return board
+    if (path.dirname(dir) === dir) return null
+  }
+}
+
+function operationStatus(result: TaskOperationResult): TaskOperationResult {
+  if (result.status === 'confirmed') return { status: result.status }
+  return { status: result.status, code: result.code, message: result.message }
+}
+
+function archiveReceipt(board: string, task: string, file?: string): TaskOperationResult | null {
+  try {
+    const base = JSON.parse(fs.readFileSync(path.join(board, '..', 'base.json'), 'utf8'))
+    const receipt = base.archiveReceipts?.[task]
+    const root = `projects/${runnerProject(board)}/`
+    const synced = receipt && base.files?.[root + receipt.path]
+    const manifest = assetsFile(task)
+    const assets = base.files?.[root + manifest]
+    if (synced && (!file || receipt.path === file) && synced.seq === receipt.seq && (assets?.seq ?? 0) === receipt.assets_seq) {
+      const local = (name: string) => {
+        try { return fs.readFileSync(path.join(board, name), 'utf8') } catch { return null }
+      }
+      if (synced.content === local(receipt.path) && (assets?.content ?? null) === local(manifest)) return operationStatus(receipt)
+      if (file) return { status: 'pending' }
+    }
+    return base.pendingArchives?.[task] ? { status: 'pending' } : null
+  } catch { return null }
+}
+
+export async function taskArchive(asked: string, location: TaskLocation = {}): Promise<MoveResult> {
+  const ref = asked.trim()
+  const local = localTaskTarget(location)
+  const keyMatch = local && /^[a-z][a-z0-9]{0,9}-[1-9]\d{0,8}$/i.test(ref)
+    ? await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`) : null
+  if (local && (ref === local.task || /^\d+$/.test(ref) && Number(ref) === local.number || keyMatch && keyMatch.id === local.task)) {
+    const archive = await withSyncLock(local.board, async () => {
+      useBoard({ board: local.board, root: projectRootOf(local.board), named: true }, false)
+      return withCreationLock(() => withBoardLock(() => {
+        if (locate(local.number)) return { receipt: cmdRemove(local.number, 'completed', { archivingTask: true }) }
+        const existing = locateArchived(local.number)
+        if (!existing) return null
+        const file = existing.kind === 'group' ? path.join(existing.target, 'root.md') : existing.target
+        const { meta } = parseFrontmatter(fs.readFileSync(file, 'utf8'))
+        if (!meta?.archived || meta.rejected) return refuse('This task is not eligible for archive.', 'conflict')
+        return { receipt: { archived_to: path.relative(local.board, existing.target) },
+          existing: path.relative(local.board, file) }
+      }))
+    })
+    if (archive) {
+      const receipt = archive.existing && archiveReceipt(local.board, local.task, archive.existing)
+      if (receipt && receipt.status === 'confirmed') {
+        say('Archive confirmed by Cloud.')
+        return { task: local.task, archive_status: 'archived' }
+      }
+      if (receipt && receipt.status === 'rejected') {
+        if (receipt.code === 'version_conflict' || receipt.code === 'not_found') {
+          return refuse(receipt.message ?? 'Cloud rejected the archive.', receipt.code)
+        }
+        // An explicit retry rechecks the Cloud refusal after review or questions change.
+      } else {
+        const pending = receipt && receipt.status === 'pending' && receipt.code ? receipt : null
+        say(`Archived locally. Waiting for Runner synchronization.${pending ? ` [${pending.code}] ${pending.message}` : ''}`)
+        return { ...archive.receipt, task: local.task, archive_status: 'pending_sync', ...(pending ? { sync: pending } : {}) }
+      }
+    }
+  }
+  const result = await cloud<Task>('POST', `/v1/tasks/${enc(keyMatch?.id ??
+    (local && /^\d+$/.test(ref) && Number(ref) === local.number ? local.task : await taskRef(ref, location)))}/archive`)
+  requireResponse(requireTask(result), 'confirmation that the task was archived', task => task.status === 'done')
+  say(`Archived ${result.key}.`)
+  return { task: result.id, archive_status: 'archived' }
+}
+
+export async function taskRemove(asked: string, reason: string, location: TaskLocation = {}, discard = false): Promise<MoveResult> {
+  const ref = asked.trim()
+  const text = reason.trim()
+  if (text.length > 2000) return refuse('The removal reason must be at most 2000 characters.', 'payload_too_large')
+  const local = localTaskTarget(location)
+  const numeric = /^\d+$/.test(ref)
+  const run = insideRun()
+  const keyMatch = local && /^[a-z][a-z0-9]{0,9}-[1-9]\d{0,8}$/i.test(ref) && ref.endsWith(`-${local.number}`)
+    ? await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`) : null
+  if (local && (ref === local.task || numeric && Number(ref) === local.number || keyMatch?.id === local.task)) {
+    return withSyncLock(local.board, async () => {
+      const held = readRemoval(local.board, local.task)
+      if (held?.status === 'confirmed') {
+        const current = requireTask(keyMatch ?? await cloud<Task>('GET', `/v1/tasks/${enc(local.task)}`))
+        if (current.status === 'cancelled') {
+          say('Removal confirmed by Cloud.')
+          return { task: local.task, remove_status: 'removed' }
+        }
+      } else if (held?.status === 'rejected') {
+        const current = requireTask(keyMatch ?? await cloud<Task>('GET', `/v1/tasks/${enc(local.task)}`))
+        if (current.status === 'done' || current.status === 'cancelled') return refuse(held.message ?? 'Cloud rejected the removal.', held.code ?? 'conflict')
+      }
+      if (held?.status !== 'pending') writeRemoval(local.board, local.task, { status: 'pending', reason: text, discard: true })
+      const pending = held?.status === 'pending' && held.code ? operationStatus(held) : null
+      say(`Removal queued for Runner synchronization.${pending && pending.status !== 'confirmed' ? ` [${pending.code}] ${pending.message}` : ''}`)
+      return { task: local.task, board: local.board, remove_status: 'pending_sync', ...(pending ? { sync: pending } : {}) }
+    })
+  }
+
+  if (!workspaceTask() && run && numeric) {
+    const found = resolveBoard('reject', { board: location.board, dir: location.dir ?? null,
+      cwd: location.cwd ?? process.cwd(), installHint: 'Connect the project to WildCrane' })
+    useBoard(found, location.dir != null, true)
+    const number = Number(ref)
+    if (peekRun(run)?.cardId === number) {
+      useBoard(found, location.dir != null)
+      return { board: found.board, ...withCreationLock(() => withBoardLock(() => cmdRemove(number, 'rejected', { reason: text, discard }))) }
+    }
+  }
+
+  const skipLearning = discard || Boolean(workspaceTask() || run)
+  const body = { ...(text ? { reason: text } : {}), ...(skipLearning ? { discard: true } : {}) }
+  return act(keyMatch?.id ?? ref, 'cancel', Object.keys(body).length ? body : undefined,
+    (key, value) => {
+      requireResponse(value, 'confirmation that the task was removed', task => hasText(task.id) && task.status === 'cancelled')
+      return `Removed ${keyMatch ? ref : key} in Cloud. Restore it with akb task restore ${keyMatch ? ref : key}.`
+    }, location)
+}
 export async function taskRestore(id: string, location: TaskLocation = {}): Promise<MoveResult> {
   const task = await cloud<Task>('POST', `/v1/tasks/${enc(await taskRef(id, location))}/restore`)
+  requireResponse(requireTask(task), 'confirmation that the task was restored', value => ['stopped', 'waiting_review', 'failed'].includes(value.status))
   say(`Restored ${task.key}. Status: ${task.status}.`)
   return { ...task }
 }
-export const taskResume = (id: string, location: TaskLocation = {}) => act(id, 'resume', undefined, (k) => `Resumed ${k}.`, location)
-export const taskStop = (id: string, location: TaskLocation = {}) => act(id, 'stop', undefined, (k) => `Stopped ${k}.`, location)
-export const taskComment = (id: string, text: string, location: TaskLocation = {}) => act(id, 'comments', { body: text }, (k) => `Commented on ${k}.`, location)
+export async function taskResume(id: string, location: TaskLocation = {}): Promise<MoveResult> {
+  const task = requireTask(await cloud<Task>('POST', `/v1/tasks/${enc(await taskRef(id, location))}/resume`))
+  if (!['queued', 'running'].includes(task.status)) {
+    const reason = task.failure || (task.status === 'waiting_review' ? 'The task is waiting for review.' :
+      ['done', 'cancelled'].includes(task.status) ? 'This task has finished.' : `The task is ${task.status}.`)
+    return refuse(reason, task.status === 'failed' ? 'execution_failed' : 'conflict')
+  }
+  say(task.status === 'queued' ? `Resume queued for ${task.key}.` : `Resumed ${task.key}.`)
+  return { ...task }
+}
+
+export async function taskStop(id: string, location: TaskLocation = {}): Promise<MoveResult> {
+  const task = requireTask(await cloud<Task>('POST', `/v1/tasks/${enc(await taskRef(id, location))}/stop`))
+  requireResponse(task, 'a stop receipt', value => ['running', 'queued', 'waiting_review', 'stopped'].includes(value.status))
+  const stop_status = task.status === 'stopped' ? 'stopped' : 'requested'
+  say(stop_status === 'stopped' ? `Stopped ${task.key}.` : `Stop requested for ${task.key}.`)
+  return { ...task, stop_status }
+}
+
+export const taskComment = (id: string, text: string, location: TaskLocation = {}) =>
+  act(id, 'comments', { body: text }, (key, value) => {
+    requireResponse(value, 'a comment receipt', receipt => hasText(receipt.id) && receipt.body === text.trim())
+    return `Commented on ${key}.`
+  }, location)
 
 export async function workspaceList(): Promise<MoveResult> {
   const data = await all<Workspace>('/v1/workspaces')

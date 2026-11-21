@@ -5,7 +5,6 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { parseEnv } from 'node:util'
 import { followProxy } from './proxy'
 
 /** `WILDCRANE_HOME` moves it, which is what a test uses. */
@@ -23,23 +22,8 @@ export function runnerCwd(): string {
 /** The CLI's session code reads its folder from `AI4KANBAN_HOME`; point it here. Every entry calls this, so the proxy is re-read here too. */
 export function useRunnerHome(): void {
   process.env.AI4KANBAN_HOME = runnerHome()
-  loadProxyFile()
   followProxy()
   setInterval(followProxy, 60_000).unref()
-}
-
-// `proxy.env` fills in proxy variables the host did not pass.
-function loadProxyFile(): void {
-  try {
-    const config = parseEnv(fs.readFileSync(path.join(runnerHome(), 'proxy.env'), 'utf8'))
-    for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY']) {
-      const lower = key.toLowerCase()
-      const value = config[lower] ?? config[key]
-      if (value !== undefined && process.env[key] === undefined && process.env[lower] === undefined) process.env[key] = value
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.error('runner: could not load proxy.env')
-  }
 }
 
 /** This computer's id, minted once. Opaque to Cloud: only equality is read. */

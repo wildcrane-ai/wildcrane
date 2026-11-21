@@ -19,8 +19,12 @@ cannot proceed and offer ways forward.
 - **Not a question**: where a fix goes (`akb guide follow-up`).
 
 ```text
-akb raw update-questions <id> \
+akb task update-questions <task> \
   --append "Which behavior should apply?" \
   --recommended-option "A — outcome and cost" \
   --option "B — outcome and cost"
 ```
+
+Use the current task's key, ID, or project number. Runner saves the current card locally
+and synchronizes it with the rest of the card. For a Cloud version conflict, read the card
+again and check the question positions before resubmitting.

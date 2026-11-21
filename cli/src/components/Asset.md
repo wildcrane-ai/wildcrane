@@ -9,5 +9,8 @@ Inline and fenced examples remain text.
 - **Loop**: add `loop` for muted, looping video without controls.
 - **Tiled map**: a `.tmx` or `.tmj` `src` draws as a map; keep its `.tsx`/`.tsj` tilesets and images beside it, at the relative paths it names.
 - **Sprite animation**: a TexturePacker JSON (Hash or Array) `src` plays as an animation; keep its sheet image beside it, at the relative path `meta.image` names.
-- **Web page**: an `.html` `src` loads only the files its tags and styles name by relative path, never paths that appear only in its scripts.
+- **Web page**: an `.html` or `.htm` `src` loads only the relative paths named in its tags and styles.
+- **Mermaid**: a `.mmd` or `.mermaid` `src` draws a diagram and shows its source if it cannot render.
+- **Documents**: PDF, DOCX, and PPTX open in a read-only viewer with page and zoom controls. DOCX and PPTX previews use LibreOffice and the fonts installed on the Runner. The original remains downloadable.
+- **Excel**: a `.xlsx` draws a read-only workbook with sheet tabs, formulas, and saved results.
 - **Text**: code and other text files show as highlighted text; a `.diff` or `.patch` shows its added and removed lines.

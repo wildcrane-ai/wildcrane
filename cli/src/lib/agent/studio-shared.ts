@@ -45,15 +45,10 @@ export function readStudioMemory(studio: string): { name: string; text: string }
 
 const fileLine = (studio: string, file: string) => `- \`${file}\` — \`${rawMove(`file ${studio} ${file}`)}\``
 
-/** The prompt sections a run on `studio` gets: its rules, its files (with `agent`'s own when it
- *  is one of the studio's agents), and, with `memory`, what it remembers. */
-export function studioSections(studio: string | undefined, _opts: { agent?: string; memory?: boolean } = {}): string[] {
+/** Extra rules from the task's Studio. */
+export function studioSections(studio: string | undefined): string[] {
   const files = studio ? studioFiles(studio) : null
   if (!studio || !files) return []
   const rules = files[RULES_FILE]?.trim()
   return rules ? [`——— Studio rules ———\n\n${rules}`] : []
 }
-
-/** Whether `studio`'s files list `agent`'s own, so `studioSections` names them. */
-export const studioHoldsAgent = (studio: string | undefined, agent: string): boolean =>
-  !!studio && Object.keys(studioFiles(studio) ?? {}).some((f) => f.startsWith(`agents/${agent}/`))
