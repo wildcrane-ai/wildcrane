@@ -1,4 +1,4 @@
-// wildcrane-runner 0.6.117 — built by runner/scripts/build.mjs. Do not edit.
+// wildcrane-runner 0.6.118 — built by runner/scripts/build.mjs. Do not edit.
 import { createRequire as __ai4kanbanRequire } from 'node:module'
 const require = __ai4kanbanRequire(import.meta.url)
 var __create = Object.create;
@@ -43500,7 +43500,7 @@ var init_package = __esm({
   "../cli/package.json"() {
     package_default = {
       name: "wildcrane",
-      version: "0.11.99",
+      version: "0.11.100",
       akbContract: 33,
       canonicalCommands: true,
       description: "WildCrane's `akb` command \u2014 scaffold the Markdown board under docs/kanban/, put an agent on a card, and carry the flows the agent works by.",

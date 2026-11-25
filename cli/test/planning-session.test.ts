@@ -368,9 +368,11 @@ it('sends compact task turns on new, carried and resumed Cloud sessions', async 
   `)
   const manifest = path.join(root, 'approved-inputs.md')
   fs.writeFileSync(manifest, 'Pinned approved asset v2\n')
+  const initialVersion = 11212
+  const updatedVersion = 11213
   const vars = {
     AI4KANBAN_TASK: 'task_42', AI4KANBAN_TASK_REVIEW: '', AI4KANBAN_REVIEW_STAGES: '',
-    [STUDIO_SNAPSHOT_ENV]: JSON.stringify({ studio: 'wf_builtin_coding', version: 1 }),
+    [STUDIO_SNAPSHOT_ENV]: JSON.stringify({ studio: 'wf_builtin_coding', version: initialVersion }),
     AI4KANBAN_SAVED_PREVIEW_FILE: manifest, AI4KANBAN_COMMAND: 'akb',
   }
   for (const [key, value] of Object.entries(vars)) {
@@ -386,7 +388,7 @@ it('sends compact task turns on new, carried and resumed Cloud sessions', async 
       'skills/export/schema.txt': 'schema v' + version,
     },
   })
-  savePin('task_42', studio(1))
+  savePin('task_42', studio(initialVersion))
   delete process.env.AI4KANBAN_REVIEW_STAGES
   const design = { id: 'design', after: [], previews: ['ui-design'] }
   const review = (revision: number, status: 'available' | 'approved', body?: string) => {
@@ -424,11 +426,11 @@ preferences:
   review(3, 'available')
   const fresh = await task({ action: 'clarify', session: 'new' })
   const introduced = await sent(fresh, 'refine')
-  assert.doesNotMatch(introduced, /Plan the task|Read schema\.txt|schema v1/)
-  assert.match(introduced, /### Available skills\n- export: Export v1\./)
+  assert.doesNotMatch(introduced, /Plan the task|Read schema\.txt|schema v\d+/)
+  assert.ok(introduced.includes(`### Available skills\n- export: Export v${initialVersion}.`))
   const skill = / \(file: (.+)\)$/m.exec(introduced)?.[1]
   assert.ok(skill)
-  assert.equal(fs.readFileSync(path.join(path.dirname(skill), 'schema.txt'), 'utf8'), 'schema v1')
+  assert.equal(fs.readFileSync(path.join(path.dirname(skill), 'schema.txt'), 'utf8'), `schema v${initialVersion}`)
   const carried = await task({ action: 'clarify' })
   assert.equal(carried.continues?.resumeId, fresh.sessionId)
   const carriedPrompt = await sent(carried, 'refine')
@@ -463,12 +465,12 @@ preferences:
   assert.match(built, /Stages complete[\s\S]*Only stage approval accepts reviewable outputs/)
   assert.ok(built.includes(`Use \`custom-akb --board ${board}\` for \`akb\`.`))
   review(8, 'approved', 'Frozen draft text')
-  savePin('task_42', studio(2))
-  process.env[STUDIO_SNAPSHOT_ENV] = JSON.stringify({ studio: 'wf_builtin_coding', version: 2 })
+  savePin('task_42', studio(updatedVersion))
+  process.env[STUDIO_SNAPSHOT_ENV] = JSON.stringify({ studio: 'wf_builtin_coding', version: updatedVersion })
   const resumed = await openResume(first.sessionId)
   if ('error' in resumed) assert.fail(resumed.error)
   assert.equal(resumed.run.resumedFrom, first.sessionId)
-  assert.equal(resumed.run.studioPin?.version, 1)
+  assert.equal(resumed.run.studioPin?.version, initialVersion)
   const continued = await sent(resumed.run, 'implement')
   assert.match(continued, /^Continue delivery[\s\S]*Stages complete/)
   assert.doesNotMatch(continued, /Available skills/)
