@@ -107,9 +107,7 @@ export async function saveReplyImages(parts: LocalReplyPart[], cwd: string,
       bytes = f.read()
       if (`rim_${createHash('sha256').update(bytes).digest('hex')}` !== key || imageMime(bytes) !== f.mime) continue
     } catch { continue }
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try { saved.set(key, await upload(key.slice(4), bytes, f.mime)); break } catch { /* Bounded retry; the model is never rerun. */ }
-    }
+    try { saved.set(key, await upload(key.slice(4), bytes, f.mime)) } catch { /* Keep the rest of the reply. */ }
   }
   return read.parts.map(p => {
     if (p.type !== 'image' || !p.id) return p

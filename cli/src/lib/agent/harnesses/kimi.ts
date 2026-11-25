@@ -1,7 +1,9 @@
 import { join } from 'node:path'
 
 import { home } from './models'
-import { createKimiStreamRenderer } from '../wire'
+import { createAcpClient, createKimiStreamRenderer } from '../wire'
+import { readKimiRunFacts } from '../wire/kimi-session'
+import { ownUsage, ZERO_USAGE } from '../wire/usage'
 import { machineFile, namesFlag, type Harness } from './types'
 
 // Kimi Code CLI, Moonshot's coding agent (#377). The binary is `kimi`, and what this
@@ -46,6 +48,27 @@ function kimiExtraArgs(argv: string[], before: string[] = []): string[] {
   return extra
 }
 
+function imageClient(model?: string) {
+  const client = createAcpClient({ tool: 'kimi', model, config: { mode: 'auto' }, fallbackOnSetupFailure: true })
+  return {
+    ...client,
+    async turn(io: Parameters<typeof client.turn>[0]) {
+      let session = io.resumeId
+      const before = session ? readKimiRunFacts(session)?.usage : ZERO_USAGE
+      const end = await client.turn({
+        ...io,
+        gotResumeId(id, restarted) {
+          if (restarted || !session) session = id
+          io.gotResumeId(id, restarted)
+        },
+      })
+      if (!session || end.canFallback) return end
+      const facts = readKimiRunFacts(session)
+      return { ...end, usage: end.usage ?? ownUsage(facts?.usage, before), context: end.context ?? facts?.context }
+    },
+  }
+}
+
 export const KIMI: Harness = {
   name: 'kimi',
   label: 'Kimi Code',
@@ -53,6 +76,8 @@ export const KIMI: Harness = {
   // No `-p` here on purpose: it has to be the last flag on the line, and this is only the
   // start of one. `kimiExtraArgs` adds it after everything else.
   command: 'kimi --output-format stream-json',
+  // ACP does not load the print command's agent profile.
+  discussionImages: { args: ['acp'], client: ({ model }) => imageClient(model), fallbackToPath: true },
 
   // Nothing to pin: Kimi mints its own session id and takes none from us. The id arrives on
   // the run's closing row, and the renderer reports it.

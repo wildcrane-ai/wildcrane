@@ -2,7 +2,7 @@ import { isObject } from '../references';
 
 export type StudioAgent = { agent: string; title: { en: string; zh?: string }; icon?: string | { d: string; f?: string; o?: true; s?: string; w?: number }[] };
 export type StudioFile = { path: string; before: string | null; after: string | null; diff?: string };
-export type AssetResult = { src: string; label?: string; alt?: string; device?: 'mobile' | 'desktop'; loop?: boolean; variants?: Record<string, string> };
+export type AssetResult = { src: string; label?: string; alt?: string; device?: 'mobile' | 'desktop'; loop?: boolean; playable?: boolean; variants?: Record<string, string> };
 export type StudioResult = { agent: string } & (
   | ({ component: 'Asset' } & AssetResult)
   | { component: 'Set'; label: string; items: AssetResult[] }
@@ -13,6 +13,7 @@ export type StudioReview = {
   version: 2;
   base: { id: string; version: number; fingerprint: string } | null;
   fingerprint: string;
+  versionFile?: string;
   agents?: StudioAgent[];
   files: StudioFile[];
   results?: StudioResult[];
@@ -20,12 +21,14 @@ export type StudioReview = {
 const text = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 const source = (v: unknown): v is string => text(v) && !/^(?:[a-z][\w+.-]*:|\/|#)|\\|[\u0000-\u001f]/i.test(v);
 const icon = (v: unknown) => v === undefined || typeof v === 'string' || (Array.isArray(v) && v.length > 0 && v.length <= 12 && v.every(p => isObject(p) && text(p.d) && /^[MmLlHhVvCcSsQqTtAaZz0-9.,\s-]+$/.test(p.d) && ['f','s'].every(k => p[k] === undefined || (typeof p[k] === 'string' && /^[kwcgopsmlry]$/.test(p[k] as string))) && (p.o === undefined || p.o === true) && (p.w === undefined || (typeof p.w === 'number' && p.w > 0 && p.w <= 3))));
-const relativePath = (v: unknown): v is string => source(v) && v.split('/').every(p => p && p !== '.' && p !== '..');
+const relativePath = (v: unknown): v is string =>
+  text(v) && !/^(?:[a-z][\w+.-]*:|\/)|\\|[\u0000-\u001f]/i.test(v) && v.split('/').every(p => p && p !== '.' && p !== '..');
 const optionalText = (v: Record<string, unknown>, keys: string[]) => keys.every(k => v[k] === undefined || typeof v[k] === 'string');
 const asset = (v: unknown): boolean => isObject(v) && source(v.src) && optionalText(v, ['label', 'alt'])
   && (v.alt === undefined || !/[<>]/.test(v.alt as string))
   && (v.device === undefined || v.device === 'desktop' || v.device === 'mobile')
   && (v.loop === undefined || typeof v.loop === 'boolean')
+  && (v.playable === undefined || typeof v.playable === 'boolean')
   && (v.variants === undefined || (isObject(v.variants) && Object.values(v.variants).every(source)));
 
 export function resultProblem(value: unknown, agents: Set<string>): string | null {
@@ -57,7 +60,7 @@ export function reviewProblem(v: unknown): string | null {
   const paths = new Set<string>();
   for (const f of v.files) {
     if (!isObject(f) || !relativePath(f.path) || paths.has(f.path) || !(f.before === null || source(f.before)) || !(f.after === null || source(f.after)) || (f.before === null && f.after === null) || (f.diff !== undefined && !source(f.diff)) || ((f.before === null || f.after === null) && !f.diff)) return '/files';
-    if (f.path.startsWith('agents/') && !agents.has(f.path.split('/')[1]!)) return '/files';
+    if (v.agents !== undefined && f.path.startsWith('agents/') && !agents.has(f.path.split('/')[1]!)) return '/files';
     paths.add(f.path);
   }
   return v.results === undefined ? null : resultProblem(v.results, agents);

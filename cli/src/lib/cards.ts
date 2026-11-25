@@ -63,6 +63,13 @@ export function locate(id: number): Found | null {
   return null
 }
 
+/** The open card's file, including a group root's root.md. */
+export function cardFile(id: number): string | null {
+  const found = locate(id)
+  if (!found) return null
+  return found.kind === 'group' ? path.join(found.target, 'root.md') : found.target
+}
+
 // The same, in `.archive/` — for the one flow that reads a card AFTER it has left the board
 // (#534). The archive keeps the shape `todo/` had, so a group is still a folder holding
 // `root.md` and everything else is a file. Null on a board that has archived nothing.

@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { cmdUpdate } from '../src/commands/update'
 import { SKILL_VERSION } from '../src/version'
 import { runAgent } from '../src/lib/agent-cli'
+import { setLanguage } from '../src/lib/machine/settings'
 import { buildAkbProgram } from '../src/lib/cli/akb'
 import { move } from './helpers/board'
 
@@ -43,6 +44,7 @@ afterEach(() => {
 })
 
 it('真实入口在两棵命令树的无看板错误中保留诊断并提示插件连接', () => {
+  setLanguage('zh')
   const project = path.join(root, 'empty')
   fs.mkdirSync(project)
   for (const program of ['akb', '/plugin path/bin/akb']) {
@@ -52,7 +54,7 @@ it('真实入口在两棵命令树的无看板错误中保留诊断并提示插�
         [['--dir', project], `no board in ${project} — it has no docs/kanban/.`],
         [['--board', project], `${project} is not a board — it has no todo/ and config.md.`],
       ] as const) {
-        const message = `${diagnostic} 通过插件连接云端项目${options.length ? '。' : '，或用 --board 指定已有看板。'}`
+        const message = `${diagnostic} Link this folder to a WildCrane project from the plugin${options.length ? '.' : ', or use --board to select an existing board.'}`
         for (const json of [false, true]) {
           const result = load([...options, ...command, ...(json ? ['--json'] : [])], project, program)
           assert.equal(result.status, 1, result.stdout + result.stderr)
@@ -157,7 +159,56 @@ it('update 修复已有看板，保留旧技能、配置和钩子', async () => 
 it('显式命名的云端看板得到修复，不创建旧默认看板', async () => {
   const board = path.join(root, '.akb/kanban')
   await move(root, ['init', '--board', board])
-  assert.equal(await runAgent(['update', '--dir', root, '--board', board, '--json'], { cwd: root }), 0)
+  const command = ['update', '--dir', root, '--board', board]
+  for (const version of [SKILL_VERSION, '99.0.0']) {
+    fs.writeFileSync(path.join(root, 'bin', 'npm'), `#!/bin/sh\nprintf '%s\\n' '${version}'\n`)
+    const update = load(command, root)
+    assert.equal(update.status, 0, update.stderr)
+    assert.equal(update.stdout.match(/Release notes: https:\/\/github\.com\/wildcrane-ai\/wildcrane\/releases/g)?.length, 1)
+    assert.equal(update.stdout.match(/This command is /g)?.length, 1)
+    assert.ok(update.stdout.includes(path.join(board, 'modules.md')))
+    if (version === SKILL_VERSION) assert.match(update.stdout, /the newest published\./)
+    else assert.match(update.stdout, /Version 99\.0\.0 is available\.\nRun `npm install -g wildcrane@latest`/)
+  }
   assert.equal(fs.existsSync(path.join(root, 'docs/kanban')), false)
   assert.equal(fs.existsSync(path.join(root, '.claude')), false)
+})
+
+it('keeps update and guide output in English in either language', () => {
+  const outputs = (['en', 'zh'] as const).map(language => {
+    setLanguage(language)
+    return [
+      load(['update', '--help'], root).stdout,
+      JSON.parse(load(['update', '--json'], root).stdout),
+      load(['guide'], root).stdout,
+      load(['guide', 'troubleshoot'], root).stdout,
+    ]
+  })
+  assert.deepEqual(outputs[0], outputs[1])
+  const [help, update, index, guide] = outputs[0]!
+  assert.match(help, /Repair an existing board and show how to upgrade the CLI/)
+  const { output, ...result } = update
+  assert.deepEqual(result, { ok: true, updated: root, from: null, to: SKILL_VERSION })
+  assert.match(output, /No board found\. Link this folder to a WildCrane project from the plugin\./)
+  assert.match(output, /Could not check for updates\.$/)
+  assert.match(index, /Find the cause of a software failure and how to fix it\./)
+  assert.match(guide, /# Troubleshoot/)
+})
+
+it('raw create reports an invalid project link in English without changing the board', async () => {
+  const board = path.join(root, '.akb/kanban')
+  await move(root, ['init', '--board', board])
+  fs.writeFileSync(path.join(root, '.akb', 'base.json'), '{"project":"one","files":{"projects/two/todo/card.md":{}}}')
+  const command = ['--board', board, 'raw', 'create', '--title', '中文任务', '--studio', 'coding', '--json']
+  const before = fs.readdirSync(path.join(board, 'todo'))
+  for (const language of ['en', 'zh'] as const) {
+    setLanguage(language)
+    const result = load(command, root)
+    assert.equal(result.status, 1)
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: false,
+      error: { kind: 'refused', message: 'The project link is invalid or conflicting. Check this folder’s project link, then try again.' },
+    })
+    assert.deepEqual(fs.readdirSync(path.join(board, 'todo')), before)
+  }
 })

@@ -6,12 +6,12 @@ Use when planning or implementation discovers additional work.
 - **Drop what was turned down**: queue nothing that
   `docs/kanban/memory/agents/planner/rejected.md` or
   `docs/kanban/memory/agents/planner/*/rejected.md` turns down.
-- **Existing card**: when only another open card needs changing, run `akb raw card revise <id> "<the change and why>"`.
+- **Existing card**: when only another open card needs changing, run `akb task revise <id> "<the change and why>"`.
 - **Queue it**: use the command below; skip an item the command reports as already there.
 - **Studio**: use the source card's `studio:`, or the id from `akb studio list` that fits the work when it has none.
 
 ```text
-akb raw triage add --title "<one line>" --slug <short-english-slug> --source "#<id>" --studio <studio> --text "<body>"
+akb triage add --title "<one line>" --slug <short-english-slug> --source "#<id>" --studio <studio> --text "<body>"
 ```
 
 ## Write the item

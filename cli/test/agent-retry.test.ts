@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { it } from 'node:test'
 import { harnessGaps } from '../src/lib/agent/capabilities'
 import { HARNESSES } from '../src/lib/agent/harnesses'
 import { IDLE_FAILURE } from '../src/lib/agent/idle'
-import { backoffMs, isSessionMissingFailure, planRetry, retryContinuePrompt, retryLine, type ExecutionFailure } from '../src/lib/agent/retry'
+import { backoffMs, isSessionMissingFailure, pauseLine, planRetry, retryBudget, retryContinuePrompt, retryLine, type ExecutionFailure } from '../src/lib/agent/retry'
 import { createStreamRenderer } from '../src/lib/agent/wire/claude-stream'
 import { createCodexStreamRenderer } from '../src/lib/agent/wire/codex-stream'
 import { codexFailure, executionFailure, providerFailure } from '../src/lib/agent/wire/failures'
@@ -12,17 +15,27 @@ const overload: ExecutionFailure = { code: 'service_overloaded', source: 'runtim
 const validation: ExecutionFailure = { code: 'validation_failed', source: 'validation', summary: 'Missing field' }
 const syncFail: ExecutionFailure = { code: 'sync_conflict', source: 'sync', summary: 'Board revision changed' }
 
-it('uses one unified 4-attempt budget with 0ms handoff for validation/sync and jittered 15s-60s backoff for others', () => {
+it('uses English for local retry notices and keeps explicit Runner localization', (t) => {
+  const original = process.env.AI4KANBAN_LANGUAGE
+  process.env.AI4KANBAN_LANGUAGE = 'zh'
+  t.after(() => {
+    if (original === undefined) delete process.env.AI4KANBAN_LANGUAGE
+    else process.env.AI4KANBAN_LANGUAGE = original
+  })
+  assert.equal(pauseLine('limit'), 'The automatic retry limit was reached.')
+  assert.equal(pauseLine('limit', true), '已达到自动重试次数上限。')
+})
+
+it('allows four retries after the original failure with shared backoff', () => {
   const now = 7_200_000
-  for (const immediate of [validation, syncFail]) {
-    assert.deepEqual(planRetry(immediate, 1, now), { plan: { at: now, of: 4, failure: immediate } })
-    assert.deepEqual(planRetry(immediate, 3, now), { plan: { at: now, of: 4, failure: immediate } })
-    assert.deepEqual(planRetry(immediate, 4, now), { pause: 'limit' })
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    assert.deepEqual(planRetry(validation, attempt, now), { plan: { at: now, of: 4, failure: validation } })
   }
-  for (const [index, delay] of [15_000, 30_000, 60_000].entries()) {
+  for (const [index, delay] of [15_000, 30_000, 60_000, 120_000].entries()) {
     const attempt = index + 1
     for (const failure of [
       IDLE_FAILURE,
+      syncFail,
       overload,
       executionFailure(Object.assign(new Error('arbitrary'), { code: 'ECONNRESET' })),
       { code: 'unknown', source: 'runtime' as const, summary: 'HTTP 503 Service Unavailable' },
@@ -31,11 +44,26 @@ it('uses one unified 4-attempt budget with 0ms handoff for validation/sync and j
         const decision = planRetry(failure, attempt, now, next => backoffMs(next, () => roll))
         assert.ok('plan' in decision)
         assert.equal(decision.plan.at - now, delay * (1 - 0.25 * roll))
-        assert.match(retryLine(decision.plan, attempt, now), new RegExp(`attempt ${attempt + 1} of 4`))
+        assert.match(retryLine(decision.plan, attempt, now), new RegExp(`retry ${attempt} of 4`))
       }
     }
   }
-  assert.deepEqual(planRetry(overload, 4, now), { pause: 'limit' })
+  assert.deepEqual(planRetry(overload, 5, now), { pause: 'limit' })
+})
+
+it('leaves only the remaining retries for a CLI attaching after Cloud dispatch (#1059)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dispatch-retry-'))
+  try {
+    const counter = join(dir, 'retries')
+    const runner = retryBudget(counter, 4)
+    const cli = retryBudget(counter)
+    assert.equal(cli.attempt(), 4)
+    assert.equal(cli.take(), 5)
+    assert.equal(runner.take(), undefined)
+    assert.equal(retryBudget(counter, 2).attempt(), 5)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 it('honors structured retryAfterMs up to the wait cap without short-circuiting by error tier', () => {
@@ -59,7 +87,7 @@ it('detects missing session and missing Codex rollout errors', () => {
 
 it('builds structured diagnostic continuation prompts for retries', () => {
   const prompt = retryContinuePrompt({ source: 'runtime', code: 'connection_lost', summary: 'EOF from app-server', detail: 'stream_disconnected\nreq=1' }, 1, 4)
-  assert.match(prompt, /Previous attempt \(1\/4\) failed \[runtime:connection_lost\]: EOF from app-server/)
+  assert.match(prompt, /Previous attempt \(1\/5\) failed \[runtime:connection_lost\]: EOF from app-server/)
   assert.match(prompt, /stream_disconnected/)
   assert.match(prompt, /Check the current state/)
 })

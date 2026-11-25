@@ -33,7 +33,7 @@ The installer manages global configuration under `OPENCODE_CONFIG_DIR`, or `$XDG
 
 ## Interfaces and release
 
-The native tools preserve the existing contracts: `wildcrane_open_settings({path?,project?})`, `wildcrane_status({path?})`, `wildcrane_sign_in({})`, `wildcrane_add_folder({path,project?})`, `wildcrane_draft_read({discussionId?,path?})`, and `wildcrane_draft_save({discussionId,expectedVersion,goals?,ideas?})`. Pass exactly one goal list on save. Every call uses the real host session and directory; missing identity fails explicitly. Task operations use the returned `akb` executable and `akb task --help`.
+The native tools preserve the existing contracts: `wildcrane_open_settings({path?,project?})`, `wildcrane_status({path?})`, `wildcrane_sign_in({})`, `wildcrane_add_folder({path,project?})`, `wildcrane_draft_read({discussionId?,path?})`, and `wildcrane_draft_save({discussionId,expectedVersion,goals})`. Pass the complete open Goal list on save. Every call uses the real host session and directory; missing identity fails explicitly. Task operations use the returned `akb` executable and `akb task --help`.
 
 Build with `npm run build` in `runner/`, then `npm pack` here. Shared skills are copied completely at build time. Release after the compatible Runner. See [OpenCode plugin configuration](https://opencode.ai/docs/plugins/) and [native tools, skills and cleanup](https://opencode.ai/docs/build/plugins/server/).
 

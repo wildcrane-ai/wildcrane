@@ -8,7 +8,7 @@ import { cloudEndpoints } from '../../cli/src/lib/cloud/config'
 import { machineId, runnerCwd } from './home'
 import { status, t } from './i18n'
 import { acceptAlphaUpdates } from './preferences'
-import { EXIT_OUTDATED, EXIT_REFUSED, EXIT_UPDATE } from './protocol'
+import { EXIT_ALREADY_RUNNING, EXIT_OUTDATED, EXIT_REFUSED, EXIT_UPDATE } from './protocol'
 import { compare, entryOf, install, legacyVersionsDir, versionDir, versionsDir } from './update'
 import { busy } from './cache'
 
@@ -189,6 +189,7 @@ function runOnce(candidate: Candidate, options: LaunchOptions): Promise<Outcome>
     let timer: ReturnType<typeof setTimeout> | null = null
     let timedOut = false
     let stopping = false
+    let duplicate = false
     let forceKill: ReturnType<typeof setTimeout> | undefined
     const watchConnection = () => {
       if (timer) clearTimeout(timer)
@@ -213,10 +214,12 @@ function runOnce(candidate: Candidate, options: LaunchOptions): Promise<Outcome>
     child.on('message', (message: { type?: string }) => {
       if (message.type === 'update-deferred') update = null
       if (message.type === 'reconnecting' && candidate.fresh && !connected && !timedOut) watchConnection()
-      // Another Runner on this computer runs the jobs: this one is up, only not connected yet.
-      if (message.type === 'waiting' && timer) {
-        clearTimeout(timer)
-        timer = null
+      // Older Runner versions wait for the owner to exit.
+      if (message.type === 'waiting') {
+        duplicate = true
+        process.stderr.write(`${t.alreadyRunning()}\n`)
+        child.kill('SIGTERM')
+        return
       }
       if (message.type === 'connected' && !connected) {
         connected = true
@@ -242,6 +245,7 @@ function runOnce(candidate: Candidate, options: LaunchOptions): Promise<Outcome>
         status(`Runner 无法启动：${spawnError.message}`)
         return resolve({ exit: 1 })
       }
+      if (duplicate || code === EXIT_ALREADY_RUNNING) return resolve({ exit: EXIT_ALREADY_RUNNING })
       if (code === EXIT_UPDATE && update && !stopping) return resolve({ update })
       if (connected || !candidate.fresh || stopping) return resolve({ exit: code ?? (signal ? 1 : 0) })
       if (timedOut) return resolve({ failed: 'timeout' })

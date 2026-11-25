@@ -398,6 +398,44 @@ it('does not create without a studio or resend on refusal or a lost creation rec
   }
 })
 
+it('passes --review, --review-file, and --preview-definitions-file on request creation and rejects invalid combinations', async () => {
+  const reviewFile = path.join(a, 'review.json')
+  const defsFile = path.join(a, 'defs.json')
+  const plan = [{ id: 'ui-design', after: [], previews: ['ui-design'] }]
+  const defs = [{ id: 'accessibility-report', title: { en: 'Accessibility report', zh: '无障碍检查报告' }, instructions: 'Check contrast.' }]
+  fs.writeFileSync(reviewFile, JSON.stringify(plan))
+  fs.writeFileSync(defsFile, JSON.stringify(defs))
+
+  calls = []
+  serve = () => Response.json({ id: 'task_new', key: 'B-14', title: 'Review task', status: 'queued' })
+  let out = await run(['task', 'create', 'Review task', '--studio', 'coding', '--review', 'UI design -> Accessibility report', '--preview-definitions-file', defsFile], true, a)
+  assert.equal(out.code, 0)
+  assert.deepEqual(calls[0]!.body, {
+    title: 'Review task', request: 'Review task', project: 'prj_a', studio: 'wf_builtin_coding',
+    source: 'api', run: true, review_flow: 'UI design -> Accessibility report', preview_definitions: defs,
+  })
+
+  calls = []
+  out = await run(['task', 'create', 'File plan', '--studio', 'coding', '--review-file', reviewFile], true, a)
+  assert.equal(out.code, 0)
+  assert.deepEqual(calls[0]!.body, {
+    title: 'File plan', request: 'File plan', project: 'prj_a', studio: 'wf_builtin_coding',
+    source: 'api', run: true, review_plan: plan,
+  })
+
+  for (const args of [
+    ['task', 'create', 'Both', '--studio', 'coding', '--review', 'UI design', '--review-file', reviewFile],
+    ['task', 'create', '--title', 'Local', '--review', 'UI design'],
+    ['task', 'create', '--title', 'Local', '--review-file', reviewFile],
+    ['task', 'create', '--title', 'Local', '--preview-definitions-file', defsFile],
+  ]) {
+    calls = []
+    const bad = await run(args, true, a)
+    assert.equal(bad.code, 1, args.join(' '))
+    assert.equal(calls.length, 0)
+  }
+})
+
 it('restores the selected original task and reports its actual status', async () => {
   const r = await run(['task', 'restore', '12', '--board', b + '/.akb/kanban'])
   assert.equal(r.code, 0)
@@ -414,9 +452,91 @@ it('restores the selected original task and reports its actual status', async ()
   assert.doesNotMatch(failed.stdout, /Restored /)
 })
 
+it('changes a task runtime by id or name and refuses missing or ambiguous names', async () => {
+  const baseServe = serve
+  serve = (url) => {
+    if (url.pathname === '/v1/runtimes') {
+      return Response.json({
+        data: [
+          { id: 'rt_default', name: 'Default', default: true },
+          { id: 'rt_kimi', name: 'Kimi Lite', default: false },
+          { id: 'rt_dup_1', name: 'Shared', default: false },
+          { id: 'rt_dup_2', name: 'Shared', default: false },
+        ],
+      })
+    }
+    const last = calls.at(-1)
+    if (url.pathname === '/v1/tasks/B-12' && last?.method === 'PATCH') {
+      const runtime = last.body?.runtime as string
+      return Response.json({
+        id: 'task_b',
+        key: 'B-12',
+        status: 'stopped',
+        runtime,
+        runtime_info: { id: runtime, name: runtime === 'rt_default' ? 'Global default' : 'Kimi Lite', connector: 'kimi', model: null, default: runtime === 'rt_default' },
+      })
+    }
+    return baseServe(url)
+  }
+
+  const byId = await run(['task', 'runtime', '12', 'rt_kimi', '--board', b + '/.akb/kanban'])
+  assert.equal(byId.code, 0)
+  assert.equal(byId.value.runtime, 'rt_kimi')
+  assert.deepEqual(calls.map(c => [c.method, c.url.pathname]), [['GET', '/v1/projects/prj_b'], ['PATCH', '/v1/tasks/B-12']])
+
+  calls = []
+  const byName = await run(['task', 'runtime', 'B-12', 'Kimi Lite'])
+  assert.equal(byName.code, 0)
+  assert.equal(byName.value.runtime, 'rt_kimi')
+  assert.deepEqual(calls.map(c => [c.method, c.url.pathname]), [['GET', '/v1/runtimes'], ['PATCH', '/v1/tasks/B-12']])
+
+  calls = []
+  const byDefault = await run(['task', 'runtime', 'B-12', 'Global default'])
+  assert.equal(byDefault.code, 0)
+  assert.equal(byDefault.value.runtime, 'rt_default')
+
+  calls = []
+  const missing = await run(['task', 'runtime', 'B-12', 'NoSuchRuntime'])
+  assert.equal(missing.code, 1)
+  assert.equal(missing.value.error.code, 'not_found')
+  assert.equal(calls.length, 1)
+
+  calls = []
+  const dup = await run(['task', 'runtime', 'B-12', 'Shared'])
+  assert.equal(dup.code, 1)
+  assert.equal(dup.value.error.code, 'conflict')
+  assert.match(dup.value.error.message, /rt_\.\.\./)
+  assert.equal(calls.length, 1)
+})
+
+it('requires the saved runtime and any effective runtime to match before reporting success', async () => {
+  const task = { id: 'task_b', key: 'B-12', status: 'waiting_review' }
+  const args = ['task', 'runtime', 'B-12', 'rt_carbon']
+  const previous = { id: 'rt_default', name: 'Global default' }
+  for (const [receipt, expected] of [
+    [{ ...task, runtime: 'rt_default', runtime_info: previous }, /requested rt_carbon, saved rt_default, effective rt_default/],
+    [{ ...task, runtime: 'rt_carbon', runtime_info: previous }, /requested rt_carbon, saved rt_carbon, effective rt_default/],
+    [{ ...task, runtime_info: previous }, /requested rt_carbon, saved missing, effective rt_default/],
+  ] as const) {
+    serve = () => Response.json(receipt)
+    const json = await run(args)
+    assert.equal(json.code, 1)
+    assert.equal(json.value.error.code, 'invalid_response')
+    assert.match(json.value.error.message, expected)
+    const terminal = await run(args, false)
+    assert.equal(terminal.code, 1)
+    assert.doesNotMatch(terminal.stdout, /Updated /)
+    assert.match(terminal.stderr, expected)
+  }
+  serve = () => Response.json({ ...task, runtime: 'rt_carbon' })
+  const terminal = await run(args, false)
+  assert.equal(terminal.code, 0)
+  assert.match(terminal.stdout, /Updated B-12 runtime to rt_carbon\./)
+})
+
 it('uses the same Cloud error and reason for terminal and JSON, and requires mutation receipts', async () => {
   const commands = [
-    ['archive', 'B-12'], ['remove', 'B-12'], ['restore', 'B-12'], ['resume', 'B-12'], ['stop', 'B-12'],
+    ['archive', 'B-12'], ['remove', 'B-12'], ['restore', 'B-12'], ['resume', 'B-12'], ['runtime', 'B-12', 'rt_kimi'], ['stop', 'B-12'],
     ['approve', 'B-12', '--revision', '0'], ['chat', 'B-12', 'Hello'], ['comment', 'B-12', 'Hello'],
   ]
   for (const args of commands) {
@@ -486,4 +606,53 @@ it('reports account verification failure and cached identity without claiming si
     assert.equal(terminal.code, 1)
     assert.ok(terminal.stderr.includes(json.value.error.message))
   }
+})
+
+it('shows the readable card, current review, approved pins and chat together', async (t) => {
+  const board = path.join(a, '.akb', 'kanban')
+  const card = path.join(board, 'todo', '12-export', 'root.md')
+  const chat = path.join(process.env.AI4KANBAN_HOME!, 'chats', 'task_a.jsonl')
+  const manifest = path.join(root, 'previews.md')
+  const record = path.join(board, '.sync', 'task_a.json')
+  const source = '.assets/12/export.txt'
+  const body = '---\ntitle: Export\nquestions:\n  - Which format?\n---\n\n<Preview id="ui-design">\n\nDraft here.\n\n</Preview>\n'
+  for (const [file, content] of [[card, body], [chat, '{"text":"A private message"}\n'], [manifest, 'Frozen inputs\n'],
+    [record, JSON.stringify({ task: 'task_a', number: 12 })]] as const) {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, content)
+  }
+  process.env.AI4KANBAN_BOARD = board
+  process.env.AI4KANBAN_TASK = 'task_a'
+  const previousManifest = process.env.AI4KANBAN_SAVED_PREVIEW_FILE
+  process.env.AI4KANBAN_SAVED_PREVIEW_FILE = manifest
+  t.after(() => {
+    if (previousManifest === undefined) delete process.env.AI4KANBAN_SAVED_PREVIEW_FILE
+    else process.env.AI4KANBAN_SAVED_PREVIEW_FILE = previousManifest
+  })
+
+  const review = { revision: 7, plan: [{ id: 'design', after: [], previews: ['ui-design'] }],
+    stages: [{ id: 'design', status: 'approved', revision: 6, snapshot: {
+      body: 'Frozen review text',
+      evidence: { content: { 'ui-design': { sources: [source] } }, assets: { [source]: { artifact: 'art_a', version: 2 } } },
+    } }] }
+  serve = url => url.pathname.endsWith('/card') ? Response.json({ body, version: 8 }) : Response.json({
+    id: 'task_a', key: 'A-12', project: 'prj_a', title: 'Export', status: 'running',
+    studio: { id: 'wf_builtin_coding', name: 'Coding' }, review, card_version: 8,
+    preview_inputs: { sections: { 'ui-design': { sources: [source] } }, assets: { [source]: { version: 3 } } },
+  })
+  const shown = await run(['task', 'show', 'A-12'])
+  assert.equal(shown.code, 0, shown.stderr)
+  assert.deepEqual(shown.value.review, review)
+  assert.deepEqual(shown.value.card, { body, version: 8 })
+  assert.equal(shown.value.local_context.card_file, card)
+  assert.equal(shown.value.local_context.chat_file, chat)
+  assert.equal(shown.value.local_context.approved_inputs_file, manifest)
+  assert.match(shown.value.output, /Which format\?[\s\S]*## Review[\s\S]*design · ui-design · approved/)
+  assert.match(shown.value.output, /saved version 3[\s\S]*approved version 2 · design/)
+  assert.doesNotMatch(shown.value.output, /A private message|Frozen review text|Frozen inputs|\br[67]\b/)
+  assert.equal(calls.length, 2)
+
+  const otherBoard = await run(['task', 'show', 'A-12', '--board', path.join(b, '.akb', 'kanban')])
+  assert.equal(otherBoard.value.local_context.card_file, null)
+  assert.equal(otherBoard.value.local_context.approved_inputs_file, null)
 })

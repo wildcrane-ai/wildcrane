@@ -1,16 +1,9 @@
-// `akb account` — which account this machine acts as.
-//
-// 登录由 Runner 或插件完成，命令读取本机共享会话。
-//
-// `image`, `tts` and `music` generate through Cloud on the user's Pro credits (#1119). Their messages
-// are bilingual because an agent relays them to the user as they are; exit 2 is a usage error.
-
 import fs from 'node:fs'
 import path from 'node:path'
 
 import { readCloudAccount, signOutOfCloud } from '../lib/cloud/account'
 import { cloudEndpoints } from '../lib/cloud/config'
-import { accessToken } from '../lib/cloud/session'
+import { accessToken, CLOUD_ACCESS_HINTS } from '../lib/cloud/session'
 import { workspaceTask } from '../lib/cloud/tasks'
 import { die } from '../lib/paths'
 import { BoardError, say } from '../lib/io'
@@ -21,7 +14,7 @@ export async function cmdCloud(args: string[], program: string): Promise<MoveRes
   const [sub] = args
   if (sub === 'sign-out') {
     signOutOfCloud()
-    say('Signed out. This machine no longer reaches Cloud; nothing on any board changed.')
+    say('Signed out of WildCrane Cloud on this machine.')
     return { signedOut: true }
   }
   if (sub !== undefined) {
@@ -34,9 +27,11 @@ export async function cmdCloud(args: string[], program: string): Promise<MoveRes
   const account = await readCloudAccount()
   if (account.verificationFailure) {
     if (account.handle || account.email) say(`Cached account: ${account.handle ? '@' + account.handle : account.email}`)
-    throw cloudError({ ...account.verificationFailure,
-      message: `Cloud verification failed. Showing cached account details. ${account.verificationFailure.message}` },
-    { details: { cached: true, cloud: account } })
+    const failure = account.verificationFailure
+    const hint = failure.code === 'expired' || failure.code === 'unauthenticated' ? CLOUD_ACCESS_HINTS.expired
+      : failure.code === 'unreachable' ? CLOUD_ACCESS_HINTS.unreachable : 'Cloud verification failed.'
+    throw cloudError({ ...failure, message: [hint, failure.message].filter(Boolean).join(' ') },
+      { details: { cached: true, cloud: account } })
   }
   for (const line of report(account, program)) say(line)
   return { cloud: account }
@@ -49,12 +44,7 @@ function report(account: Awaited<ReturnType<typeof readCloudAccount>>, program: 
   const lines: string[] = []
   switch (account.state) {
     case 'signed-out':
-      lines.push('Not signed in to Cloud. Nothing on this machine reaches it.')
-      lines.push(
-        account.configured
-          ? 'Sign in from the WildCrane app, under Configuration → Cloud. It is once per machine.'
-          : account.message ?? '',
-      )
+      lines.push(account.configured ? CLOUD_ACCESS_HINTS['signed-out'] : account.message ?? 'Not signed in to WildCrane Cloud.')
       break
     case 'signed-in':
       lines.push(`Signed in to Cloud as ${who}.`)
@@ -83,40 +73,14 @@ function report(account: Awaited<ReturnType<typeof readCloudAccount>>, program: 
 
 // ---- generation ---------------------------------------------------------------------
 
-export type Said = { zh: string; en: string }
-
-export const SAID = {
-  'signed-out': {
-    zh: '未登录 WildCrane Cloud。请在 WildCrane 应用的“配置 → Cloud”中登录后重试。',
-    en: 'Not signed in to WildCrane Cloud. Sign in from Configuration → Cloud in the WildCrane app, then try again.',
-  },
-  expired: {
-    zh: 'WildCrane Cloud 登录已过期。请在 WildCrane 应用的“配置 → Cloud”中重新登录后重试。',
-    en: 'Your WildCrane Cloud sign-in has expired. Sign in again from Configuration → Cloud in the WildCrane app, then try again.',
-  },
-  unreachable: {
-    zh: '无法连接 WildCrane Cloud。请检查网络后重试。',
-    en: 'Could not reach WildCrane Cloud. Check your connection and try again.',
-  },
-  credits_used_up: {
-    zh: '本月 AI 积分已用完。可在 WildCrane 网页的“设置 → 用量”中以 $10 加购 2,500 积分，或等下月 1 日（UTC）重置。',
-    en: 'This month’s AI credits are used up. Buy 2,500 more for $10 in Settings → Usage on the WildCrane web app, or wait for the reset on the 1st of next month (UTC).',
-  },
-  trial_credits_used_up: {
-    zh: '试用期的 AI 积分已用完。试用结束后可在 WildCrane 网页设置中购买 Pro。',
-    en: 'Your trial’s AI credits are used up. Get Pro from WildCrane web settings once the trial ends.',
-  },
-} satisfies Record<string, Said>
-
 interface Generation {
   usage: string
   endpoint: string
   body: Record<string, unknown>
   out: string
-  pro_required: Said
-  failed: Said
-  /** The other way to get the same thing, offered with every failure. */
-  fallback: Said
+  proRequired: string
+  failed: string
+  fallback: string
   /** What the success line names in brackets after the file. */
   label: (res: Response) => string
   /** Where the answer goes when its format is not the one `out` names. */
@@ -163,17 +127,11 @@ export async function cloudImage(
     endpoint: '/v1/image',
     body: { prompt, aspect: opts.aspect, tier, references },
     out: opts.out,
-    pro_required: {
-      zh: '图像生成是 Pro 功能。升级 Pro：https://wildcrane.ai/pricing',
-      en: 'Image generation is a Pro feature. Upgrade at https://wildcrane.ai/pricing',
-    },
-    failed: { zh: '图像暂时无法生成，请稍后重试。', en: 'The image could not be generated right now. Try again later.' },
-    fallback: {
-      zh: '也可以改用现有图片或截图。',
-      en: 'You can also use an existing image or screenshot instead.',
-    },
+    proRequired: 'Image generation requires Pro.',
+    failed: 'Could not generate the image.',
+    fallback: 'Use an existing image or screenshot.',
     // A Cloud without tiers answers no `x-tier`, and generated at standard.
-    label: (res) => `${res.headers.get('x-model') ?? 'unknown model'}, ${res.headers.get('x-tier') ?? 'standard'}`,
+    label: (res) => `${res.headers.get('x-tier') ?? 'standard'}`,
   })
 }
 
@@ -196,18 +154,9 @@ export async function cloudTts(
     endpoint: '/v1/speech',
     body: { voice, text, tier },
     out: opts.out,
-    pro_required: {
-      zh: '托管声音是 Pro 功能。升级 Pro：https://wildcrane.ai/pricing',
-      en: 'Hosted voices are a Pro feature. Upgrade at https://wildcrane.ai/pricing',
-    },
-    failed: {
-      zh: '托管声音暂时无法生成旁白，请稍后重试。',
-      en: 'Hosted voices could not generate the narration right now. Try again later.',
-    },
-    fallback: {
-      zh: '也可以改用本地声音（`npx hyperframes tts --list`）。',
-      en: 'You can also use a local voice instead (`npx hyperframes tts --list`).',
-    },
+    proRequired: 'Hosted voices require Pro.',
+    failed: 'Could not generate narration.',
+    fallback: 'Run `npx hyperframes tts --list` to find a local voice.',
     label: (res) => `${res.headers.get('x-voice') ?? voice}, ${res.headers.get('x-tier') ?? 'standard'}`,
     // Chinese voices answer mp3 (#87).
     outFor: (res, out) =>
@@ -232,28 +181,23 @@ export async function cloudMusic(
     endpoint: '/v1/music',
     body: { prompt, seconds },
     out: opts.out,
-    pro_required: {
-      zh: '托管配乐是 Pro 功能。升级 Pro：https://wildcrane.ai/pricing',
-      en: 'Hosted music is a Pro feature. Upgrade at https://wildcrane.ai/pricing',
-    },
-    failed: { zh: '托管配乐暂时无法生成，请稍后重试。', en: 'Hosted music could not be generated right now. Try again later.' },
-    fallback: {
-      zh: '也可以先留空音乐槽位，或换成你自己的曲子。',
-      en: 'You can also leave the music slot empty, or use a track of your own.',
-    },
+    proRequired: 'Music generation requires Pro.',
+    failed: 'Could not generate music.',
+    fallback: 'Use your own audio track.',
     label: () => `${seconds}s`,
   })
 }
 
-function refuse(m: Said, fallback: Said, problem: CloudProblem, exitCode = 1): never {
-  const message = [m.zh, m.en, problem.message, fallback.zh, fallback.en].filter(Boolean).join('\n')
+function refuse(problem: CloudProblem, message: string, exitCode = 1): never {
   throw cloudError({ ...problem, message }, { bare: true, exitCode })
 }
 
 async function generate(g: Generation): Promise<MoveResult> {
   const token = await accessToken()
-  if (!token.ok) refuse(SAID[token.reason], g.fallback, { code: token.reason.replace('-', '_'),
-    message: 'error' in token ? token.error ?? '' : '', retryable: token.reason === 'unreachable' })
+  if (!token.ok) throw cloudError({
+    code: token.reason.replace('-', '_'), retryable: token.reason === 'unreachable',
+    message: [CLOUD_ACCESS_HINTS[token.reason], 'error' in token ? token.error : undefined].filter(Boolean).join('\n'),
+  }, { bare: true, exitCode: 1 })
   const task = workspaceTask()
   let res: Response
   try {
@@ -263,22 +207,26 @@ async function generate(g: Generation): Promise<MoveResult> {
       body: JSON.stringify(g.body),
     })
   } catch {
-    refuse(SAID.unreachable, g.fallback, { code: 'unreachable', message: '', retryable: true })
+    throw cloudError({ code: 'unreachable', message: CLOUD_ACCESS_HINTS.unreachable, retryable: true }, { bare: true, exitCode: 1 })
   }
   const contentType = res.headers.get('content-type') ?? ''
   const problem = !res.ok || /^application\/(?:[\w.+-]+\+)?json(?:;|$)/i.test(contentType)
     ? cloudProblem(res, await readCloudJson(res)) ?? invalidResponse('a complete media file')
     : null
   if (problem) {
-    if (res.status === 401) refuse(SAID.expired, g.fallback, problem)
-    if (problem.code === 'pro_required') refuse(g.pro_required, g.fallback, problem)
+    if (res.status === 401) refuse(problem, `${CLOUD_ACCESS_HINTS.expired}\n${problem.message}`)
+    if (problem.code === 'pro_required') refuse(problem, g.proRequired)
+    if (problem.code === 'api_balance_insufficient' || problem.code === 'pricing_changed') refuse(problem, problem.message)
     if (problem.code === 'credits_used_up') {
-      refuse(res.headers.has('retry-after') ? SAID.credits_used_up : SAID.trial_credits_used_up, g.fallback, problem)
+      refuse(problem, res.headers.has('retry-after')
+        ? 'AI credits are used up. See Settings → Usage or wait for the next reset.'
+        : 'Trial AI credits are used up. Add API balance in Settings → Usage.')
     }
-    if (res.status === 400) {
-      throw cloudError({ ...problem, message: `${problem.message}\nusage: ${g.usage}` }, { bare: true, exitCode: 2 })
-    }
-    refuse(g.failed, g.fallback, problem)
+    if (res.status === 400) refuse(problem, `${problem.message}\nusage: ${g.usage}`, 2)
+    const generic = problem.message === `Cloud answered ${res.status}.`
+      || /^The (image|narration|music) could not be generated\. Try again shortly\.$/.test(problem.message)
+    const reason = generic ? g.failed : problem.message
+    refuse(problem, `${reason}\n${g.fallback}`)
   }
   let bytes: Buffer
   try {
@@ -286,15 +234,15 @@ async function generate(g: Generation): Promise<MoveResult> {
     if (!mediaMatches(contentType, bytes, g.endpoint.endsWith('image'))) throw cloudError(invalidResponse('a complete media file'))
   } catch (error) {
     if (!(error instanceof BoardError)) throw error
-    refuse(g.failed, g.fallback, { code: error.kind, message: error.message, retryable: true })
+    throw cloudError({ code: error.kind, message: `${error.message}\n${g.fallback}`, retryable: true }, { bare: true, exitCode: 1 })
   }
   const out = g.outFor?.(res, g.out) ?? g.out
   fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true })
   fs.writeFileSync(out, bytes)
-  say(`${out} (${g.label(res)})`)
+  const charge = res.headers.get('x-wildcrane-api-charge-usd')
+  say(`${out} (${g.label(res)}${charge ? `, WildCrane API $${charge}` : ''})`)
   return { out }
 }
-
 
 function mediaMatches(contentType: string, bytes: Buffer, image: boolean): boolean {
   const type = contentType.toLowerCase().split(';', 1)[0]?.trim()

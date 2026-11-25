@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { runAgent } from '../src/lib/agent-cli.ts'
 import { writeSession } from '../src/lib/cloud/session.ts'
+import { setLanguage } from '../src/lib/machine/settings.ts'
 import { restoreMachineHome } from './helpers/board.ts'
 
 const SUPABASE = 'https://project.supabase.co'
@@ -64,14 +65,17 @@ async function akb(argv: string[]): Promise<{ code: number; out: string; err: st
   const out: string[] = []
   const err: string[] = []
   const [log, error] = [console.log, console.error]
+  const write = process.stdout.write
   console.log = (line: unknown) => void out.push(String(line))
   console.error = (line: unknown) => void err.push(String(line))
+  if (argv.includes('--json')) process.stdout.write = ((chunk: string) => { out.push(chunk); return true }) as typeof write
   try {
     const code = await runAgent(argv, { program: 'akb', cwd: home })
     return { code, out: out.join('\n'), err: err.join('\n') }
   } finally {
     console.log = log
     console.error = error
+    process.stdout.write = write
   }
 }
 
@@ -99,29 +103,31 @@ describe('akb image / tts / music', () => {
     assert.match(err, /--ref x\.gif: use a PNG, JPEG or WebP file\./)
   })
 
-  it('exits 1 when signed out, in both languages, offering the fallback', async () => {
+  it('exits 1 when signed out and points to sign-in', async () => {
     answer(() => assert.fail('nothing is sent while signed out'))
     const { code, err } = await akb(['tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'])
     assert.equal(code, 1)
-    assert.match(err, /^未登录 WildCrane Cloud/)
-    assert.match(err, /Not signed in to WildCrane Cloud/)
-    assert.match(err, /npx hyperframes tts --list/)
+    assert.match(err, /^Not signed in to WildCrane Cloud\. Sign in from Configuration → Cloud[^\n]+$/)
   })
 
-  it('exits 1 without Pro, naming what Pro unlocks', async () => {
+  it('reports the same single Pro refusal under either language and preserves the error fields', async () => {
     signIn()
-    answer(refusal(403, 'pro_required'))
-    const image = await akb(['image', '--aspect', '16:9', '--out', 'a.png', 'a cat'])
-    assert.equal(image.code, 1)
-    assert.match(image.err, /图像生成是 Pro 功能/)
-    assert.match(image.err, /use an existing image or screenshot/)
-    const tts = await akb(['tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'])
-    assert.equal(tts.code, 1)
-    assert.match(tts.err, /Hosted voices are a Pro feature/)
-    const music = await akb(['music', '--seconds', '30', '--out', 'a.wav', 'calm piano'])
-    assert.equal(music.code, 1)
-    assert.match(music.err, /托管配乐是 Pro 功能/)
-    assert.match(music.err, /leave the music slot empty/)
+    answer(() => Response.json({ error: { code: 'pro_required', message: 'This needs Pro.' } }, { status: 403 }))
+    for (const language of ['en', 'zh'] as const) {
+      setLanguage(language)
+      for (const [args, message] of [
+        [['image', '--aspect', '16:9', '--out', 'a.png', 'a cat'], 'Image generation requires Pro.'],
+        [['tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'], 'Hosted voices require Pro.'],
+        [['music', '--seconds', '30', '--out', 'a.wav', 'calm piano'], 'Music generation requires Pro.'],
+      ] as const) {
+        assert.deepEqual(await akb([...args]), { code: 1, out: '', err: `${message} [pro_required]` })
+        const json = await akb([...args, '--json'])
+        assert.equal(json.code, 1)
+        assert.deepEqual(JSON.parse(json.out), {
+          ok: false, error: { kind: 'pro_required', code: 'pro_required', status: 403, retryable: false, message },
+        })
+      }
+    }
   })
 
   it('exits 1 when the credits are used up, and 2 when Cloud refuses the request', async () => {
@@ -129,18 +135,18 @@ describe('akb image / tts / music', () => {
     answer(refusal(429, 'credits_used_up', { 'retry-after': '3600' }))
     const spent = await akb(['tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'])
     assert.equal(spent.code, 1)
-    assert.match(spent.err, /本月 AI 积分已用完/)
+    assert.equal(spent.err, 'AI credits are used up. See Settings → Usage or wait for the next reset. [credits_used_up]')
     answer(refusal(429, 'credits_used_up'))
     const trial = await akb(['tts', '--voice', 'Ava', '--out', 'a.wav', 'hi'])
     assert.equal(trial.code, 1)
-    assert.match(trial.err, /试用期的 AI 积分已用完/)
+    assert.equal(trial.err, 'Trial AI credits are used up. Add API balance in Settings → Usage. [credits_used_up]')
     answer(refusal(400, 'Unknown voice.'))
     const bad = await akb(['tts', '--voice', 'Nobody', '--out', 'a.wav', 'hi'])
     assert.equal(bad.code, 2)
     assert.match(bad.err, /^Unknown voice\.\nusage: akb tts /)
   })
 
-  it('writes the file and names it with the model and tier', async () => {
+  it('writes the file and reports the tier without the provider model', async () => {
     signIn()
     const ref = path.join(home, 'shot.png')
     fs.writeFileSync(ref, 'png')
@@ -149,7 +155,7 @@ describe('akb image / tts / music', () => {
     const { code, out: said } = await akb(['image', '--aspect', '16:9', '--tier', 'premium', '--ref', ref, '--out', out, 'a', 'cat'])
     assert.equal(code, 0)
     assert.deepEqual(fs.readFileSync(out), imageBytes)
-    assert.equal(said, `${out} (model-x, premium)`)
+    assert.equal(said, `${out} (premium)`)
     assert.deepEqual(sent, [
       {
         url: `${API}/v1/image`,
@@ -164,7 +170,7 @@ describe('akb image / tts / music', () => {
     const out = path.join(home, 'b.png')
     const { code, out: said } = await akb(['image', '--aspect', '1:1', '--out', out, 'a cat'])
     assert.equal(code, 0)
-    assert.equal(said, `${out} (model-x, standard)`)
+    assert.equal(said, `${out} (standard)`)
     assert.equal((sent[0].body as { tier: string }).tier, 'standard')
 
     const bad = await akb(['image', '--aspect', '1:1', '--tier', 'ultra', '--out', out, 'a cat'])
@@ -195,17 +201,18 @@ describe('akb image / tts / music', () => {
     assert.equal(said, `${path.join(home, 'line.mp3')} (Yunzhou, standard)`)
     assert.deepEqual(fs.readFileSync(path.join(home, 'line.mp3')), mp3Bytes)
     assert.equal(fs.existsSync(path.join(home, 'line.wav')), false)
+    assert.equal((sent[0].body as { text: string }).text, '你好')
   })
 
   it('writes the track and asks for the length given', async () => {
     signIn()
     answer(() => new Response(wavBytes, { headers: { 'content-type': 'audio/wav' } }))
     const out = path.join(home, 'music', 'score.wav')
-    const { code, out: said } = await akb(['music', '--seconds', '42.5', '--out', out, 'calm', 'piano'])
+    const { code, out: said } = await akb(['music', '--seconds', '42.5', '--out', out, '平静的', '钢琴曲'])
     assert.equal(code, 0)
     assert.deepEqual(fs.readFileSync(out), wavBytes)
     assert.equal(said, `${out} (42.5s)`)
-    assert.deepEqual(sent, [{ url: `${API}/v1/music`, body: { prompt: 'calm piano', seconds: 42.5 } }])
+    assert.deepEqual(sent, [{ url: `${API}/v1/music`, body: { prompt: '平静的 钢琴曲', seconds: 42.5 } }])
   })
 })
 
@@ -217,9 +224,16 @@ it('refuses empty, partial or mislabeled media before writing the output', async
     ['tts', '--voice', 'Kore', '--out', out, 'hello'],
     ['music', '--seconds', '20', '--out', out, 'piano'],
   ]
-  for (const args of commands) {
-    answer(() => Response.json({ error: { code: 'provider_failed', message: 'No audio or image.' } }))
-    assert.match((await akb(args)).err, /provider_failed/)
+  for (const [index, args] of commands.entries()) {
+    const fallback = ['Use an existing image or screenshot.', 'Run `npx hyperframes tts --list` to find a local voice.', 'Use your own audio track.'][index]
+    const failure = ['Could not generate the image.', 'Could not generate narration.', 'Could not generate music.'][index]
+    answer(() => new Response(null, { status: 502 }))
+    assert.equal((await akb(args)).err, `${failure}\n${fallback} [service_unavailable]`)
+    const medium = ['image', 'narration', 'music'][index]
+    answer(() => Response.json({ error: { code: 'provider_failed', message: `The ${medium} could not be generated. Try again shortly.` } }, { status: 502 }))
+    assert.equal((await akb(args)).err, `${failure}\n${fallback} [provider_failed]`)
+    answer(() => Response.json({ error: { code: 'provider_failed', message: '服务暂时不可用。' } }))
+    assert.equal((await akb(args)).err, `服务暂时不可用。\n${fallback} [provider_failed]`)
     const type = args[0] === 'image' ? 'image/png' : 'audio/wav'
     answer(() => new Response(null, { headers: { 'content-type': type } }))
     assert.equal((await akb(args)).code, 1)
@@ -229,4 +243,28 @@ it('refuses empty, partial or mislabeled media before writing the output', async
     assert.match((await akb(args)).err, /invalid_response/)
     assert.equal(fs.existsSync(path.dirname(out)), false)
   }
+})
+
+it('distinguishes a verified account, a cached account and sign-out', async () => {
+  setLanguage('zh')
+  signIn()
+  answer(() => Response.json({ session: { admitted: true, handle: 'verified' } }))
+  const active = await akb(['account'])
+  assert.equal(active.code, 0)
+  assert.match(active.out, /^Signed in to Cloud as @verified\./)
+
+  const file = path.join(home, 'session.json')
+  fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), handle: 'cached' }))
+  answer(() => { throw new Error('网络中断') })
+  const offline = await akb(['account'])
+  assert.equal(offline.code, 1)
+  assert.equal(offline.out, 'Cached account: @cached')
+  assert.match(offline.err, /Could not reach WildCrane Cloud\. Check your connection and try again\. 网络中断$/)
+
+  answer(() => Response.json({ error: { code: 'unauthenticated', message: '登录已过期。' } }, { status: 401 }))
+  const expired = JSON.parse((await akb(['account', '--json'])).out)
+  assert.equal(expired.error.cloud.state, 'expired')
+  assert.equal(expired.error.cached, true)
+  assert.match(expired.error.message, /^Your WildCrane Cloud sign-in has expired\..+登录已过期。$/)
+  assert.deepEqual(await akb(['account', 'sign-out']), { code: 0, out: 'Signed out of WildCrane Cloud on this machine.', err: '' })
 })

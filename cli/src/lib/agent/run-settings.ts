@@ -147,7 +147,7 @@ function languageEnv(given: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 /** 语言要求只进入连接器的系统提示词；无法注入时返回可见提示。 */
 export function withSystemLanguage(
-  harness: Harness,
+  harness: Pick<Harness, 'systemPrompt'>,
   argv: string[],
   env: NodeJS.ProcessEnv,
   language: Language | null,

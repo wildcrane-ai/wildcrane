@@ -12,7 +12,6 @@ import { asContext, asUsage } from './log'
 import type {
   AgentAction,
   AnswerVerdict,
-  ChatHandoff,
   DeliveryLanding,
   DeliveryRecord,
   DeliveryReview,
@@ -128,7 +127,10 @@ function parseStore(): Store {
     runs.push({
       sessionId: entry.sessionId,
       cloudExecution: executionOf(entry.cloudExecution ?? null),
+      studioPin: typeof entry.studioPin?.studio === 'string' && Number.isSafeInteger(entry.studioPin.version)
+        && entry.studioPin.version > 0 ? entry.studioPin : undefined,
       pendingWrites: entry.pendingWrites === true || undefined,
+      submitted: entry.submitted === true || undefined,
       cardId: typeof entry.cardId === 'number' ? entry.cardId : null,
       createdCardIds: Array.isArray(entry.createdCardIds)
         ? [...new Set(entry.createdCardIds.filter((id): id is number => Number.isInteger(id) && id > 0))]
@@ -699,18 +701,4 @@ export function recordCreatedCards(sessionId: string, ids: readonly number[]): b
     run.createdCardIds = [...new Set([...(run.createdCardIds ?? []), ...valid])]
     return true
   })
-}
-
-/** A card's creating session (#1222) as a file holds it, or nothing when it names none. */
-export function handoffOf(value: unknown): ChatHandoff | undefined {
-  const h = value as Partial<ChatHandoff> | undefined
-  if (!h || typeof h.harness !== 'string' || !h.harness) return undefined
-  const resumeId = typeof h.resumeId === 'string' && h.resumeId ? h.resumeId : undefined
-  if (!resumeId) return undefined
-  return {
-    harness: h.harness,
-    runtime: typeof h.runtime === 'string' && h.runtime ? h.runtime : undefined,
-    resumeId,
-    cwd: typeof h.cwd === 'string' && h.cwd ? h.cwd : undefined,
-  }
 }

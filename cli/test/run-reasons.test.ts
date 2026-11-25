@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 import { SESSIONS, SESSIONS_DIR, setBoardRoot } from '../src/lib/paths.ts'
 import { openRun, patch, peekRun } from '../src/lib/agent/sessions.ts'
 import { readStore } from '../src/lib/agent/store.ts'
-import { setBoardProvider } from '../src/lib/board/index.ts'
 import { watchRun } from '../src/lib/agent/watch.ts'
 import { forgetMachineState } from './helpers/board.ts'
 
@@ -20,7 +19,6 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-run-reasons-'))
   forgetMachineState(root)
   setBoardRoot(root)
-  setBoardProvider(null)
   fs.mkdirSync(path.join(root, 'docs/kanban/todo'), { recursive: true })
   fs.writeFileSync(path.join(root, 'docs/kanban/next-id'), '1\n')
   fs.writeFileSync(path.join(root, 'docs/kanban/todo/README.md'), '# Tasks\n')
@@ -113,9 +111,9 @@ describe('Codex 后台收尾', () => {
       const run = peekRun(opened.run.sessionId)!
       assert.equal(run.status, outcome === '恢复成功' ? 'done' : 'error')
       assert.equal(run.ok, outcome === '恢复成功')
-      assert.equal(retries, outcome === '恢复成功' ? 0 : 1)
-      if (outcome === '恢复成功') assert.equal(run.retry, undefined)
-      else assert.equal(run.retry?.attempt, 1)
+      assert.equal(retries, outcome === '退出失败' ? 1 : 0)
+      assert.equal(run.retry?.attempt, outcome === '退出失败' ? 1 : undefined)
+      if (outcome === '最终失败') assert.equal(run.retryPause, 'authorization')
     })
   }
 })
@@ -143,7 +141,7 @@ describe('task recovery after a local Codex service exits (#724)', () => {
       patch(opened.run.sessionId, r => {
         r.pid = process.pid
         r.startedAt = Date.now() - 3600_000
-        if (mode === 'exhausted') r.retry = { attempt: 4, of: 4, at: Date.now(), since: Date.now(), reason: 'previous crash' }
+        if (mode === 'exhausted') r.retry = { attempt: 5, of: 4, at: Date.now(), since: Date.now(), reason: 'previous crash' }
       })
       let resumed = 0
       await watchRun(opened.run.sessionId, async id => {

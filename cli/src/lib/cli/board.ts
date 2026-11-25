@@ -1,17 +1,8 @@
-// The board's bookkeeping, declared once.
-//
-// Every move below says what it takes and what each option means, and that declaration IS
-// the help: `akb raw help` is the summaries, `akb raw help <move>` the whole of one.
-// Nothing is written twice, so a flag that is added is a flag the help already knows about.
-//
-// `akb raw <move>` and direct `kanban.mjs` calls share this command tree.
-
 import { insideRun } from '../agent/env'
 import { recordCards } from '../agent/created-cards'
 import { runAgent } from '../agent/project-agent'
-import { board, moveTarget, withLease, type MoveOutput, type OpResult } from '../board'
-import { BOARD_MOVES, READ_ONLY_MOVES } from '../board/local'
-import { BoardError, say, warn } from '../io'
+import { BOARD_MOVES, runLocalMove } from '../board/local'
+import { BoardError, say } from '../io'
 import crypto from 'node:crypto'
 import { creationReceipt, readCreation, saveCreation, archiveCreation, creationError, triageFile } from '../agent/creation'
 import { peekRun } from '../agent/sessions'
@@ -47,15 +38,13 @@ export interface BoardCliOptions {
   program: string
   cwd: string
   installHint: string
-  version: string | null
+  version?: string | null
   /** The move's own fields, handed over as it finishes. `--json` already carries them; this
    *  is for a caller that ran the move in-process and wants the value rather than the text. */
   onAnswer?: (data: Record<string, unknown>) => void
 }
 
-// The one thing every move does before its own work: find the board, open it, then either
-// read it or take a lease and write it. Lifted here so a move's own declaration is only
-// what that move takes.
+// Open the board and dispatch the command.
 async function dispatch(
   move: string,
   cmd: Command,
@@ -89,7 +78,7 @@ async function dispatch(
       say(`Board conflict ${result.id}: ${result.state}.`)
       return { board: found.board, ...result }
     }
-    if (move !== 'inspect') await syncStudios()
+    if (move !== 'inspect') await syncStudios(!workspaceTask() && (move === 'file' || move === 'skills'))
     const root = found.root
 
     const creating = move === 'create' && insideRun() ? peekRun(insideRun()!) : undefined
@@ -98,27 +87,17 @@ async function dispatch(
       opts = { ...opts, triage: creating.triage }
     }
     const input = { args, opts }
-    // A read answers straight off the board. A write is one operation of the contract, under
-    // a lease taken for it — whoever typed this never read the card, so the lease is what
-    // hands them the revision they write against (lib/board/ops.ts).
     const inRun = move === 'create' && insideRun() !== null
     const task = move === 'create' && opts.id === undefined ? workspaceTask() : null
     if (move === 'create' && opts.id === undefined) {
       const { studio } = validateCreate(opts as unknown as CreateOptions)
       input.opts = (await cloudCard(task, task ? opts : { ...opts, studio })).opts
     }
-    const data = READ_ONLY_MOVES.has(move)
-      ? await board().readMove(move, input)
-      : unwrap(await withLease(moveTarget(move, args), (env) => board().runMove(move, input, env)))
+    const data = await runLocalMove(move, input)
     const created = move === 'create' && Array.isArray(data.ids) ? data.ids.filter((id): id is number => Number.isInteger(id)) : []
     if (inRun) await recordCards(insideRun()!, created)
     if (move === 'create' && typeof input.opts.triage === 'string' && created[0] !== undefined) archiveCreation(input.opts.triage, created[0])
-    // A board that ran the move somewhere else sends its prose back rather than printing it;
-    // Local printed as it went and has none to add.
-    const { output, warnings, ...fields } = data
-    if (output) say(output)
-    for (const line of (warnings as string[] | undefined) ?? []) warn(line)
-    return { board: KANBAN, ...fields }
+    return { board: KANBAN, ...data }
   })
   cli.onAnswer?.(data)
 }
@@ -184,31 +163,36 @@ function refuseRecurring(command: Command): void {
   )
 }
 
-// What a mutation answered with: the move's own fields, or the refusal thrown so the door
-// turns it into a message and an exit code.
-function unwrap(res: OpResult<{ data: MoveOutput }>): MoveOutput {
-  if (res.ok) return res.data
-  // A conflict reaches a terminal only when something else wrote the same card in the
-  // milliseconds between the lease and the write. Reading it again is the whole fix.
-  throw new BoardError(res.error, res.kind === 'conflict' ? { kind: 'conflict' } : { kind: 'refused' })
-}
-
 const ID = "the card's id"
 
-/** Build the whole tree. Fresh per call: the ordered-option accumulators below belong to
- *  one command line, not to the process. */
-export function buildBoardProgram(cli: BoardCliOptions): Command {
-  const program = withShared(newCommand(cli.program))
-  program
-    .description(
-      "the local board and the commands an agent uses inside a run; a person never has to type one. " +
-        "They own a card's frontmatter — write and edit only a card's body.",
-    )
-    .helpCommand('help [move]', 'this list, or one move in full')
+export function withCreateOptions(command: Command, legacy = false): Command {
+  return command
+    .addOption(new Option('--title <title>', 'write a local card with a Cloud-assigned number').makeOptionMandatory(legacy))
+    .option('--studio <id>', "the Studio from `akb studio list`")
+    .option('--priority <level>', `how much it matters: ${LEVELS.join(' | ')} (default: med)`, oneOf(LEVELS))
+    .option('--blocked-by <ids>', 'ids of open cards this one waits on', collectList)
+    .option('--related <ids>', 'ids of open cards this one relates to', collectList)
+    .option('--modules <names>', 'the parts of the project it touches, validated against modules.md', collectList)
+    .option('--slug <slug>', 'the filename to write it under (default: from the title)')
+    .option('--triage <source-id>', 'the triage item this card is made of')
+    .option('--source <ref>', "where it came from: a plan's path, plan:<id>, #<id> or a URL. Repeatable", collect)
+}
 
-  const move = (name: string) => withShared(program.command(name))
+export async function createBoardCard(command: Command, cli: BoardCliOptions, asked: Typed[] = []): Promise<void> {
+  refuseRecurring(command)
+  await dispatch('create', command, [], { ...command.opts(), asked }, cli)
+}
 
-  const conflict = move('conflict').summary('read and explicitly resolve saved board content conflicts')
+interface BoardGroups {
+  task: Command
+  board: Command
+  studio: Command
+  memory: Command
+}
+
+export function declareBoardMoves(program: Command, cli: BoardCliOptions, groups?: BoardGroups): void {
+  const move = (name: string, parent = program) => withShared(parent.command(name))
+  const conflict = move('conflict', groups?.board).summary('read and explicitly resolve saved board content conflicts')
   withShared(conflict.command('list')).summary('list pending local conflicts without contacting Cloud')
     .action(async function (this: Command) { await dispatch('conflict-list', this, [], this.opts(), cli) })
   withShared(conflict.command('show <id>')).summary('read saved versions and a current read credential')
@@ -220,52 +204,7 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
 
   // ---- cards ---------------------------------------------------------------
 
-  // `--question`, and the choices that qualify it, are read in the order they were typed:
-  // an `--option` belongs to the `--question` before it. One accumulator per command line.
-  const asked: Typed[] = []
-  const inOrder = ordered(asked)
-
-  move('create')
-    .summary('write exactly one card — its fields, its body template and its index entry')
-    .description(
-      'Write exactly ONE card: allocate its id, write its frontmatter and a body template, and index it. ' +
-        'There is no separate id-reservation mode. --blocked-by and --related take ids of existing open ' +
-        'cards; for a group, create the root first, then create each subtask related to its id (see ' +
-        '"Group tasks" in `akb guide add-task`). The script owns the frontmatter and writes the body ' +
-        'scaffold; fill only the body by hand. ' +
-        'Without --id, Cloud assigns the number in the linked project (no source task required). ' +
-        'A failed local write can resume the same creation without making another Cloud task. ' +
-        'Missing or invalid project links and denied access exit with code 1 using the existing error envelope. ' +
-        '--body-file accepts a short draft or full card body. Invalid bodies fail before allocating a task or writing a card, with repair instructions. Cloud moves the card on by itself once ' +
-        'it reaches the board: do not refine it here. ' +
-        'Example: akb raw create --title "Add a delete command" --studio coding --body-file /tmp/delete-command.md',
-    )
-    .requiredOption('--title <title>', 'what the card is called')
-    .addOption(new Option('--recurring').hideHelp())
-    // No default here: `create` falls back to `med` itself.
-    .option('--priority <level>', `how much it matters: ${LEVELS.join(' | ')} (default: med)`, oneOf(LEVELS))
-    .option('--blocked-by <ids>', 'ids of open cards this one waits on', collectList)
-    .option('--related <ids>', 'ids of open cards this one relates to', collectList)
-    .option('--modules <names>', 'the parts of the project it touches, validated against modules.md', collectList)
-    .option('--question <text>', 'an open question; needs its --option choices. Repeatable; follow `akb guide update-questions`', inOrder('question'))
-    .option('--option <text>', 'a choice for the --question before it', inOrder('option'))
-    .option('--recommended-option <text>', 'a choice for the --question before it, ticked to start', inOrder('recommended-option'))
-    .option('--mode <mode>', 'how many choices the --question before it takes: single | multi', inOrder('mode'))
-    .option('--slug <slug>', 'the filename to write it under (default: from the title)')
-    .option('--no-body', 'write the frontmatter and no body template')
-    .option('--body-file <path>', 'a short draft or full card body, written to a file first')
-    .addOption(new Option('--cadence <cadence>').hideHelp())
-    .option('--studio <id>', "the studio it runs through (`akb studio list`). Required when the board has more than one, except inside a task run, which uses the task's own")
-    .option('--previews <ids>', 'the Preview IDs chosen from its Studio; "" chooses none', collectList)
-    .addOption(new Option('--id <n>', "the number Cloud gave this card's task; for the Runner").argParser(cardId).hideHelp())
-    .option('--triage <source-id>', 'the triage item this card is made of, so the item is never carded twice')
-    .option('--source <ref>', "where it came from: a plan's path, plan:<id>, #<id> or a URL. Repeatable", collect)
-    .action(async function (this: Command) {
-      refuseRecurring(this)
-      await dispatch('create', this, [], { ...this.opts(), asked }, cli)
-    })
-
-  move('update')
+  const update = move('update', groups?.task)
     .argument('<id>', ID, cardId)
     .summary("rewrite a card's fields")
     .description(
@@ -282,7 +221,6 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
     .option('--modules <names>', 'the parts of the project it touches', collectList)
     .option('--source <ref>', "where it came from: a plan's path, plan:<id>, #<id> or a URL. Repeatable; \"\" clears the list", collect)
     .option('--add-source <ref>', 'append one source, keeping the ones already there. Repeatable', collect)
-    .option('--previews <ids>', 'the Preview IDs chosen from its Studio; "" chooses none', collectList)
     .option('--slug <slug>', 'rename the file')
     .option('--studio <id>', 'the studio it runs through. The card goes back to todo and is re-planned')
     .addOption(new Option('--cadence <cadence>').hideHelp())
@@ -291,31 +229,24 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
       await dispatch('update', this, [String(id)], this.opts(), cli)
     })
 
-  const questionOps: Typed[] = []
-  withQuestionOptions(withShared(program.command('update-questions', { hidden: true }))
-    .argument('<id>', ID, cardId)
-    .summary('edit open questions on a local card (compatibility)')
-    .description('For older Runner instructions. Use akb task update-questions.\nSee akb guide update-questions.'), questionOps)
-    .action(async function (this: Command, id: number) {
-      await dispatch('update-questions', this, [String(id)], { ops: questionOps }, cli)
-    })
+  if (!groups) update.option('--previews <ids>', 'the Preview IDs chosen from its Studio; "" chooses none', collectList)
 
-  move('inspect')
+  move('inspect', groups?.task)
     .argument('<id>', ID, cardId)
     .summary('read task facts, saved work and execution references')
     .action(async function (this: Command, id: number) {
       await dispatch('inspect', this, [String(id)], this.opts(), cli)
     })
 
-  move('validate')
+  move('validate', groups?.task)
     .argument('[id]', ID, cardId)
     .summary('validate card format and report file, line, and repair instructions')
-    .description('Check one card, or every open card when no id is given. Reads only; exits non-zero with detailed errors until the format is valid.')
+    .description('Check every open card, or all copies of a card when an id is given. Reads only; exits non-zero with detailed errors until the format is valid.')
     .action(async function (this: Command, id?: number) {
       await dispatch('validate', this, id === undefined ? [] : [String(id)], this.opts(), cli)
     })
 
-  move('file')
+  move('file', groups?.studio)
     .argument('<studio>', 'the studio, e.g. blog-post')
     .argument('<path>', 'the path inside the Studio folder')
     .summary('print one file of a studio')
@@ -324,15 +255,15 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
       await dispatch('file', this, [studio, file], this.opts(), cli)
     })
 
-  // Before #656; a project agent's files are still read through it.
-  withShared(program.command('agent-file', { hidden: true }))
-    .argument('<agent>')
-    .argument('<path>')
-    .action(async function (this: Command, agent: string, file: string) {
-      await dispatch('agent-file', this, [agent, file], this.opts(), cli)
+  move('skills', groups?.studio)
+    .argument('<studio>', 'the Studio, e.g. blog-post')
+    .summary('list the Studio’s skill names and descriptions')
+    .description("In a task's run, reads the execution's Studio version.")
+    .action(async function (this: Command, studio: string) {
+      await dispatch('skills', this, [studio], this.opts(), cli)
     })
 
-  move('memory-file')
+  move(groups ? 'file' : 'memory-file', groups?.memory)
     .argument('<name>', 'the global memory')
     .summary("print one global memory's rules, its MEMORY.md")
     .description(
@@ -343,7 +274,7 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
       await dispatch('memory-file', this, [name], this.opts(), cli)
     })
 
-  move('list')
+  move('list', groups?.board)
     .summary('the open cards: id, title, meta, summary, path — or, with --archived, the cards that landed')
     .description(
       'The open cards at a glance — one block per card with its id, title, meta (status, priority, ' +
@@ -368,6 +299,68 @@ export function buildBoardProgram(cli: BoardCliOptions): Command {
     .option('--studio <id>', 'with --archived: only the cards of that studio')
     .action(async function (this: Command) {
       await dispatch('list', this, [], this.opts(), cli)
+    })
+}
+
+/** Build the whole tree. Fresh per call: the ordered-option accumulators below belong to
+ *  one command line, not to the process. */
+export function buildBoardProgram(cli: BoardCliOptions): Command {
+  const program = withShared(newCommand(cli.program))
+  program
+    .description(
+      "the local board and the commands an agent uses inside a run; a person never has to type one. " +
+        "They own a card's frontmatter — write and edit only a card's body.",
+    )
+    .helpCommand('help [move]', 'this list, or one move in full')
+
+  const move = (name: string) => withShared(program.command(name))
+
+  declareBoardMoves(program, cli)
+
+  const asked: Typed[] = []
+  const inOrder = ordered(asked)
+  withCreateOptions(move('create'), true)
+    .summary('write exactly one card — its fields, its body template and its index entry')
+    .description(
+      'Write exactly ONE card: allocate its id, write its frontmatter and a body template, and index it. ' +
+        'There is no separate id-reservation mode. --blocked-by and --related take ids of existing open ' +
+        'cards; for a group, create the root first, then create each subtask related to its id (see ' +
+        '"Group tasks" in `akb guide add-task`). The script owns the frontmatter and writes the body ' +
+        'scaffold; fill only the body by hand. ' +
+        'Without --id, Cloud assigns the number in the linked project (no source task required). ' +
+        'A failed local write can resume the same creation without making another Cloud task. ' +
+        'Missing or invalid project links and denied access exit with code 1 using the existing error envelope. ' +
+        '--body-file accepts a short draft or full card body. Invalid bodies fail before allocating a task or writing a card, with repair instructions. Cloud moves the card on by itself once ' +
+        'it reaches the board: do not refine it here. ' +
+        'Example: akb raw create --title "Add a delete command" --studio coding --body-file /tmp/delete-command.md',
+    )
+    .addOption(new Option('--recurring').hideHelp())
+    .addOption(new Option('--cadence <cadence>').hideHelp())
+    .option('--question <text>', 'an open question; needs its --option choices', inOrder('question'))
+    .option('--option <text>', 'a choice for the preceding --question', inOrder('option'))
+    .option('--recommended-option <text>', 'a choice ticked to start', inOrder('recommended-option'))
+    .option('--mode <mode>', 'single or multi', inOrder('mode'))
+    .option('--no-body', 'write only the frontmatter')
+    .option('--body-file <path>', 'read a draft or full card body from a file')
+    .option('--previews <ids>', 'the Preview IDs from its Studio', collectList)
+    .addOption(new Option('--id <n>', "the number Cloud gave this card's task; for the Runner").argParser(cardId).hideHelp())
+    .action(async function (this: Command) { await createBoardCard(this, cli, asked) })
+
+  const questionOps: Typed[] = []
+  withQuestionOptions(withShared(program.command('update-questions', { hidden: true }))
+    .argument('<id>', ID, cardId)
+    .summary('edit open questions on a local card (compatibility)')
+    .description('For older Runner instructions. Use akb task update-questions.\nSee akb guide update-questions.'), questionOps)
+    .action(async function (this: Command, id: number) {
+      await dispatch('update-questions', this, [String(id)], { ops: questionOps }, cli)
+    })
+
+  // Before #656; a project agent's files are still read through it.
+  withShared(program.command('agent-file', { hidden: true }))
+    .argument('<agent>')
+    .argument('<path>')
+    .action(async function (this: Command, agent: string, file: string) {
+      await dispatch('agent-file', this, [agent, file], this.opts(), cli)
     })
 
   move('reject')

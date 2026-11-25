@@ -8,13 +8,12 @@ import { afterEach, describe, it } from 'node:test'
 
 import { markUnsent } from '../src/cache'
 import { runnerHome, useRunnerHome } from '../src/home'
-import { linesFor } from '../src/i18n'
 import { hostOf, nextOf, noticeOf, type Seen } from '../src/plugin'
-import { holdMachine, lockPath } from '../src/lock'
+import { acquireMachine, lockPath, RunnerAlreadyRunning } from '../src/lock'
+import { EXIT_ALREADY_RUNNING } from '../src/protocol'
 import { FakeCloud, writeFakeSession } from './fake-cloud'
 
-// The Claude Code (#2161) and Codex (#2160) plugins: one process per computer runs the jobs, and
-// their component speaks MCP on stdout and ends with its host.
+// The Claude Code and Codex components speak MCP on stdout and end with their host.
 
 const until = async (check: () => boolean, ms = 3_000) => {
   const end = Date.now() + ms
@@ -25,35 +24,29 @@ const until = async (check: () => boolean, ms = 3_000) => {
 }
 
 describe('one Runner per computer', () => {
-  it('lets one process hold the computer and hands it on when that one lets go', async () => {
-    const held: string[] = []
-    let waited: string | null = null
-    const first = holdMachine('claude-code', () => held.push('first'))
-    await until(() => held.length === 1)
-    const second = holdMachine('terminal', () => held.push('second'), (holder) => (waited = holder ?? 'unknown'))
-    await until(() => waited !== null)
-    assert.equal(waited, 'claude-code')
-    assert.deepEqual(held, ['first'])
-    first.release()
-    await until(() => held.length === 2)
-    assert.deepEqual(held, ['first', 'second'])
-    second.release()
+  it('reports the duplicate to its launcher and exits before sign-in', async () => {
+    const release = await acquireMachine('claude-code')
+    try {
+      const launched = spawnSync(process.execPath, [path.join(process.env.RUNNER_DIST!, 'launcher.mjs')], {
+        env: { ...process.env, AI4KANBAN_CLOUD_URL: 'http://127.0.0.1:9', LC_ALL: 'en_US' },
+        encoding: 'utf8', timeout: 8_000,
+      })
+      assert.equal(launched.error, undefined)
+      assert.equal(launched.status, EXIT_ALREADY_RUNNING, launched.stderr)
+      assert.match(launched.stderr, /A WildCrane Runner is already running/)
+      assert.equal(launched.stdout, '')
+    } finally { await release() }
+    await (await acquireMachine('terminal'))()
   })
 
-  it('says the holder is unknown when it does not tell its kind', async () => {
+  it('rejects a duplicate while a legacy Runner holds the socket', async () => {
     if (process.platform === 'win32') return
     fs.mkdirSync(path.dirname(lockPath()), { recursive: true })
     fs.rmSync(lockPath(), { force: true })
     const silent = net.createServer((peer) => peer.on('error', () => {})).listen(lockPath())
     await new Promise((r) => silent.once('listening', r))
-    let waited: string | null = null
-    const lock = holdMachine('terminal', () => {}, (holder) => (waited = holder ?? 'unknown'))
-    await until(() => waited !== null)
-    assert.equal(waited, 'unknown')
-    assert.match(linesFor(false).waitingHere(), /^Another app on this computer is already running/)
-    assert.match(linesFor(true).waitingHere('terminal'), /^本机终端已在运行一个 WildCrane 实例/)
-    lock.release()
-    await new Promise((r) => silent.close(r))
+    try { await assert.rejects(acquireMachine('terminal'), RunnerAlreadyRunning) }
+    finally { await new Promise((r) => silent.close(r)) }
   })
 
   it('takes over from a holder that crashed and left its socket behind', async () => {
@@ -64,10 +57,17 @@ describe('one Runner per computer', () => {
     crashed.kill('SIGKILL')
     await new Promise((r) => crashed.once('exit', r))
     assert.ok(fs.existsSync(lockPath()))
-    let held = false
-    const lock = holdMachine('terminal', () => (held = true))
-    await until(() => held)
-    lock.release()
+    await (await acquireMachine('terminal'))()
+  })
+
+  it('rejects a duplicate even when the live Runner loses its socket path', async () => {
+    if (process.platform === 'win32') return
+    const release = await acquireMachine('terminal')
+    try {
+      fs.unlinkSync(lockPath())
+      await assert.rejects(acquireMachine('codex'), RunnerAlreadyRunning)
+    } finally { await release() }
+    await (await acquireMachine('codex'))()
   })
 })
 
@@ -75,7 +75,7 @@ const components = new Set<ReturnType<typeof spawn>>()
 afterEach(() => { for (const child of components) child.kill('SIGKILL'); components.clear() })
 
 /** The built component of `host`'s plugin, spoken to over stdio. */
-function component(host: 'claude-code' | 'codex' | 'dsh' | 'grok' | 'opencode', cloud = 'http://127.0.0.1:9', env: Record<string, string> = {}) {
+function component(host: 'claude-code' | 'codex' | 'dsh' | 'grok' | 'opencode' | 'antigravity', cloud = 'http://127.0.0.1:9', env: Record<string, string> = {}) {
   const server = path.join(process.env.RUNNER_DIST!, '..', '..', 'plugins', host, 'server', 'dist', 'start.mjs')
   const child = spawn(process.execPath, [server, ...(host === 'claude-code' ? [] : [host])], {
     stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CLAUDE_PLUGIN_ROOT: path.resolve(path.dirname(server), '..', '..'), WILDCRANE_RUNNER_DIR: path.resolve(process.env.RUNNER_DIST!, '..'), AI4KANBAN_CLOUD_URL: cloud, HTTPS_PROXY: 'http://127.0.0.1:9', CODEX_HOME: path.join(os.tmpdir(), 'wildcrane-no-codex-home'), ...env },
@@ -256,6 +256,43 @@ describe('the plugin akb in a session started by hand (#187)', () => {
 })
 
 describe('the plugin component', () => {
+  it('reports an existing Runner to the host without retrying after it exits', async () => {
+    useRunnerHome()
+    fs.rmSync(runnerHome(), { recursive: true, force: true })
+    writeFakeSession(runnerHome())
+    const cloud = new FakeCloud()
+    await cloud.start()
+    const release = await acquireMachine('terminal')
+    const plugin = component('codex', `http://127.0.0.1:${cloud.port}`, { PATH: '' })
+    const status = async (id: number) => {
+      plugin.send(id, 'tools/call', { name: 'wildcrane_status', arguments: { path: os.homedir() } })
+      await until(() => plugin.answers.has(id), 10_000)
+      const result = plugin.answers.get(id)!.result as { content: { text: string }[] }
+      return JSON.parse(result.content[0]!.text) as { runner: string; next?: string }
+    }
+    try {
+      await plugin.ready
+      let reported = await status(10)
+      for (let id = 11; id <= 30 && reported.runner !== 'already-running'; id++) {
+        await new Promise(resolve => setTimeout(resolve, 50))
+        reported = await status(id)
+      }
+      assert.equal(reported.runner, 'already-running')
+      assert.match(reported.next ?? '', /A second instance cannot start/)
+      await release()
+      await new Promise(resolve => setTimeout(resolve, 1_200))
+      assert.equal((await status(31)).runner, 'already-running')
+      assert.equal(cloud.registrations, 0)
+    } finally {
+      const exited = new Promise(resolve => plugin.child.once('exit', resolve))
+      plugin.child.stdin.end()
+      await exited
+      await release()
+      await cloud.stop()
+      fs.rmSync(runnerHome(), { recursive: true, force: true })
+    }
+  })
+
   it('两个插件竞争时复用设置服务，宿主退出后另一入口可以重开', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wc324-hosts-'))
     const env = { WILDCRANE_HOME: home, PATH: '' }
@@ -438,7 +475,8 @@ describe('the plugin component', () => {
       const read = await call('wildcrane_draft_read', { sessionId: 'sess-1' })
       assert.equal(read.discussion, 'dsc_1')
       assert.equal((await call('wildcrane_draft_read', { sessionId: 'sess-1' })).discussion, 'dsc_1')
-      assert.deepEqual(read.goals, read.ideas)
+      assert.deepEqual(read.goals, [])
+      assert.equal(Object.hasOwn(read, 'ideas'), false)
       assert.equal((read.studios as { when: string }[])[0]!.when, 'Software changes.')
       assert.match(String(read.url), /discussions\/dsc_1$/)
       assert.equal(cloud.discussions.length, 1)
@@ -446,24 +484,23 @@ describe('the plugin component', () => {
       const goals = [{ title: '目标', outcome: '结果', acceptance: ['验收'], studio: 'wf_builtin_coding' }]
       const saved = await call('wildcrane_draft_save', { discussionId: 'dsc_1', expectedVersion: 1, goals })
       assert.equal(saved.saved, true)
-      assert.deepEqual(saved.goals, saved.ideas)
+      assert.equal(Object.hasOwn(saved, 'ideas'), false)
       assert.match(String((saved.goals as { url: string }[])[0].url), /discussions\/dsc_1$/)
-      assert.equal(cloud.draftBodies[0].goals, undefined, '旧服务必须使用 ideas 写入')
-      for (const fields of [{}, { goals, ideas: goals }]) {
-        const invalid = await call('wildcrane_draft_save', { discussionId: 'dsc_1', expectedVersion: 2, ...fields })
-        assert.equal(invalid.error, 'bad_request')
-        assert.equal(invalid.message, 'Provide exactly one of goals or ideas.')
-        assert.equal((answers.get(id - 1)!.result as { isError: boolean }).isError, true)
-      }
+      assert.deepEqual(cloud.draftBodies[0].goals, goals)
+      const invalid = id++
+      send(invalid, 'tools/call', { name: 'wildcrane_draft_save', arguments: { discussionId: 'dsc_1', expectedVersion: 2, ideas: goals } })
+      await until(() => answers.has(invalid), 10_000)
+      const refusal = answers.get(invalid)!.result as { isError: boolean; content: { text: string }[] }
+      assert.equal(refusal.isError, true)
+      assert.match(refusal.content[0]!.text, /goals/)
       assert.equal(cloud.draftWrites, 1)
-      const conflict = await call('wildcrane_draft_save', { discussionId: 'dsc_1', expectedVersion: 1, ideas: goals })
+      const conflict = await call('wildcrane_draft_save', { discussionId: 'dsc_1', expectedVersion: 1, goals })
       assert.equal(conflict.saved, false)
       assert.equal(conflict.reason, 'The goals have changed. Merge your changes with the latest goals and save again.')
       assert.equal(cloud.draftWrites, 1)
       assert.deepEqual(conflict.goals, saved.goals)
       assert.equal(conflict.version, 2)
-      assert.deepEqual(conflict.goals, conflict.ideas)
-      cloud.goalProtocol = true
+      assert.equal(Object.hasOwn(conflict, 'ideas'), false)
       await call('wildcrane_draft_read', { sessionId: 'sess-1' })
       const current = await call('wildcrane_draft_save', { discussionId: 'dsc_1', expectedVersion: 2, goals })
       assert.equal(current.saved, true)
@@ -623,7 +660,7 @@ describe('the plugin component', () => {
     }
   })
 
-  for (const sharedHost of ['dsh', 'grok'] as const) it(`opens a new discussion for each ${sharedHost} chat and keeps it by id (#675)`, async () => {
+  for (const sharedHost of ['dsh', 'grok', 'antigravity'] as const) it(`opens a new discussion for each ${sharedHost} chat and keeps it by id`, async () => {
     useRunnerHome()
     fs.rmSync(runnerHome(), { recursive: true, force: true })
     writeFakeSession(runnerHome())

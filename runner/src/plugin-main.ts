@@ -1,6 +1,3 @@
-// The plugins' local component (plugin.ts), as the host starts it: `codex`, `cursor`, `dsh`, `kimi` or `grok` from those plugins,
-// and the Claude Code plugin from Claude Code or ZCode.
-
 import './startup'
 import { hostOf, main } from './plugin'
 

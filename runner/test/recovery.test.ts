@@ -7,6 +7,7 @@ import type { Flow, Job } from '../src/api'
 import { flowRunEvidence, runFlow, type FlowIo } from '../src/flow'
 import { toWire } from '../src/jobs'
 import { checkpointEvent, checkpointRecovery, replayable, type Checkpoint } from '../src/recovery'
+import { replyPrompt } from '../src/reply-input'
 import type { TaskFolder } from '../src/task-folder'
 
 const FAKE_AKB = path.resolve('test/fake-akb.mjs')
@@ -35,6 +36,14 @@ test('prompt 已提交但启动结果未知时，不把没有工具事件当作�
   const checkpoint: Checkpoint = { pending: [], effects: false, started: true, session: 'original' }
   checkpointEvent(checkpoint, { kind: 'phase', data: { phase: 'submitted', at: new Date().toISOString() } })
   assert.equal(replayable(checkpoint), false)
+  const input = { body: 'Original user message.', previousReviewRevision: null }
+  const turn = replyPrompt(input, {
+    initialize: false,
+    task: { card: '/task.md', blocks: [['studio', 'Original Studio.']] },
+    diagnostics: [], attachments: '/original.png', continuation: 'Continue the interrupted turn.',
+  })
+  assert.equal(turn.withAttachments, 'Follow `akb guide card-chat`.\n\nContinue the interrupted turn.')
+  assert.equal(turn.sent, undefined)
 })
 
 test('同一份执行证据按已完成、原会话、安全重放、暂停排序', () => {
@@ -94,7 +103,6 @@ function setupFakeFlow(fakePlan: Record<string, unknown>, taskOverrides: Partial
     onStop: () => {},
     lost: () => false,
     sync: async (step, op) => (step === 'prepare' ? ({ ok: true, value: undefined } as never) : op()),
-    syncBackoff: () => 0,
   }
   const deps = {
     machineId: 'm_1',
@@ -175,16 +183,45 @@ test('completed delivery reports deliveryId and landing without starting an agen
   } finally { ctx.cleanup() }
 })
 
-test('reconcile failure retries with bounded backoff and isolates diagnostic to log (#966)', async () => {
+test('cloud verification only reconciles the original delivery (#1059)', async () => {
+  const flow = { verb: 'implement', studio: 'coding', review_stages: [], review_revision: 1,
+    sync_recovery_of: 'original', verify_delivery: { id: 'saved' } } satisfies Flow
+  for (const deliveryId of ['saved', 'other']) {
+    const ctx = setupFakeFlow({ reconcile: { kind: 'completed', deliveryId } }, { flow })
+    try {
+      const end = await runFlow(ctx.job, ctx.ws, ctx.deps, ctx.io)
+      assert.equal(end.ok, deliveryId === 'saved')
+      if (end.ok) assert.equal(end.report.deliveryId, 'saved')
+      else assert.equal(end.failure?.code, 'task_delivery_unverified')
+      assert.ok(!ctx.calls().some(args => args[1] === 'card' || args[1] === 'run' && args[2] === 'resume'))
+    } finally { ctx.cleanup() }
+  }
+})
+
+test('cloud can replay its saved delivery receipt without invoking the Studio again (#1059)', async () => {
+  const ctx = setupFakeFlow({ reconcile: { kind: 'none' } }, {
+    flow: { verb: 'implement', studio: 'coding', review_stages: [], review_revision: 1,
+      sync_recovery_of: 'original', verify_delivery: { id: 'saved', confirmed: true } },
+  })
+  ctx.deps.runtimes = async () => { throw new Error('Receipt replay should not need an agent runtime') }
+  try {
+    const end = await runFlow(ctx.job, ctx.ws, ctx.deps, ctx.io)
+    assert.equal(end.ok, true)
+    assert.equal(end.ok && end.report.deliveryId, 'saved')
+    assert.ok(!fs.existsSync(path.join(ctx.ws.cwd, 'akb.log')))
+  } finally { ctx.cleanup() }
+})
+
+test('failed delivery reconciliation preserves its cause and skips delivery execution', async () => {
   const ctx = setupFakeFlow({
     reconcile: { kind: 'unverified', deliveryId: 'd_bad', diagnostic: 'secret internal lock error' },
   })
   try {
     const end = await runFlow(ctx.job, ctx.ws, ctx.deps, ctx.io)
     assert.equal(end.ok, false)
-    assert.equal(!end.ok && end.reason, 'task_recovery_unverified')
+    assert.equal(!end.ok && end.reason, 'secret internal lock error')
     assert.equal(!end.ok && end.failure?.code, 'task_recovery_unverified')
-    assert.equal(ctx.calls().filter((a) => a.slice(0, 3).join(' ') === 'raw delivery reconcile').length, 3)
+    assert.equal(ctx.calls().filter((a) => a.slice(0, 3).join(' ') === 'raw delivery reconcile').length, 1)
     assert.match(ctx.logs.join(''), /d_bad/)
     assert.match(ctx.logs.join(''), /secret internal lock error/)
   } finally { ctx.cleanup() }

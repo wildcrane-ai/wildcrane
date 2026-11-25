@@ -3,6 +3,9 @@ name: Blog post
 names:
   zh: 博客文章
 description: Research, draft and revise blog posts with the images and destination copies the request needs.
+summaries:
+  zh: 先确认大纲，再写成带配图的文章。
+  en: Approve the outline, then get the full article.
 needsArtifact: true
 icon: blog
 previews:
@@ -11,16 +14,25 @@ previews:
     title:
       en: Brief & outline
       zh: 简报与大纲
+    description:
+      en: Confirm the topic, angle, and structure before writing.
+      zh: 动笔前确认选题、切入点和文章大纲。
   article-images:
     icon: post-image
     title:
       en: Images
       zh: 配图
+    description:
+      en: Review generated illustrations and cover images.
+      zh: 审阅文章配图与封面图。
   article:
     icon: article
     title:
       en: Article
       zh: 文章
+    description:
+      en: Read the full post and destination copies.
+      zh: 审阅文章正文与各平台发布版本。
 ---
 
 Create or revise blog posts using only the Previews the request needs. For a new post,

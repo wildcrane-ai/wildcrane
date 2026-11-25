@@ -7,13 +7,24 @@ import path from 'node:path'
 
 import { STUDIO_MEMORY_DIR } from '../memory'
 import { MEMORY, rel } from '../paths'
+import { workspaceTask } from '../cloud/tasks'
+import { studioName } from '../shared/board-files'
 import { RULES_FILE, SHARED_DIR } from '../shared/studio-files'
-import { rawMove } from './command'
-import { cloudFlows, type StudioFiles } from './cloud-studios'
+import { configurationBlock, studioEntry, type ContextBlock } from './runtime-context'
+import { studioSetup } from './studio-def'
+import { studioConfigContext } from './studio-config'
+import { activeStudioPin, cloudFlows, cachedStudioSkillBlock, missingStudioVersion, readVersion, type HeldVersion, type StudioFiles } from './cloud-studios'
 
 /** One studio's files by akb's name for it (`blog-post`, `wf-…`) or Cloud's id; null when this
  *  board has no such studio. */
 export function studioFiles(studio: string): StudioFiles | null {
+  const task = workspaceTask()
+  const pin = task ? activeStudioPin(task) : null
+  if (pin && (pin.studio === studio || studioName(pin.studio) === studio)) {
+    const held = readVersion(pin.studio, pin.version)
+    if (!held) throw new Error(missingStudioVersion(pin))
+    return held.files
+  }
   const flow = cloudFlows().find((f) => f.def.id === studio || f.cloudId === studio)
   if (flow) return flow.files
   return null
@@ -43,12 +54,28 @@ export function readStudioMemory(studio: string): { name: string; text: string }
   })
 }
 
-const fileLine = (studio: string, file: string) => `- \`${file}\` — \`${rawMove(`file ${studio} ${file}`)}\``
-
 /** Extra rules from the task's Studio. */
 export function studioSections(studio: string | undefined): string[] {
   const files = studio ? studioFiles(studio) : null
   if (!studio || !files) return []
   const rules = files[RULES_FILE]?.trim()
   return rules ? [`——— Studio rules ———\n\n${rules}`] : []
+}
+
+export function listedStudioVersion(studio: string | undefined): HeldVersion | undefined {
+  const flow = studio && cloudFlows().find(f => f.def.id === studio || f.cloudId === studio)
+  return flow ? { id: flow.cloudId, version: flow.version, name: flow.def.name, files: flow.files } : undefined
+}
+
+export function studioContextBlocks(
+  held: HeldVersion, action: string, definition: { name: string; rules: string }, board: string, project: string | null, command?: string,
+): ContextBlock[] {
+  const config = studioConfigContext(held.id, project, action, file => {
+    try { return fs.readFileSync(path.join(board, file), 'utf8') } catch { return undefined }
+  })
+  const setup = studioSetup(definition.rules)
+  return [studioEntry(held.id, definition.name, held.version, action, command),
+    ['skills', cachedStudioSkillBlock(held)],
+    ['setup', setup && '<studio-setup>\n' + setup + '\n</studio-setup>', 'Studio Setup cleared.'],
+    configurationBlock(config)]
 }

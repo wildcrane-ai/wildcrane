@@ -9,7 +9,6 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { setBoardRoot } from '../src/lib/paths.ts'
-import { setBoardProvider } from '../src/lib/board/index.ts'
 import { HARNESSES, harnessByName } from '../src/lib/agent/harnesses/index.ts'
 import { compareVersions, isCopy, locate, pick, spawnName, versionIn, warm, type Copy } from '../src/lib/agent/locate.ts'
 import { agentInfo, commandOf, openPlan, planRun } from '../src/lib/agent/resolve.ts'
@@ -118,7 +117,6 @@ describe('locating a CLI', { skip: process.platform === 'win32' }, () => {
     delete process.env.KIMI_INSTALL_DIR
     delete process.env.CODEX_INSTALL_DIR
     setBoardRoot(root)
-    setBoardProvider(null)
     fs.mkdirSync(path.join(root, 'docs/kanban/todo'), { recursive: true })
     fs.writeFileSync(path.join(root, 'docs/kanban/next-id'), '1\n')
     fs.writeFileSync(path.join(root, 'docs/kanban/todo/README.md'), '# Tasks\n')

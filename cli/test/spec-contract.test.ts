@@ -10,10 +10,10 @@ import { parseFrontmatter, serializeFrontmatter } from '../src/lib/frontmatter'
 import { byDispatchOrder } from '../src/lib/view/rules'
 import type { Card } from '../src/lib/view/types'
 import { formatContractErrors, snapshotSpecs, validateSpec } from '../src/lib/spec-contract'
+import { newCardWriteProblems } from '../src/lib/shared/card-structure'
 import { setBlock, setItems } from '../../artifact-sdk/src/internal/tags'
 import { bodySources } from '../../artifact-sdk/src/internal/references'
 import { openRun, openResume, patch, peekRun } from '../src/lib/agent/sessions'
-import { setBoardProvider } from '../src/lib/board'
 import type { AgentAction } from '../src/lib/agent/types'
 import { watchRun } from '../src/lib/agent/watch'
 import { move, refuses } from './helpers/board'
@@ -52,7 +52,6 @@ A requirement.
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-contract-'))
   setBoardRoot(root)
-  setBoardProvider(null)
   file = path.join(root, 'docs/kanban/todo/1-feature.md')
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, valid)
@@ -78,6 +77,33 @@ describe('the card format contract', () => {
   it('accepts ordinary cards and group roots', () => {
     assert.deepEqual(validateSpec(file, valid), [])
     assert.deepEqual(validateSpec(path.join(path.dirname(file), '1-group/root.md'), valid), [])
+  })
+
+  it('reports the structure that would be lost by the readers', () => {
+    const context = { studio: 'coding', historicalPreviews: ['historical-registered'], previewIds: [] }
+    const cases = [
+      [parseFrontmatter(valid).body, 'frontmatter', 'frontmatter', 1],
+      [valid.replace('studio: coding\n', ''), 'studio', 'studio', 1],
+      [valid.replace('studio: coding', 'studio: another'), 'studio', 'studio', 8],
+      [valid.replace('status: todo', 'status: "todo'), 'status', 'status', 4],
+      [valid.replace('status: todo', 'status: "todo\''), 'status', 'status', 4],
+      [valid.replace('blocked_by: []', 'blocked_by:\n  - 12\n  - bad-id'), 'task-ids', 'blocked_by', 7],
+      [valid.replace('questions: []', 'questions:\n  - question: Choose\n    options: [A, B]'), 'questions', 'questions.options', 11],
+      [valid.replace('questions: []', 'questions:\n  - question: Choose\n    skipped: true'), 'questions', 'questions.skipped', 11],
+      [valid.replace('questions: []', 'questions:\n  - question: Choose\n    mode: multiple\n    options:\n      - A'), 'questions', 'questions.mode', 11],
+      [valid.replace('questions: []', 'questions:\n  - question: Choose\n    options:\n      - A\n    recommend: [2]'), 'questions', 'questions.recommend', 13],
+      [valid.replace('- [ ] Implement it.', '+ [] Implement it.'), 'todo-item', 'Todo', 22],
+    ] as const
+    for (const [source, rule, path, line] of cases) {
+      assert.ok(validateSpec(file, source, 1, context).some(e => e.rule === rule && e.line === line), rule)
+      assert.ok(newCardWriteProblems(file, source, valid, context).some(e => e.path === path && e.line === line), path)
+    }
+    const legacy = valid.replace('status: todo', 'status: "todo')
+    assert.deepEqual(newCardWriteProblems(file, legacy.replace('A requirement.', 'Updated requirement.'), legacy, context), [])
+    assert.deepEqual(newCardWriteProblems(file, valid, legacy, context), [])
+    const history = valid.replace('<!-- agent -->', '<Preview id="historical-registered">\nSaved result.\n</Preview>\n\n<!-- agent -->')
+    assert.deepEqual(validateSpec(file, history, 1, context), [])
+    assert.ok(validateSpec(file, history, 1, { previewIds: [] }).some(e => e.rule === 'preview-id'))
   })
 
   it('reports exact lines and repair instructions without modifying the card', async () => {

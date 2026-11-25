@@ -12,8 +12,9 @@ import { watchRun } from '../src/lib/agent/watch'
 import { setBoardRoot } from '../src/lib/paths'
 import { forgetMachineState, move, uiConfigOf } from './helpers/board'
 
-for (const mode of ['init', 'work', 'no-session']) it(`AGy early-crash recovery after ${mode} (#830)`, { timeout: 20_000 }, async () => {
+for (const mode of ['init', 'submitted', 'work', 'no-session']) it(`AGy early-crash recovery after ${mode} (#830)`, { timeout: 20_000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-early-'))
+  const submitted = mode === 'submitted' || mode === 'work'
   const oldHome = process.env.HOME
   const session = '00000000-0000-4000-8000-000000000830'
   let agentPid: number | undefined
@@ -33,7 +34,7 @@ for (const mode of ['init', 'work', 'no-session']) it(`AGy early-crash recovery 
       if (args.includes('--conversation')) {
         if (args[args.indexOf('--conversation') + 1] !== ${JSON.stringify(session)}) process.exit(2);
         const prompt = args.at(-1);
-        if (!prompt.includes('Plan task 1') || !/verify.*do not repeat/i.test(prompt)) process.exit(3);
+        if (prompt.includes('Plan task 1') === ${submitted} || !/verify.*do not repeat/i.test(prompt)) process.exit(3);
         ${mode === 'work' ? `if (fs.readFileSync(${JSON.stringify(output)}, 'utf8') !== 'once') process.exit(4);` : ''}
         out({event:'init', conversation_id:${JSON.stringify(session)}});
         out({event:'result', result:{conversation_id:${JSON.stringify(session)}, status:'SUCCESS', response:'Cedar830 preserved.'}});
@@ -42,6 +43,7 @@ for (const mode of ['init', 'work', 'no-session']) it(`AGy early-crash recovery 
         fs.mkdirSync(${JSON.stringify(path.dirname(db))}, {recursive:true});
         fs.writeFileSync(${JSON.stringify(db)}, 'native session');
         out({event:'init', conversation_id:${JSON.stringify(session)}});
+        ${mode === 'submitted' ? `out({event:'step_update', step_update:{conversation_id:${JSON.stringify(session)}, step_type:'user_input', step_index:0, state:'DONE'}});` : ''}
         ${mode === 'work' ? `fs.appendFileSync(${JSON.stringify(output)}, 'once');
         out({event:'step_update', step_update:{conversation_id:${JSON.stringify(session)}, step_type:'tool', step_index:1, state:'DONE', tool_info:{name:'write_file', parameters:{Path:${JSON.stringify(output)}}}}});` : ''}
         setInterval(() => {}, 1000);
@@ -59,7 +61,7 @@ for (const mode of ['init', 'work', 'no-session']) it(`AGy early-crash recovery 
       while (true) {
         const run = readRuns().find(r => r.sessionId === started.run.sessionId)!
         agentPid = run.agentPid
-        if (run.resumeId === session && (mode !== 'work' || fs.existsSync(output))) break
+        if (run.resumeId === session && (!submitted || run.submitted === true)) break
         assert.ok(Date.now() < until, 'session ID must be saved before any reply completes')
         await new Promise(resolve => setTimeout(resolve, 10))
       }
@@ -90,7 +92,7 @@ for (const mode of ['init', 'work', 'no-session']) it(`AGy early-crash recovery 
     const next = await openResume(ended.sessionId)
     if ('error' in next) throw Error(next.error)
     assert.equal(next.spec.plan.resumeId, session)
-    assert.equal(next.spec.prompt, original)
+    assert.equal(next.spec.prompt, submitted ? '' : original)
     patch(next.run.sessionId, r => { r.pid = process.pid })
     fs.writeFileSync(next.run.logPath, '')
     await watchRun(next.run.sessionId)

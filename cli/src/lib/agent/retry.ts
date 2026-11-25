@@ -1,4 +1,6 @@
-import { translating } from './language'
+import fs from 'node:fs'
+import path from 'node:path'
+import { withLock } from '../lock'
 
 export type RetrySource = 'runtime' | 'runner' | 'sync' | 'validation'
 export type RetryState = 'waiting' | 'retrying' | 'recovered' | 'paused'
@@ -69,6 +71,60 @@ export type RetryPause = PauseReason
 export type Recovery = 'report' | 'resume' | 'replay' | 'unsafe'
 
 export const MAX_RETRY_ATTEMPTS = 4
+export const RETRY_FILE_ENV = 'AI4KANBAN_RETRY_FILE'
+
+// Persist before invoking the recovery. Runner and detached CLI watches share this counter.
+export function retryBudget(file: string, initialAttempt = 1) {
+  const attempt = () => {
+    try {
+      const saved = fs.readFileSync(file, 'utf8')
+      const used = Number(saved)
+      return /^\d+$/.test(saved) && Number.isSafeInteger(used) && used <= MAX_RETRY_ATTEMPTS
+        ? used + 1 : MAX_RETRY_ATTEMPTS + 1
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 1
+      throw error
+    }
+  }
+  const update = (advance: (current: number) => number) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    return withLock(file + '.lock', 'recording a task retry', () => {
+      const current = attempt()
+      const next = advance(current)
+      if (next > MAX_RETRY_ATTEMPTS + 1) return
+      if (next !== current) {
+        fs.writeFileSync(file + '.tmp', String(next - 1), { mode: 0o600 })
+        fs.renameSync(file + '.tmp', file)
+      }
+      return next
+    })
+  }
+  if (initialAttempt > 1) update(current => Math.max(current, initialAttempt))
+  return { attempt, take: () => update(current => current + 1) }
+}
+
+export function retryRecord(failure: ExecutionFailure, attempt: number, runtime: RetryRuntime, sessionAction?: SessionAction): RetryRecord {
+  const { source, summary, detail, code } = failure
+  return { attempt, source, runtime, summary, ...(detail ? { detail } : {}), ...(code ? { code } : {}),
+    ...(sessionAction ? { sessionAction } : {}), at: new Date().toISOString() }
+}
+
+export function mergeRetryHistory(...histories: (RetryRecord[] | undefined)[]): RetryRecord[] {
+  const records = histories.flatMap(history => history ?? [])
+  return [...new Map(records.map(record => [JSON.stringify(record), record])).values()]
+    .sort((a, b) => a.at.localeCompare(b.at))
+}
+
+export async function waitForRetry(at: number, stopped?: Promise<unknown>): Promise<void> {
+  const delay = Math.max(0, at - Date.now())
+  if (!delay) return
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([new Promise<void>(resolve => { timer = setTimeout(resolve, delay) }), ...(stopped ? [stopped] : [])])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 const MAX_SUMMARY_CHARS = 300
 const MAX_DETAIL_CHARS = 4000
 const SOURCES = new Set<RetrySource>(['runtime', 'runner', 'sync', 'validation'])
@@ -137,7 +193,7 @@ export const recoveryPrompt =
 
 export function retryContinuePrompt(failure: ExecutionFailure, attempt?: number, maxAttempts = MAX_RETRY_ATTEMPTS): string {
   const head = attempt
-    ? `Previous attempt (${attempt}/${maxAttempts}) failed [${failure.source}${failure.code ? `:${failure.code}` : ''}]: ${failure.summary}`
+    ? `Previous attempt (${attempt}/${maxAttempts + 1}) failed [${failure.source}${failure.code ? `:${failure.code}` : ''}]: ${failure.summary}`
     : `Previous execution failed [${failure.source}${failure.code ? `:${failure.code}` : ''}]: ${failure.summary}`
   const parts = [head]
   if (failure.detail && failure.detail !== failure.summary) parts.push(`Diagnostics:\n${failure.detail}`)
@@ -163,10 +219,15 @@ export function planRetry(
 ): { plan: RetryPlan } | { pause: RetryPause } {
   if (!Number.isSafeInteger(attempt) || attempt < 1) return { pause: 'unsafe' }
   const of = MAX_RETRY_ATTEMPTS
-  if (attempt >= of) return { pause: 'limit' }
+  if (failure.code === 'completed_operation_failed') return { pause: 'unsafe' }
+  if (['provider_refused', 'executable_missing', 'execution_blocked', 'unauthenticated'].includes(failure.code ?? '')
+    || failure.source === 'runtime' && /\b(?:401 unauthorized|please (?:log in|login|sign in)|authentication failed|permission denied|(?:credits|quota) (?:exhausted|exceeded)|invalid model selection)\b/i.test(failure.summary)) {
+    return { pause: 'authorization' }
+  }
+  if (attempt > of) return { pause: 'limit' }
   const delay = failure.retryAfterMs
   const valid = delay !== undefined && !Number.isNaN(delay) && delay >= 0
-  const immediate = failure.source === 'validation' || failure.source === 'sync'
+  const immediate = failure.source === 'validation'
   const wait = valid ? delay : immediate ? 0 : backoff(attempt + 1)
   const cap = task && failure.code === 'rate_limited' && valid ? 24 * 60 * 60_000 : CAP_MS
   if (wait > cap) return { pause: 'wait_too_long' }
@@ -264,7 +325,7 @@ export function readRetryPlan(raw: unknown, attempt: number, task = false): Retr
   }
 }
 
-export function pauseLine(pause: RetryPause, zh = translating()): string {
+export function pauseLine(pause: RetryPause, zh = false): string {
   switch (pause) {
     case 'limit': return zh ? '已达到自动重试次数上限。' : 'The automatic retry limit was reached.'
     case 'wait_too_long': return zh ? '所需等待时间超过两分钟，已暂停。' : 'Paused because the required wait exceeds two minutes.'
@@ -276,7 +337,7 @@ export function pauseLine(pause: RetryPause, zh = translating()): string {
 
 export function retryLine(plan: RetryPlan, attempt: number, now = Date.now()): string {
   const seconds = Math.max(0, Math.ceil((plan.at - now) / 1_000))
-  return `${plan.failure.summary} — retrying ${seconds ? `in ${seconds}s` : 'now'} (attempt ${attempt + 1} of ${plan.of}).`
+  return `${plan.failure.summary} — retrying ${seconds ? `in ${seconds}s` : 'now'} (retry ${attempt} of ${plan.of}).`
 }
 
 export function syncRepairPrompt(reason: string): string {

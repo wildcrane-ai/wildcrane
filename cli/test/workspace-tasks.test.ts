@@ -131,6 +131,21 @@ describe('in a Runner workspace', () => {
     assert.match(card, /Offer yearly billing\./)
   })
 
+  it('creates and indexes a numbered card from the canonical title mode', async () => {
+    fs.writeFileSync(path.join(todo, 'README.md'), '## Tasks\n')
+    const writes: string[] = []
+    const stdout = process.stdout.write
+    process.stdout.write = (line) => { writes.push(String(line)); return true }
+    try {
+      assert.equal(await runAgent(['task', 'create', '--title', 'Local card', '--priority', 'high', '--json'], { cwd: root }), 0)
+    } finally { process.stdout.write = stdout }
+    const result = JSON.parse(writes.join(''))
+    assert.equal(result.id, 12)
+    assert.match(fs.readFileSync(path.join(todo, '12-local-card.md'), 'utf8'), /^priority: high$/m)
+    assert.match(fs.readFileSync(path.join(todo, 'README.md'), 'utf8'), /12-local-card\.md/)
+    assert.equal(sent.filter((s) => s.method === 'POST').length, 1)
+  })
+
   it('names the triage item it is made of by its file, for Cloud to move (#2107)', async () => {
     fs.mkdirSync(path.join(kanban, 'triage', 'dismissed'), { recursive: true })
     const item = (title: string) => `---\nsource_id: derived-${title.length}\ntitle: ${title}\ncollected_at: 2026-10-26 09:00\nimported_at: 2026-10-26 09:00\n---\n\nWords.\n`

@@ -24,14 +24,17 @@ import { captureConflict, conflictList, pendingConflicts, withSyncLock, type Con
 
 import { diff3Merge } from 'node-diff3'
 
-import { BOARD_FILE_LIMIT, assetsFile, cardFront, isBoardPath, isSettingsPath, numberOfCard, studioFolder, studioName, studioRuleFile, taskOfAssets } from '../../cli/src/lib/shared/board-files.ts'
+import { BOARD_FILE_LIMIT, assetsFile, cardFront, isBoardPath, isSettingsPath, numberOfCard, studioFolder, studioName, taskOfAssets } from '../../cli/src/lib/shared/board-files.ts'
+import { studioContextBlocks } from '../../cli/src/lib/agent/studio-shared'
+import { studioConfigContext } from '../../cli/src/lib/agent/studio-config.ts'
 import { describeTaskPreviewProblems } from '../../cli/src/lib/shared/task-preview-validation'
-import { parsePreviewBlocks, sourcePosition, withoutCode, type SourceProblem } from '../../cli/src/lib/shared/preview-blocks'
-import { CODING_PREVIEWS, migrateTask } from '../../cli/src/lib/shared/studio-migration'
+import { parsePreviewBlocks, sourcePosition, type SourceProblem } from '../../cli/src/lib/shared/preview-blocks'
+import { migrateHistoricalArchive } from '../../cli/src/lib/shared/studio-migration'
 import { makeFailure, type ExecutionFailure } from '../../cli/src/lib/agent/retry'
 import { itemAt, stampItem } from '../../cli/src/lib/shared/triage-files.ts'
 import { projectStateDir } from '../../cli/src/lib/machine/project'
-import { readPin, readVersion, savePin } from '../../cli/src/lib/agent/cloud-studios'
+import { loadPublishedStudio, missingStudioVersion, readPin, readVersion, savePin, type StudioPin } from '../../cli/src/lib/agent/cloud-studios'
+import { safeStudioPath } from '../../cli/src/lib/shared/studio-files'
 import { renderError } from '../../cli/src/lib/preview-validation'
 import { referenceText } from '../../cli/src/lib/dress-page'
 import * as api from './api'
@@ -59,6 +62,9 @@ export interface TaskFolder {
   number: number | null
   /** The task's studio, e.g. `wf_builtin_coding`. */
   studio: string | null
+  studioSnapshot?: StudioPin
+  bindStudio?: (snapshot: StudioPin) => void
+  materialIssues?: Record<string, string>
 }
 
 interface Entry {
@@ -421,66 +427,83 @@ export interface McpServers {
   [name: string]: { command: string; args?: string[] }
 }
 
-const SKILL_PATH = /^skills\/([a-z0-9]+(?:-[a-z0-9]+)*)\/((?:[\w.-]+\/)*[\w.-]+)$/
+/** Remove only unchanged files the legacy Runner recorded as its own. */
+function removePlacedSkills(ws: TaskFolder, held: Record<string, string>): void {
+  for (const [name, hash] of Object.entries(held)) {
+    const [top, skill, ...rest] = name.split('/')
+    if (top !== 'skills' || !skill || skill === 'kanban' || !rest.length || !safeStudioPath(name)) continue
+    for (const root of SKILL_ROOTS) {
+      const boundary = path.join(ws.cwd, root)
+      const file = path.join(boundary, skill, ...rest)
+      // A project skill may have been replaced by a symlink since the legacy write.
+      let current = ws.cwd
+      const safe = [...root.split('/'), skill, ...rest].every(part => {
+        current = path.join(current, part)
+        const entry = fs.lstatSync(current, { throwIfNoEntry: false })
+        return current === file ? entry?.isFile() : entry?.isDirectory()
+      })
+      if (!safe || hashFile(file) !== hash) continue
+      fs.rmSync(file, { force: true })
+      for (let dir = path.dirname(file); dir !== boundary; dir = path.dirname(dir)) {
+        try { fs.rmdirSync(dir) } catch { break }
+      }
+    }
+  }
+}
 
-/** Write the version's skills into the project, only what changed, and drop the ones it no
- *  longer has. A skill folder the project already holds of its own is left alone. */
-function pullTools(ws: TaskFolder, record: Record_, files: Record<string, string>): void {
-  const held = record.tools?.skills ?? {}
-  const ours = new Set(Object.keys(held).map((name) => name.split('/')[1]))
-  const theirs = (skill: string) => !ours.has(skill) && SKILL_ROOTS.some((root) => fs.existsSync(path.join(ws.cwd, root, skill)))
-  const kept = Object.keys(files).map((name) => SKILL_PATH.exec(name)?.[1]).filter((skill) => skill && !theirs(skill))
-  const skills: Record<string, string> = {}
-  for (const [name, text] of Object.entries(files)) {
-    const at = SKILL_PATH.exec(name)
-    if (!at || at[1] === 'kanban' || !kept.includes(at[1]) || at[2]!.split('/').includes('..')) continue
-    skills[name] = hashOf(text)
-    for (const root of SKILL_ROOTS) {
-      const file = path.join(ws.cwd, root, at[1]!, at[2]!)
-      if (held[name] !== skills[name] || hashFile(file) !== skills[name]) write(file, text)
-    }
-  }
-  for (const name of Object.keys(held)) {
-    if (skills[name]) continue
-    const [, skill, rest] = SKILL_PATH.exec(name) ?? []
-    if (!skill || !rest) continue
-    for (const root of SKILL_ROOTS) {
-      fs.rmSync(path.join(ws.cwd, root, skill, rest), { force: true })
-      if (!Object.keys(skills).some((n) => n.startsWith(`skills/${skill}/`))) fs.rmSync(path.join(ws.cwd, root, skill), { recursive: true, force: true })
-    }
-  }
-  const names = [...new Set(Object.keys(skills).map((name) => name.split('/')[1]!))]
-  if (names.length) keepOutOfGit(ws.cwd, SKILL_ROOTS.flatMap((root) => names.map((n) => `${root}/${n}`)))
-  let mcp: McpServers = {}
+function studioMcp(files: Record<string, string>): McpServers {
   try {
-    mcp = (JSON.parse(files['mcp.json'] ?? '{}') as { mcpServers?: McpServers }).mcpServers ?? {}
+    return (JSON.parse(files['mcp.json'] ?? '{}') as { mcpServers?: McpServers }).mcpServers ?? {}
   } catch {
-    // Checked by Cloud; a broken one gives no servers.
+    return {}
   }
-  record.tools = { skills, mcp }
 }
 
-/** The MCP servers the task's studio gives its runs. */
-export const mcpServersOf = (ws: TaskFolder): McpServers => readRecord(ws).tools?.mcp ?? {}
-
-/** Read the version pinned to this task. */
-async function studioFiles(task: string): Promise<api.Call<Record<string, string>>> {
-  const pin = readPin(task)
+export const mcpServersOf = (ws: TaskFolder): McpServers => {
+  const pin = ws.studioSnapshot
   const held = pin && readVersion(pin.studio, pin.version)
-  if (held && 'def' in parseStudioFile('studio', held.files['STUDIO.md'] ?? '', 'STUDIO.md')) return { ok: true, value: held.files }
-  const read = await api.readTaskStudio(task)
-  if (!read.ok) return read
-  savePin(task, { id: read.value.studio, version: read.value.version, name: read.value.name ?? read.value.studio, files: read.value.files, historicalPreviews: read.value.historicalPreviews })
-  return { ok: true, value: read.value.files }
+  return held ? studioMcp(held.files) : readRecord(ws).tools?.mcp ?? {}
 }
 
-/** Install the task's Studio tools and remove files placed by earlier Runners. */
+async function studioFiles(ws: TaskFolder): Promise<api.Call<Record<string, string>>> {
+  const requested = ws.studioSnapshot
+  const route = '/v1/tasks/' + encodeURIComponent(ws.task) + '/studio'
+  const read = await loadPublishedStudio(route, route => api.request('GET', route), api.download, requested)
+  if (!read.ok) {
+    if (!requested || !['not_found', 'invalid_response'].includes(read.code ?? '')) return read
+    const cached = readVersion(requested.studio, requested.version)
+    if (!cached) return { ok: false, error: missingStudioVersion(requested), code: 'studio_version_missing' }
+    ws.bindStudio?.(requested)
+    return { ok: true, value: cached.files }
+  }
+  if (!read.value) {
+    const pin = ws.studioSnapshot ?? readPin(ws.task)
+    const held = pin && readVersion(pin.studio, pin.version)
+    if (requested && !held) return { ok: false, code: 'studio_version_missing', error: missingStudioVersion(requested) }
+    if (pin && held) {
+      ws.studioSnapshot = pin
+      ws.bindStudio?.(pin)
+    }
+    return { ok: true, value: held?.files ?? {} }
+  }
+  const held = read.value
+  const snapshot = { studio: held.id, version: held.version, historicalPreviews: held.historicalPreviews }
+  ws.studioSnapshot = snapshot
+  ws.bindStudio?.(snapshot)
+  if (!requested) savePin(ws.task, held, true)
+  return { ok: true, value: held.files }
+}
+
+/** Load the task's Studio snapshot and remove files placed by earlier Runners. */
 async function pullStudio(ws: TaskFolder, record: Record_): Promise<api.Call<void>> {
   if (ws.cloudTask === ws.task) {
     record.builtin = ws.studio?.startsWith('wf_builtin_') ?? false
-    const files = await studioFiles(ws.task)
-    if (!files.ok && files.code !== 'not_found') return files
-    if (files.ok) pullTools(ws, record, files.value)
+    const files = await studioFiles(ws)
+    if (!files.ok && (ws.studioSnapshot || files.code !== 'not_found')) return files
+    if (files.ok) {
+      removePlacedSkills(ws, record.tools?.skills ?? {})
+      record.tools = { skills: {}, mcp: studioMcp(files.value) }
+    }
   }
   dropPlacedAgents(ws)
   for (const name of Object.keys(record.agents ?? {})) fs.rmSync(path.join(ws.board, name), { force: true })
@@ -507,7 +530,7 @@ function dropPlacedAgents(ws: TaskFolder): void {
 }
 
 /** Resolve an asset inside this card's allowed files. */
-function assetPath(ws: TaskFolder, name: string, owner: string): string | null {
+export function assetPath(ws: TaskFolder, name: string, owner: string): string | null {
   if (/^[a-z][\w+.-]*:/i.test(name) || name.startsWith('#') || name.startsWith('//')) return null
   if (path.isAbsolute(name)) throw new Error(`absolute path: ${name}`)
   const held = /^\.assets\//.exec(name)
@@ -554,10 +577,9 @@ function assetsOf(text: string | null | undefined): Assets {
 
 const assetsText = (assets: Assets) => `${JSON.stringify(Object.fromEntries(Object.entries(assets).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)), null, 2)}\n`
 
-/** Bring the folder up to Cloud: what changed here goes first, then what changed since the base,
- *  in one call, and the board's files reset to it. Nothing here is overwritten while it cannot
- *  be sent. */
-export function pull(ws: TaskFolder, machineId: string, stopped?: () => boolean, mode?: 'chat'): Promise<api.Call<void>> {
+/** Send local changes, refresh the board, then prepare the task's Studio and assets. */
+export function pull(ws: TaskFolder, machineId: string, stopped?: () => boolean, mode?: 'chat' | 'implement'): Promise<api.Call<void>> {
+  if (mode === 'implement') ws.materialIssues = {}
   const taskChat = mode === 'chat' ? ws.task : undefined
   return whenPrepared(ws, { ok: false, code: 'stopped', error: 'Task preparation stopped.' }, async () => {
     const sent = await sendBoard(boardFolder(ws), machineId, { taskChat })
@@ -575,7 +597,7 @@ export function pull(ws: TaskFolder, machineId: string, stopped?: () => boolean,
         return { ok: false, error: `This computer's board changes could not be sent: ${refused.error}`, ...(refused.offline ? {} : { code: sent.conflict ? 'board_content_conflict' : refused.code ?? 'version_conflict' }) }
       }
     }
-    const read = await readCloud(ws, !!validation, taskChat)
+    const read = await prepareTask(ws, !!validation, taskChat)
     if (!read.ok && read.code === 'board_content_conflict') {
       const prepared = await prepareConflictTask(ws)
       if (!prepared.ok) return prepared
@@ -636,45 +658,61 @@ export function syncedCardVersion(ws: TaskFolder): number | null {
   return card?.[1].seq ?? null
 }
 
+export function syncedArchive(ws: TaskFolder): Omit<ArchiveCompletion, 'task'> | undefined {
+  const p = path.relative(ws.board, cardFile(ws))
+  if (!p.startsWith('.archive/')) return
+  const base = readBase(ws)
+  const root = rootOf(ws)
+  const card = base.files[root + p]
+  const list = assetsFile(ws.task)
+  const assets = base.files[root + list]
+  if (!card || !archiveMeta(card.content) || card.content !== readText(path.join(ws.board, p)) ||
+      (assets?.content ?? null) !== readText(path.join(ws.board, list)) ||
+      base.pendingAssets?.includes(ws.task) || base.pendingPreviews?.some(held => held === p || held === list)) return
+  return { path: p, seq: card.seq, assets_seq: assets?.seq ?? 0 }
+}
+
 export const readHead = (ws: Pick<TaskFolder, 'cwd'>): number | null => readBase(ws).head_seq
+
+function restoredCards(ws: TaskFolder, base: Base, files: api.BoardFile[]) {
+  const root = rootOf(ws)
+  return files.flatMap(({ path: remote, content, seq }) => {
+    if (!remote.startsWith(root + 'todo/') || !content) return []
+    const p = remote.slice(root.length)
+    const number = numberOfCard(p)
+    const stamp = /^restored:\s*(.+)$/m.exec(content)?.[1]
+    const before = base.files[remote]?.content
+    if (number === null || !stamp || (before && /^restored:\s*(.+)$/m.exec(before)?.[1] === stamp)) return []
+    return [{ path: p, number, content, seq }]
+  })
+}
 
 /** A restored card supersedes old local archive moves. Keep divergent copies outside the board. */
 function applyRestorations(ws: TaskFolder, base: Base, files: api.BoardFile[]): Set<string> {
   const restored = new Set<string>()
   const root = rootOf(ws)
-  const protectedPaths = new Set(pendingConflicts(ws.board).flatMap(r => r.files.map(f => f.path)))
-  for (const f of files) {
-    if (protectedPaths.has(f.path.startsWith(root) ? f.path.slice(root.length) : f.path)) continue
-    if (!f.path.startsWith(root + 'todo/') || !f.content) continue
-    const p = f.path.slice(root.length)
-    const number = numberOfCard(p)
-    const stamp = /^restored:\s*(.+)$/m.exec(f.content)?.[1]
-    if (number === null || !stamp || base.files[f.path]?.content === f.content) continue
-    const old = Object.entries(base.files).find(([name]) => name.startsWith(root) && numberOfCard(name.slice(root.length)) === number)
-    if (old && old[0] === f.path && /^restored:\s*(.+)$/m.exec(old[1].content)?.[1] === stamp) continue
+  for (const { path: p, number, content, seq } of restoredCards(ws, base, files)) {
     for (const local of ['todo', '.archive'].flatMap(dir => filesUnder(path.join(ws.board, dir), ws.board))) {
       if (numberOfCard(local) !== number) continue
       const here = readText(path.join(ws.board, local))
-      if (here !== null && here !== base.files[root + local]?.content && here !== f.content) {
-        write(path.join(ws.board, '.sync', 'restored', String(f.seq), local), here)
+      if (here !== null && here !== base.files[root + local]?.content && here !== content) {
+        write(path.join(ws.board, '.sync', 'restored', String(seq), local), here)
       }
       restored.add(local)
       if (local !== p) fs.rmSync(path.join(ws.board, local), { force: true })
     }
-    write(path.join(ws.board, p), f.content)
+    write(path.join(ws.board, p), content)
     restored.add(p)
   }
   return restored
 }
 
-function observeConflicts(ws: TaskFolder, base: Base, files: api.BoardFile[]): boolean {
-  const shared = sharedMemory(ws.board)
+function observeConflicts(ws: TaskFolder, base: Base, files: api.BoardFile[], shared: Shared): boolean {
   const root = rootOf(ws)
   const pending = new Set(base.pendingPreviews)
   const conflicting = files.some(f => {
-    const own = f.path.startsWith(root)
-    const p = own ? f.path.slice(root.length) : f.path
-    if (pending.has(p) || !kept(p) || (p.startsWith(MEMORY) && shared(p.slice(MEMORY.length))) !== !own) return false
+    const p = f.path.startsWith(root) ? f.path.slice(root.length) : f.path
+    if (pending.has(p) || !kept(p) || remoteOf(ws, shared, p) !== f.path) return false
     return !!mergeFile(base.files[f.path]?.content ?? null, readText(path.join(ws.board, p)), f.content).conflict
   })
   if (!conflicting) return false
@@ -697,57 +735,88 @@ function observeConflicts(ws: TaskFolder, base: Base, files: api.BoardFile[]): b
   return true
 }
 
-/** What Cloud changed since the base, between jobs (#103): written only over a file still as last
- *  read. One changed here keeps its base, so the next push merges it, and the base keeps its
- *  `head_seq` until that push lands. */
+/** Between jobs, refresh the board without preparing a task. */
 export const pullChanges = (ws: TaskFolder): Promise<api.Call<void>> => inFolder(ws.cwd, async () => {
   if (busy(preparationKey(ws))) return { ok: true, value: undefined }
   const base = readBase(ws)
   if (base.head_seq === null) return { ok: true, value: undefined }
   const read = await api.readBoard(ws.project, base.head_seq)
   if (!read.ok) return read
-  const shared = sharedMemory(ws.board)
-  const root = rootOf(ws)
-  if (pendingConflicts(ws.board).length) return { ok: false, code: 'board_content_conflict', error: 'Resolve the saved board content conflicts before refreshing.' }
-  applyRestorations(ws, base, read.value.files)
-  if (observeConflicts(ws, base, read.value.files)) return { ok: false, code: 'board_content_conflict', error: 'Resolve the saved board content conflicts before refreshing.' }
-  let skipped = false
-  for (const f of read.value.files) {
-    const p = f.path.startsWith(root) ? f.path.slice(root.length) : f.path
-    const index = syncIndex(ws)
-    if (index) rememberDirectories(index.directories, p)
-    const isShared = p.startsWith(MEMORY) && shared(p.slice(MEMORY.length))
-    if (kept(p) && isShared === !f.path.startsWith(root)) {
-      const file = path.join(ws.board, p)
-      const here = readText(file)
-      if (here !== f.content && here !== (base.files[f.path]?.content ?? null)) {
-        skipped = true
-        continue
-      }
-      if (f.content === null) fs.rmSync(file, { force: true })
-      else if (here !== f.content) write(file, f.content)
-    }
-    base.deleted ??= {}
-    if (f.content === null) { delete base.files[f.path]; base.deleted[f.path] = f.seq }
-    else { base.files[f.path] = { seq: f.seq, content: f.content }; delete base.deleted[f.path] }
-  }
-  if (!skipped) base.head_seq = read.value.head_seq
-  writeBase(ws, base)
-  writeIndex(ws.board)
-  await cleanRecords(ws, base, {
-    removed: read.value.files.filter(f => f.content === null).map(f => f.path),
-    tasks: syncIndex(ws)?.ready ? affectedTasks(ws, read.value.files.map(f => f.path.startsWith(root) ? f.path.slice(root.length) : f.path)) : undefined,
-  })
-  return { ok: true, value: undefined }
+  const result = await reconcileBoard(ws, base, read.value, sharedMemory(ws.board))
+  return result.ok ? { ok: true, value: undefined } : result
 })
 
-async function readCloud(ws: TaskFolder, preserveAssets: boolean, taskChat?: string): Promise<api.Call<void>> {
+/** Apply Cloud changes. A deferred change keeps its file base and holds the cursor for replay. */
+async function reconcileBoard(ws: TaskFolder, base: Base, board: { files: api.BoardFile[]; head_seq: number }, shared: Shared, taskChat?: string): Promise<api.Call<Set<string>>> {
+  const root = rootOf(ws)
   if (pendingConflicts(ws.board).length) return { ok: false, code: 'board_content_conflict', error: 'Resolve the saved board content conflicts before refreshing.' }
+  const restored = applyRestorations(ws, base, board.files)
+  const snapshot = base.head_seq === null ? base.files : undefined
+  if (!snapshot && observeConflicts(ws, base, board.files, shared)) return { ok: false, code: 'board_content_conflict', error: 'Resolve the saved board content conflicts before refreshing.' }
+  if (snapshot) base.files = {}
+
+  const index = syncIndex(ws)
+  const paths: string[] = []
+  const removed: string[] = []
+  let skipped = false
+  for (const f of board.files) {
+    const p = f.path.startsWith(root) ? f.path.slice(root.length) : f.path
+    paths.push(p)
+    if (index) rememberDirectories(index.directories, p)
+    if (!snapshot && kept(p) && remoteOf(ws, shared, p) === f.path) {
+      const file = path.join(ws.board, p)
+      const here = readText(file)
+      if (here !== f.content) {
+        if (!restored.has(p) && here !== (base.files[f.path]?.content ?? null)) {
+          skipped = true
+          continue
+        }
+        if (f.content === null) fs.rmSync(file, { force: true })
+        else write(file, f.content)
+      }
+    }
+    base.deleted ??= {}
+    if (f.content === null) {
+      delete base.files[f.path]
+      base.deleted[f.path] = f.seq
+      removed.push(f.path)
+    } else {
+      base.files[f.path] = { seq: f.seq, content: f.content }
+      delete base.deleted[f.path]
+    }
+  }
+  if (snapshot) {
+    for (const p of Object.keys(snapshot)) if (!base.files[p]) removed.push(p)
+    resetBoardSnapshot(ws, base, snapshot, shared)
+  }
+  if (!skipped) base.head_seq = board.head_seq
+  base.project = ws.project
+  writeBase(ws, base)
+  writeIndex(ws.board)
+  const tasks = index?.ready ? affectedTasks(ws, paths) : undefined
+  if (ws.cloudTask === ws.task) tasks?.add(ws.task)
+  return { ok: true, value: await cleanRecords(ws, base, { removed, tasks, taskChat }) }
+}
+
+function resetBoardSnapshot(ws: TaskFolder, base: Base, before: Base['files'], shared: Shared): void {
+  const root = rootOf(ws)
+  const deferred = new Set(base.deferred)
+  const view = viewOf(ws, base, shared)
+  for (const p of new Set([...localFiles(ws, base), ...view.keys()])) {
+    if (!kept(p)) continue
+    const file = path.join(ws.board, p)
+    const here = readText(file)
+    const content = view.get(p) ?? null
+    const previous = before[root + p]
+    if (here === content || (here !== (previous?.content ?? null) &&
+        (deferred.has(p) || previous && content === null && p.startsWith('.archive/')))) continue
+    if (content !== null) write(file, content)
+    else if (previous || !isSettingsPath(p)) fs.rmSync(file, { force: true })
+  }
+}
+
+async function prepareTask(ws: TaskFolder, preserveAssets: boolean, taskChat?: string): Promise<api.Call<void>> {
   const base = readBase(ws)
-  const previous = { ...base.files }
-  const known = new Set(Object.keys(base.files))
-  const keepDraft = new Set((base.deferred ?? []).filter(p =>
-    readText(path.join(ws.board, p)) !== (base.files[rootOf(ws) + p]?.content ?? null)))
   if (base.workspace === undefined) {
     const project = await api.readProject(ws.project)
     if (!project.ok) return project
@@ -755,54 +824,23 @@ async function readCloud(ws: TaskFolder, preserveAssets: boolean, taskChat?: str
   }
   const read = await api.readBoard(ws.project, base.head_seq)
   if (!read.ok) return read
-  const restored = applyRestorations(ws, base, read.value.files)
-  if (base.head_seq !== null && observeConflicts(ws, base, read.value.files)) return { ok: false, code: 'board_content_conflict', error: 'Resolve the saved board content conflicts before refreshing.' }
-  const dirty = new Set(base.head_seq === null ? [] : [...new Set([...localFiles(ws, base), ...viewOf(ws, base, sharedMemory(ws.board)).keys()])].filter(p => !restored.has(p) && readText(path.join(ws.board, p)) !== (previous[remoteOf(ws, sharedMemory(ws.board), p)]?.content ?? null)))
-  for (const p of dirty) keepDraft.add(p)
-  if (base.head_seq === null) base.files = {}
-  for (const f of read.value.files) {
-    const local = f.path.startsWith(rootOf(ws)) ? f.path.slice(rootOf(ws).length) : f.path
-    if (dirty.has(local)) continue
-    base.deleted ??= {}
-    if (f.content === null) { delete base.files[f.path]; base.deleted[f.path] = f.seq }
-    else { base.files[f.path] = { seq: f.seq, content: f.content }; delete base.deleted[f.path] }
-  }
-  const removed = [...known].filter(p => !base.files[p])
-  for (const p of removed) {
-    const local = p.startsWith(rootOf(ws)) ? p.slice(rootOf(ws).length) : p
-    if (local.startsWith('.archive/') && readText(path.join(ws.board, local)) !== null &&
-      readText(path.join(ws.board, local)) !== previous[p]?.content) keepDraft.add(local)
-  }
-  if (!dirty.size) base.head_seq = read.value.head_seq
-  base.project = ws.project
-  writeBase(ws, base)
-
-  const reset = (view: Map<string, string>) => {
-    for (const [p, content] of view) {
-      const file = path.join(ws.board, p)
-      if (!keepDraft.has(p) && kept(p) && readText(file) !== content) write(file, content)
-    }
-  }
-  const view = viewOf(ws, base, sharedMemory(ws.board))
-  // A settings file Cloud has never held is this board's own until its next push (#2106).
-  const first = (p: string) => isSettingsPath(p) && !known.has(rootOf(ws) + p)
-  for (const p of localFiles(ws, base)) if (!keepDraft.has(p) && !view.has(p) && !first(p)) fs.rmSync(path.join(ws.board, p), { force: true })
-  reset(view)
-
-  const retired = await cleanRecords(ws, base, { removed, taskChat })
-  if (retired.has(ws.task)) {
-    writeIndex(ws.board)
-    return { ok: true, value: undefined }
-  }
+  const shared = sharedMemory(ws.board)
+  const refreshed = await reconcileBoard(ws, base, read.value, shared, taskChat)
+  if (!refreshed.ok) return refreshed
+  if (refreshed.value.has(ws.task)) return { ok: true, value: undefined }
   const record = readRecord(ws)
   const studio = await pullStudio(ws, record)
   if (!studio.ok) return studio
-  // Apply the Studio's memory policy to the board view.
-  reset(viewOf(ws, base, sharedMemory(ws.board)))
+  const studioShared = sharedMemory(ws.board)
+  const previousView = viewOf(ws, base, shared)
+  for (const [p, content] of viewOf(ws, base, studioShared)) {
+    if (!kept(p) || !p.startsWith(MEMORY) || remoteOf(ws, studioShared, p) === remoteOf(ws, shared, p)) continue
+    const file = path.join(ws.board, p)
+    if (readText(file) === (previousView.get(p) ?? null) && previousView.get(p) !== content) write(file, content)
+  }
   const assets = await pullAssets(ws, record, assetsOf(assetsListOf(ws, base)), preserveAssets)
   if (!assets.ok) return assets
   writeRecord(ws, record)
-  writeIndex(ws.board)
   return { ok: true, value: undefined }
 }
 
@@ -834,18 +872,19 @@ export function writeIndex(board: string): void {
 /** The task's workspace, as its last pull read it. */
 export const workspaceOf = (ws: TaskFolder): string | null => readBase(ws).workspace ?? null
 
-async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets, preserve = false): Promise<api.Call<void>> {
+async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets, preserve = false, stopped?: () => boolean): Promise<api.Call<void>> {
   if (ws.cloudTask && ws.number) { record.task = ws.cloudTask; record.number = ws.number }
   const file = cardFile(ws)
   const out: Record_['assets'] = {}
   for (const [name, ref] of Object.entries(assets)) {
+    if (stopped?.()) return { ok: false, code: 'stopped', error: 'Task preparation stopped.' }
     const held = record.assets[name]
     if (isDocumentPreview(name)) {
       if (held?.artifact === ref.artifact && held.version === ref.version) out[name] = held
       continue
     }
-    // Never drawn: nothing to read, and the source here stays.
-    if (ref.error && !ref.version) {
+    // Implementation keeps usable files even when Cloud metadata is incomplete.
+    if (ref.error && !ref.version && !ws.materialIssues) {
       if (held?.artifact === ref.artifact) out[name] = held
       continue
     }
@@ -856,6 +895,22 @@ async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets, prese
     let kind = held?.artifact === ref.artifact ? held.kind : undefined
     let version = ref.version
     const localHash = hashFile(target)
+    if (ws.materialIssues && localHash !== null) {
+      if (held) out[name] = held
+      continue
+    }
+    if (ws.materialIssues?.[name]) { if (held) out[name] = held; continue }
+    const unavailable = (failure: Extract<api.Call<unknown>, { ok: false }>) => {
+      if (!ws.materialIssues || ['unauthenticated', 'forbidden', 'unauthorized', 'permission_denied'].includes(failure.code ?? '')) return false
+      ws.materialIssues[name] = failure.error
+      if (held) out[name] = held
+      return true
+    }
+    if (ws.materialIssues && (typeof ref.artifact !== 'string' || !/^art_[a-z0-9]+$/i.test(ref.artifact))) {
+      ws.materialIssues[name] = ref.error || 'Missing asset record.'
+      if (held) out[name] = held
+      continue
+    }
     const unpublished = held?.artifact === ref.artifact && held.version > (version ?? 0)
     if (preserve && localHash !== null && (unpublished || !held || localHash !== (held.localHash ?? held.hash))) {
       if (held) out[name] = held
@@ -864,13 +919,18 @@ async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets, prese
     const current = held?.artifact === ref.artifact && held.version === version && localHash === (held.localHash ?? held.hash)
     if (version === undefined || !kind || (!current && kind !== 'html')) {
       const latest = await api.readArtifact(ref.artifact)
+      if (!latest.ok && unavailable(latest)) continue
       if (!latest.ok && latest.code === 'not_found') { if (held) out[name] = held; continue }
       if (!latest.ok) return latest
       version ??= latest.value.latest_version ?? 0
       kind = latest.value.type
-      if (!kind) return { ok: false, code: 'bad_request', error: `${name}: 资源类型缺失` }
+      if (!kind) {
+        const failure = { ok: false as const, code: 'bad_request', error: `${name}: 资源类型缺失` }
+        if (unavailable(failure)) continue
+        return failure
+      }
     }
-    if (kind === 'html' && held?.artifact === ref.artifact) {
+    if (kind === 'html' && held?.artifact === ref.artifact && localHash !== null) {
       out[name] = { ...held, kind, version }
       continue
     }
@@ -879,6 +939,7 @@ async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets, prese
       continue
     }
     const bytes = await readAsset(ref.artifact, version)
+    if (!bytes.ok && unavailable(bytes)) continue
     if (!bytes.ok && bytes.code === 'not_found') { if (held) out[name] = held; continue }
     if (!bytes.ok) return bytes
     let local = bytes.value
@@ -922,6 +983,10 @@ async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets, prese
         local = Buffer.from(source)
       }
     }
+    if (ws.materialIssues && hashFile(target) !== null) {
+      if (held) out[name] = held
+      continue
+    }
     write(target, local)
     // 改写过引用的页面以本地内容为准，推送时据此认出它没变。
     const hash = hashOf(typeof data === 'string' ? local : bytes.value)
@@ -929,6 +994,30 @@ async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets, prese
   }
   record.assets = out
   return { ok: true, value: undefined }
+}
+
+export async function pullMaterials(ws: TaskFolder, assets: Assets, stopped: () => boolean): Promise<api.Call<void>> {
+  return whenPrepared(ws, { ok: false, code: 'stopped', error: 'Task preparation stopped.' }, async () => {
+    ws.materialIssues ??= {}
+    const record = readRecord(ws)
+    const result = await pullAssets(ws, record, { ...assetsOf(assetsListOf(ws, readBase(ws))), ...assets }, true, stopped)
+    writeRecord(ws, record)
+    return result
+  }, stopped)
+}
+
+export function localMaterials(ws: TaskFolder) {
+  const card = cardFile(ws)
+  const { assets } = readRecord(ws)
+  return (source: string) => {
+    try {
+      const file = assetPath(ws, source, card)
+      const hash = file && hashFile(file)
+      if (!file || !hash) return null
+      const held = assets[source]
+      return { file, pin: held && hash === (held.localHash ?? held.hash) ? held : undefined }
+    } catch { return null }
+  }
 }
 
 export async function readAsset(artifact: string, version: number, textField?: 'html'): Promise<api.Call<Uint8Array>> {
@@ -1305,23 +1394,6 @@ export async function withBoard<T>(ws: TaskFolder, work: (send: (job: { id: stri
   } finally { release() }
 }
 
-function migratedArchive(pathname: string, content: string, base?: string): string {
-  if (!pathname.startsWith('.archive/') || numberOfCard(pathname) === null || !base || !/<Preview id=/.test(base)) return content
-  const masked = withoutCode(content)
-  const headings = [...masked.matchAll(/^##[ \t]+By[ \t]+[^\n]*agent[ \t]*$/gm)]
-  if (!headings.length) return content
-  const ids = new Set(parsePreviewBlocks(base).blocks.map(block => block.id))
-  if (headings.some(({ index, 0: line }) => {
-    const name = /^##[ \t]+By[ \t]+`([^`]+)`[ \t]+agent[ \t]*$/.exec(content.slice(index!, index! + line.length))?.[1]
-    return !name || !Object.hasOwn(CODING_PREVIEWS, name) || !ids.has(CODING_PREVIEWS[name]!)
-  })) return content
-  try {
-    const migrated = migrateTask(content, [], CODING_PREVIEWS).body
-    if (!/^##[ \t]+By[ \t]+[^\n]*agent[ \t]*$/m.test(withoutCode(migrated))) return migrated
-  } catch { /* Keep ambiguous archives available for conflict resolution. */ }
-  return content
-}
-
 /** What changed on the board, for no job (#59). */
 export const pushBoard = (ws: TaskFolder, machineId: string, paths?: string[]): Promise<Pushed> =>
   inFolder(ws.cwd, () => {
@@ -1436,7 +1508,7 @@ function affectedTasks(ws: TaskFolder, paths: Iterable<string>): Set<string> {
   return tasks
 }
 
-async function send(ws: TaskFolder, job: { id: string | null; machineId: string }, { paths, taskChat }: BoardWriteScope): Promise<Pushed> {
+async function send(ws: TaskFolder, job: { id: string | null; machineId: string }, { paths, taskChat }: BoardWriteScope, retryRestore = true): Promise<Pushed> {
   const record = readRecord(ws)
   const base = readBase(ws)
   const fail = (error: string, conflict = false, code?: string, status?: number): Pushed =>
@@ -1607,7 +1679,7 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
     const original = list?.content ?? fs.readFileSync(path.join(ws.board, p), 'utf8')
     const remote = remoteOf(ws, shared, p)
     const held = base.files[remote]
-    const content = migratedArchive(p, original, held?.content)
+    const content = p.startsWith('.archive/') && numberOfCard(p) !== null ? migrateHistoricalArchive(original, held?.content) : original
     if (content !== original && readText(path.join(ws.board, p)) === original) {
       const backup = path.join(ws.board, '.sync', 'legacy-previews', hashOf(Buffer.from(original)), p)
       write(backup, original)
@@ -1684,6 +1756,17 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
   let sent = await commit()
   if (sent === null) return success(false)
   if (!sent.ok && sent.files) {
+    const root = rootOf(ws)
+    const deletedCards = new Set(sent.files.filter(f => f.content === null && f.path.startsWith(root))
+      .map(f => numberOfCard(f.path.slice(root.length))).filter(number => number !== null))
+    if (boardSync && retryRestore && deletedCards.size) {
+      const read = await api.readBoard(ws.project, base.head_seq)
+      if (read.ok && restoredCards(ws, base, read.value.files).some(card => deletedCards.has(card.number))) {
+        const refreshed = await reconcileBoard(ws, base, read.value, shared, taskChat)
+        if (!refreshed.ok) return conflictFailure(ws)
+        return send(ws, job, { paths, taskChat }, false)
+      }
+    }
     // Obsolete project copies cannot take ownership from shared memory.
     for (const f of sent.files) if (stale.has(f.path)) {
       const at = changes.findIndex(c => c.path === f.path)
@@ -1855,20 +1938,38 @@ async function reconcileArchives(ws: TaskFolder, base: Base, archives: Map<strin
   return errors
 }
 
-export function taskStudioContext(ws: TaskFolder, docs = true): string {
-  if (!ws.cloudTask) return ''
-  const pin = readPin(ws.cloudTask), held = pin && readVersion(pin.studio, pin.version)
-  if (!held) throw new Error('The task Studio version is not downloaded.')
+export function taskStudio(ws: TaskFolder) {
+  if (!ws.cloudTask) return null
+  const pin = ws.studioSnapshot ?? readPin(ws.cloudTask), held = pin && readVersion(pin.studio, pin.version)
+  if (!held) throw new Error(pin ? missingStudioVersion(pin) : 'The task Studio version is not downloaded.')
   const read = parseStudioFile(studioName(held.id), held.files['STUDIO.md'] ?? '', 'STUDIO.md')
   if ('problem' in read) throw new Error(read.problem)
-  const def = read.def
-  const notes = readText(path.join(ws.board, studioRuleFile(held.id)))?.trim()
+  return { held, def: read.def }
+}
+
+export function taskContextBlocks(ws: TaskFolder, action: string, canonicalCommands = true) {
+  const studio = taskStudio(ws)
+  if (!studio) return []
+  return studioContextBlocks(studio.held, action, studio.def, ws.board, ws.project,
+    canonicalCommands ? 'akb studio file' : 'akb raw file')
+}
+
+export function taskStudioContext(ws: TaskFolder, { docs = true, canonicalCommands = true, config = true } = {}): string {
+  const studio = taskStudio(ws)
+  if (!studio) return ''
+  const { held, def } = studio
+  const studioFile = canonicalCommands ? 'akb studio file' : 'akb raw file'
   return ['<studio>', def.rules,
     ...def.previews.map(({ id, instructions }) => `<Preview id="${id}">\n${instructions}\n</Preview>`),
-    'Prepare only requested outputs. Revise saved work in place and preserve unrelated outputs. Use stable Preview IDs in task results. Read linked resources on demand with akb raw file. Read relevant memory on demand; do not write memory in task runs.',
+    `Prepare only requested outputs. Revise saved work in place and preserve unrelated outputs. Use stable Preview IDs in task results. Read linked resources on demand with \`${studioFile} ${def.id} <path>\`. Read relevant memory on demand; do not write memory in task runs.`,
     held.files['shared/RULES.md'] ?? '', '</studio>',
-    ...(notes ? [`<rules>\n${notes}\n</rules>`] : []),
+    config && studioConfigContext(held.id, ws.project, 'implement', file => readText(path.join(ws.board, file)) ?? undefined),
     ...memoryDirectories(ws.board).map(dir => `Memory directory: ${dir}`),
-    ...(docs ? ['Preview Components', componentDocsText(allComponents())] : []),
+    docs && taskStudioComponents(canonicalCommands),
   ].filter(Boolean).join('\n\n')
+}
+
+export function taskStudioComponents(canonicalCommands: boolean): string {
+  const components = componentDocsText(allComponents())
+  return 'Preview Components\n\n' + (canonicalCommands ? components : components.replace('akb studio preview', 'akb raw studio preview'))
 }

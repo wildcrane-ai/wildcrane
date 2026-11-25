@@ -13,7 +13,6 @@ import { carriedSession, closeRun, openResume, openRun, patch, peekRun } from '.
 import { readRuns } from '../src/lib/agent/store.ts'
 import type { RunRecord } from '../src/lib/agent/types.ts'
 import { watchRun } from '../src/lib/agent/watch.ts'
-import { setBoardProvider } from '../src/lib/board/index.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
 import { forgetMachineState, move, uiConfigOf } from './helpers/board.ts'
 
@@ -45,7 +44,6 @@ beforeEach(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-own-cost-'))
   forgetMachineState(root)
   setBoardRoot(root)
-  setBoardProvider(null)
   fs.mkdirSync(path.join(root, 'docs', 'kanban', 'todo'), { recursive: true })
   fs.writeFileSync(path.join(root, 'docs', 'kanban', 'next-id'), '1\n')
   fs.writeFileSync(path.join(root, 'docs', 'kanban', 'todo', 'README.md'), '# Tasks\n')

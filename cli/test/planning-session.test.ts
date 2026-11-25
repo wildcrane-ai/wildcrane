@@ -4,15 +4,15 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
+import { savePin, STUDIO_SNAPSHOT_ENV } from '../src/lib/agent/cloud-studios.ts'
 import { harnessLabel } from '../src/lib/agent/resolve.ts'
 import { closeRun, openResume, openRun, patch, peekRun, readSpec, resumeSessionId } from '../src/lib/agent/sessions.ts'
 import { startRun } from '../src/lib/agent/start.ts'
 import { readRuns } from '../src/lib/agent/store.ts'
 import type { AgentRequest, RunRecord } from '../src/lib/agent/types.ts'
 import { watchRun } from '../src/lib/agent/watch.ts'
-import { setBoardProvider } from '../src/lib/board/index.ts'
 import type { TaskReview } from '../src/lib/shared/review-plan.ts'
-import { setBoardRoot } from '../src/lib/paths.ts'
+import { setBoardDir, setBoardRoot } from '../src/lib/paths.ts'
 import { forgetMachineState, move, uiConfigOf } from './helpers/board.ts'
 
 let root = ''
@@ -41,7 +41,6 @@ beforeEach(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-planning-session-'))
   forgetMachineState(root)
   setBoardRoot(root)
-  setBoardProvider(null)
   fs.mkdirSync(path.join(root, 'docs', 'kanban', 'todo'), { recursive: true })
   fs.writeFileSync(path.join(root, 'docs', 'kanban', 'next-id'), '1\n')
   fs.writeFileSync(path.join(root, 'docs', 'kanban', 'todo', 'README.md'), '# Tasks\n')
@@ -303,32 +302,13 @@ describe('a new implementation session (#768, #896)', () => {
   })
 })
 
-it('sends the current approved Coding mockups to the implementation session and its resume', async (t) => {
-  const src = '.assets/3/screen.tsx'
-  const phone = '.assets/3/phone.tsx'
-  const unspecified = '.assets/3/detail.tsx'
-  const previewId = 'ui-designer'
-  const body = [
-    `<Mockup src="${src}" label="Desktop mockup" device="desktop" />`,
-    `<Asset src="${phone}" label="Phone mockup" device="mobile" />`,
-    `<Asset src="${unspecified}" label="Detail" />`,
-  ].join('\n\n')
+it('passes the delivery manifest and current review revision to implementation and resume', async (t) => {
+  const previewId = 'custom-output'
   const plan = [{ id: 'design', after: [], previews: [previewId] }]
-  const review = (revision: number, label: string): TaskReview => ({
-    plan, revision, stages: [{
-      id: 'design', status: 'approved', revision,
-      snapshot: {
-        body: `<Preview id="${previewId}">\n${body.replace('Desktop mockup', label)}\n</Preview>`,
-        previews: [{ id: previewId, assets: {
-          [src]: { artifact: 'art_1', version: revision },
-          [phone]: { artifact: 'art_2', version: revision },
-          [unspecified]: { artifact: 'art_3', version: revision },
-        } }],
-      },
-    }],
+  const review = (revision: number): TaskReview => ({
+    plan, revision, stages: [{ id: 'design', status: 'approved', revision, snapshot: { body: 'Frozen content in the manifest' } }],
   })
   const prompt = path.join(root, 'captured.txt')
-  const frozen = path.join(root, 'frozen')
   fs.writeFileSync(path.join(root, 'agent.mjs'), `
     import fs from 'node:fs';
     import { createInterface } from 'node:readline';
@@ -340,39 +320,157 @@ it('sends the current approved Coding mockups to the implementation session and 
   `)
   const draft = path.join(root, 'draft.md')
   fs.writeFileSync(draft, 'Current draft page')
-  await move(root, ['create', '--title', 'Approved UI', '--studio', 'coding', '--body-file', draft])
-  const saveEnv = (key: string) => {
+  await move(root, ['create', '--title', 'Saved task inputs', '--studio', 'coding', '--body-file', draft])
+  for (const key of ['AI4KANBAN_TASK_REVIEW', 'AI4KANBAN_SAVED_PREVIEW_FILE']) {
     const saved = process.env[key]
     t.after(() => { if (saved === undefined) delete process.env[key]; else process.env[key] = saved })
   }
-  saveEnv('AI4KANBAN_TASK_REVIEW')
-  saveEnv('AI4KANBAN_APPROVED_UI_DIR')
-  saveEnv('AI4KANBAN_SAVED_PREVIEW_FILE')
-  process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify(review(4, 'Desktop mockup'))
-  process.env.AI4KANBAN_APPROVED_UI_DIR = frozen
+  const manifest = path.join(root, 'inputs.md')
+  fs.writeFileSync(manifest, '# Saved inputs')
+  process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify(review(4))
+  process.env.AI4KANBAN_SAVED_PREVIEW_FILE = manifest
   const first = openRun({ action: 'implement', id: 3 }, 'Build the task.', [])
   if ('error' in first) assert.fail(first.error)
   await watchRun(first.run.sessionId)
   const captured = fs.readFileSync(prompt, 'utf8')
-  assert.match(captured, /Approved UI previews/)
-  const started = captured.split('Approved UI previews\n\n')[1]!
-  assert.match(started, /Desktop mockup · Desktop · Review revision 4 · \.assets\/3\/screen\.tsx/)
-  assert.match(started, /Phone mockup · Mobile · Review revision 4/)
-  assert.match(started, /Detail · Device unspecified · Review revision 4/)
-  assert.ok(started.includes(path.join(frozen, 'review-4-0/ui-designer/rendered-0/.assets/3/screen.html')))
-  assert.doesNotMatch(started, /Current draft page/)
+  assert.ok(captured.includes(`Use the task inputs and pinned files listed in \`${manifest}\`. Follow the task's delivery instructions.`))
+  assert.match(captured, /"revision":4,"snapshot":null/)
+  assert.doesNotMatch(captured, /Frozen content in the manifest/)
 
-  process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify(review(8, 'Reapproved desktop'))
-  process.env.AI4KANBAN_SAVED_PREVIEW_FILE = path.join(root, 'previews.md')
+  const updated = path.join(root, 'revised-inputs.md')
+  fs.writeFileSync(updated, '# Revised inputs')
+  process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify(review(8))
+  process.env.AI4KANBAN_SAVED_PREVIEW_FILE = updated
   const resumed = await openResume(first.run.sessionId)
   if ('error' in resumed) assert.fail(resumed.error)
   assert.equal(resumed.run.resumedFrom, first.run.sessionId)
   await watchRun(resumed.run.sessionId)
   const resumedPrompt = fs.readFileSync(prompt, 'utf8')
-  assert.match(resumedPrompt, /<Preview id="ui-design">/)
-  const continued = resumedPrompt.split('Approved UI previews\n\n')[1]!
-  assert.match(continued, /Reapproved desktop · Desktop · Review revision 8/)
-  assert.ok(continued.includes(path.join(frozen, 'review-8-0/ui-designer/rendered-0/.assets/3/screen.html')))
-  assert.match(resumedPrompt, /Read the saved task Previews/)
-  assert.doesNotMatch(continued, /Review revision 4/)
+  assert.match(resumedPrompt, /"revision":8,"snapshot":null/)
+  assert.ok(resumedPrompt.includes(updated))
+})
+
+it('sends compact task turns on new, carried and resumed Cloud sessions', async (t) => {
+  const board = path.join(root, 'docs', 'kanban')
+  const captured = path.join(root, 'prompt.txt')
+  const request = path.join(root, 'request.md')
+  fs.writeFileSync(request, 'Keep the existing export format.\n')
+  await move(root, ['create', '--title', 'Clarify the CSV export button', '--id', '42', '--body-file', request])
+  setBoardDir(board, root)
+  fs.writeFileSync(path.join(root, 'agent.mjs'), `
+    import fs from 'node:fs';
+    import { createInterface } from 'node:readline';
+    for await (const line of createInterface({ input: process.stdin })) {
+      fs.writeFileSync(${JSON.stringify(captured)}, JSON.parse(line).message.content);
+      break;
+    }
+    console.log(JSON.stringify({ type: 'result', result: 'Saved' }));
+  `)
+  const manifest = path.join(root, 'approved-inputs.md')
+  fs.writeFileSync(manifest, 'Pinned approved asset v2\n')
+  const vars = {
+    AI4KANBAN_TASK: 'task_42', AI4KANBAN_TASK_REVIEW: '', AI4KANBAN_REVIEW_STAGES: '',
+    [STUDIO_SNAPSHOT_ENV]: JSON.stringify({ studio: 'wf_builtin_coding', version: 1 }),
+    AI4KANBAN_SAVED_PREVIEW_FILE: manifest, AI4KANBAN_COMMAND: 'akb',
+  }
+  for (const [key, value] of Object.entries(vars)) {
+    const before = process.env[key]
+    process.env[key] = value
+    t.after(() => { if (before === undefined) delete process.env[key]; else process.env[key] = before })
+  }
+  const studio = (version: number) => ({
+    id: 'wf_builtin_coding', name: 'Coding', version,
+    files: {
+      'STUDIO.md': '---\nname: Coding\n---\n\nCheck the project.',
+      'skills/export/SKILL.md': '---\nname: export\ndescription: Export v' + version + '.\n---\n\nRead schema.txt after selecting the skill.',
+      'skills/export/schema.txt': 'schema v' + version,
+    },
+  })
+  savePin('task_42', studio(1))
+  delete process.env.AI4KANBAN_REVIEW_STAGES
+  const design = { id: 'design', after: [], previews: ['ui-design'] }
+  const review = (revision: number, status: 'available' | 'approved', body?: string) => {
+    process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify({ plan: [design], revision,
+      stages: [{ id: 'design', status, revision, snapshot: body ? { body } : null }],
+    } satisfies TaskReview)
+  }
+  const task = (req: Omit<AgentRequest, 'id' | 'title'>) => start({ ...req, id: 42, title: 'Clarify the CSV export button' })
+  const sent = async (run: RunRecord, guide: string) => {
+    assert.equal(await watchRun(run.sessionId), 0)
+    const prompt = fs.readFileSync(captured, 'utf8')
+    const command = `${process.env.AI4KANBAN_COMMAND} --board ${board}`
+    assert.deepEqual(prompt.match(/Follow `[^`\n]+ guide [^`]+`\./g), [`Follow \`${command} guide ${guide}\`.`])
+    assert.doesNotMatch(prompt, /Preview Components|<studio>|<Preview |Frozen draft text|approved-inputs\.md|task show 42/)
+    return prompt
+  }
+
+  const configDir = path.join(board, 'rules', 'studios', 'coding')
+  fs.mkdirSync(configDir, { recursive: true })
+  const config = path.join(configDir, 'config.md')
+  fs.writeFileSync(config, `---
+preferences:
+  - actions: [refine]
+    text: Use English for plan titles.
+  - actions: [chat]
+    text: Discussion preference.
+---`)
+  delete process.env.AI4KANBAN_TASK_REVIEW
+  process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify({ plan: null, stages: [], revision: 2 } satisfies TaskReview)
+  const initial = await task({ action: 'clarify', session: 'new' })
+  const planning = await sent(initial, 'refine')
+  assert.match(planning, /Task #42 .+guide refine`\.\n\nTask card: .+\n\nStudio: Coding\. Read `akb studio file coding STUDIO.md` before planning\./)
+  assert.match(planning, /Review · planning only\n\nUse English for plan titles/)
+  assert.doesNotMatch(planning, /Discussion preference|projects:|Reread the current configuration/)
+  review(3, 'available')
+  const fresh = await task({ action: 'clarify', session: 'new' })
+  const introduced = await sent(fresh, 'refine')
+  assert.doesNotMatch(introduced, /Plan the task|Read schema\.txt|schema v1/)
+  assert.match(introduced, /### Available skills\n- export: Export v1\./)
+  const skill = / \(file: (.+)\)$/m.exec(introduced)?.[1]
+  assert.ok(skill)
+  assert.equal(fs.readFileSync(path.join(path.dirname(skill), 'schema.txt'), 'utf8'), 'schema v1')
+  const carried = await task({ action: 'clarify' })
+  assert.equal(carried.continues?.resumeId, fresh.sessionId)
+  const carriedPrompt = await sent(carried, 'refine')
+  assert.match(introduced, /Work only on these unlocked stages: design[\s\S]*design: ui-design/)
+  assert.doesNotMatch(carriedPrompt, /unlocked stages|Available skills|Studio:|Task card:|Use English for plan titles/)
+  fs.writeFileSync(config, '')
+  const cleared = await sent(await task({ action: 'clarify' }), 'refine')
+  assert.match(cleared, /Studio configuration cleared/)
+  process.env.AI4KANBAN_REVIEW_STAGES = '["other"]'
+  const restricted = await sent(await task({ action: 'clarify' }), 'refine')
+  assert.match(restricted, /Review authorization changed/)
+  assert.doesNotMatch(restricted, /Work only on these unlocked stages: design/)
+  delete process.env.AI4KANBAN_REVIEW_STAGES
+  const answer = '  Keep the existing export format.\nUse the same delimiter.  '
+  const resolve = await task({ action: 'resolve', notes: answer })
+  assert.equal(resolve.continues?.resumeId, fresh.sessionId)
+  assert.ok((await sent(resolve, 'resolve')).endsWith(answer))
+  const revise = await task({ action: 'edit', notes: 'Use “Export CSV” as the button label.' })
+  assert.equal(revise.continues?.resumeId, fresh.sessionId)
+  assert.match(await sent(revise, 'revise'), /Implement only if explicitly requested\.[\s\S]*Use “Export CSV”/)
+  review(4, 'available')
+  const approval = await task({ action: 'approve' })
+  assert.match(await sent(approval, 'writing'), /Work only on these unlocked stages: design[\s\S]*Prepare the unlocked Previews\./)
+  const drafting = await openResume(approval.sessionId, true)
+  if ('error' in drafting) assert.fail(drafting.error)
+  assert.match(await sent(drafting.run, 'writing'), /Continue the interrupted turn[\s\S]*Continue task #42\./)
+
+  review(7, 'approved', 'Frozen draft text')
+  process.env.AI4KANBAN_COMMAND = 'custom-akb'
+  const first = await task({ action: 'implement' })
+  const built = await sent(first, 'implement')
+  assert.match(built, /Stages complete[\s\S]*Only stage approval accepts reviewable outputs/)
+  assert.ok(built.includes(`Use \`custom-akb --board ${board}\` for \`akb\`.`))
+  review(8, 'approved', 'Frozen draft text')
+  savePin('task_42', studio(2))
+  process.env[STUDIO_SNAPSHOT_ENV] = JSON.stringify({ studio: 'wf_builtin_coding', version: 2 })
+  const resumed = await openResume(first.sessionId)
+  if ('error' in resumed) assert.fail(resumed.error)
+  assert.equal(resumed.run.resumedFrom, first.sessionId)
+  assert.equal(resumed.run.studioPin?.version, 1)
+  const continued = await sent(resumed.run, 'implement')
+  assert.match(continued, /^Continue delivery[\s\S]*Stages complete/)
+  assert.doesNotMatch(continued, /Available skills/)
+  assert.match(await sent(await task({ action: 'archive' }), 'archive'), /Task #42/)
 })

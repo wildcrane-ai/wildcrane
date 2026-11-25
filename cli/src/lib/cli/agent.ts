@@ -1,12 +1,4 @@
 import { queryPreviews, externalGoalSession, cloudGoal, cloudGoalStudios } from '../../commands/goal-cloud'
-// Two halves (#551):
-//
-//   declareRuns  onto `akb` (./akb.ts): Cloud tasks and goals, the account, generation, guides
-//   declareRaw   onto `akb raw` (./board.ts): the local board and in-run commands —
-//                card, delivery, run, triage, memory, previews, agent, studio validate|diagram
-//
-// The flow commands come from ../agent/flows.ts, so a new flow is a command and a help entry at once.
-
 import { Option } from 'commander'
 
 import { BoardError } from '../io'
@@ -16,9 +8,10 @@ import { syncStudios } from '../agent/cloud-studios'
 import { FLOWS, flowVerb, type Flow, type FlowGroup, type FlowOption } from '../agent/flows'
 import { namedDelivery } from '../agent/deliveries'
 import type { DeliveryRecord } from '../agent/types'
-import { HELP_AFTER } from '../agent/manual'
+import { HELP_AFTER, PRINT_FLOW_HELP } from '../agent/manual'
 import { cmdAgent } from '../../commands/agent'
 import { cloudImage, cloudMusic, cloudTts, cmdCloud } from '../../commands/cloud'
+import { cmdTranscribe } from '../../commands/transcribe'
 import {
   templateDelete,
   templateGet,
@@ -29,7 +22,7 @@ import {
   templateSource,
   templateTags,
 } from '../../commands/cloud-template'
-import { cmdComponents } from '../../commands/components'
+import { cmdComponents, cmdStudioComponents } from '../../commands/components'
 import { cmdGoal } from '../../commands/goal'
 import {
   type TaskLocation,
@@ -44,13 +37,14 @@ import {
   taskList,
   taskArchive, taskRemove, taskRestore,
   taskResume,
+  taskRuntime,
   taskShow,
   taskStop,
   workspaceList,
 } from '../../commands/task'
 import { taskChatRead, taskChatFollow, validateChatOptions } from '../../commands/task-chat'
 import { cmdGuide } from '../../commands/guide'
-import { cmdStudioDiagram, cmdStudioInstructions, cmdStudioList, cmdStudioRule, cmdStudioPull, cmdStudioPush, cmdStudioCreate, cmdStudioValidate } from '../../commands/studio'
+import { cmdStudioDiagram, cmdStudioInstructions, cmdStudioList, cmdStudioRule, cmdStudioPull, cmdStudioClone, cmdStudioPush, cmdStudioCreate, cmdStudioValidate } from '../../commands/studio'
 import {
   cmdAnswered,
   cmdCancel,
@@ -74,7 +68,7 @@ import { cmdStudioPreview } from '../../commands/studio-preview'
 import { cmdTelemetry } from '../../commands/telemetry'
 import { cmdAgentCheck } from '../../commands/agent-check'
 import { HARNESSES } from '../agent/harnesses'
-import { movedTo } from './moved'
+import { createBoardCard, declareBoardMoves, withCreateOptions } from './board'
 import { withQuestionOptions } from './question-options'
 import { cardId, ctxOf, intInRange, oneOf, runAction, withShared, type Command, type Typed } from './shared'
 import type { AkbCliOptions } from './akb'
@@ -145,15 +139,19 @@ function nounOf(program: Command, name: string, summary: string, description?: s
 /** Declare the local board and in-run commands on `akb raw` (./board.ts). `cli.program` is the
  *  `akb` the line was typed with, without `raw`. */
 export function declareRaw(program: Command, cli: AgentCliOptions): void {
-  const raw = `${cli.program} raw`
+  declareLocalRuns(program, cli)
+}
+
+function declareLocalRuns(program: Command, cli: AgentCliOptions, canonical?: { task: Command; studio: Command }): void {
+  const command = canonical ? cli.program : `${cli.program} raw`
   const noun = (name: string, summary: string, description?: string): Command => nounOf(program, name, summary, description)
 
   const groups: Record<FlowGroup | 'run', Command> = {
-    card: noun(
+    card: canonical?.task ?? noun(
       'card',
       'one card: build it, sharpen it, change it, finish it',
       'Every verb here takes the card’s id. A card with a delivery in flight refuses all of them but ' +
-        `\`implement\` — \`${raw} delivery cancel\` is what hands it back.`,
+        `\`implement\` — \`${command} delivery cancel\` is what hands it back.`,
     ),
     delivery: noun(
       'delivery',
@@ -165,9 +163,9 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
       'run',
       'the agent processes — what is going, and what went',
       'A run is one agent working once. A delivery is made of several, so ending a run leaves the ' +
-        `delivery in flight — \`${raw} delivery cancel\` is what ends that.`,
+        `delivery in flight — \`${command} delivery cancel\` is what ends that.`,
     ),
-    memory: noun('memory', 'squeeze or review the memory the planning flows read'),
+    memory: noun('memory', 'read and maintain project memory'),
     // What is waiting to be sorted (#453, #499).
     triage: noun(
       'triage',
@@ -179,23 +177,30 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
     ),
   }
 
-  for (const flow of FLOWS) if (!flow.internal) declareFlow(flow.group ? groups[flow.group] : program, flow, cli)
+  for (const flow of FLOWS) {
+    if (flow.internal) continue
+    if (canonical && flow.action === 'describe-project') {
+      declareFlow(groups.memory, flow, cli, true)
+    } else if (!canonical || flow.group === 'card' && flow.action !== 'approve' || flow.action === 'review-memory' || flow.action === 'prune-memory') {
+      declareFlow(flow.group ? groups[flow.group] : program, flow, cli, !!canonical)
+    }
+  }
 
-  declareRunning(groups.run, cli)
-  declareDelivery(groups.delivery, cli)
+  declareRunning(groups.run, cli, !!canonical)
+  declareDelivery(groups.delivery, cli, !!canonical)
 
   // What a delivery is belongs under the noun it is about, not on the root list.
   groups.delivery.addHelpText('after', HELP_AFTER.deliveries(cli.program))
 
-  withShared(program.command('previews'))
+  withShared((canonical?.studio ?? program).command('previews'))
     .allowExcessArguments()
     .summary('list Preview output IDs and instructions')
     .addOption(new Option('-f, --follow').hideHelp())
     .addOption(new Option('--notes <text>').hideHelp())
     .addOption(new Option('--print').hideHelp())
-    .option('--triggers', 'query Studio Previews for a Goal')
+    .addOption(new Option('--triggers', 'query Studio Previews for a Goal').hideHelp(!!canonical))
     .option('--studio <id>', 'Preview outputs of this Studio')
-    .option('--workspace <id>', 'the workspace whose studios to query')
+    .addOption(new Option('--workspace <id>', 'the workspace whose studios to query').hideHelp(!!canonical))
     .action(async function (this: Command) {
       const opts = this.opts()
       if (this.args.length || opts.follow || opts.notes !== undefined) {
@@ -208,10 +213,6 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
         })
       } else await onBoard(this, cli, () => listPreviews(opts.studio))
     })
-
-  // ---- the agent that runs them ---------------------------------------------
-
-  declareAgent(program, cli)
 
   // ---- what is waiting to be sorted (#453, #499) ----------------------------
   //
@@ -250,17 +251,7 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
       await onBoard(this, cli, () => cmdTriageCheck(sourceId))
     })
 
-  withShared(program.command('components'))
-    .summary('list an agent or studio’s Preview Components and their usage')
-    .option('--studio <id>', 'all components used by a studio')
-    .option('--docs', 'include component usage documentation')
-    .action(async function (this: Command) {
-      const ctx = ctxOf(this, cli.program)
-      useBoard(resolveBoard('components', { board: ctx.board, dir: ctx.dir, cwd: cli.cwd, installHint: cli.installHint }), ctx.dir !== null)
-      await boardless(this, cli, () => cmdComponents(this.opts()))
-    })
-
-  const studio = noun('studio', "check a studio folder or draw its diagram")
+  const studio = canonical?.studio ?? noun('studio', 'check a Studio folder')
   withShared(studio.command('validate'))
     .argument('<folder>', 'a studio folder containing STUDIO.md')
     .summary('validate the complete Studio definition and its references')
@@ -275,7 +266,24 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
     .action(async function (this: Command, card: number) {
       await onBoard(this, cli, () => cmdStudioPreview(card, this.opts()))
     })
-  withShared(studio.command('diagram'))
+  if (canonical) {
+    const board = noun('board', 'list local cards and resolve board conflicts')
+    declareBoardMoves(program, cli, { ...canonical, board, memory: groups.memory })
+    return
+  }
+
+  declareAgent(program, cli)
+  withShared(program.command('components'))
+    .summary('list an agent or studio’s Preview Components and their usage')
+    .option('--studio <id>', 'all components used by a studio')
+    .option('--docs', 'include component usage documentation')
+    .action(async function (this: Command) {
+      const ctx = ctxOf(this, cli.program)
+      useBoard(resolveBoard('components', { board: ctx.board, dir: ctx.dir, cwd: cli.cwd, installHint: cli.installHint }), ctx.dir !== null)
+      await boardless(this, cli, () => cmdStudioComponents(this.opts()))
+    })
+
+  withShared(studio.command('diagram', { hidden: true }))
     .argument('<id-or-card>', 'studio id, or card number with --folder')
     .argument('[card]', 'the card whose asset folder gets studio.json')
     .option('--folder <folder>', 'read a local studio folder')
@@ -287,12 +295,18 @@ export function declareRaw(program: Command, cli: AgentCliOptions): void {
 
 /** Declare the Cloud commands and the guides on `akb` (./akb.ts). */
 export function declareRuns(program: Command, cli: AgentCliOptions): void {
+  withShared(program.command('components'))
+    .argument('[component...]', 'component names in output order')
+    .summary('list supported Preview formats or show component usage')
+    .action(async function (this: Command, names: string[]) {
+      await boardless(this, cli, () => cmdComponents(names))
+    })
+
   // ---- WildCrane tasks and goals, in Cloud (#550) -----------------------------
 
-  const ON_WEB = 'Reads and writes WildCrane Cloud as the signed-in account; changes show on the web at once.'
   const task = withShared(program.command('task'))
-    .summary('see where WildCrane tasks stand; list, create, approve, stop, resume, remove and restore them')
-    .description(`${ON_WEB} <task> is WC-12, task_…, or just 12 in a linked folder.`)
+    .summary('manage Cloud tasks and work on local cards')
+    .description('Manage tasks. Check subcommand help for whether it works on this board or in Cloud.')
     .action(function (this: Command) {
       this.help()
     })
@@ -306,17 +320,33 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     })
   withShared(task.command('show'))
     .argument('<task>')
-    .summary('a task and its card')
+    .summary('read the card, review stages, Previews and task files')
     .action(async function (this: Command, id: string) {
       await boardless(this, cli, (_, location) => taskShow(id, location))
     })
-  withShared(task.command('create'))
-    .argument('<request...>', 'what the task should do')
-    .summary('create a task and prepare its card asynchronously')
-    .option('--project <id>', 'the project; default: this folder’s linked one')
-    .option('--studio <id>', 'required: a name `akb studio list` shows')
+  withCreateOptions(withShared(task.command('create')))
+    .argument('[request...]', 'what the task should do')
+    .summary('prepare a task from a request or write a local card from a title')
+    .description('Pass a request to prepare a Cloud task asynchronously. ' +
+      'Use --title to allocate a number in Cloud and immediately write a card and its index entry to this board. ' +
+      'Use --studio with a request. Card fields apply to --title and --project applies to a request. Edit the saved body separately.')
+    .option('--project <id>', 'for a request: the project; default: this folder’s linked one')
+    .option('--review <flow>', 'set a review flow using Studio Preview names')
+    .option('--review-file <path>', 'JSON review nodes with after dependencies; [] needs no extra review')
+    .option('--preview-definitions-file <path>', 'propose a JSON list of task Preview definitions')
     .action(async function (this: Command, request: string[]) {
-      await boardless(this, cli, (_, location) => taskCreate(request.join(' '), this.opts(), location))
+      const opts = this.opts()
+      if (opts.title !== undefined) {
+        if (request.length || opts.project !== undefined || opts.review !== undefined || opts.reviewFile !== undefined || opts.previewDefinitionsFile !== undefined) {
+          die('Use --title with the local board, or pass a request with --project, --review, --review-file, and --preview-definitions-file.', 'bad-args')
+        }
+        return createBoardCard(this, cli)
+      }
+      if (['priority', 'blockedBy', 'related', 'modules', 'slug', 'triage', 'source'].some((key) => opts[key] !== undefined)) {
+        die('Card fields require --title.', 'bad-args')
+      }
+      if (!request.length) this.error("missing required argument 'request' or option '--title'", { code: 'commander.missingArgument' })
+      await boardless(this, cli, (_, location) => taskCreate(request.join(' '), opts, location))
     })
   withShared(task.command('approve'))
     .argument('<task>')
@@ -396,6 +426,13 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .summary('continue its stopped run')
     .action(async function (this: Command, id: string) {
       await boardless(this, cli, (_, location) => taskResume(id, location))
+    })
+  withShared(task.command('runtime'))
+    .argument('<task>')
+    .argument('<runtime>')
+    .summary('change a task’s runtime')
+    .action(async function (this: Command, id: string, runtime: string) {
+      await boardless(this, cli, (_, location) => taskRuntime(id, runtime, location))
     })
   withShared(task.command('stop'))
     .argument('<task>')
@@ -505,6 +542,18 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       )
     })
 
+  withShared(program.command('transcribe'))
+    .argument('<media>', 'the local video or audio file')
+    .summary('transcribe an audio stream in a Runner task')
+    .option('--audio-stream <index>', 'zero-based audio stream index, required when there are multiple streams')
+    .option('--language <code>', 'language hint or auto (default)')
+    .requiredOption('--out <file>', 'where to write the JSON transcript')
+    .requiredOption('--vtt <file>', 'where to write the WebVTT captions')
+    .action(async function (this: Command, media: string) {
+      const options = this.opts() as Parameters<typeof cmdTranscribe>[1]
+      await boardless(this, cli, () => cmdTranscribe(media, options, cli.cwd))
+    })
+
   // The shared template catalog (#1708). Options are read in the handlers, so a missing one exits 2.
   const template = withShared(program.command('template'))
     .summary('the shared UI and video template catalog')
@@ -584,7 +633,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
   // `check` is the only word here; the rest of `agent` moved under `raw` (#551).
   tools.allowExcessArguments().allowUnknownOption().action(function (this: Command) {
     if (!this.args.length) this.help()
-    this.error(movedTo('agent', cli.program), { code: 'commander.unknownCommand' })
+    this.error(`unknown command '${this.args[0]}'`, { code: 'commander.unknownCommand' })
   })
   withShared(tools.command('check'))
     .summary('whether WildCrane can run an agent here, and what is missing; exits 1 until it can')
@@ -634,7 +683,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .action(async function (this: Command) {
       const word = this.args[0]
       if (word === 'diagram') {
-        this.error(`\`${cli.program} studio ${word}\` is now \`${cli.program} raw studio ${word}\`.`, { code: 'commander.unknownCommand' })
+        this.error(`Freeze a Studio draft with \`${cli.program} studio preview <card> --folder <draft> --base <baseline>\`.`, { code: 'commander.unknownCommand' })
       }
       if (word) this.error(`unknown command '${word}'`, { code: 'commander.unknownCommand' })
       await studioList(this, cli)
@@ -653,7 +702,16 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .argument('[folder]', 'where to write it, empty or new; default ./<id>')
     .summary('write the studio\'s current version into a folder to edit')
     .action(async function (this: Command, id: string, folder?: string) {
-      await onBoard(this, cli, () => cmdStudioPull(id, folder))
+      await onBoard(this, cli, () => cmdStudioPull(id, folder), true)
+    })
+
+  flowWord('clone')
+    .argument('<id>', 'the studio, from `studio list`')
+    .argument('<folder>', 'where to write the draft, empty or new')
+    .option('--name <name>', 'the draft name; defaults to the source name with a copy suffix')
+    .summary('write an independent local draft from a Studio')
+    .action(async function (this: Command, id: string, folder: string) {
+      await onBoard(this, cli, () => cmdStudioClone(id, folder, this.opts().name), true)
     })
 
   flowWord('create')
@@ -677,12 +735,13 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
 
   flowWord('rule')
     .argument('<studio>', 'a studio id from `akb studio list`')
-    .option('--text <text>', 'the rules, for a one-liner; empty clears them')
-    .option('--file <path>', 'the rules, as markdown written to a file first')
-    .summary("set a studio's rules — what every card on it follows — in the user's own words")
+    .option('--text <text>', 'configuration for a one-liner; empty clears it')
+    .option('--file <path>', 'configuration as Markdown')
+    .option('--revision <n>', 'the revision read before editing')
+    .summary("read or save a studio's shared configuration")
     .description(
-      "Without --text or --file, prints the studio's current rules. With them, replaces all of them, " +
-        'saved to Cloud for every project in the workspace; empty clears them.',
+      "Without --text or --file, reads the Studio configuration. With them, saves it for all projects " +
+        'in the workspace. Pass the revision from the read with --revision when editing.',
     )
     .action(async function (this: Command, id: string) {
       await onBoard(this, cli, () => cmdStudioRule(id, this.opts()))
@@ -720,6 +779,8 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       await boardless(this, cli, (p) => cmdGuide(topic, p))
     })
 
+  declareLocalRuns(program, cli, { task, studio })
+
   // The watcher's own door. Not a command anyone types — `akb raw card implement 12` spawns it — and
   // spelled so it can never be mistaken for one.
   program
@@ -742,7 +803,7 @@ const DELIVERY = 'the delivery, or the card it is on'
 // ---- akb raw card run <verb> -------------------------------------------------------------------
 
 /** The agent processes: what is going, what went, and steering one. */
-function declareRunning(run: Command, cli: AgentCliOptions): void {
+function declareRunning(run: Command, cli: AgentCliOptions, canonical: boolean): void {
   const verb = (name: string) => withShared(run.command(name))
 
   verb('list')
@@ -780,7 +841,7 @@ function declareRunning(run: Command, cli: AgentCliOptions): void {
   verb('log')
     .argument('[id]', RUN_ID, String)
     .summary("one run's log")
-    .description('Shows the failure reason, any triage source and recorded cost. A creation run with no card fails even if the agent exits with code 0. Non-following queries exit with code 0; following a failed run exits with code 1. Example: akb raw run log abc12345 --follow')
+    .description('Shows the failure reason, any triage source and recorded cost. A creation run with no card fails even if the agent exits with code 0. Non-following queries exit with code 0; following a failed run exits with code 1. Example: akb run log abc12345 --follow')
     .option('-f, --follow', 'keep printing it until the run ends')
     .option('--events', 'with --follow: print its structured events, one JSON object per line')
     .option('--full', 'all of it, rather than the tail')
@@ -805,7 +866,7 @@ function declareRunning(run: Command, cli: AgentCliOptions): void {
     .option('-f, --follow', 'watch its log instead of returning')
     .option('--events', 'with --follow: print its structured events, one JSON object per line')
     .option('--fresh', 'explicitly take over saved work in a new session')
-    .option('--require-session', 'require the original session')
+    .addOption(new Option('--require-session', 'require the original session').hideHelp(canonical))
     .action(async function (this: Command, ...vals: unknown[]) {
       const [id] = positional(vals) as [string | undefined]
       await onBoard(this, cli, () => cmdResume(id, this.opts()))
@@ -816,8 +877,8 @@ function declareRunning(run: Command, cli: AgentCliOptions): void {
 
 /** What you do to a build in flight, or to one that stopped. `conflict` is a flow and is
  *  declared with the rest of them; these start nothing. */
-function declareDelivery(delivery: Command, cli: AgentCliOptions): void {
-  const verb = (name: string) => withShared(delivery.command(name))
+function declareDelivery(delivery: Command, cli: AgentCliOptions, canonical: boolean): void {
+  const verb = (name: string, internal = false) => withShared(delivery.command(name, { hidden: canonical && internal }))
 
   verb('complete')
     .argument('<delivery>', DELIVERY)
@@ -873,7 +934,7 @@ function declareDelivery(delivery: Command, cli: AgentCliOptions): void {
       await onBoard(this, cli, () => cmdResumeDelivery(named))
     })
 
-  verb('reconcile')
+  verb('reconcile', true)
     .argument('<card>', 'card number', cardId)
     .summary('reconcile local delivery state for a card before recovery')
     .action(async function (this: Command, ...vals: unknown[]) {
@@ -881,7 +942,7 @@ function declareDelivery(delivery: Command, cli: AgentCliOptions): void {
       await onBoard(this, cli, () => cmdReconcileDelivery(id))
     })
 
-  verb('release')
+  verb('release', true)
     .argument('<card>', 'card number', cardId)
     .summary('safely release an active delivery write lock while preserving saved work')
     .action(async function (this: Command, ...vals: unknown[]) {
@@ -897,25 +958,26 @@ function declareDelivery(delivery: Command, cli: AgentCliOptions): void {
 // Every flow is the same command with a different name: what it takes comes off the flow's
 // own entry, and `--print` and `--follow` are added to all of them. It is declared onto the
 // noun it acts on (`parent`), or onto `akb` itself when it acts on nothing yet.
-function declareFlow(parent: Command, flow: Flow, cli: AgentCliOptions): void {
+function declareFlow(parent: Command, flow: Flow, cli: AgentCliOptions, canonical: boolean): void {
   // A `delivery` verb answers to the delivery as well as to the card it is on, so the id is
   // taken as written and read once the board is open — before that there is no record to
   // look a delivery up in. What it is read INTO is the delivery itself (#428): a build with
   // no card has no id to be resolved to, and a carded one is found by its delivery just the
   // same.
   const byDelivery = flow.group === 'delivery'
-  const cmd = withShared(parent.command(flowVerb(flow)))
+  const cmd = withShared(parent.command(flowVerb(flow), { hidden: canonical && flow.action === 'prune-memory' }))
   for (const arg of splitArgs(flow.argument)) {
     cmd.argument(arg, argNote(arg, flow), arg.startsWith('<id') ? (byDelivery ? String : cardId) : undefined)
   }
   cmd.summary(flow.gloss)
   if (flow.more?.length) cmd.description(`${sentence(flow.gloss)} ${flow.more.join(' ')}`)
-  for (const option of flow.options ?? []) addFlowOption(cmd, option)
+  for (const option of flow.options ?? []) addFlowOption(cmd, option, canonical && option.internal === true)
+  const showPrint = !canonical || flow.group === 'card'
   cmd
-    .addOption(new Option('-p, --print', 'say what to do and start nothing').conflicts('follow'))
-    .option('-f, --follow', 'watch the log instead of returning')
-    .option('--events', 'with --follow: print its structured events, one JSON object per line')
-    .addHelpText('after', HELP_AFTER.flow)
+    .addOption(new Option('-p, --print', 'say what to do and start nothing').conflicts('follow').hideHelp(!showPrint))
+    .addOption(new Option('-f, --follow', 'watch the log instead of returning').hideHelp(canonical))
+    .addOption(new Option('--events', 'with --follow: print its structured events, one JSON object per line').hideHelp(canonical))
+    .addHelpText('after', showPrint ? PRINT_FLOW_HELP : '')
     .action(async function (this: Command, ...vals: unknown[]) {
       const args = positional(vals)
       await onBoard(this, cli, (p) =>
@@ -933,8 +995,8 @@ function deliveryOf(named: string): DeliveryRecord {
   return delivery
 }
 
-function addFlowOption(cmd: Command, option: FlowOption): void {
-  const declared = new Option(option.flags, option.description)
+function addFlowOption(cmd: Command, option: FlowOption, hidden: boolean): void {
+  const declared = new Option(option.flags, option.description).hideHelp(hidden)
   if (option.choices) declared.argParser(oneOf(option.choices))
   if (option.range) declared.argParser(intInRange(option.range[0], option.range[1]))
   cmd.addOption(declared)

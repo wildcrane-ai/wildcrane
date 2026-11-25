@@ -8,7 +8,7 @@ import { uploadReplyImage } from '../src/api'
 import { saveReplyImages } from '../src/reply-images'
 import { writeFakeSession } from './fake-cloud'
 
-test('slow reply uploads survive 40–60 seconds, retry transient failures, and bound stalled images', async t => {
+test('slow reply uploads survive 40–60 seconds and time out stalled images', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reply-upload-'))
   const previous = { AI4KANBAN_HOME: process.env.AI4KANBAN_HOME, AI4KANBAN_SUPABASE_URL: process.env.AI4KANBAN_SUPABASE_URL }
   t.after(() => {
@@ -38,7 +38,6 @@ test('slow reply uploads survive 40–60 seconds, retry transient failures, and 
     assert.ok(index >= 0)
     assert.equal(init.method, 'PUT')
     attempts[index]++
-    if (index === 1 && attempts[index] === 1) return new Response('{}', { status: 503 })
     return new Promise<Response>((resolve, reject) => {
       const timer = index === 2 ? undefined : setTimeout(() => {
         init.signal!.removeEventListener('abort', abort)
@@ -56,7 +55,7 @@ test('slow reply uploads survive 40–60 seconds, retry transient failures, and 
     return result.value
   }
   const pending = saveReplyImages([{ type: 'text', text: 'Before ![a](0.png) Between ![b](1.png) After ![c](2.png) End' }], root, upload)
-  for (const ms of [40_000, 60_000, 90_000, 90_000]) {
+  for (const ms of [40_000, 60_000, 90_000]) {
     await setImmediate()
     t.mock.timers.tick(ms)
   }
@@ -66,7 +65,7 @@ test('slow reply uploads survive 40–60 seconds, retry transient failures, and 
     { type: 'text', text: ' After ' }, { type: 'image', id: undefined, mime: 'image/png', status: 'not_saved' },
     { type: 'text', text: ' End' },
   ])
-  assert.deepEqual(attempts, [1, 2, 2])
+  assert.deepEqual(attempts, [1, 1, 1])
   assert.deepEqual(Buffer.from(stored.get('rim_cloud0')!), images[0])
   assert.deepEqual(Buffer.from(stored.get('rim_cloud1')!), images[1])
   const imageOnly = saveReplyImages([{ type: 'image', path: '0.png' }], root, upload)

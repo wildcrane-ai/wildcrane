@@ -53,11 +53,6 @@ const capturedFiles = directory => Object.fromEntries(fs.readdirSync(directory, 
     const target = path.join(file.parentPath, file.name)
     return [path.relative(directory, target), fs.readFileSync(target, 'utf8')]
   }))
-const approvedUi = process.env.AI4KANBAN_APPROVED_UI_DIR
-if (approvedUi) write('approved-ui.json', {
-  directory: approvedUi,
-  files: capturedFiles(approvedUi),
-})
 const savedPreviews = process.env.AI4KANBAN_SAVED_PREVIEW_FILE
 if (savedPreviews) {
   const directory = path.dirname(savedPreviews)

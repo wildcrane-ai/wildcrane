@@ -1,12 +1,12 @@
 import { IDLE_FAILURE } from '../idle'
-import { makeFailure, MAX_RETRY_ATTEMPTS, type ExecutionFailure } from '../retry'
+import { makeFailure, type ExecutionFailure } from '../retry'
 import { codexFailure, executionFailure } from './failures'
 import { bounded, CONVERSATION_MS } from '../../shared/conversation'
 import type { RunClient, ClientTurn, TurnEnd } from './client'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { batch, CODEX_SETTLE_MS, settlementPrompt, type Cleanup, type ManagedWork } from './codex-background'
-import { codexWork } from './codex-work'
+import { codexWork, terminalKey } from './codex-work'
 import { createCodexStreamRenderer } from './codex-stream'
 import { childSpend, readCodexRunFacts } from './codex-session'
 import { addUsage, ownUsage, ZERO_USAGE } from './usage'
@@ -116,6 +116,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
   const execution = randomUUID()
   let host: Json = {}
   let cleanup: Cleanup = { status: 'confirmed', execution, kept: [] }
+  let hostCleanup: 'confirmed' | 'unconfirmed' | undefined
   let settlement: { work: ManagedWork[]; polled: Set<string>; messages: { raw: Json; completed: boolean }[] } | undefined
   let replySnapshots = new Map<string, string>()
   const visible = new Set<string>()
@@ -164,17 +165,20 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     const cost = priceUsd(provider, model, usage)
     const combinedUsage = usage && child.usage ? addUsage(usage, child.usage) : usage ?? child.usage
     const costUsd = cost === undefined ? child.costUsd : cost + (child.costUsd ?? 0)
-    const failure = error || (cleanup.status === 'unconfirmed' ? cleanup.detail : undefined) || work.work().filter(w => !w.intentionalStop && ['failed', 'interrupted'].includes(w.status)).map(w => w.result || `Background work ${w.id} ${w.status}.`).join('\n') || undefined
+    const failedWork = work.work().filter(w => !w.intentionalStop && ['failed', 'interrupted'].includes(w.status))
+      .map(w => w.result || `Background work ${w.id} ${w.status}.`).join('\n')
+    const failure = error || (cleanup.status === 'unconfirmed' ? cleanup.detail : undefined) || failedWork || undefined
     if (failure) io.event?.({ kind: 'error', data: { text: failure } })
-    resolve({ ok: !failure, error: failure, failure: failure ? classified ?? makeFailure('runtime', failure, { code: 'execution_failed', detail: failure }) : undefined, cleanup, result: renderer.result(), replyParts: renderer.replyParts?.(), usage: combinedUsage, context, costUsd, costIncomplete: child.costIncomplete || (cost === undefined && child.costUsd !== undefined) || undefined })
+    const code = !error && cleanup.status === 'confirmed' && failedWork ? 'completed_operation_failed' : 'execution_failed'
+    resolve({ ok: !failure, error: failure, failure: failure ? classified ?? makeFailure('runtime', failure, { code, detail: failure }) : undefined, cleanup, result: renderer.result(), replyParts: renderer.replyParts?.(), usage: combinedUsage, context, costUsd, costIncomplete: child.costIncomplete || (cost === undefined && child.costUsd !== undefined) || undefined })
   }
   const closed = () => {
     const reason = 'Codex connection closed before all work and results finished.'
-    if (work.work().some(w => ['running', 'unknown'].includes(w.status))) note('Connection lost; managed cleanup is unconfirmed.')
+    if (hostCleanup !== 'confirmed' && work.work().some(w => ['running', 'unknown'].includes(w.status))) note('Connection lost; managed cleanup is unconfirmed.')
     end(reason, makeFailure('runtime', reason, { code: 'connection_lost', detail: reason }))
   }
   const inputFailed = (e: Error) => {
-    if (work.work().some(w => ['running', 'unknown'].includes(w.status))) note('Connection input failed; managed cleanup is unconfirmed.')
+    if (hostCleanup !== 'confirmed' && work.work().some(w => ['running', 'unknown'].includes(w.status))) note('Connection input failed; managed cleanup is unconfirmed.')
     end(e.message, executionFailure(e))
   }
   io.stdout.once('close', closed)
@@ -275,21 +279,44 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     if (ended) return
     const kept = work.work().filter(w => w.disposition === 'keep' && w.status === 'running')
     cleanup.kept = kept.map(w => w.id)
-    if (host.instance) {
+    const confirmed = cleanup.status === 'confirmed'
+    if (host.instance && (confirmed || kept.length)) {
       try {
         const answer = await bounded(rpc.call('wildcrane/settled', { threadId, execution, instance: host.instance,
-          lease: host.lease, confirmed: cleanup.status === 'confirmed',
+          lease: host.lease, confirmed,
           kept: kept.map(w => ({ threadId: w.threadId, itemId: w.itemId, processId: w.processId })),
         }), Math.max(0, until - Date.now()), 'Codex host did not confirm retention and release.')
-        if (answer.confirmed !== true || answer.instance !== host.instance || answer.lease !== host.lease) throw Error('Codex host returned an invalid retention acknowledgement.')
-      } catch (e) { cleanup.kept = []; note(e instanceof Error ? e.message : String(e)) }
+        if (answer.confirmed !== confirmed || answer.instance !== host.instance || answer.lease !== host.lease) throw Error('Codex host returned an invalid retention acknowledgement.')
+      } catch (e) {
+        cleanup.kept = []
+        const detail = e instanceof Error ? e.message : String(e)
+        note([cleanup.detail, detail].filter(Boolean).join(' '))
+      }
     } else if (kept.length) { cleanup.kept = []; note('This connection cannot retain services after its exclusive backend closes.') }
     end()
+  }
+  const terminate = async (entry: ManagedWork, until: number) => {
+    let expired = false
+    const failure = `Could not confirm stopping Codex background terminal ${entry.id}`
+    try {
+      const remaining = until - Date.now()
+      if (remaining <= 0) throw Error('Termination verification timed out.')
+      await bounded(work.terminate(rpc, entry, () => !ended && !expired), remaining, 'Termination verification timed out.')
+    } catch (e) {
+      if (ended) return
+      const current = work.entries.get(entry.id)
+      if (!current || current.processId !== entry.processId) throw Error('Codex background ownership changed during termination.')
+      current.disposition = 'unconfirmed'
+      note(`${failure}: ${e instanceof Error ? e.message : String(e)}`)
+    } finally { expired = true }
   }
   const armCleanup = () => {
     const pending = settlement
     if (!pending || ended) return
-    const necessary = pending.work.some(w => work.entries.get(w.id)?.status === 'running' && (w.kind === 'agent' || pending.polled.has(w.id)))
+    const necessary = pending.work.some(w => {
+      const current = work.entries.get(w.id)
+      return current?.status === 'running' && !current.intentionalStop && (w.kind === 'agent' || pending.polled.has(w.id))
+    })
     if (necessary) { clearTimeout(settleTimer); settleTimer = undefined; return }
     if (settleTimer) return
     settleTimer = setTimeout(() => {
@@ -315,7 +342,10 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
           if (current.threadId !== before.threadId || current.processId !== before.processId) throw Error('Codex background ownership changed during cleanup.')
           if (current.status === 'running') {
             if (current.kind === 'terminal' && current.processId && retained.get(current.id) === current.processId && host.instance) current.disposition = 'keep'
-            else if (current.kind === 'agent' || pending.polled.has(current.id)) current.disposition = 'await'
+            else if (current.kind === 'terminal' && current.processId && current.intentionalStop) {
+              await terminate(current, verifyUntil)
+              if (ended) return
+            } else if (current.kind === 'agent' || pending.polled.has(current.id)) current.disposition = 'await'
             else throw Error(`Background work ${current.id} is still running; neither a necessary wait nor service retention could be verified.`)
           } else if (current.status === 'unknown') throw Error(`Background work ${current.id} disappeared without a verified result.`)
           else {
@@ -328,7 +358,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
         if (report) for (const [id, value] of replySnapshots) presented.set(id, value)
         settlement = undefined
       }
-      const outstanding = work.work().filter(w => offered.get(w.id) !== snapshot(w) && presented.get(w.id) !== snapshot(w) && w.disposition !== 'keep' && !(w.intentionalStop && !['running', 'unknown'].includes(w.status)))
+      const outstanding = work.work().filter(w => offered.get(w.id) !== snapshot(w) && presented.get(w.id) !== snapshot(w) && w.disposition !== 'keep' && w.disposition !== 'unconfirmed' && !(w.intentionalStop && !['running', 'unknown'].includes(w.status)))
       if (outstanding.length) {
         const entries = batch(outstanding).map(w => ({ ...w }))
         for (const entry of entries) offered.set(entry.id, snapshot(entry))
@@ -337,7 +367,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
         await start(settlementPrompt(entries, execution, !!host.instance))
         return
       }
-      const awaited = work.work().filter(w => w.status === 'running' && w.disposition !== 'keep')
+      const awaited = work.work().filter(w => w.status === 'running' && w.disposition !== 'keep' && w.disposition !== 'unconfirmed')
       if (awaited.length) { count(awaited.length); schedule(); return }
       count(0)
       await finishManaged(Date.now() + CODEX_SETTLE_MS.verify)
@@ -351,23 +381,36 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     if (msg.id !== undefined) {
       // Never silently grant an approval the user's command did not grant.
       rpc.refuse(msg.id, 'WildCrane cannot answer interactive requests in an unattended run.')
-      end(`Codex requested interaction: ${msg.method}`)
+      const reason = `Codex requested interaction: ${msg.method}`
+      end(reason, makeFailure('runtime', reason, { code: 'provider_refused' }))
       return
     }
     const p = obj(msg.params)
+    if (msg.method === 'wildcrane/cleanup') {
+      if (p.status === 'confirmed') hostCleanup = 'confirmed'
+      else if (p.status === 'unconfirmed') {
+        hostCleanup = 'unconfirmed'
+        note(str(p.diagnostic) || 'Codex cleanup is unconfirmed.')
+      }
+      return
+    }
     const source = str(p.threadId)
     if (!work.own(source)) return
     if (msg.method === 'item/commandExecution/terminalInteraction') {
-      for (const w of work.entries.values()) if (w.kind === 'terminal' && w.threadId === source && w.processId === p.processId && w.status === 'running') {
+      const turnId = str(p.turnId)
+      if (source === threadId && (!active || historicalTurns.has(turnId) || completedTurns.has(turnId) || currentTurn && turnId && currentTurn !== turnId)) return
+      const w = work.entries.get(terminalKey(source, str(p.itemId)))
+      if (w && w.processId && w.processId === p.processId && w.status === 'running') {
         if (str(p.stdin).includes('\u0003')) w.intentionalStop = true
-        else if (settlement && p.stdin === '') { settlement.polled.add(w.id); armCleanup() }
+        else if (settlement && p.stdin === '') settlement.polled.add(w.id)
+        armCleanup()
       }
     }
     if (msg.method === 'item/started' || msg.method === 'item/completed') {
       const raw = obj(p.item)
       work.observe(source, raw)
       if (source === threadId && active) {
-        if (raw.type === 'commandExecution') visible.add(`terminal:${source}:${str(raw.id)}`)
+        if (raw.type === 'commandExecution') visible.add(terminalKey(source, str(raw.id)))
         if (raw.type === 'collabAgentToolCall') for (const id of Object.keys(obj(raw.agentsStates))) visible.add(`agent:${id}`)
       }
       armCleanup()
@@ -412,20 +455,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
         status = 'retrying'
         io.log(`[Codex recovery] ${failure.code ?? 'error'}: ${failure.summary}\n`)
         io.event?.({ kind: 'status', data: { state: 'retrying', source: 'codex', code: failure.code } })
-        io.event?.({
-          kind: 'retry',
-          data: {
-            state: 'retrying',
-            source: 'runtime',
-            runtime: { connector: 'codex', name: null, model: model ?? null },
-            attempt: 1,
-            maxAttempts: MAX_RETRY_ATTEMPTS,
-            summary: failure.summary,
-            ...(failure.detail ? { detail: failure.detail } : {}),
-            ...(failure.code ? { code: failure.code } : {}),
-            at: new Date().toISOString(),
-          },
-        })
+
       } else if (p.willRetry !== true) end(failure.summary, failure)
     }
     if (msg.method === 'turn/completed') {
@@ -491,7 +521,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     if (!threadId) throw Error('Codex did not return a thread id.')
     if (mode === 'resume' && threadId !== params.threadId) throw Error('Codex did not return the requested session.')
     work.root(threadId, list(response.retainedThreads).map(t => str(t.id)))
-    for (const terminal of list(response.retainedTerminals)) retained.set(`terminal:${str(terminal.threadId)}:${str(terminal.itemId)}`, str(terminal.processId))
+    for (const terminal of list(response.retainedTerminals)) retained.set(terminalKey(str(terminal.threadId), str(terminal.itemId)), str(terminal.processId))
     provider = str(thread.modelProvider) || undefined
     model = str(response.model) || str(thread.model) || undefined
     if (model) io.gotModel(model)

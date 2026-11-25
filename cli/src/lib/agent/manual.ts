@@ -8,9 +8,7 @@
 // Each block is attached to the command it is about, never to the root — `akb help` is
 // Commander's own list and stays that short.
 
-export const HELP_AFTER = {
-  /** Under every flow: print it, or run it. The one choice each of them has. */
-  flow: `
+export const PRINT_FLOW_HELP = `
 Print it, or run it
   --print     print the flow to follow in the current session, filled in for this board:
               the card's own path, the steps it has left, the memory file its modules point
@@ -19,8 +17,9 @@ Print it, or run it
   (no flag)   start a separate session with its own context.
 
   Inside a task session, board actions print their flows. Prepare requested Previews there.
-`,
+`
 
+export const HELP_AFTER = {
   /** Under `delivery`: what one is, which no verb of it says on its own. */
   deliveries: (program: string): string => `
 What a delivery is

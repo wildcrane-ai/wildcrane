@@ -5,6 +5,29 @@ import { summary, type ManagedWork } from './codex-background'
 const list = (value: unknown): Json[] => Array.isArray(value) ? value.map(obj) : []
 export const terminalKey = (thread: string, item: string) => `terminal:${thread}:${item}`
 
+async function* terminals(rpc: Rpc, threadId: string, alive: () => boolean, verify = false) {
+  let cursor: string | undefined
+  const cursors = new Set<string>()
+  do {
+    if (!alive()) return
+    if (cursor !== undefined) {
+      if (cursors.has(cursor)) throw Error('Codex repeated a background terminal cursor.')
+      cursors.add(cursor)
+    }
+    const page = await rpc.call('thread/backgroundTerminals/list', { threadId, ...(cursor === undefined ? {} : { cursor }) })
+    if (!alive()) return
+    if (verify && (!Array.isArray(page.data) || page.nextCursor != null && typeof page.nextCursor !== 'string')) {
+      throw Error('Codex background terminal state is unconfirmed.')
+    }
+    for (const terminal of list(page.data)) {
+      const itemId = str(terminal.itemId), processId = str(terminal.processId)
+      if (!itemId || !processId) throw Error('Codex returned a background terminal without its complete handles.')
+      yield { terminal, itemId, processId }
+    }
+    cursor = typeof page.nextCursor === 'string' ? page.nextCursor : undefined
+  } while (cursor !== undefined)
+}
+
 /** Only native lineage and the current connection can establish ownership. */
 export function codexWork() {
   const children = new Set<string>()
@@ -50,12 +73,15 @@ export function codexWork() {
     }
     if (raw.type !== 'commandExecution' || !str(raw.id)) return
     const id = terminalKey(threadId, str(raw.id))
-    const previous = entries.get(id)
+    const known = entries.get(id)
+    const processId = str(raw.processId) || known?.processId
+    const previous = known?.processId === processId ? known : undefined
+    if (previous?.disposition === 'stopped') return
     const running = raw.status === 'inProgress'
     if (running && previous?.exitCode !== undefined) return
     const exitCode = typeof raw.exitCode === 'number' ? raw.exitCode : previous?.exitCode
     entries.set(id, { ...previous, id, threadId, kind: 'terminal', itemId: str(raw.id),
-      processId: str(raw.processId) || previous?.processId,
+      processId,
       command: summary(str(raw.command) || previous?.command || '', 600),
       status: running ? 'running' : exitCode !== undefined ? exitCode === 0 ? 'completed' : 'failed' : 'unknown',
       result: summary(str(raw.aggregatedOutput) || previous?.result || ''), exitCode,
@@ -93,6 +119,20 @@ export function codexWork() {
     root(id: string, retained: string[] = []) { root = id; for (const child of retained) if (child !== id) children.add(child) },
     freeze() { for (const [id, entry] of entries) if (entry.status === 'running') background.add(id) },
     work: () => [...entries.values()].filter(e => background.has(e.id)),
+    async terminate(rpc: Rpc, entry: ManagedWork, alive: () => boolean) {
+      const { id, threadId, itemId, processId } = entry
+      const result = await rpc.call('thread/backgroundTerminals/terminate', { threadId, processId })
+      if (!alive()) return
+      if (result.terminated !== true) throw Error('Codex did not acknowledge terminating the background terminal.')
+      for await (const terminal of terminals(rpc, threadId, alive, true)) {
+        if (terminal.itemId === itemId || terminal.processId === processId) throw Error('The background terminal is still listed after termination.')
+      }
+      if (!alive()) return
+      const current = entries.get(id)
+      if (!current || current.processId !== processId) throw Error('Codex background ownership changed during termination.')
+      current.status = 'interrupted'
+      current.disposition = 'stopped'
+    },
     async refresh(rpc: Rpc, alive: () => boolean) {
       for (const id of children) {
         if (!alive()) return
@@ -101,33 +141,25 @@ export function codexWork() {
       for (const threadId of [root, ...children]) {
         if (!alive()) return
         const present = new Set<string>()
-        let cursor: unknown = null
-        const cursors = new Set<unknown>()
         try {
-          do {
+          for await (const { terminal, itemId, processId } of terminals(rpc, threadId, alive)) {
             if (!alive()) return
-            if (cursors.has(cursor)) throw Error('Codex repeated a background terminal cursor.')
-            cursors.add(cursor)
-            const page = await rpc.call('thread/backgroundTerminals/list', { threadId, ...(cursor ? { cursor } : {}) })
-            for (const terminal of list(page.data)) {
-              const itemId = str(terminal.itemId), processId = str(terminal.processId)
-              if (!itemId || !processId) throw Error('Codex returned a background terminal without its complete handles.')
-              const id = terminalKey(threadId, itemId)
-              present.add(id)
-              const previous = entries.get(id)
-              entries.set(id, { ...previous, id, threadId, kind: 'terminal', itemId, processId,
-                ...(typeof terminal.osPid === 'number' ? { osPid: terminal.osPid } : {}),
-                command: summary(str(terminal.command) || previous?.command || '', 600), status: 'running', result: previous?.result ?? '',
-              })
-              background.add(id)
-            }
-            cursor = page.nextCursor
-          } while (cursor)
+            const id = terminalKey(threadId, itemId)
+            present.add(id)
+            const known = entries.get(id)
+            const previous = known?.processId === processId ? known : undefined
+            entries.set(id, { ...previous, id, threadId, kind: 'terminal', itemId, processId,
+              ...(typeof terminal.osPid === 'number' ? { osPid: terminal.osPid } : {}),
+              command: summary(str(terminal.command) || previous?.command || '', 600), status: 'running', result: previous?.result ?? '',
+            })
+            background.add(id)
+          }
         } catch (e) {
           if (!(e instanceof RpcError) || ![-32601, -32600].includes(e.code ?? 0) || !/method|unknown|unsupported/i.test(e.message)) throw e
           if ([...entries.values()].some(w => w.threadId === threadId && w.kind === 'terminal' && w.status === 'running')) throw Error('This Codex version cannot report unfinished background commands; cleanup is unconfirmed.')
           continue
         }
+        if (!alive()) return
         const missing = [...entries.values()].filter(e => background.has(e.id) && e.threadId === threadId && e.kind === 'terminal' && e.status === 'running' && !present.has(e.id))
         if (missing.length) {
           await readThread(rpc, threadId)

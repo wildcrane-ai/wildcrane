@@ -1,8 +1,3 @@
-// The runtimes a job can name, run through the CLI's own harness entries so a flag or a
-// stream format the CLI learns reaches the Runner on its next build. The ones that talk
-// (OpenCode, Cursor, DSH, ZCode, Grok Build) are driven by the harness's own client. A job's
-// settings become arguments and environment by the board's own rules (agent/run-settings.ts).
-
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
@@ -13,11 +8,12 @@ import { antigravityModels } from '../../cli/src/lib/agent/harnesses/antigravity
 import { LANGUAGE_ENV } from '../../cli/src/lib/agent/language'
 import { splitCommand } from '../../cli/src/lib/agent/argv'
 import { HARNESSES as ALL } from '../../cli/src/lib/agent/harnesses'
+import { installedCommand, planLaunch, promptInput } from '../../cli/src/lib/agent/harnesses/launch'
 import { withSystemProxy } from '../../cli/src/lib/agent/proxy'
 import { MODEL_KEY, type Harness } from '../../cli/src/lib/agent/harnesses/types'
-import { chooseCopy, copyEnv, locate, spawnName, SPAWN_MS, warm } from '../../cli/src/lib/agent/locate'
+import { copyEnv, locate, spawnName, warm } from '../../cli/src/lib/agent/locate'
 import { spawnable } from '../../cli/src/lib/agent/spawnable'
-import { effectiveValues, providerFor, settingArgs, settingEnv, withSystemLanguage, type SettingValues } from '../../cli/src/lib/agent/run-settings'
+import { providerFor, settingArgs, type SettingValues } from '../../cli/src/lib/agent/run-settings'
 import type { HarnessSetting } from '../../cli/src/lib/agent/types'
 import type { RunEvent, StreamRenderer, TurnEnd } from '../../cli/src/lib/agent/wire'
 import { obj, str } from '../../cli/src/lib/agent/wire/json'
@@ -35,6 +31,7 @@ export interface Plan {
   managedProcess?: boolean
   idleRecovery?: boolean
   startNote?: string
+  fallback?: () => Plan
   args: string[]
   env: NodeJS.ProcessEnv
   /** Written to stdin when the runtime reads its prompt there. */
@@ -90,76 +87,73 @@ export const hints = (runtime: Job['runtime']) => ({ login: HARNESSES[runtime].l
 /** True when the runtime can open a copy of an earlier session (#2146). */
 export const forks = (runtime: Job['runtime']) => !!HARNESSES[runtime].forkArgs
 
-/** The harness's command on the copy `locate` chooses for a spawn. */
-function commandOf(harness: Harness): [string, ...string[]] {
-  const [binary, ...flags] = splitCommand(harness.command)
-  return [spawnName(chooseCopy(harness, SPAWN_MS), binary!), ...flags]
+/** This connector reads attachments from command-line image arguments. */
+export const takesImageArgs = (runtime: Job['runtime']) => HARNESSES[runtime].images?.as === 'args'
+
+export interface DiscussionImages {
+  files: readonly string[]
+  prompt: string
 }
 
-/** 续接原会话；语言只通过连接器系统提示词传入。 */
-export function plan(runtime: Job['runtime'], prompt: string, cwd: string, resume?: string | null, model?: string | null, given: Settings = {}, fork = false, language: 'zh' | 'en' | null = null): Plan {
+export function plan(runtime: Job['runtime'], prompt: string, cwd: string, resume?: string | null, model?: string | null, given: Settings = {}, fork = false, language: 'zh' | 'en' | null = null, images: readonly string[] = [], discussionImages?: DiscussionImages): Plan {
   const harness = HARNESSES[runtime]
-  const values = held(runtime, model, given)
-  const [binary, ...flags] = commandOf(harness)
-  const base = [binary, ...flags, ...settingArgs(harness, values)]
+  const { argv, note } = installedCommand(harness)
   const id = randomUUID()
-  const copied = fork && resume && harness.forkArgs ? harness.forkArgs(base, resume, id, cwd) : null
-  if (fork) resume = null
-  const extra = copied ?? (resume ? harness.resumeArgs(base, resume, cwd) : harness.extraArgs(base, id, cwd))
-  const quiet = (line: string) => harness.quietStderr?.(line) ?? false
-  // WILDCRANE_JOB keeps the Claude Code plugin a job's own session loads from serving it (#2161).
-  const { argv, env, note } = withSystemLanguage(harness, [...base, ...extra], copyEnv(binary, { ...process.env, ...settingEnv(harness, values, given.secrets ?? {}, cwd), WILDCRANE_JOB: '1', [LANGUAGE_ENV]: language ?? '' }), language)
-  const connection = harness.connection?.(argv)
-  if (connection || harness.client) {
-    const client = connection?.client ?? harness.client!(effectiveValues(harness, values))
-    const started = connection?.argv ?? argv
-    let session: string | undefined
+  const session = fork ? resume && harness.forkArgs ? { id, resume, fork: true as const } : { id }
+    : resume ? { resume } : { id }
+  const launch = planLaunch(harness, argv, {
+    cwd, settings: held(runtime, model, given), secrets: given.secrets ?? {}, language, images, note,
+    // Keep the Claude Code plugin from serving jobs inside a job's own session.
+    env: { WILDCRANE_JOB: '1', [LANGUAGE_ENV]: language ?? '' },
+  }, session, !!discussionImages)
+  const adapt = (started: ReturnType<typeof planLaunch>): Plan => {
+    const { client, renderer, resumeId, fallback } = started
+    const input = promptInput(started, prompt)
+    const base = {
+      ...input,
+      env: started.env,
+      startNote: started.startNote,
+      quiet: started.quietStderr ?? (() => false),
+    }
+    if (!client) return {
+      ...base,
+      renderer,
+      session: () => renderer?.resumeId?.() ?? resumeId ?? undefined,
+      model: () => renderer?.model?.(),
+    }
+    const native = started.nativeDiscussion ? discussionImages : undefined
+    let currentSession: string | undefined
     let named: string | undefined
     return {
+      ...base,
       managedProcess: client.managedProcess,
       idleRecovery: client.idleRecovery,
       background: client.background,
-      startNote: note,
-      command: started[0]!,
-      args: started.slice(1),
-      env,
-      converse: (child, event, restart = true, prepareUntil, signal, activity, idleSignal) =>
-        client.turn({
-          signal,
-          idleSignal,
-          activity,
-          stdout: child.stdout!,
-          stdin: child.stdin!,
-          prompt,
-          prepareUntil,
-          restartPrompt: restart ? prompt : undefined,
-          cwd,
-          resumeId: resume ?? undefined,
-          log: () => {},
-          gotResumeId: (got, restarted) => {
-            if (restarted || !session) session = got
-          },
-          gotModel: (got) => (named = got),
-          event,
-        }),
-      quiet,
-      session: () => session ?? resume ?? undefined,
+      fallback: fallback && (() => adapt(fallback())),
+      converse: (child, event, restart = true, prepareUntil, signal, activity, idleSignal) => client.turn({
+        signal,
+        idleSignal,
+        activity,
+        stdout: child.stdout!,
+        stdin: child.stdin!,
+        prompt: native?.prompt ?? prompt,
+        imageFiles: native?.files,
+        prepareUntil,
+        restartPrompt: restart ? prompt : undefined,
+        cwd,
+        resumeId: resumeId ?? undefined,
+        log: () => {},
+        gotResumeId: (got, restarted) => {
+          if (restarted || !currentSession) currentSession = got
+        },
+        gotModel: (got) => (named = got),
+        event,
+      }),
+      session: () => currentSession ?? resumeId ?? undefined,
       model: () => named,
     }
   }
-  const renderer = harness.renderer!(cwd, argv[0], argv)
-  const toStdin = harness.stdinPrompt?.(argv)
-  return {
-    startNote: [note, runtime === 'codex' ? 'Custom Codex command preserved; managed background cleanup is unavailable for this command shape.' : undefined].filter(Boolean).join('\n') || undefined,
-    command: argv[0]!,
-    args: [...argv.slice(1), ...(toStdin ? [] : [prompt])],
-    env,
-    stdin: toStdin?.(prompt),
-    renderer,
-    quiet,
-    session: () => renderer.resumeId?.() ?? resume ?? (harness.adoptsSessionId ? id : undefined),
-    model: () => renderer.model?.(),
-  }
+  return adapt(launch)
 }
 
 /** What a form needs of one setting: never how it reaches a run. */
@@ -211,9 +205,9 @@ const sources: Partial<Record<Job['runtime'], ModelSource>> = Object.fromEntries
 Object.assign(sources, {
   'claude-code': () => claudeModels(path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'cache', 'model-catalog')),
   codex: () => codexModels(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'models_cache.json')),
-  opencode: async (signal: AbortSignal) => opencodeModels(await output(commandOf(HARNESSES.opencode)[0], ['models'], signal)),
+  opencode: async (signal: AbortSignal) => opencodeModels(await output(installedCommand(HARNESSES.opencode).argv[0], ['models'], signal)),
   cursor: (signal: AbortSignal) => cursorModels(signal),
-  antigravity: async (signal: AbortSignal) => antigravityModels(await output(commandOf(HARNESSES.antigravity)[0], ['models'], signal)),
+  antigravity: async (signal: AbortSignal) => antigravityModels(await output(installedCommand(HARNESSES.antigravity).argv[0], ['models'], signal)),
 })
 export const modelLists = new ModelLists(sources)
 
@@ -225,7 +219,7 @@ export function opencodeModels(out: string): Model[] {
 /** Cursor's ACP ids carry their parameters and are not the ones `cursor-agent models` prints, so
  *  they are read off a session opened for the purpose and closed without a prompt. Auto is the
  *  menu's own default and is left out. */
-export function cursorModels(signal: AbortSignal, argv = commandOf(HARNESSES.cursor)): Promise<Model[]> {
+export function cursorModels(signal: AbortSignal, argv = installedCommand(HARNESSES.cursor).argv): Promise<Model[]> {
   return new Promise((resolve) => {
     let child: ChildProcess
     try {

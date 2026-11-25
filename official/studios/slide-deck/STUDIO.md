@@ -4,6 +4,9 @@ names:
   zh: 演示文稿
 description: Creates or revises wireframes, slide samples, finished slides or an
   image-based PowerPoint, as requested.
+summaries:
+  zh: 先确认版式，再导出 PowerPoint。
+  en: Approve the layout, then export to PowerPoint.
 needsArtifact: true
 icon: deck
 previews:
@@ -12,11 +15,17 @@ previews:
     title:
       en: Wireframes & samples
       zh: 线框稿与样张
+    description:
+      en: Approve slide structure and sample visual pages.
+      zh: 确认页面结构与代表性样张的视觉风格。
   slides:
     icon: slides
     title:
       en: Slides
       zh: 演示文稿
+    description:
+      en: Review the finished slides or exported PowerPoint.
+      zh: 审阅完整演示文稿或导出的 PowerPoint。
 ---
 
 Create or revise the requested slide work, reusing the project's applicable template and

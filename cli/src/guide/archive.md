@@ -9,7 +9,7 @@ Record the delivered outcome and verification on the task. Do not write independ
 Verify the approved requirements and outputs. Leave unmet work unchecked and handle blockers
 through `akb guide implement`.
 
-For an active delivery, run `akb raw delivery complete <id>` and follow the handoff. For Git
+For an active delivery, run `akb delivery complete <id>` and follow the handoff. For Git
 projects, supply `--commit <full-sha> --branch <target>`. If interrupted, inspect the recorded
 result and retry the same completion.
 

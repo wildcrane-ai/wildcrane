@@ -3,7 +3,7 @@
 - **Method**: capture real product states as screenshots, draw diagrams or charts with
   HTML/CSS or SVG rendered to PNG, or generate illustrations; never generate a product UI.
 - **Generation**: use `akb image --aspect <ratio> --tier <tier> --out <file> "<prompt>"`,
-  which spends Pro credits; default to premium for a cover, standard for an article image
+  which uses the WildCrane API balance; default to premium for a cover, standard for an article image
   and economy for a draft or alternative, unless the user requests otherwise. State the tier.
 - **Fallback**: if a method cannot deliver, choose another suitable method and state it.
 - **Cover**: match existing covers' aspect ratio, defaulting to 16:9, and check thumbnail legibility.

@@ -56,6 +56,13 @@ export interface LoginProbe {
  *  wrong `args` fails the run on an unexpected argument. */
 export type ImageInput = { as: 'message' } | { as: 'args'; args(file: string): string[] }
 
+export interface ImageConversation {
+  args: string[]
+  client(values: Record<string, string>): RunClient
+  systemPrompt?: Harness['systemPrompt']
+  fallbackToPath?: boolean
+}
+
 export interface Harness
   extends Omit<HarnessOption, 'binary' | 'installed' | 'version' | 'gaps' | 'runs' | 'values' | 'secretsSet' | 'ignored'> {
   /** The flags to append to the configured argv. `argv` is what the user's command
@@ -129,6 +136,9 @@ export interface Harness
   renderer?(cwd: string, binary?: string, argv?: string[]): StreamRenderer
   /** Optional persistent transport for a supported command; unknown command shapes keep their renderer. */
   connection?(argv: string[]): { argv: string[]; client: RunClient } | undefined
+  connectionFallbackNote?: string
+  /** The normal client can read native discussion images, or an alternate connection can. */
+  discussionImages?: 'client' | ImageConversation
   /** How the prompt goes in on stdin, for a printing CLI whose `argv` asks it to read its
    *  turns there and keep going while stdin stays open (#1540). Undefined when this argv
    *  takes the prompt on the command line. */

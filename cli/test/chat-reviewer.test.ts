@@ -191,7 +191,7 @@ describe("the Runner's archived tasks a review takes (#2065, #165)", () => {
     assert.match(await printed(['raw', 'memory', 'review', '--task', `${TASK}:1`]), /nothing to review, so no run started/)
     assert.deepEqual(readRuns(), [])
 
-    const answer = JSON.parse((await printed(['raw', 'memory', 'review', '--task', `${TASK}:1`, '--follow', '--events', '--json'])).split('\n').at(-1)!)
+    const answer = JSON.parse((await printed(['memory', 'review', '--task', `${TASK}:1`, '--follow', '--events', '--json'])).split('\n').at(-1)!)
     assert.equal(answer.ok, true)
     assert.equal(answer.result, undefined)
     assert.deepEqual(readRuns(), [])
@@ -254,7 +254,7 @@ describe("the Runner's archived tasks a review takes (#2065, #165)", () => {
   })
 
   it('names the command that prints them in the run’s ask', () => {
-    assert.match(buildAsk({ action: 'review-memory', tasks: [`${TASK}:1`] }), /raw memory review --task task_0190ab:1 --print/)
+    assert.match(buildAsk({ action: 'review-memory', tasks: [`${TASK}:1`] }), /memory review --task task_0190ab:1 --print/)
   })
 
   it('is refused without the tasks to review', async () => {

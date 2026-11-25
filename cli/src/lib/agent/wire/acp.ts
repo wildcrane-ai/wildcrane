@@ -2,6 +2,8 @@ import { makeFailure } from '../retry'
 import { ExecutionError, executionFailure, providerFailure } from './failures'
 import { acpCostFile, readAcpCost, saveAcpCost } from './acp-cost'
 import { bounded, CONVERSATION_MS } from '../../shared/conversation'
+import { imageMime } from '../../shared/reply-parts'
+import { attachmentPaths } from '../pictures'
 // The board's side of the Agent Client Protocol (#225).
 //
 // ACP is a conversation over the command's own stdin and stdout, in JSON-RPC lines: we
@@ -161,6 +163,8 @@ export interface AcpOptions {
   model?: string
   /** A file in Claude Code's `--mcp-config` shape, whose servers the session opens with. */
   mcpConfig?: string
+  config?: Record<string, string | undefined>
+  fallbackOnSetupFailure?: boolean
 }
 
 /** The servers of a `--mcp-config` file, as ACP's stdio servers. */
@@ -266,7 +270,7 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
   try {
     const mcpServers = options.mcpConfig ? mcpServersIn(options.mcpConfig) : []
     phase('preparing')
-    await bounded(rpc.call('initialize', {
+    const initialized = await bounded(rpc.call('initialize', {
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: CLIENT_CAPABILITIES,
       clientInfo: { name: 'ai4kanban', version: SKILL_VERSION },
@@ -327,7 +331,20 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
         : await bounded(rpc.call('session/set_config_option', { sessionId, configId: 'model', value: options.model }), preparingUntil - Date.now(), 'ACP session/set_config_option timed out.')
       model = picked?.name ?? modelOf(set) ?? options.model
     }
+    for (const [configId, value] of Object.entries(options.config ?? {})) {
+      if (value) await bounded(rpc.call('session/set_config_option', { sessionId, configId, value }), preparingUntil - Date.now(), 'ACP session/set_config_option timed out.')
+    }
     if (model) io.gotModel(model)
+
+    const caps = obj(obj(initialized.agentCapabilities).promptCapabilities)
+    const images: Json[] = []
+    const files: string[] = []
+    for (const file of io.imageFiles ?? []) {
+      const bytes = caps.image === true ? fs.readFileSync(file) : undefined
+      const mimeType = bytes && imageMime(bytes)
+      if (mimeType) images.push({ type: 'image', mimeType, data: bytes.toString('base64') })
+      else files.push(file)
+    }
 
     if (Date.now() >= preparingUntil) throw Error('ACP preparation timed out.')
     phase('ready')
@@ -336,7 +353,7 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
     phase('submitted')
     const done = await rpc.call('session/prompt', {
       sessionId,
-      prompt: [{ type: 'text', text: prompt }],
+      prompt: [{ type: 'text', text: prompt + attachmentPaths(files) }, ...images],
     })
     const result = tail.end()
     events.end()
@@ -363,12 +380,14 @@ async function oneTurn(io: ClientTurn, options: AcpOptions): Promise<TurnEnd> {
     // user reads it, and nothing is added on top of it.
     const error = e instanceof Error ? e.message : String(e)
     const result = tail.end()
+    const failure = e instanceof RpcError ? providerFailure(e.data, error) : executionFailure(e)
+    if (options.fallbackOnSetupFailure && !live) return { ok: false, result, error, canFallback: true, failure }
     io.log(`[error] ${error}\n`)
     events.end()
     events.error(error)
     emit()
     if (currentSession) saveAcpCost(acpCostFile(options.tool ?? 'acp', io.cwd, currentSession), costUsd)
-    return { ok: false, result, error, failure: e instanceof RpcError ? providerFailure(e.data, error) : executionFailure(e), usage: undefined, costUsd: costUsd === undefined || costBefore === undefined ? undefined : costUsd < costBefore ? costUsd : costUsd - costBefore }
+    return { ok: false, result, error, failure, usage: undefined, costUsd: costUsd === undefined || costBefore === undefined ? undefined : costUsd < costBefore ? costUsd : costUsd - costBefore }
   } finally {
     io.signal?.removeEventListener('abort', cancelled)
   }

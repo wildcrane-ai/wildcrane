@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import diagnosticsChannel from 'node:diagnostics_channel'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -65,10 +66,42 @@ export function nativeEndpoint(key: string): string {
   return `unix://${path.join(directory, `${key.slice(0, 12)}-${crypto.randomBytes(6).toString('hex')}.sock`)}`
 }
 
+function nativeErrorText(error: unknown): string {
+  if (!error) return ''
+  if (error instanceof RpcError) return `RPC ${error.code ?? 'unknown'}: ${error.message}`
+  if (error instanceof Error) {
+    const code = (error as NodeJS.ErrnoException).code
+    const text = error.message.trim() || error.name
+    return code && !text.includes(code) ? `${code}: ${text}` : text
+  }
+  return String(error)
+}
+
+function nativeEventDetail(event: Event, fallback?: string) {
+  const value = event as Event & { error?: unknown; message?: string; code?: number; reason?: string }
+  const message = typeof value.message === 'string' && value.message.trim() && value.message !== 'undefined' ? value.message.trim() : ''
+  const code = typeof value.code === 'number' ? `code ${value.code}${value.reason ? `: ${value.reason}` : ''}` : ''
+  const error = value.error instanceof Error && !value.error.message.trim() ? '' : nativeErrorText(value.error)
+  return fallback || error || message || code || nativeErrorText(value.error)
+}
+
 /** Native connections belong to executions, so replacing Runner does not break their streams. */
 export async function nativeConnection(backend: NativeBackend, onMessage: (message: Message) => void) {
   const unix = backend.endpoint.startsWith('unix://')
-  const dispatcher = unix ? new Agent({ connect: { socketPath: backend.endpoint.slice(7) } }) : undefined
+  const socketPath = unix ? backend.endpoint.slice(7) : undefined
+  const dispatcher = unix ? new Agent({ connect: { socketPath } }) : undefined
+  let lastError = ''
+  const onSocketError = (err: unknown) => { lastError = nativeErrorText(err) || lastError }
+  const onConnectError = (data: unknown) => {
+    const record = data as { connectParams?: { socketPath?: string }; error?: unknown }
+    if (!socketPath || record.connectParams?.socketPath === socketPath) lastError = nativeErrorText(record.error) || lastError
+  }
+  diagnosticsChannel.subscribe('undici:websocket:socket_error', onSocketError)
+  diagnosticsChannel.subscribe('undici:client:connectError', onConnectError)
+  const unsubscribeDiagnostics = () => {
+    diagnosticsChannel.unsubscribe('undici:websocket:socket_error', onSocketError)
+    diagnosticsChannel.unsubscribe('undici:client:connectError', onConnectError)
+  }
   const ws = new WebSocket(unix ? 'ws://localhost' : backend.endpoint, {
     ...(dispatcher ? { dispatcher } : {}),
     ...(backend.token ? { headers: { authorization: `Bearer ${backend.token}` } } : {}),
@@ -79,14 +112,39 @@ export async function nativeConnection(backend: NativeBackend, onMessage: (messa
   } })
   incoming.on('error', () => {})
   outgoing.on('error', () => {})
+  let closing = false
   ws.addEventListener('message', event => incoming.write(String(event.data) + '\n'))
-  ws.addEventListener('close', () => incoming.destroy())
-  ws.addEventListener('error', () => incoming.destroy(Error('Codex native connection failed.')))
-  const close = () => { ws.close(); incoming.destroy(); outgoing.destroy(); void dispatcher?.destroy() }
+  ws.addEventListener('close', event => {
+    unsubscribeDiagnostics()
+    if (!closing && !incoming.destroyed && (!event.wasClean || event.code !== 1000 && event.code !== 1005)) {
+      const detail = nativeEventDetail(event, lastError)
+      const message = detail ? `Codex native connection closed (${detail}).` : 'Codex native connection closed.'
+      console.error(message)
+      incoming.destroy(Error(message))
+      return
+    }
+    incoming.destroy()
+  })
+  ws.addEventListener('error', event => {
+    if (closing || incoming.destroyed) return
+    const detail = nativeEventDetail(event, lastError)
+    const message = detail ? `Codex native connection failed: ${detail}` : 'Codex native connection failed.'
+    console.error(message)
+    incoming.destroy(Error(message))
+  })
+  const close = () => {
+    closing = true
+    unsubscribeDiagnostics()
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close()
+    incoming.destroy(); outgoing.destroy(); void dispatcher?.destroy()
+  }
   try {
     await bounded(new Promise<void>((resolve, reject) => {
       ws.addEventListener('open', () => resolve(), { once: true })
-      ws.addEventListener('error', () => reject(Error('Codex native listener did not answer.')), { once: true })
+      ws.addEventListener('error', event => {
+        const detail = nativeEventDetail(event, lastError)
+        reject(Error(detail ? `Codex native listener did not answer (${detail}).` : 'Codex native listener did not answer.'))
+      }, { once: true })
     }), CODEX_TIMEOUT, 'Codex native connection timed out.')
   } catch (error) { close(); throw error }
   const unloads = new EventTarget()

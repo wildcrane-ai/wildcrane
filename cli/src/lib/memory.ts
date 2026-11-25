@@ -62,16 +62,16 @@ before proposing so you don't re-suggest them.
   // Only a header: `describe-project` writes the body, and runs while there is none (#1268).
   'project.md': `# Project
 
-What the project is today, from its users' side. Rewritten whole by \`akb raw describe-project\`;
+What the project is today, from its users' side. Rewritten whole by \`akb memory describe-project\`;
 edits here do not last.
 `,
 }
 
 /** Whether a memory file says nothing beyond the header it was seeded with. */
-export const onlyStarter = (name: string, text: string): boolean => !text.trim() || unraw(text) === unraw(STARTERS[name] ?? '')
+export const onlyStarter = (name: string, text: string): boolean => !text.trim() || normalizeStarter(text) === normalizeStarter(STARTERS[name] ?? '')
 
-/** A starter seeded before `akb raw` (#551) still counts as one. */
-const unraw = (text: string): string => text.trim().replace('`akb raw ', '`akb ')
+const normalizeStarter = (text: string): string =>
+  text.trim().replace(/`akb (?:raw )?describe-project`/, '`akb memory describe-project`')
 
 const setOf = (names: readonly string[]): Record<string, string> =>
   Object.fromEntries(names.map((name) => [name, STARTERS[name]!]))

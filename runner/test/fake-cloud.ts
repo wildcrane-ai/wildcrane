@@ -14,6 +14,7 @@ import type { AddressInfo, Socket } from 'node:net'
 
 export interface FakeJob {
   taskReview?: import('../src/api').Job['taskReview']
+  reviewAtDispatch?: boolean
   handoff?: import('../src/api').Job['handoff']
   id: string
   runtime: 'claude-code' | 'codex' | 'cursor' | 'opencode' | 'kimi' | 'dsh' | 'zcode' | 'grok' | 'antigravity'
@@ -37,8 +38,9 @@ export interface FakeJob {
   fork?: boolean
   transcript?: string | null
   flow?: { review_stages?: string[]; review_revision?: number; sync_recovery_of?: string; verb: string; studio: string; card?: number; text?: string; title?: string; resume?: boolean; replan?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null
-  discussion?: { id: string; workspace: string; version?: number; goals?: Record<string, unknown>[]; ideas: Record<string, unknown>[] } | null
+  discussion?: { id: string; workspace: string; version?: number; goals: Record<string, unknown>[] } | null
   chat?: { message: string; body: string } | null
+  replyInput?: import('../src/api').Job['replyInput']
   review?: { tasks: string[] } | null
   agent?: { name: string; studio?: string; tasks?: { id: string; number: number }[] } | null
   prompt: string
@@ -49,6 +51,7 @@ export interface FakeJob {
   machine?: string
   outcome?: string
   reason?: string
+  taskRecovery?: import('../src/api').TaskRecovery
   report?: import('../src/api').JobReport & Record<string, unknown>
   events: { seq: number; text: string; kind?: string; data?: Record<string, unknown> }[]
   claims: number
@@ -120,6 +123,7 @@ export class FakeCloud {
   log: string[] = []
   /** Runs just before the next board write lands, as another writer would. */
   beforeNextCommit: (() => void) | null = null
+  beforeNextBoardRead: (() => void) | null = null
   previewProblems?: (path: string, content: string) => SourceProblem[]
   /** Every call fails as if Cloud could not be reached. */
   offline = false
@@ -134,6 +138,7 @@ export class FakeCloud {
   serviceUnavailableUploads = false
   unavailableUploadTypes = new Set<string>()
   boardTimeouts = 0
+  boardWritesUnavailable = false
   cancelTask?: (task: string, body: { reason?: string; discard: boolean }) => { status: number; value: unknown }
   taskCancelReasons: Record<string, string> = {}
   completeArchives?: (body: any) => { receipts?: ArchiveCompletionReceipt[] } | null
@@ -142,13 +147,17 @@ export class FakeCloud {
   /** The type each artifact was made with. */
   types = new Map<string, string>()
   jobs = new Map<string, FakeJob>()
+  onClaim?: (id: string) => 'unavailable' | 'lose-response' | undefined
+  jobFinishes: { job: string; outcome: string }[] = []
+  unavailableJobRead: string | null = null
+  replyHistoryReads: string[] = []
+  replyHistories = new Map<string, import('../src/api').ReplyHistoryMessage[]>()
   runner: { machineId: string; machineName: string; live: boolean; notify?: boolean } | null = null
   alerts: FakeAlert[] = []
   folders: { project: string; name: string; path: string; notify: boolean; machine: string }[] = []
   /** The account's projects with no folder anywhere yet (#2022). */
   others: { project: string; name: string; workspace: string; workspace_name: string; personal: boolean }[] = []
   /** Claude Code and Codex sessions' discussions, by the session they were opened for. */
-  goalProtocol = false
   draftGoals: Record<string, unknown>[] = []
   draftVersion = 1
   draftWrites = 0
@@ -322,7 +331,7 @@ export class FakeCloud {
     const url = new URL(req.url!, 'http://x')
     const send = (status: number, value: unknown) => {
       const bytes = value && typeof value === 'object' ? (value as { [BYTES]?: Buffer })[BYTES] : undefined
-      res.writeHead(status, { 'content-type': bytes ? 'application/octet-stream' : 'application/json' })
+      res.writeHead(status, bytes ? { 'content-type': 'application/octet-stream', 'content-length': bytes.length } : { 'content-type': 'application/json' })
       res.end(bytes ?? JSON.stringify(value))
     }
     const refuse = (status: number, code: string, message: string) => send(status, { error: { code, message } })
@@ -334,7 +343,7 @@ export class FakeCloud {
     if (this.service) {
       try {
         const result = await this.service(req.method!, url, body)
-        if (result !== undefined) return send(200, result)
+        if (result !== undefined) return send(200, Buffer.isBuffer(result) ? { [BYTES]: result } : result)
       } catch (e) { return refuse(500, 'internal', e instanceof Error ? e.message : String(e)) }
     }
     const upload = /^\/v1\/artifacts\/([^/]+)\/uploads$/.exec(route)
@@ -421,21 +430,21 @@ export class FakeCloud {
     }
     if (/^\/v1\/discussions\/[^/]+\/draft$/.test(route)) {
       this.draftBodies.push(body)
-      const discussion = { id: route.split('/')[3], workspace: 'ws_me', project: null, title: '', version: this.draftVersion, ideas: this.draftGoals, ...(this.goalProtocol ? { goals: this.draftGoals } : {}), updated_at: new Date(0).toISOString() }
+      const discussion = { id: route.split('/')[3], workspace: 'ws_me', project: null, title: '', version: this.draftVersion, goals: this.draftGoals, updated_at: new Date(0).toISOString() }
       if (body.expectedVersion !== this.draftVersion) return send(409, { error: { code: 'version_conflict', message: 'changed' }, discussion })
-      const goals = this.goalProtocol ? body.goals ?? body.ideas : body.ideas
+      const goals = body.goals
       if (!Array.isArray(goals)) return refuse(400, 'bad_request', 'array required')
       this.draftGoals = goals.map((goal: Record<string, unknown>, i: number) => ({ ...goal, id: goal.id ?? `idea_${i + 1}`, task: null }))
       this.draftVersion++
       this.draftWrites++
-      return send(200, { ...discussion, version: this.draftVersion, ideas: this.draftGoals, ...(this.goalProtocol ? { goals: this.draftGoals } : {}) })
+      return send(200, { ...discussion, version: this.draftVersion, goals: this.draftGoals })
     }
     if (route === '/v1/discussions/external' || /^\/v1\/discussions\/[^/]+$/.test(route)) {
       const held = route === '/v1/discussions/external'
         ? this.discussions.find((d) => d.request === body.requestId) ?? this.discussions[this.discussions.push({ id: `dsc_${this.discussions.length + 1}`, request: body.requestId, project: body.project ?? null }) - 1]!
         : this.discussions.find((d) => d.id === route.split('/').pop())
       if (!held) return refuse(404, 'not_found', 'no')
-      return send(200, { id: held.id, workspace: 'ws_me', project: held.project, title: '', version: this.draftVersion, ideas: this.draftGoals, ...(this.goalProtocol ? { goals: this.draftGoals } : {}), updated_at: new Date(0).toISOString() })
+      return send(200, { id: held.id, workspace: 'ws_me', project: held.project, title: '', version: this.draftVersion, goals: this.draftGoals, updated_at: new Date(0).toISOString() })
     }
     if (route === '/v1/runner/release') {
       if (this.runner && this.runner.machineId === body.machineId) this.runner.live = false
@@ -471,8 +480,17 @@ export class FakeCloud {
     if (readJob && req.method === 'GET') {
       const id = decodeURIComponent(readJob[1]!)
       await this.beforeReadJob?.(id)
+      if (this.unavailableJobRead === id) return refuse(503, 'service_unavailable', 'Job status unavailable.')
       const job = this.jobs.get(id)
       return job ? send(200, { job }) : refuse(404, 'not_found', 'no')
+    }
+    const history = /^\/v1\/runner\/jobs\/([^/]+)\/history$/.exec(route)
+    if (history && req.method === 'GET') {
+      const id = history[1]!
+      const job = this.jobs.get(id)
+      if (job?.state !== 'claimed' || job.machine !== url.searchParams.get('machine')) return refuse(404, 'not_found', 'No active reply.')
+      this.replyHistoryReads.push(id)
+      return send(200, { messages: this.replyHistories.get(id) ?? [] })
     }
     const move = /^\/v1\/runner\/jobs\/([^/]+)\/(claim|renew|finish|approve)$/.exec(route)
     const job = move && this.jobs.get(move[1]!)
@@ -484,16 +502,25 @@ export class FakeCloud {
         if (body.cancel) return send(200, { cancelled: true })
         this.replyApprovals.push({ job: job.id, fields: body.fields, card: this.file('todo/1-task-1.md') })
         return send(200, { id: job.id, status: 'pending', task: job.task })
-      case 'claim':
+      case 'claim': {
+        const fault = this.onClaim?.(job.id)
+        if (fault === 'unavailable') return refuse(503, 'service_unavailable', 'Claim temporarily unavailable.')
         if (!mine(body.machineId) || job.state !== 'waiting') return send(200, { claimed: false, reason: 'taken' })
         job.claims++
         job.state = 'claimed'
         job.machine = body.machineId
+        delete job.taskRecovery
+        if (fault === 'lose-response') { req.socket.destroy(); return }
         return send(200, { claimed: true, job: { ...job, events: undefined } })
+      }
       case 'renew':
+        if (job.state === 'waiting' && mine(body.machineId) && body.progress?.taskRecovery?.code === 'claim') {
+          job.taskRecovery = body.progress.taskRecovery
+        }
         return send(200, { renewed: held, ...(job.stop ? { stop: true } : {}) })
       default:
         if (!held) return send(200, { finished: false })
+        this.jobFinishes.push({ job: job.id, outcome: body.outcome })
         if (body.outcome === 'update_prepare' && !job.stop) return send(200, { finished: false, prepared: true })
         if (body.outcome === 'update_resume' && !job.stop) {
           Object.assign(job, { state: 'waiting', resume: body.report?.session ?? job.resume, fork: false })
@@ -523,6 +550,8 @@ export class FakeCloud {
     const board = /^\/v1\/projects\/([^/]+)\/board(\/commits)?$/.exec(route)
     const ours = (p: string) => p.startsWith(`projects/${board![1]}/`) || p.startsWith('memory/')
     if (board && !board[2] && method === 'GET') {
+      this.beforeNextBoardRead?.()
+      this.beforeNextBoardRead = null
       if (this.boardTimeouts > 0) {
         this.boardTimeouts--
         return refuse(408, 'refused', 'Sync request timed out.')
@@ -538,6 +567,7 @@ export class FakeCloud {
       if (body.job !== null && (!job || job.state !== 'claimed' || job.machine !== body.machine || job.leaseLost)) {
         return refuse(409, 'conflict', 'This job has ended or moved to another computer.')
       }
+      if (this.boardWritesUnavailable) return refuse(503, 'service_unavailable', 'Could not save board files.')
       const writes = body.files as { path: string; content: string | null; base_seq: number }[]
       if (!writes.every((w) => ours(w.path))) return refuse(400, 'bad_request', 'A path is not this project’s.')
       const problems = writes.flatMap(w => w.content === null ? [] : this.previewProblems?.(w.path, w.content) ?? [])
@@ -562,7 +592,7 @@ export class FakeCloud {
       return send(200, { head_seq: this.head, files: writes.map((w) => ({ path: w.path, seq: now(w.path)?.seq ?? 0 })) })
     }
     if (/^\/v1\/tasks\/[^/]+\/studio$/.test(route)) {
-      return send(200, { object: 'studio_version', ...(task.studio ?? { studio: 'wf_builtin_coding', version: 1, builtin: true, files: { 'STUDIO.md': '---\nname: Coding\n---\n\nDo the requested work.' } }) })
+      return send(200, { object: 'studio', deleted: false, ...(task.studio ?? { studio: 'wf_builtin_coding', builtin: true, files: { 'STUDIO.md': '---\nname: Coding\n---\n\nDo the requested work.' } }) })
     }
     const chat = /^\/v1\/tasks\/([^/]+)\/chat$/.exec(route)
     if (chat && method === 'GET') {

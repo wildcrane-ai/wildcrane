@@ -1,46 +1,23 @@
-// `akb template` — the shared template catalog (#1708).
-//
-// Agents list a category's tags, search within one for bounded metadata, preview, and fetch
-// the whole template. Maintainers publish. Every
-// message is bilingual because an agent relays it as it is; a reader's failure always offers
-// carrying on without a template.
+// `akb template` — read the shared template catalog and publish as a maintainer.
 
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
 import { cloudEndpoints } from '../lib/cloud/config'
-import { accessToken } from '../lib/cloud/session'
+import { accessToken, CLOUD_ACCESS_HINTS } from '../lib/cloud/session'
 import { BoardError, say } from '../lib/io'
 import { cloudBytes, cloudError, cloudProblem, hasText, invalidResponse, isRecord, readCloudJson, requireResponse, type CloudProblem } from '../lib/cloud/response'
 import { die } from '../lib/paths'
 import type { MoveResult } from '../lib/types'
-import { SAID } from './cloud'
-import type { Said } from './cloud'
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const CAPTURED = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/
 const MAX_BYTES = 50 * 1024 * 1024
 
-const WITHOUT: Said = { zh: '可以不用模板继续。', en: 'You can continue without a template.' }
-
-const T = {
-  pro_required: {
-    zh: '这个模板需要 Pro。升级 Pro：https://wildcrane.ai/pricing',
-    en: 'This template needs Pro. Upgrade at https://wildcrane.ai/pricing',
-  },
-  not_found: { zh: '模板库里没有这个模板。', en: 'There is no template with this name.' },
-  failed: { zh: '模板库暂时无法使用，请稍后重试。', en: 'Templates are not available right now. Try again later.' },
-  publisher_only: { zh: '只有模板库维护者可以发布或删除模板。', en: 'Only the catalog’s maintainers can publish or delete templates.' },
-  exists: {
-    zh: '模板库已有同名模板，本地文件未改动。确认替换时加 --replace 重新发布。',
-    en: 'A template with this name already exists; your files are unchanged. Publish again with --replace to replace it.',
-  },
-  corrupt: {
-    zh: '下载的文件与模板库记录不一致，未写入任何文件，请重试。',
-    en: 'A downloaded file did not match the catalog, so nothing was written. Try again.',
-  },
-} satisfies Record<string, Said>
+const WITHOUT = 'You can continue without a template.'
+const UNAVAILABLE = 'Templates are not available right now. Try again later.'
+const CORRUPT = 'A downloaded file did not match the catalog, so nothing was written. Try again.'
 
 interface Entry {
   path: string
@@ -62,22 +39,16 @@ function usage(problem: string, line: string): never {
   die(`${problem}\nusage: ${line}`, { kind: 'bad-args', bare: true, exitCode: 2 })
 }
 
-function refuse(m: Said, also?: Said, problem?: CloudProblem): never {
-  const message = [m.zh, m.en, problem?.message, also?.zh, also?.en].filter(Boolean).join('\n')
-  if (problem) throw cloudError({ ...problem, message }, { bare: true })
-  die(message, { kind: 'cloud-refused', bare: true })
+function refuse(message: string, fallback?: string, problem?: CloudProblem): never {
+  const text = [message, fallback].filter(Boolean).join('\n')
+  if (problem) throw cloudError({ ...problem, message: text }, { bare: true })
+  die(text, { kind: 'cloud-refused', bare: true })
 }
 
-function invalid(zh: string, en: string): never {
-  refuse({ zh: `模板未通过校验：${zh}`, en: `The template is not valid: ${en}` })
-}
-
-/** One call to the catalog. A refusal is turned into the bilingual words for it. A 404 on a
- *  route with no template name (tags, search) means the catalog itself is missing. */
-async function ask(route: string, init: RequestInit = {}, fallback?: Said): Promise<Response> {
+async function ask(route: string, init: RequestInit = {}, fallback?: string): Promise<Response> {
   const token = await accessToken()
-  if (!token.ok) refuse(SAID[token.reason], fallback, { code: token.reason.replace('-', '_'),
-    message: 'error' in token ? token.error ?? '' : '', retryable: token.reason === 'unreachable' })
+  if (!token.ok) refuse([CLOUD_ACCESS_HINTS[token.reason], 'error' in token ? token.error : undefined].filter(Boolean).join('\n'),
+    fallback, { code: token.reason.replace('-', '_'), message: '', retryable: token.reason === 'unreachable' })
   let res: Response
   try {
     res = await fetch(`${cloudEndpoints().api}/v1/templates${route}`, {
@@ -85,18 +56,33 @@ async function ask(route: string, init: RequestInit = {}, fallback?: Said): Prom
       headers: { authorization: `Bearer ${token.token}` },
     })
   } catch {
-    refuse(SAID.unreachable, fallback, { code: 'unreachable', message: '', retryable: true })
+    refuse(CLOUD_ACCESS_HINTS.unreachable, fallback, { code: 'unreachable', message: '', retryable: true })
   }
   if (res.ok) return res
   const problem = cloudProblem(res, await readCloudJson(res))!
-  if (res.status === 401) refuse(SAID.expired, fallback, problem)
-  if (problem.code === 'pro_required') refuse(T.pro_required, fallback, problem)
-  const named = route.startsWith('/') && !route.startsWith('/tags?')
-  if (problem.code === 'not_found' && named) refuse(T.not_found, fallback, problem)
-  if (problem.code === 'owner_only') refuse(T.publisher_only, undefined, problem)
-  if (problem.code === 'template_exists') refuse(T.exists, undefined, problem)
-  if (res.status === 400) refuse({ zh: '模板请求未通过校验。', en: 'The template request is not valid.' }, fallback, problem)
-  refuse(T.failed, fallback, problem)
+  if (res.status === 401) refuse(`${CLOUD_ACCESS_HINTS.expired}\n${problem.message}`, fallback, problem)
+  const detail = problem.message === `Cloud answered ${res.status}.` ? undefined : problem.message
+  switch (problem.code) {
+    case 'pro_required':
+      refuse('This template requires Pro.', fallback, problem)
+    case 'not_found':
+      // Tags and search can fail even when they don't name a template.
+      if (route.startsWith('/') && !route.startsWith('/tags?')) {
+        const message = !detail || detail === 'No template has this name.'
+          ? 'There is no template with this name.' : detail
+        refuse(message, fallback, problem)
+      }
+      refuse(detail ? `${UNAVAILABLE}\n${detail}` : UNAVAILABLE, fallback, problem)
+    case 'owner_only':
+      refuse('Only the catalog’s maintainers can publish or delete templates.', undefined, problem)
+    case 'template_exists': {
+      const message = detail ?? 'A template with this name already exists.'
+      refuse(`${message}\nPublish again with --replace to replace it.`, undefined, problem)
+    }
+    case 'templates_unavailable':
+      refuse(detail && detail !== 'Templates are not available right now.' ? detail : UNAVAILABLE, fallback, problem)
+  }
+  refuse(detail ?? (res.status === 400 ? 'The template request is not valid.' : UNAVAILABLE), fallback, problem)
 }
 
 async function asJson<T>(res: Response): Promise<T> {
@@ -114,7 +100,7 @@ function entries(value: unknown): value is Entry[] {
     && (entry.sha256 === undefined || typeof entry.sha256 === 'string' && /^[a-f0-9]{64}$/.test(entry.sha256)))
 }
 
-async function downloadEntries(name: string, kind: 'previews' | 'evidence', files: Entry[], to: string, fallback?: Said): Promise<string[]> {
+async function downloadEntries(name: string, kind: 'previews' | 'evidence', files: Entry[], to: string, fallback?: string): Promise<string[]> {
   if (!SLUG.test(name)) throw cloudError(invalidResponse('a valid template name'))
   const fetched: { out: string; bytes: Buffer }[] = []
   const names = new Set<string>()
@@ -122,10 +108,14 @@ async function downloadEntries(name: string, kind: 'previews' | 'evidence', file
   for (const file of files) {
     const leaf = path.basename(file.path)
     const out = path.join(to, kind === 'previews' && leaf.startsWith(`${name}-`) ? leaf : `${name}-${leaf}`)
-    if (names.has(out)) refuse(T.corrupt, fallback, invalidResponse(expected))
+    if (names.has(out)) refuse(CORRUPT, fallback, invalidResponse(expected))
     names.add(out)
-    const bytes = await cloudBytes(await ask(`/${encodeURIComponent(name)}/${kind}/${route(file.path)}`, {}, fallback), expected, { size: file.size })
-    if (file.sha256 && createHash('sha256').update(bytes).digest('hex') !== file.sha256) refuse(T.corrupt, fallback, invalidResponse(expected))
+    const response = await ask(`/${encodeURIComponent(name)}/${kind}/${route(file.path)}`, {}, fallback)
+    const bytes = await cloudBytes(response, expected, { size: file.size }).catch(error => {
+      if (!(error instanceof BoardError)) throw error
+      return refuse(CORRUPT, fallback, invalidResponse(expected))
+    })
+    if (file.sha256 && createHash('sha256').update(bytes).digest('hex') !== file.sha256) refuse(CORRUPT, fallback, invalidResponse(expected))
     fetched.push({ out, bytes })
   }
   if (fetched.length) fs.mkdirSync(to, { recursive: true })
@@ -150,7 +140,7 @@ export async function templateTags(opts: { category?: string }, program: string)
   const { tags } = await asJson<{ tags: { tag: string; count: number }[] }>(
     await ask(`/tags?category=${cat}`, {}, WITHOUT),
   )
-  if (tags.length === 0) say(`这个类别还没有模板。${WITHOUT.zh}\nNo templates in this category yet. ${WITHOUT.en}`)
+  if (tags.length === 0) say('No templates in this category yet.')
   for (const { tag, count } of tags) say(`${tag} (${count})`)
   return { category: cat, tags }
 }
@@ -168,7 +158,7 @@ export async function templateSearch(
   if (opts.words.length > 0) query.set('q', opts.words.join(' '))
   if (opts.limit) query.set('limit', opts.limit)
   const { templates } = await asJson<{ templates: TemplateMeta[] }>(await ask(`?${query}`, {}, WITHOUT))
-  if (templates.length === 0) say(`没有匹配的模板。${WITHOUT.zh}\nNo template matches. ${WITHOUT.en}`)
+  if (templates.length === 0) say('No template matches.')
   for (const t of templates) {
     say(`${t.name} — ${t.title} [${t.access}]`)
     say(`  ${t.summary}`)
@@ -185,7 +175,7 @@ export async function templatePreview(name: string, opts: { to?: string }, progr
   const at = encodeURIComponent(name)
   const { previews } = requireResponse(await asJson<{ previews: Entry[] }>(await ask(`/${at}/previews`, {}, WITHOUT)),
     'the template preview list', value => entries(value.previews))
-  if (previews.length === 0) say('这个模板没有预览图。\nThis template has no preview.')
+  if (previews.length === 0) say('This template has no preview.')
   return { name, previews: await downloadEntries(name, 'previews', previews, opts.to, WITHOUT) }
 }
 
@@ -200,29 +190,26 @@ export async function templateGet(name: string, opts: { to?: string }, program: 
   const fetched: { out: string; bytes: Buffer }[] = []
   for (const f of template.files) {
     const out = path.resolve(to, f.path)
-    if (!out.startsWith(path.resolve(to) + path.sep)) refuse(T.corrupt, WITHOUT)
+    if (!out.startsWith(path.resolve(to) + path.sep)) refuse(CORRUPT, WITHOUT)
     const response = await ask(`/${at}/files/${route(f.path)}`, {}, WITHOUT)
     const bytes = await cloudBytes(response, 'a matching template file', { size: f.size }).catch(error => {
       if (!(error instanceof BoardError)) throw error
-      return refuse(T.corrupt, WITHOUT, invalidResponse('a matching template file'))
+      return refuse(CORRUPT, WITHOUT, invalidResponse('a matching template file'))
     })
     if (bytes.byteLength !== f.size || createHash('sha256').update(bytes).digest('hex') !== f.sha256) {
-      refuse(T.corrupt, WITHOUT)
+      refuse(CORRUPT, WITHOUT)
     }
     fetched.push({ out, bytes })
   }
   const taken = fetched.filter((f) => fs.existsSync(f.out)).map((f) => path.relative(to, f.out))
   if (taken.length > 0) {
-    refuse({
-      zh: `目标文件夹已有同名文件：${taken.join('、')}。请换一个文件夹，或先移走这些文件。`,
-      en: `The folder already has ${taken.join(', ')}. Use another folder, or move those files first.`,
-    })
+    refuse(`The folder already has ${taken.join(', ')}. Use another folder, or move those files first.`)
   }
   for (const f of fetched) {
     fs.mkdirSync(path.dirname(f.out), { recursive: true })
     fs.writeFileSync(f.out, f.bytes)
   }
-  say(`已取回 ${name}：${fetched.length} 个文件，位于 ${to}\nFetched ${name}: ${fetched.length} files into ${to}`)
+  say(`Fetched ${name}: ${fetched.length} files into ${to}`)
   return { name, to, files: template.files.map((f) => f.path) }
 }
 
@@ -235,7 +222,7 @@ export async function templateSource(name: string, opts: { to?: string }): Promi
   const { source, evidence } = requireResponse(await asJson<{ source: Record<string, unknown>; evidence: Entry[] }>(await ask(`/${at}/source`)),
     'the template source and evidence list', value => isRecord(value.source) && entries(value.evidence))
   const written = opts.to ? await downloadEntries(name, 'evidence', evidence, opts.to) : []
-  if (source.original === true) say('原创模板，没有外部参考。\nAn original template, with no outside reference.')
+  if (source.original === true) say('An original template, with no outside reference.')
   for (const [k, v] of Object.entries(source)) if (k !== 'original') say(`${k}: ${Array.isArray(v) ? v.join(', ') : String(v)}`)
   if (!opts.to) for (const file of evidence) say(`evidence: ${file.path}`)
   return { name, source, evidence: opts.to ? written : evidence.map((e) => e.path) }
@@ -251,22 +238,19 @@ export async function templatePublish(
 ): Promise<MoveResult> {
   const root = path.resolve(dir)
   const manifest = path.join(root, 'template.md')
-  if (!fs.existsSync(manifest)) invalid('文件夹顶层缺少 template.md。', 'template.md is missing from the folder’s top level.')
+  if (!fs.existsSync(manifest)) refuse('template.md is missing from the folder’s top level.')
   const meta = readTemplateMeta(fs.readFileSync(manifest, 'utf8'))
   const files = walk(root)
   const total = files.reduce((sum, f) => sum + fs.statSync(path.join(root, f)).size, 0)
-  if (total > MAX_BYTES) invalid('模板文件合计超过 50 MB。', 'the template’s files exceed 50 MB.')
+  if (total > MAX_BYTES) refuse('The template’s files exceed 50 MB.')
   for (const extra of [...opts.preview, ...opts.evidence]) {
-    if (!fs.existsSync(extra)) invalid(`找不到文件 ${extra}。`, `${extra} does not exist.`)
+    if (!fs.existsSync(extra)) refuse(`${extra} does not exist.`)
     if (path.resolve(extra).startsWith(root + path.sep)) {
-      invalid(
-        `${extra} 在模板文件夹内；预览图与来源凭证需放在模板文件夹之外。`,
-        `${extra} is inside the template folder; keep previews and evidence outside it.`,
-      )
+      refuse(`${extra} is inside the template folder. Move the previews and evidence outside it.`)
     }
   }
   if (meta.source.original !== true && opts.evidence.length === 0) {
-    invalid('参考外部作品的模板需要用 --evidence 附上采集的来源凭证。', 'a template cloned from a reference needs its captured evidence, via --evidence.')
+    refuse('A template cloned from a reference needs its captured evidence, via --evidence.')
   }
 
   const form = new FormData()
@@ -281,8 +265,8 @@ export async function templatePublish(
     'a template publication receipt', value => value.name === meta.name && typeof value.replaced === 'boolean')
   say(
     done.replaced
-      ? `已替换 ${done.name}：${files.length} 个文件。\nReplaced ${done.name}: ${files.length} files.`
-      : `已发布 ${done.name}：${files.length} 个文件。\nPublished ${done.name}: ${files.length} files.`,
+      ? `Replaced ${done.name}: ${files.length} files.`
+      : `Published ${done.name}: ${files.length} files.`,
   )
   return { name: done.name, replaced: done.replaced, files }
 }
@@ -291,7 +275,7 @@ export async function templatePublish(
 export async function templateDelete(name: string): Promise<MoveResult> {
   requireResponse(await asJson<{ name: string; deleted: boolean }>(await ask(`/${encodeURIComponent(name)}`, { method: 'DELETE' })),
     'confirmation that the template was deleted', value => value.name === name && value.deleted === true)
-  say(`已从模板库删除 ${name}。\nDeleted ${name} from the catalog.`)
+  say(`Deleted ${name} from the catalog.`)
   return { name, deleted: true }
 }
 
@@ -299,12 +283,12 @@ export async function templateDelete(name: string): Promise<MoveResult> {
  *  described by `<dir>/showcase.json` and kept apart from the template. Maintainers only. */
 export async function templateShowcase(name: string, dir: string): Promise<MoveResult> {
   const file = path.join(dir, 'showcase.json')
-  if (!fs.existsSync(file)) invalid(`${dir} 中缺少 showcase.json。`, `showcase.json is missing from ${dir}.`)
+  if (!fs.existsSync(file)) refuse(`showcase.json is missing from ${dir}.`)
   let meta: Record<string, unknown>
   try {
     meta = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>
   } catch {
-    return invalid('showcase.json 不是有效的 JSON。', 'showcase.json is not valid JSON.')
+    return refuse('showcase.json is not valid JSON.')
   }
   const sides = [meta.original, meta.recreation].filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
   const pages = (Array.isArray(meta.pages) ? meta.pages : []).flatMap((p: unknown) =>
@@ -315,12 +299,12 @@ export async function templateShowcase(name: string, dir: string): Promise<MoveR
   form.set('meta', JSON.stringify(meta))
   for (const p of new Set(named)) {
     const at = path.join(dir, p)
-    if (!fs.existsSync(at)) invalid(`找不到文件 ${at}。`, `${at} does not exist.`)
+    if (!fs.existsSync(at)) refuse(`${at} does not exist.`)
     form.append(`media:${p}`, new Blob([fs.readFileSync(at)]), p)
   }
   const done = requireResponse(await asJson<{ name: string; files: number }>(await ask(`/${encodeURIComponent(name)}/showcase`, { method: 'PUT', body: form })),
     'a showcase publication receipt', value => value.name === name && value.files === new Set(named).size)
-  say(`已更新 ${name} 的展示资料：${done.files} 个文件。\nUpdated ${name}'s showcase: ${done.files} files.`)
+  say(`Updated ${name}'s showcase: ${done.files} files.`)
   return { name, files: done.files }
 }
 
@@ -350,41 +334,41 @@ interface PublishMeta {
 /** `template.md`'s frontmatter, checked the way the catalog will check it. */
 export function readTemplateMeta(text: string): PublishMeta {
   const m = /^---\n([\s\S]*?)\n---/.exec(text.replace(/\r\n/g, '\n'))
-  if (!m) invalid('template.md 缺少 frontmatter。', 'template.md has no frontmatter.')
+  if (!m) refuse('template.md has no frontmatter.')
   const fm = parseYamlSubset(m[1] ?? '')
   const text_ = (k: string, oneLine = true): string => {
     const v = typeof fm[k] === 'string' ? (fm[k] as string).trim() : ''
-    if (!v) invalid(`缺少 ${k}。`, `${k} is missing.`)
-    if (oneLine && v.includes('\n')) invalid(`${k} 只能是一行。`, `${k} is one line.`)
+    if (!v) refuse(`${k} is missing.`)
+    if (oneLine && v.includes('\n')) refuse(`${k} must be one line.`)
     return v
   }
   const name = text_('name')
-  if (!SLUG.test(name)) invalid(`name 只能由小写字母、数字和连字符组成，例如 hero-tilted-screen。`, `name is lowercase words joined by hyphens, like hero-tilted-screen.`)
+  if (!SLUG.test(name)) refuse('name must use lowercase letters, numbers, and hyphens, like hero-tilted-screen.')
   const cat = text_('category')
-  if (!SLUG.test(cat)) invalid('category 只能是小写英文短词，例如 ui 或 video。', 'category is a lowercase word, like ui or video.')
+  if (!SLUG.test(cat)) refuse('category is a lowercase word, like ui or video.')
   const rawTags = fm.tags === undefined || fm.tags === '' ? [] : fm.tags
-  if (!Array.isArray(rawTags)) return invalid('tags 需要是列表，例如 [hero, saas]。', 'tags is a list, like [hero, saas].')
+  if (!Array.isArray(rawTags)) return refuse('tags must be a list, like [hero, saas].')
   const tags = [...new Set((rawTags as Yaml[]).map(String))]
   const bad = tags.filter((t) => !SLUG.test(t))
-  if (bad.length > 0) invalid(`标签 ${bad.join('、')} 不合规：只能用小写英文短词。`, `tag ${bad.join(', ')}: use lowercase words joined by hyphens.`)
+  if (bad.length > 0) refuse(`tag ${bad.join(', ')}: use lowercase words joined by hyphens.`)
   const access = fm.access === undefined || fm.access === '' ? 'pro' : fm.access
-  if (access !== 'free' && access !== 'pro') return invalid('access 只能是 free 或 pro。', 'access is free or pro.')
+  if (access !== 'free' && access !== 'pro') return refuse('access must be free or pro.')
   // An absent source means original; the creator answers for that.
   const source = fm.source === undefined || fm.source === '' ? { original: true } : fm.source
   if (typeof source !== 'object' || Array.isArray(source)) {
-    invalid('source 写法不对；原创模板可以不写，或写 source: { original: true }。', 'source is malformed; an original can omit it or say original: true.')
+    refuse('source is malformed. For an original template, omit source or set original: true.')
   }
   const s = source as Record<string, unknown>
   if (s.original !== true) {
-    if (typeof s.site !== 'string' || !/^https?:\/\//.test(s.site)) invalid('source.site 需要是原站网址。', 'source.site is the referenced site’s URL.')
+    if (typeof s.site !== 'string' || !/^https?:\/\//.test(s.site)) refuse('source.site must be the referenced site’s URL.')
     if (!Array.isArray(s.references) || s.references.length === 0) {
-      invalid('source.references 需要列出实际参考资料的网址。', 'source.references lists the URLs actually referenced.')
+      refuse('source.references must list the URLs used.')
     }
     if (typeof s.captured !== 'string' || !CAPTURED.test(s.captured)) {
-      invalid('source.captured 需要带时区的采集时间，例如 2026-10-16T09:00:00+08:00。', 'source.captured is the capture time with its time zone, like 2026-10-16T09:00:00+08:00.')
+      refuse('source.captured must include the capture time and time zone, like 2026-10-16T09:00:00+08:00.')
     }
     if (typeof s.note !== 'string' || !s.note.trim()) {
-      invalid('source.note 需要说明凭证是什么、由谁采集。', 'source.note says what the evidence is and who captured it.')
+      refuse('source.note must describe the evidence and who captured it.')
     }
   }
   return {

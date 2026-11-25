@@ -155,7 +155,7 @@ export function validateCreate(opts: CreateOptions) {
 
 export function cmdCreate(opts: CreateOptions): MoveResult {
   const { title, priority, blocked_by, related, modules, triage, studio, previews, source, questions, written } = validateCreate(opts)
-  if (opts.id === undefined) die('请通过 `akb raw create` 创建卡片，由 Cloud 分配编号', { kind: 'needs-cloud' })
+  if (opts.id === undefined) die('请通过 `akb task create --title "<title>"` 创建卡片，由 Cloud 分配编号', { kind: 'needs-cloud' })
   const start = opts.id
   const slug = slugify(opts.slug !== undefined ? opts.slug : title)
   const fileRel = `${start}-${slug}.md`
@@ -264,7 +264,7 @@ export function cmdUpdate(id: number, flags: UpdateOptions): MoveResult {
   if (!found) die(`no task with id ${id} under ${rel(TODO)}`, { kind: 'card-not-found', id })
   const file = found.kind === 'group' ? path.join(found.target, 'root.md') : found.target
   const { meta, body } = parseFrontmatter(fs.readFileSync(file, 'utf8'))
-  if (!meta) die(`${rel(file)} has no frontmatter — recreate it with \`akb raw create\``)
+  if (!meta) die(`${rel(file)} has no frontmatter — restore this card from its last valid version`)
   if (flags.blockedBy !== undefined && flags.addBlockedBy !== undefined) die('--blocked-by replaces the list and --add-blocked-by appends to it — pass one')
   if (flags.related !== undefined && flags.addRelated !== undefined) die('--related replaces the list and --add-related appends to it — pass one')
   if (flags.source !== undefined && flags.addSource !== undefined) die('--source replaces the list and --add-source appends to it — pass one')
@@ -377,7 +377,7 @@ export function updateCardQuestions(id: number, ops: QuestionOp[], compatibility
   if (!found) die(`no task with id ${id} under ${rel(TODO)}`, { kind: 'card-not-found', id })
   const file = found.kind === 'group' ? path.join(found.target, 'root.md') : found.target
   const { meta, body } = parseFrontmatter(fs.readFileSync(file, 'utf8'))
-  if (!meta) die(`${rel(file)} has no frontmatter — recreate it with \`akb raw create\``)
+  if (!meta) die(`${rel(file)} has no frontmatter — restore this card from its last valid version`)
 
   for (const op of ops) {
     if (!compatibility || !op.question?.agent) continue

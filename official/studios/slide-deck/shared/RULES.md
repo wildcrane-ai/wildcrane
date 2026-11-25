@@ -4,7 +4,7 @@
   each slide's speaker notes in `notes`.
 - **Structure**: `storyboard.json` follows `shared/references/slides.schema.json` and
   its example and is the only outline; keep slide IDs stable and set the canvas with `size`.
-- **Check**: run `akb raw validate <card id> --json` and the studio's
+- **Check**: run `akb task validate <card id> --json` and the studio's
   `shared/scripts/validate-storyboard.mjs` on every outline you write; fix every diagnostic.
 
 ## Pages

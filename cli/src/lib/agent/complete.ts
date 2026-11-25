@@ -2,7 +2,7 @@
 import { cmdRemove, recoveredArchiveHandoff } from '../../commands/remove'
 import fs from 'node:fs'
 import { parseFrontmatter } from '../frontmatter'
-import { cardFile } from '../board/revision'
+import { cardFile } from '../cards'
 import { locate } from '../cards'
 import { quietly } from '../io'
 import { withBoardLock } from '../lock'

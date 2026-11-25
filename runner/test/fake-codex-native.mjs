@@ -100,11 +100,24 @@ server.on('upgrade',(req,socket)=>{
   if(m.method.startsWith('thread/backgroundTerminals/')&&loaded.get(p.threadId)?.cleanup==='unverified'){send({id:m.id,error:{code:-32603,message:'terminal verification unavailable'}});return;}
   if(m.method==='thread/backgroundTerminals/list')result={data:terminals.get(p.threadId)??[],nextCursor:null};
   if(m.method==='thread/backgroundTerminals/list'&&loaded.get(p.threadId)?.cleanup==='malformed')result={nextCursor:null};
+  if(m.method==='thread/backgroundTerminals/terminate'){
+   const current=terminals.get(p.threadId)??[];
+   const remaining=current.filter(item=>item.processId!==p.processId);
+   terminals.set(p.threadId,remaining);result={terminated:remaining.length!==current.length};
+  }
   if(m.method==='thread/backgroundTerminals/clean'){terminals.delete(p.threadId);unload(p.threadId);}
   if(m.method==='turn/start'){
    materialized.add(p.threadId);
    const text=p.input?.[0]?.text;
    if(text==='crash'){process.exit(1);return;}
+   if(text==='drop-connection'){
+    const turnId='turn-'+(++turns);active.set(p.threadId,turnId);
+    send({id:m.id,result:{turn:{id:turnId}}});
+    notify('turn/started',{threadId:p.threadId,turn:{id:turnId}});
+    notify('item/started',{threadId:p.threadId,turnId,item:{type:'commandExecution',id:'cmd-drop',status:'inProgress',command:'sleep 10'}});
+    setTimeout(()=>socket.destroy(),20);
+    return;
+   }
    result={turn:{id:'turn-'+(++turns)}};active.set(p.threadId,result.turn.id);notify('turn/started',{threadId:p.threadId,turn:result.turn});
    const idle = /^Idle regression (recover|release-rpc|restart|budget|unknown|live|stop|stop-release)$/.exec(text)?.[1] ?? idleModes.get(p.threadId);
    if (idle) {
@@ -137,9 +150,10 @@ server.on('upgrade',(req,socket)=>{
     notify('thread/started',{thread:{id,parentThreadId:p.threadId}},peer);
    }
    if(text==='retain')terminals.set(p.threadId,[{itemId:'service',processId:'42',command:'service'}]);
+   if(text==='leave-terminal')terminals.get(p.threadId).push({itemId:'temporary',processId:'43',command:'check'});
    if(text==='hang-release')hanging.add(p.threadId);
    if(text==='finish-service'){terminals.delete(p.threadId);notify('item/completed',{threadId:p.threadId,item:{type:'commandExecution',id:'service',status:'completed'}});}
-   if(['retain','finish','finish-service','hang-release'].includes(text)){active.delete(p.threadId);notify('turn/completed',{threadId:p.threadId,turn:{id:result.turn.id,status:'completed',items:[]}});}
+   if(['retain','finish','finish-service','hang-release','leave-terminal'].includes(text)){active.delete(p.threadId);notify('turn/completed',{threadId:p.threadId,turn:{id:result.turn.id,status:'completed',items:[]}});}
   }
   if(m.method==='turn/interrupt'){
    const turn = history.get(p.threadId)?.at(-1);

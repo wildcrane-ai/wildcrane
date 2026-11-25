@@ -19,3 +19,5 @@ export const EXIT_OUTDATED = 11
 
 /** 已保存更新进度，启动器可以换版。 */
 export const EXIT_UPDATE = 12
+/** Another Runner owns this computer. */
+export const EXIT_ALREADY_RUNNING = 13

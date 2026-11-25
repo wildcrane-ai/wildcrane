@@ -41,9 +41,9 @@ export type { Goal }
 function loadGoals() {
   const file = goalDraftPath()
   if (!file) die('Goals exist only inside a WildCrane goal discussion.')
-  const { field, value } = readGoalDraft<GoalsFile>(file)
+  const value = readGoalDraft<GoalsFile>(file)
   const held = { ...value, studios: value.studios ?? [] }
-  return { held, write: () => writeGoalDraft(file, held, field) }
+  return { held, write: () => writeGoalDraft(file, held) }
 }
 
 /** A built-in's short name, as `akb studio list` shows it: `wf_builtin_slide_deck` → `slide-deck`. */

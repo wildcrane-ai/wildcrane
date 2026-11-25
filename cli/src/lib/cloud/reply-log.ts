@@ -1,8 +1,7 @@
 import LegacyWebSocket from 'ws'
-import { accessToken } from './session'
+import { accessToken, CLOUD_ACCESS_HINTS } from './session'
 import { cloudEndpoints } from './config'
 import { BoardError } from '../io'
-import { SAID } from '../../commands/cloud'
 
 interface Event { seq: number; text: string; kind?: string; data?: Record<string, unknown> | null; at?: string }
 
@@ -36,7 +35,7 @@ export function watchReplyLog(id: string, add: (event: Event) => void, fail: (er
   const open = async () => {
     const token = await accessToken()
     if (closed) return
-    if (!token.ok) return refuse(new BoardError(SAID[token.reason].en, { kind: token.reason.replace('-', '_') }))
+    if (!token.ok) return refuse(new BoardError(CLOUD_ACCESS_HINTS[token.reason], { kind: token.reason.replace('-', '_') }))
     const url = `${cloudEndpoints().api.replace(/^http/, 'ws')}/v1/runner/jobs/${encodeURIComponent(id)}/stream?after=${after}`
     let live: WebSocket | LegacyWebSocket
     try {

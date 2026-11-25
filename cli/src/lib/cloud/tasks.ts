@@ -6,6 +6,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { readStudioDownload } from '../shared/studio-package'
 import { cloudConfigured, cloudEndpoints, NOT_CONFIGURED } from './config'
 import { accessToken } from './session'
 import { cloudProblem, invalidResponse, isRecord, readCloudJson } from './response'
@@ -38,7 +39,9 @@ export function cloudStudio(name: string): string {
   return `wf_builtin_${name.replace(/-/g, '_')}`
 }
 
-export async function call<T>(method: 'GET' | 'POST' | 'PATCH' | 'PUT', route: string, body?: unknown, key?: string): Promise<CloudCall<T> & { replayed?: boolean }> {
+export async function call<T>(
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT', route: string, body?: unknown, key?: string, { allowResultError = false, downloadBytes }: { allowResultError?: boolean; downloadBytes?: number } = {},
+): Promise<CloudCall<T> & { replayed?: boolean }> {
   if (!cloudConfigured()) return { ok: false, error: NOT_CONFIGURED, code: 'bad_request' }
   const token = await accessToken()
   if (!token.ok) {
@@ -52,17 +55,25 @@ export async function call<T>(method: 'GET' | 'POST' | 'PATCH' | 'PUT', route: s
       method,
       headers: {
         authorization: `Bearer ${token.token}`,
-        ...(body ? { 'content-type': 'application/json' } : {}),
+        ...(body ? { 'content-type': body instanceof Blob ? body.type : 'application/json' } : {}),
         ...(key ? { 'idempotency-key': key } : {}),
       },
-      ...(body ? { body: JSON.stringify(body) } : {}),
+      ...(body ? { body: body instanceof Blob ? body : JSON.stringify(body) } : {}),
       signal: AbortSignal.timeout(20_000),
     })
   } catch (e) {
     return { ok: false, error: `Cloud could not be reached: ${e instanceof Error ? e.message : String(e)}`, code: 'unreachable', retryable: true }
   }
+  if (response.ok && downloadBytes !== undefined) {
+    try {
+      return { ok: true, value: await readStudioDownload(response, downloadBytes) as T }
+    } catch (error) {
+      return { ok: false, error: (error as Error).message, code: 'invalid_response' }
+    }
+  }
   const parsed = await readCloudJson(response)
-  const problem = cloudProblem(response, parsed) ?? (isRecord(parsed) ? null : invalidResponse('a valid JSON response'))
+  const problem = (response.ok && allowResultError ? null : cloudProblem(response, parsed))
+    ?? (isRecord(parsed) ? null : invalidResponse('a valid JSON response'))
   if (problem) return { ok: false, ...problem, error: problem.message }
   return { ok: true, value: parsed as T, replayed: response.headers.get('idempotent-replayed') === 'true' }
 }

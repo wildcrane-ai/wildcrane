@@ -36,7 +36,7 @@ describe('explicit archival after agent checks (#735)', () => {
     try {
       fs.mkdirSync(path.join(root, 'docs/kanban/todo'), { recursive: true })
       setBoardRoot(root)
-      for (const [index, studio] of ['carousel-post', 'blog-post', 'video-clone'].entries()) {
+      for (const [index, studio] of ['slide-deck', 'blog-post', 'video-clone'].entries()) {
         const id = index + 1
         await move(root, ['create', '--id', String(id), '--title', 'Explicit completion', '--studio', studio])
         cmdRemove(id, 'completed')

@@ -1,22 +1,14 @@
-// One Runner per computer (#2161): the Claude Code plugin starts one with every host session,
-// beside any standalone Runner. Whichever listens on the Runner home's socket runs the jobs; the
-// others hold a connection to it and take over when it closes. Exiting releases it. The holder
-// writes its kind to each one waiting, so that one can say who runs the jobs.
-
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 
+import { tryLock } from '../../cli/src/lib/lock'
 import { runnerHome } from './home'
 
-const RETRY_MS = 5_000
-/** How long a waiting process listens for the holder's kind before saying it is unknown. */
-const KIND_MS = 1_000
-
-/** 启动 Runner 的插件宿主或终端。 */
 export type Holder = 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'zcode' | 'kimi' | 'terminal'
-const HOLDERS: readonly string[] = ['claude-code', 'codex', 'cursor', 'dsh', 'zcode', 'kimi', 'terminal']
+export type MachineLock = () => Promise<void>
+export class RunnerAlreadyRunning extends Error {}
 
 export function lockPath(): string {
   const home = runnerHome()
@@ -24,102 +16,73 @@ export function lockPath(): string {
   return path.join(home, 'runner.sock')
 }
 
-export interface MachineLock {
-  release(): void
-  /** Another process waits to take over, so the computer stays connected past this one. */
-  waited(): boolean
+function socketIdentity(file: string): string | undefined {
+  try {
+    const stat = fs.lstatSync(file, { bigint: true })
+    if (stat.isSocket()) return `${stat.dev}:${stat.ino}`
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
 }
 
-/** Calls `onHeld` once this process runs the computer's jobs, `onWaiting` while another does —
- *  with its kind, unless it did not say. */
-export function holdMachine(kind: Holder, onHeld: () => void, onWaiting?: (holder?: Holder) => void): MachineLock {
+function probe(file: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const socket = net.connect(file)
+    const finish = (code?: string) => {
+      socket.destroy()
+      resolve(code)
+    }
+    socket.setTimeout(1_000, () => finish())
+    socket.once('connect', () => finish())
+    socket.once('error', (error: NodeJS.ErrnoException) => finish(error.code))
+  })
+}
+
+export async function acquireMachine(kind: Holder): Promise<MachineLock> {
   const where = lockPath()
-  let closed = false
-  let server: net.Server | null = null
-  let waiting: net.Socket | null = null
-  let timer: ReturnType<typeof setTimeout> | null = null
-  const peers = new Set<net.Socket>()
-
-  const later = (ms: number) => {
-    if (!closed) timer = setTimeout(attempt, ms)
+  const unix = process.platform !== 'win32'
+  let unlock: (() => void) | undefined
+  if (unix) {
+    fs.mkdirSync(path.dirname(where), { recursive: true, mode: 0o700 })
+    // The listening path can disappear while the owner is still alive.
+    unlock = tryLock(`${where}.owner`)
+    if (!unlock) throw new RunnerAlreadyRunning()
   }
-
-  const attempt = () => {
-    timer = null
-    if (closed) return
-    if (process.platform !== 'win32') fs.mkdirSync(path.dirname(where), { recursive: true, mode: 0o700 })
-    const s = net.createServer((peer) => {
+  const peers = new Set<net.Socket>()
+  const listen = () => new Promise<net.Server>((resolve, reject) => {
+    const server = net.createServer((peer) => {
       peers.add(peer)
       peer.on('error', () => {}).on('close', () => peers.delete(peer))
       peer.write(`${JSON.stringify({ kind, settings: 1 })}\n`)
     })
-    s.once('error', (e: NodeJS.ErrnoException) => {
-      if (e.code !== 'EADDRINUSE') return later(RETRY_MS)
-      const probe = net.connect(where)
-      probe.once('connect', () => {
-        waiting = probe
-        let told = false
-        let said = ''
-        const tell = (holder?: Holder) => {
-          if (told || waiting !== probe) return
-          told = true
-          clearTimeout(silent)
-          onWaiting?.(holder)
-        }
-        const silent = setTimeout(tell, KIND_MS)
-        probe.on('data', (d) => {
-          said += d
-          const line = said.split('\n')
-          if (line.length < 2) return
-          let got: unknown
-          try {
-            got = (JSON.parse(line[0]!) as { kind?: unknown }).kind
-          } catch {}
-          tell(typeof got === 'string' && HOLDERS.includes(got) ? (got as Holder) : undefined)
-        })
-        probe.once('close', () => {
-          clearTimeout(silent)
-          waiting = null
-          later(0)
-        })
-      })
-      probe.once('error', () => {
-        if (waiting === probe) return
-        if (process.platform !== 'win32') {
-          const removeIfStill = net.connect(where)
-          removeIfStill.once('connect', () => {
-            removeIfStill.destroy()
-            later(0)
-          })
-          // Nobody answered twice: a holder that crashed. The second ask keeps two processes
-          // finding it at once from removing the one that just started listening.
-          removeIfStill.once('error', () => {
-            fs.rmSync(where, { force: true })
-            later(50 + Math.random() * 200)
-          })
-          return
-        }
-        later(RETRY_MS)
-      })
+    server.once('error', reject)
+    server.listen(where, () => {
+      server.off('error', reject)
+      resolve(server)
     })
-    s.listen(where, () => {
-      if (closed) return void s.close()
-      server = s
-      onHeld()
-    })
-  }
+  })
 
-  attempt()
-  return {
-    waited: () => peers.size > 0,
-    release() {
-      if (closed) return
-      closed = true
-      if (timer) clearTimeout(timer)
-      waiting?.destroy()
-      server?.close()
+  try {
+    const server = await listen().catch(async (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EADDRINUSE') throw error
+      if (!unix) throw new RunnerAlreadyRunning()
+      const identity = socketIdentity(where)
+      const result = await probe(where)
+      if (result === 'ECONNREFUSED' && identity !== undefined && identity === socketIdentity(where)) fs.unlinkSync(where)
+      else if (result !== 'ENOENT') throw new RunnerAlreadyRunning()
+      return listen().catch((retry: NodeJS.ErrnoException) => {
+        if (retry.code === 'EADDRINUSE') throw new RunnerAlreadyRunning()
+        throw retry
+      })
+    })
+    let closing: Promise<void> | undefined
+    return () => closing ??= new Promise((resolve) => {
+      server.close(() => { unlock?.(); resolve() })
       for (const peer of peers) peer.destroy()
-    },
+    })
+  } catch (error) {
+    unlock?.()
+    throw error
   }
 }
 

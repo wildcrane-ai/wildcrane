@@ -7,7 +7,7 @@
 import { buildAkbProgram } from './cli/akb'
 import { runProgram } from './cli/shared'
 import { reportAppOpen } from './machine/usage'
-import { rawArgv, runBoard } from './board-cli'
+import { BOARD_LINK_HINT, rawArgv, runBoard } from './board-cli'
 
 /** The watcher's own door — spawned by whichever command started a run, never typed. */
 const WATCH = '__watch'
@@ -19,7 +19,7 @@ export interface RunAgentOptions {
 }
 
 export async function runAgent(argv: string[], options: RunAgentOptions = {}): Promise<number> {
-  const { program = 'akb', cwd = process.cwd(), installHint = '通过插件连接云端项目' } = options
+  const { program = 'akb', cwd = process.cwd(), installHint = BOARD_LINK_HINT } = options
   const raw = rawArgv(argv)
   if (raw) return runBoard(raw, { program: `${program} raw`, cwd, installHint })
   // The command started (#295) — the terminal's half of "how many people use this". Once a

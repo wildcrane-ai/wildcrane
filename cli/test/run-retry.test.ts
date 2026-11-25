@@ -171,8 +171,8 @@ describe('akb raw run list', () => {
       stopCollecting()
     }
     const said = sink.out.join('\n')
-    assert.match(said, /try it again with `akb raw run resume quiet-00/)
-    assert.match(said, /continue it with `akb raw run resume started-/)
+    assert.match(said, /try it again with `akb [^`]* run resume quiet-00/)
+    assert.match(said, /continue it with `akb [^`]* run resume started-/)
   })
 })
 

@@ -2,16 +2,21 @@
 name: Coding
 names:
   zh: 软件开发
-description: Plan and deliver software changes, and work no other Studio covers.
+description: Plan and deliver changes to repository code, documentation, agent instructions, skills, and other project files. Handle general project work when no specialized Studio fits.
+summaries:
+  zh: 先确认改动方案，再写代码。
+  en: Approve the plan, then the code gets written.
 needsArtifact: false
 icon: software
 previews:
   tech-choices:
     icon: stack
     title: {en: Tech choices, zh: 技术选型}
+    description: {en: "Compare libraries, tools, or services before deciding.", zh: "对比候选库、工具或服务方案后再做决定。"}
   emails:
     icon: email
     title: {en: Emails, zh: 邮件}
+    description: {en: "Preview email subjects, copy, and mobile/desktop layouts.", zh: "预览邮件主题、正文以及桌面和移动端排版。"}
   ui-design:
     icon: screen
     title: {en: UI design, zh: 界面设计}
@@ -19,15 +24,19 @@ previews:
   api-docs:
     icon: api
     title: {en: API design, zh: 接口设计}
+    description: {en: "Review new or updated APIs, CLI commands, and schemas.", zh: "审阅新增或变更的接口签名与数据结构。"}
   schema:
     icon: schema
     title: {en: Schema, zh: 数据库结构}
+    description: {en: "Review table changes, migrations, and data risks.", zh: "审阅表结构变更、迁移方案与潜在风险。"}
   prompts:
     icon: prompt
     title: {en: Prompts, zh: 提示词}
+    description: {en: "Review changes to agent prompts, skills, and instructions.", zh: "审阅提示词、技能或指令文件的修改。"}
   competitor-research:
     icon: compare
     title: {en: Competitor research, zh: 竞品研究}
+    description: {en: "Compare competitor capabilities side by side.", zh: "横向对比竞品能力与我们的设计取舍。"}
 ---
 
 Plan software changes with `akb guide refine` without editing project code. Choose only the
@@ -70,12 +79,13 @@ Set for several.
 
 <Preview id="ui-design">
 
-Design requested copy, images, or screens in the existing product design:
+Design requested copy, images, or screens using the project's design:
 - **Copy or docs**: show full MD/MDX for new or reorganized files, diff for existing,
   `Field: value` per field for sourceless text, and navigation placement for new pages.
 - **Images or animation**: prefer programmatic illustration (TSX, HTML, CSS, SVG); show
   animation as `.mp4` with `<Asset src="..." loop />`.
-- **Screens**: follow [screen rendering](references/ui/rendered-screen.md).
+- **Screens**: use [landing-page](skills/landing-page/SKILL.md) for new promotional pages and
+  [ui-mockup](skills/ui-mockup/SKILL.md) for screens based on existing product source.
 Recommended display: Asset for one screen; Set for several screens or states.
 
 </Preview>

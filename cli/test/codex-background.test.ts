@@ -6,6 +6,7 @@ import { createCodexClient, createCodexConnection } from '../src/lib/agent/wire/
 import { streamFinished } from '../src/lib/agent/wire/background.ts'
 import { createStreamRenderer } from '../src/lib/agent/wire/claude-stream.ts'
 import { CODEX_SETTLE_MS, batch } from '../src/lib/agent/wire/codex-background.ts'
+import { openPlan } from '../src/lib/agent/resolve.ts'
 import { BACKGROUND_WAIT } from '../src/lib/agent/settings.ts'
 import type { RunEvent } from '../src/lib/agent/wire/index.ts'
 
@@ -14,7 +15,7 @@ const originalSettle = { ...CODEX_SETTLE_MS }
 afterEach(() => { BACKGROUND_WAIT.minutes = originalWait; Object.assign(CODEX_SETTLE_MS, originalSettle) })
 const tick = () => new Promise(r => setImmediate(r))
 
-function server(handle: (method: string, params: any) => any, options?: Parameters<typeof createCodexClient>[0], completed?: () => boolean) {
+function server(handle: (method: string, params: any) => any, options?: Parameters<typeof createCodexClient>[0], completed?: () => boolean, client = createCodexClient(options)) {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const calls: { method: string; params: any }[] = []
@@ -34,7 +35,6 @@ function server(handle: (method: string, params: any) => any, options?: Paramete
       }, error => stdout.write(JSON.stringify({ id: request.id, error }) + '\n'))
     }
   })
-  const client = createCodexClient(options)
   const end = client.turn({ stdout, stdin, prompt: 'original task', cwd: '/tmp', completed, log: () => {}, gotResumeId: () => {}, gotModel: () => {}, event: e => events.push(e) })
   const item = (item: any) => notify('item/completed', { threadId: 'main', turnId: `t${calls.filter(c => c.method === 'turn/start').length}`, item })
   const complete = (id = 't1', status = 'completed') => notify('turn/completed', { threadId: 'main', turn: { id, status, items: [] } })
@@ -42,6 +42,25 @@ function server(handle: (method: string, params: any) => any, options?: Paramete
   return { stdout, stdin, client, end, calls, events, notify, item, complete, reply }
 }
 
+
+it('resumes a saved exec plan with a native Codex image', async () => {
+  const image = '/tmp/front page.png'
+  const saved = { harness: 'codex', argv: ['/fixture/codex', 'exec', '--json', 'resume', 'main'], resumeId: 'main', install: '', cwd: '/tmp' }
+  const launch = openPlan(saved, [image])
+  assert.ok(launch.client)
+  assert.ok(launch.argv.includes('app-server'))
+  assert.ok(!launch.argv.some(arg => arg.includes(image)))
+  const s = server(method => method === 'thread/resume' ? { thread: { id: 'main' } } : {}, undefined, undefined, launch.client)
+  await tick()
+  assert.equal(s.calls.find(call => call.method === 'thread/resume')?.params.threadId, 'main')
+  assert.deepEqual(s.calls.find(call => call.method === 'turn/start')?.params.input, [
+    { type: 'text', text: 'original task' },
+    { type: 'localImage', path: image },
+  ])
+  s.reply('DONE', 'reply')
+  s.complete()
+  assert.equal((await s.end).ok, true)
+})
 
 it('finishes ordinary turns on old servers without inventing background work', async () => {
   const s = server(method => {
@@ -251,6 +270,62 @@ it('stops temporary work through its actual handle without replacing the origina
   assert.equal(s.events.filter(e => e.kind === 'message').length, 1)
   assert.equal(s.calls.some(c => /clean|terminate/.test(c.method)), false)
 })
+
+for (const verification of ['exited', 'still running', 'invalid list'] as const) {
+  it(`verifies a native stop after a polled terminal ignores Ctrl+C (${verification})`, { timeout: 5000 }, async t => {
+    const temporary = { ...terminal, osPid: null }
+    const test = { itemId: 'test', processId: '43', command: 'run tests' }
+    const service = { itemId: 'service', processId: '44', command: 'retained preview' }
+    const host = { instance: 'backend', lease: 'lease' }
+    let stopSent = false, testDone = false
+    const s = server((method, params) => {
+      if (method === 'initialize') return { wildcrane: host }
+      if (method === 'thread/resume') return { thread: { id: 'main' }, retainedTerminals: [{ threadId: 'main', ...service }] }
+      if (method === 'thread/backgroundTerminals/list') {
+        if (stopSent && verification === 'invalid list' && !testDone) return { nextCursor: null }
+        return { data: [service, ...(testDone ? [] : [test]), ...(!stopSent || verification !== 'exited' ? [temporary] : [])] }
+      }
+      if (method === 'thread/backgroundTerminals/terminate') {
+        assert.deepEqual(params, { threadId: 'main', processId: '42' })
+        stopSent = true
+        return { terminated: true }
+      }
+      if (method === 'wildcrane/settled') {
+        assert.deepEqual(params.kept, [{ threadId: 'main', itemId: 'service', processId: '44' }])
+        return { ...host, confirmed: params.confirmed }
+      }
+      return {}
+    }, { mode: 'resume', threadId: 'main', images: [] })
+    t.after(() => s.stdout.destroy())
+    await tick(); s.reply('Saved delivery', 'answer'); s.complete(); await tick()
+    poll(s)
+    poll(s, '\u0003')
+    poll(s)
+    s.notify('item/commandExecution/terminalInteraction', { threadId: 'main', itemId: 'test', processId: '43', stdin: '' })
+    s.notify('item/commandExecution/terminalInteraction', { threadId: 'main', turnId: 't1', itemId: 'test', processId: '43', stdin: '\u0003' })
+    s.notify('item/commandExecution/terminalInteraction', { threadId: 'parallel', itemId: 'test', processId: '43', stdin: '\u0003' })
+    s.notify('item/commandExecution/terminalInteraction', { threadId: 'main', itemId: 'cmd', processId: '44', stdin: '\u0003' })
+    assert.equal(stopSent, false)
+    finish(s); await tick()
+    assert.equal(stopSent, true)
+    assert.equal(s.client.background?.(), 1)
+    testDone = true
+    s.item({ ...command(0), id: 'test', processId: '43', aggregatedOutput: 'TESTS PASSED' })
+    await new Promise(r => setTimeout(r, 1100))
+    assert.match(s.calls.filter(c => c.method === 'turn/start').at(-1)!.params.input[0].text, /TESTS PASSED/)
+    finish(s, 'TESTS PASSED; delivery saved')
+    const end = await s.end
+    assert.equal(end.ok, verification === 'exited', end.error)
+    assert.equal(end.cleanup?.status, verification === 'exited' ? 'confirmed' : 'unconfirmed')
+    assert.equal(end.cleanup?.items?.find(w => w.processId === '42')?.disposition, verification === 'exited' ? 'stopped' : 'unconfirmed')
+    assert.deepEqual(end.cleanup?.kept, ['terminal:main:service'])
+    assert.equal(end.result, 'TESTS PASSED; delivery saved')
+    assert.equal(s.client.background?.(), 0)
+    const stops = s.calls.filter(c => c.method.endsWith('/terminate') || c.method.endsWith('/clean'))
+    assert.deepEqual(stops.map(c => c.params), [{ threadId: 'main', processId: '42' }])
+    assert.ok(s.calls.slice(s.calls.indexOf(stops[0]!) + 1).some(c => c.method === 'thread/backgroundTerminals/list'))
+  })
+}
 
 for (const exit of [0, 2]) it(`delivers the actual result completed during cleanup, including failed exit ${exit} (#757)`, async () => {
   let running = true

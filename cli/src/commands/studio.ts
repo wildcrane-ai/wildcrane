@@ -11,7 +11,7 @@ import { findSpecAgent } from '../lib/agents'
 import { locate } from '../lib/cards'
 import { say } from '../lib/io'
 import { ASSETS, die } from '../lib/paths'
-import { NEEDS_CLOUD, boardProject, cloudFlows, isStudioFiles, isStudioVersion, studioVerification, studiosReachable, type StudioFiles } from '../lib/agent/cloud-studios'
+import { NEEDS_CLOUD, boardProject, cloudFlows, isStudioFiles, isStudioVersion, loadWorkspaceStudio, readStudioMetadata, studioVerification, studiosReachable, studioSkillBlock, type StudioFiles } from '../lib/agent/cloud-studios'
 import {
   studioPurpose,
   studioWhen,
@@ -22,11 +22,13 @@ import {
 } from '../lib/agent/studios'
 import type { MoveResult } from '../lib/types'
 import { readStudioFolder } from '../lib/agent/studio-folder'
-import { checkStudioFiles, isAboutFile, VERSION_FILE, versionText, STUDIO_FILE, studioFilesProblems, hashInput, diagramFrom, formatStudioProblem } from '../lib/shared/studio-files'
+import { checkStudioFiles, cloneFiles, isAboutFile, PUBLICATION_FILE, VERSION_FILE, versionText, STUDIO_FILE, studioFilesProblems, studioSkills, hashInput, diagramFrom, formatStudioProblem } from '../lib/shared/studio-files'
 import { parseStudioFile } from '../lib/agent/studio-def'
 import { studioName } from '../lib/shared/board-files'
-import { call, type CloudCall } from '../lib/cloud/tasks'
+import { call, workspaceTask, type CloudCall } from '../lib/cloud/tasks'
 import { cloudError, hasText, requireResponse, temporaryCloudFailure } from '../lib/cloud/response'
+import { taskReviewContext } from '../lib/agent/env'
+import { reviewAllows, reviewAuthorization } from '../lib/shared/review-plan'
 
 const found = (id: string) => {
   const flow = studioById(id)
@@ -53,7 +55,7 @@ export function cmdStudioList(): MoveResult {
 }
 
 export function cmdStudioDiagram(_id: string, _card: string, _folder?: string): MoveResult {
-  die('Studios have no agent graph. Read STUDIO.md for instructions and Preview outputs.', 'bad-args')
+  die('Freeze a Studio draft with akb studio preview <card> --folder <draft> --base <baseline>.', 'bad-args')
 }
 
 /** `akb raw studio validate <folder>` (#622): every problem in a studio folder, the agents it
@@ -61,7 +63,11 @@ export function cmdStudioDiagram(_id: string, _card: string, _folder?: string): 
 export function cmdStudioValidate(folder: string): MoveResult {
   const dir = path.resolve(folder)
   if (!fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory()) die(`${folder} is not a folder`, 'bad-args')
-  const files = readStudioFolder(dir)
+  let files: StudioFiles
+  try { files = readStudioFolder(dir) } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    die(reason, { kind: 'studio-problems', problems: [{ file: folder, reason, hint: 'Use a Studio folder with regular UTF-8 files within the size limits.' }] })
+  }
   let builtin = false
   try { builtin = JSON.parse(files[VERSION_FILE] ?? 'null')?.id?.startsWith('wf_builtin_') === true } catch {}
   const problems = studioFilesProblems(files, builtin)
@@ -69,33 +75,84 @@ export function cmdStudioValidate(folder: string): MoveResult {
   say(`${folder}: no problems`)
   const checked = checkStudioFiles(files, builtin)
   const fingerprint = checked.ok ? crypto.createHash('sha256').update(hashInput({ ...checked.files, ...(files[VERSION_FILE] ? { [VERSION_FILE]: files[VERSION_FILE] } : {}) })).digest('hex') : null
-  return { folder: dir, problems, fingerprint }
+  const skillContext = studioSkillBlock(studioSkills(files), dir)
+  return { folder: dir, problems, fingerprint, ...(skillContext ? { skillContext } : {}) }
 }
 
 const cloudIdOf = (id: string): string | undefined => cloudFlows().find((f) => studioName(f.cloudId) === id)?.cloudId
 
-/** `akb studio pull <id> [folder]` (#544): the studio's current version as a folder. */
-export async function cmdStudioPull(id: string, folder?: string): Promise<MoveResult> {
+async function currentStudio(id: string) {
   const cloudId = cloudIdOf(id)
   if (!cloudId) {
     const { problem } = studioVerification()
     if (problem) throw cloudError(problem)
     found(id)
   }
-  const dir = path.resolve(folder ?? id)
-  if (fs.existsSync(dir) && fs.readdirSync(dir).length) die(`${folder ?? id} is not empty`, 'bad-args')
-  const read = await call<{ id: string; version: number; files: StudioFiles }>('GET', `/v1/studios/${encodeURIComponent(cloudId!)}`)
-  const { version, files } = requireResponse(cloudOk(read, read.ok || read.code !== 'not_found' ? undefined : 'no-such-studio'),
+  const read = await loadWorkspaceStudio(cloudId!)
+  const held = requireResponse(cloudOk(read, read.ok || read.code !== 'not_found' ? undefined : 'no-such-studio'),
     'the Studio version and files', value => value.id === cloudId && isStudioVersion(value.version) && isStudioFiles(value.files))
-  for (const [file, text] of Object.entries({ ...files, [VERSION_FILE]: versionText(cloudId!, version) })) {
+  const { 'catalog.json': _catalog, ...files } = held.files
+  return { ...held, files }
+}
+
+function emptyStudioFolder(dir: string): boolean {
+  const destination = fs.lstatSync(dir, { throwIfNoEntry: false })
+  if (!destination) return false
+  if (!destination.isDirectory()) die(`${dir} is not a directory. Choose a new or empty folder.`, 'bad-args')
+  if (fs.readdirSync(dir).length) die(`${dir} is not empty. Choose a new or empty folder.`, 'bad-args')
+  return true
+}
+
+function writeStudioFiles(dir: string, files: StudioFiles): void {
+  for (const [file, text] of Object.entries(files)) {
     const full = path.join(dir, ...file.split('/'))
     fs.mkdirSync(path.dirname(full), { recursive: true })
     const data = isAboutFile(file) && !file.endsWith('.md') && /^data:[^;]+;base64,/.exec(text)
-    fs.writeFileSync(full, data ? Buffer.from(text.slice(data[0].length), 'base64') : text)
+    fs.writeFileSync(full, data ? Buffer.from(text.slice(data[0].length), 'base64') : text, { flag: 'wx' })
   }
+}
+
+export async function cmdStudioPull(id: string, folder?: string): Promise<MoveResult> {
+  const dir = path.resolve(folder ?? id)
+  emptyStudioFolder(dir)
+  const { id: cloudId, version, files } = await currentStudio(id)
+  writeStudioFiles(dir, { ...files, [VERSION_FILE]: versionText(cloudId, version) })
   const shown = folder ?? `./${id}`
   say(`Pulled ${id} v${version} into ${shown}.`)
   return { id, version, folder: dir }
+}
+
+export async function cmdStudioClone(id: string, folder: string, name?: string): Promise<MoveResult> {
+  const dir = path.resolve(folder)
+  emptyStudioFolder(dir)
+  if (name !== undefined && !name.trim()) die('--name needs a non-blank Studio name.', 'bad-args')
+  const { version, files } = await currentStudio(id)
+  const cloned = cloneFiles(files, name?.trim())
+  if ('refused' in cloned) {
+    die(`Studio "${id}" uses ${cloned.refused}, which a workspace Studio cannot carry. Use studio pull to inspect it or choose another Studio.`, 'studio-not-cloneable')
+  }
+  const checked = checkStudioFiles(cloned.files)
+  if (!checked.ok) die(formatStudioProblem(checked), { kind: 'bad-studio', problems: checked.problems })
+
+  const parent = path.dirname(dir)
+  fs.mkdirSync(parent, { recursive: true })
+  const staging = fs.mkdtempSync(path.join(parent, '.studio-clone-'))
+  let removedEmpty = false
+  try {
+    writeStudioFiles(staging, checked.files)
+    if (emptyStudioFolder(dir) && process.platform === 'win32') {
+      fs.rmdirSync(dir)
+      removedEmpty = true
+    }
+    fs.renameSync(staging, dir)
+  } catch (error) {
+    if (removedEmpty) fs.mkdirSync(dir, { recursive: true })
+    throw error
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true })
+  }
+  say(`Cloned ${id} v${version} into ${folder}.`)
+  return { source: id, sourceVersion: version, folder: dir }
 }
 
 interface PublishOptions { dryRun?: boolean; requestId?: string; workspace?: string }
@@ -109,13 +166,18 @@ function publicationFiles(dir: string): StudioFiles {
 interface Publication {
   requestId: string
   hash: string
-  body: { files: StudioFiles; expectedVersion?: number; workspace?: string }
+  body: { files: StudioFiles; expectedVersion?: number; workspace?: string; source_task?: string }
   route: string
   resultVersion?: number
 }
 
 async function publishFolder(dir: string, route: string, body: Publication['body'], requestId?: string): Promise<MoveResult> {
-  const pendingFile = path.join(dir, '.publication.json')
+  const context = taskReviewContext()
+  const task = workspaceTask()
+  if (task && context && reviewAllows(reviewAuthorization(context.review, context.assigned), 'implement')) {
+    body = { ...body, source_task: task }
+  }
+  const pendingFile = path.join(dir, PUBLICATION_FILE)
   const hash = crypto.createHash('sha256').update(JSON.stringify({ route, files: body.files, workspace: body.workspace })).digest('hex')
   let held: Publication | undefined
   try { held = JSON.parse(fs.readFileSync(pendingFile, 'utf8')) } catch {}
@@ -153,15 +215,17 @@ export async function cmdStudioPush(folder: string, opts: PublishOptions): Promi
   const { id, version } = pulled!
   if (id.startsWith('wf_builtin_')) die('Copy this studio before editing it.', 'studio-read-only')
   const files = publicationFiles(dir)
-  if (!fs.existsSync(path.join(dir, '.publication.json')) && !opts.requestId) {
-    const now = await call<{ version: number; files: StudioFiles }>('GET', `/v1/studios/${encodeURIComponent(id)}`)
-    if (now.ok && now.value.version === version && isStudioFiles(now.value.files) && JSON.stringify(files) === JSON.stringify(Object.fromEntries(Object.entries(now.value.files).filter(([f]) => f !== VERSION_FILE).sort()))) {
+  if (!fs.existsSync(path.join(dir, PUBLICATION_FILE)) && !opts.requestId) {
+    const now = await readStudioMetadata(id)
+    const digest = now.ok ? now.value.package?.filesSha256 ?? (isStudioFiles(now.value.files)
+      ? crypto.createHash('sha256').update(hashInput(Object.fromEntries(Object.entries(now.value.files).filter(([file]) => file !== VERSION_FILE)))).digest('hex') : undefined) : undefined
+    if (now.ok && now.value.version === version && digest === crypto.createHash('sha256').update(hashInput(files)).digest('hex')) {
       say(`${studioName(id)} is unchanged (v${version}).`)
       return { id: studioName(id), version, changed: false, ...(opts.dryRun ? { dryRun: true } : {}) }
     }
   }
   if (opts.dryRun) {
-    const now = requireResponse(cloudOk(await call<{ version: number }>('GET', `/v1/studios/${encodeURIComponent(id)}`)),
+    const now = requireResponse(cloudOk(await readStudioMetadata(id)),
       'the current Studio version', value => isStudioVersion(value.version))
     if (now.version !== version) die(`The studio is at v${now.version}; pull again.`, 'studio-moved')
     say(`${studioName(id)} would push v${version + 1}.`)
@@ -206,12 +270,16 @@ async function cloudScope(): Promise<{ project: string; workspace: string }> {
 }
 
 interface WorkspaceRules {
-  studios: { id: string; rule?: string }[]
+  studios: { id: string; rule?: string; revision?: number }[]
 }
 
-/** `akb studio rule <studio>`: the rules every card on it follows. */
-export async function cmdStudioRule(name: string, opts: NoteOptions): Promise<MoveResult> {
+/** `akb studio rule <studio>`: shared Studio configuration. */
+export async function cmdStudioRule(name: string, opts: NoteOptions & { revision?: string }): Promise<MoveResult> {
   const rule = noteText(opts)
+  const expected = opts.revision === undefined ? undefined : Number(opts.revision)
+  if (expected !== undefined && (!/^\d+$/.test(opts.revision!) || !Number.isSafeInteger(expected))) {
+    die('--revision must be a nonnegative integer', 'bad-args')
+  }
   const { workspace } = await cloudScope()
   const held = requireResponse(cloudOk(await call<WorkspaceRules>('GET', `/v1/workspaces/${enc(workspace)}/studio-rules`)),
     'the workspace’s Studio rules', value => Array.isArray(value.studios))
@@ -225,12 +293,12 @@ export async function cmdStudioRule(name: string, opts: NoteOptions): Promise<Mo
   if (rule === undefined) {
     const now = flow!.rule ?? ''
     say(now || `${name} has no rules`)
-    return { studio: name, rule: now }
+    return { studio: name, rule: now, revision: flow!.revision }
   }
-  requireResponse(cloudOk(await call<{ id: string; rule: string }>('PUT', `/v1/workspaces/${enc(workspace)}/studios/${enc(flow!.id)}/rule`, { rule })),
+  const saved = requireResponse(cloudOk(await call<{ id: string; rule: string; revision?: number }>('PUT', `/v1/workspaces/${enc(workspace)}/studios/${enc(flow!.id)}/rule`, { rule, revision: expected ?? flow!.revision })),
     'the saved Studio rules', value => value.id === flow!.id && value.rule === rule)
   say(`${rule ? 'saved' : 'cleared'} the rules of ${name}`)
-  return { studio: name, rule }
+  return { studio: name, rule, revision: saved.revision }
 }
 
 /** The current project's background-task instructions. */

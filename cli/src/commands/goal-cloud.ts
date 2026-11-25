@@ -8,7 +8,7 @@ import type { MoveResult } from '../lib/types'
 import { die } from '../lib/paths'
 import { say } from '../lib/io'
 import { editGoal, cmdGoalPreviews, cmdGoalStudios, goalsFile, shortStudioId, type GoalOptions, type GoalStudio, type GoalsFile } from './goal'
-import { decodeGoals, goalRoute, type GoalEnvelope, type Goal } from '../lib/shared/goal'
+import { goalRoute, type Goal, type GoalDraft } from '../lib/shared/goal'
 
 /** The host session the goals belong to; Cursor's and Kimi Code's models pass their session id themselves,
  *  and dsh's model the discussion `wildcrane_draft_read` opened. */
@@ -43,7 +43,7 @@ async function studios(workspace: string): Promise<GoalStudio[]> {
 
 interface Discussion { id: string; workspace: string; version: number; goals: Goal[] }
 
-async function discussion(): Promise<GoalEnvelope<Discussion>> {
+async function discussion(): Promise<Discussion> {
   const session = hostSession()
   if (!session) die('Goals exist only inside a WildCrane goal discussion.')
   const home = process.env.WILDCRANE_HOME || path.join(os.homedir(), '.wildcrane')
@@ -62,24 +62,20 @@ async function discussion(): Promise<GoalEnvelope<Discussion>> {
   return request('POST', '/v1/discussions/external', { requestId: session.id, host: session.host, ...(folder ? { project: folder.project } : {}) })
 }
 
-function discussionReceipt(value: GoalEnvelope<Discussion>) {
-  try {
-    const decoded = decodeGoals(value)
-    if (hasText(decoded.value.id) && hasText(decoded.value.workspace) && Number.isSafeInteger(decoded.value.version)) return decoded
-  } catch { /* An unrecognized draft cannot confirm any change. */ }
-  throw cloudError(invalidResponse('a valid discussion draft'))
-}
+const discussionReceipt = (value: Discussion) => requireResponse(value, 'a valid discussion draft', d =>
+  hasText(d.id) && hasText(d.workspace) && Number.isSafeInteger(d.version) && Array.isArray(d.goals))
 
 async function withGoalDiscussion(action: (held: GoalsFile) => MoveResult, save = false): Promise<MoveResult & { discussion: string; url: string }> {
-  const { field, value: d } = discussionReceipt(await discussion())
+  const d = discussionReceipt(await discussion())
   const held = { workspace: d.workspace, studios: await studios(d.workspace), goals: d.goals.map(goal => ({ ...goal })) }
   const result = action(held)
   if (save) {
-    const goals = held.goals.filter(g => !g.dropped)
-    const saved = await request<GoalEnvelope<Discussion>>('PUT', `/v1/discussions/${encodeURIComponent(d.id)}/draft`, {
-      expectedVersion: d.version, [field]: goals,
+    const goals = held.goals.filter(g => !g.dropped && !g.task)
+      .map(({ task, start, dropped, ...goal }) => goal) satisfies GoalDraft[]
+    const saved = await request<Discussion>('PUT', `/v1/discussions/${encodeURIComponent(d.id)}/draft`, {
+      expectedVersion: d.version, goals,
     })
-    const { field: savedField, value: latest } = discussionReceipt(saved)
+    const latest = discussionReceipt(saved)
     const existing = new Set(d.goals.map(g => g.id))
     const fresh = goals.filter(g => !existing.has(g.id))
     const made = latest.goals.filter(g => !existing.has(g.id))
@@ -88,7 +84,7 @@ async function withGoalDiscussion(action: (held: GoalsFile) => MoveResult, save 
     if (result.start) {
       const actual = latest.goals.find(g => g.id === result.id)
       if (!actual) throw cloudError(invalidResponse('the saved goal'))
-      const task = actual.task ?? requireResponse(await request<{ id: string }>('POST', `${goalRoute(d.id, actual.id, savedField)}/start`,
+      const task = actual.task ?? requireResponse(await request<{ id: string }>('POST', `${goalRoute(d.id, actual.id)}/start`,
         { expectedVersion: latest.version }), 'a started task', value => hasText(value.id))
       result.task = task.id
     }

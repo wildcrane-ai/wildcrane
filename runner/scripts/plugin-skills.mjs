@@ -10,6 +10,7 @@ export const SKILLS = {
   dsh: { 'discuss-goal': 'mcp', tasks: 'dsh', wildcrane: '' },
   opencode: { 'discuss-goal': 'mcp', tasks: 'grok', wildcrane: '' },
   grok: { 'discuss-goal': 'mcp', tasks: 'grok', wildcrane: '' },
+  antigravity: { 'discuss-goal': 'mcp', tasks: 'grok', wildcrane: '' },
 }
 
 export function copySkills(plugins) {

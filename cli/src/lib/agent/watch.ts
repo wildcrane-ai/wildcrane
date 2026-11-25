@@ -1,10 +1,15 @@
-import { APPROVED_UI_DIR_ENV, APPROVED_UI_RULE, approvedUiPrompt } from './approved-ui'
-import { studioForRun } from './runner'
-import { reviewBoundary } from '../shared/review-plan'
+import { reviewBoundary, taskReviewBoundary } from '../shared/review-plan'
 import { SAVED_PREVIEW_FILE_ENV, taskReviewContext } from './env'
 import { connectionIdentity, connectionStopped, endConnection } from './connection-process'
-import { boardCommandFor } from './command'
-import { findDelivery } from './deliveries'
+import { deliveryFor, findDelivery } from './deliveries'
+import { studioForRun } from './runner'
+import { runnerProject, workspaceTask } from '../cloud/tasks'
+import { missingStudioVersion, readRuntimeContext, readVersion, saveRuntimeContext, saveStudioSession, STUDIO_SNAPSHOT_ENV, type HeldVersion } from './cloud-studios'
+import { listedStudioVersion, studioContextBlocks } from './studio-shared'
+import { compactReview, contextAction, contextFingerprint, contextUpdate, reviewBlock, taskCardBlock, type ContextBlock } from './runtime-context'
+import { parseStudioFile } from './studio-def'
+import { boardCommand } from './command'
+import { studioFor } from './studios'
 // The process that watches one run.
 //
 // A run has to outlive the command that started it: close the terminal and the agent keeps
@@ -27,7 +32,7 @@ import { KANBAN, REPO_ROOT, SESSIONS_DIR } from '../paths'
 import { eventsPathOf, readRuns, withStore } from './store'
 import { lastSessionTotal, ownCost, reportsSessionTotal } from './own-cost'
 import { cleanupDiscardedCards } from '../../commands/remove'
-import { discardedCardsPrompt, studioRulesBlock } from './prompts'
+import { cardFileOf, discardedCardsPrompt, studioRulesBlock } from './prompts'
 import { contextLimit, refreshCatalog } from './catalog'
 import { runEnv } from './flow'
 import { spawnable } from './spawnable'
@@ -36,13 +41,15 @@ import { refineRunsAfter } from './follow'
 import { queueCompleted } from './propose'
 import { costLine, durationLine, modelLine, RESULT_MARKER, usageLine } from './log'
 import { createStderrFilter, streamFinished, type RunEvent } from './wire'
-import { restartPrompt, resumePrompt } from './prompts'
+import { compactTaskPrompt, restartPrompt, resumePrompt } from './prompts'
 import { openPlan } from './resolve'
+import { promptInput } from './harnesses/launch'
 import { createIdleWatchdog, IDLE_FAILURE, IDLE_MS } from './idle'
 import { idleStopConfirmed } from './wire/codex-background-types'
-import { agentRecovery, backoffMs, isSessionMissingFailure, makeFailure, MAX_RETRY_ATTEMPTS, pauseLine, planRetry, retryContinuePrompt, retryLine, syncRepairPrompt, type ExecutionFailure, type RetryPause, type RetryRecord, type RetryRuntime, type SessionAction } from './retry'
+import { agentRecovery, backoffMs, isSessionMissingFailure, makeFailure, MAX_RETRY_ATTEMPTS, pauseLine, planRetry, retryBudget, RETRY_FILE_ENV, retryContinuePrompt, retryLine, retryRecord, syncRepairPrompt, waitForRetry, type ExecutionFailure, type RetryPause, type RetryRecord, type RetryRuntime, type SessionAction } from './retry'
 import { runtimeById } from './runtimes'
 import { executionFailure } from './wire/failures'
+import { turnSubmitted } from './wire/events'
 import { executionHeld, executionOf } from '../cloud/execution'
 import {
   claimChanges,
@@ -104,6 +111,23 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
     return 1
   }
 
+
+  let studio: HeldVersion | undefined
+  try {
+    const pin = run.studioPin
+    if (pin) {
+      const held = readVersion(pin.studio, pin.version)
+      if (!held) throw new Error(missingStudioVersion(pin))
+      process.env[STUDIO_SNAPSHOT_ENV] = JSON.stringify(pin)
+      studio = held
+    } else {
+      studio = listedStudioVersion(studioForRun({ action: run.action, id: run.cardId ?? undefined, studio: run.studio }))
+    }
+  } catch (error) {
+    await closeRun(sessionId, { status: 'error', code: null, error: error instanceof Error ? error.message : String(error) })
+    return 1
+  }
+
   // A stop can reach a run before it ever spawns, and an index run can wait a long time for
   // its turn — so the record, not this process's own memory, is what says whether to carry
   // on. It is re-read at every step.
@@ -143,6 +167,8 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   // A sub-run leaves the board's bookkeeping to its parent (#1421): no card hold, no checks,
   // no landing and no follow-ups.
   const sub = record.action === 'sub'
+  const retryFile = record.cloudExecution && !sub && process.env[RETRY_FILE_ENV]
+  const budget = retryFile ? retryBudget(retryFile, record.retry?.attempt) : undefined
   if (claim) await setCardStatus(claim.cardId, claim.status)
 
   // The log is machine state like the record it belongs to, so a folder that refuses writes
@@ -158,6 +184,8 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   let observeActivity = (_e: RunEvent) => {}
   const pendingOperations = new Set<string>()
   let hadEffects = false
+  let submitted = record.submitted === true
+  let saveContext = () => {}
   const event = (e: RunEvent) => {
     observeActivity(e)
     const hadPending = pendingOperations.size > 0
@@ -166,9 +194,14 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       if (!['completed', 'failed'].includes(e.data.status)) pendingOperations.add(e.data.toolCallId)
     }
     if ((e.kind === 'tool_call' || e.kind === 'tool_call_update') && ['completed', 'failed'].includes(e.data.status ?? '')) pendingOperations.delete(e.data.toolCallId)
-    if (record.cloudExecution && hadPending !== (pendingOperations.size > 0)) {
-      patch(sessionId, run => { run.pendingWrites = pendingOperations.size > 0 })
-    }
+    const newSubmission = !submitted && turnSubmitted(e)
+    const operationsChanged = record.cloudExecution && hadPending !== (pendingOperations.size > 0)
+    if (newSubmission || operationsChanged) patch(sessionId, run => {
+      if (newSubmission) run.submitted = true
+      if (operationsChanged) run.pendingWrites = pendingOperations.size > 0
+    })
+    submitted ||= newSubmission
+    if (newSubmission) saveContext()
     eventsFile.write(`${JSON.stringify(e)}\n`)
   }
   const runtimeInfo = (): RetryRuntime => ({
@@ -191,53 +224,76 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
 
   // The keys are read here and nowhere else: the plan on disk carries the command and the
   // agent's name, never a key, and this is the one moment one is needed.
-  const active = openPlan(spec.plan)
+  const active = openPlan(spec.plan, record.pictures)
   if (active.startNote) log.write(`[board] ${active.startNote}\n`)
   // Resume the recorded action, not another phase of the same delivery. A resume that could
   // only open a new session (#1321) brings the whole ask instead.
-  const basePrompt = record.resumedFrom ? spec.prompt || resumePrompt(record.deliveryId, record.action) : spec.prompt
-  const resumedStudio = record.resumedFrom ? studioRulesBlock({
+  const basePrompt = record.resumedFrom ? spec.prompt || resumePrompt(record.deliveryId, record.action, record.cardId ?? undefined) : spec.prompt
+  const studioRequest = {
     action: record.action,
     id: record.cardId ?? undefined,
     deliveryId: record.deliveryId,
     studio: record.studio,
-  }) : ''
+  }
+  const compact = compactTaskPrompt(studioRequest)
+  const task = workspaceTask()
+  const scope = task ?? 'board-' + contextFingerprint(KANBAN)
+  const fromSession = record.continues?.resumeId ?? (carriesSession(record) ? active.resumeId : undefined)
+  const previous = fromSession ? readRuntimeContext(scope, record.harness, fromSession) : undefined
+  const action = contextAction(record.action)
+  const parsed = studio && parseStudioFile(studio.id, studio.files['STUDIO.md'] ?? '', 'STUDIO.md')
+  const command = boardCommand()
+  const studioBlocks = studio ? studioContextBlocks(studio, action, parsed && 'def' in parsed ? parsed.def : { name: studio.name, rules: '' },
+    KANBAN, runnerProject(KANBAN), /^akb(?: |$)/.test(command) ? undefined : command + ' studio file') : []
+  const launchStudio = !compact && (spec.studioAtLaunch || record.resumedFrom)
+    ? studioRulesBlock(studioRequest, !studio) : ''
+  const card = compact ? cardFileOf(studioRequest.id) : ''
   const recoveryPrompt = record.harness === 'antigravity' && record.resumedFrom
     ? 'First verify existing progress and operation results. Preserve user decisions and completed work; do not repeat completed operations. Check actual state before continuing any operation whose result is uncertain.' : ''
   const reviewContext = taskReviewContext()
   const savedPreviews = record.action === 'implement' && process.env[SAVED_PREVIEW_FILE_ENV]
   const review = reviewContext?.review
-  const boundary = review && reviewBoundary(savedPreviews
-    ? { ...review, stages: review.stages.map(stage => ({ ...stage, snapshot: null })) }
-    : review, reviewContext.assigned)
-  const coding = record.action === 'implement' && studioForRun({ id: record.cardId ?? undefined, deliveryId: record.deliveryId }) === 'coding'
-  const uiDirectory = process.env[APPROVED_UI_DIR_ENV]
-  const approvedUi = review && coding && (!savedPreviews || uiDirectory) ? approvedUiPrompt(review, uiDirectory, !!savedPreviews) : ''
-  const savedPrompt = savedPreviews
-    ? [
-        `Read the saved task Previews and their pinned files in \`${savedPreviews}\`. Use these saved versions for the requirements they cover and verify the delivery against them.`,
-        ...(coding && !approvedUi && review?.plan?.some(node => node.previews.includes('ui-design')) ? [APPROVED_UI_RULE] : []),
-      ].join('\n')
+  const studioPreviews = !compact && review?.preview_definitions?.length
+    ? (deliveryFor(studioRequest)?.studio ?? studioFor(studioForRun(studioRequest)))?.previews
+    : undefined
+  const boundary = review && (compact
+    ? review.plan === null ? compactReview(review, reviewContext.assigned) : taskReviewBoundary(review, reviewContext.assigned)
+    : reviewBoundary(savedPreviews ? { ...review, stages: review.stages.map(stage => ({ ...stage, snapshot: null })) }
+      : review, reviewContext.assigned, studioPreviews))
+  const savedPrompt = !compact && savedPreviews
+    ? `Use the task inputs and pinned files listed in \`${savedPreviews}\`. Follow the task's delivery instructions.`
     : ''
   const retryDiag = record.retry
     ? record.failure
       ? retryContinuePrompt(record.failure, record.retry.attempt, record.retry.of)
       : `Previous execution failed: ${record.retry.reason}. Check existing results before continuing; do not repeat completed operations.`
     : ''
-  const prompt = [process.env.AI4KANBAN_SYNC_DIAGNOSTIC ? syncRepairPrompt(process.env.AI4KANBAN_SYNC_DIAGNOSTIC) : '', retryDiag, conflictPrompt(KANBAN), boundary, basePrompt, resumedStudio, savedPrompt, approvedUi, recoveryPrompt, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n')
+  const blocks = (prior: typeof previous): ContextBlock[] => [
+    ...(card ? [taskCardBlock(card)] : []),
+    ...studioBlocks.filter(([key]) => key === 'studio' || key === 'skills'),
+    reviewBlock(boundary ?? '', review, prior),
+    ...studioBlocks.filter(([key]) => key === 'setup' && compact || key === 'config' && (compact || spec.studioAtLaunch)),
+    ['inline-studio', launchStudio], ['approved-inputs', savedPrompt],
+  ]
+  const context = contextUpdate(previous, blocks(previous))
+  const diagnostics = [process.env.AI4KANBAN_SYNC_DIAGNOSTIC ? syncRepairPrompt(process.env.AI4KANBAN_SYNC_DIAGNOSTIC) : '',
+    retryDiag, conflictPrompt(KANBAN)]
+  const rest = [recoveryPrompt, discardedCardsPrompt(record.discardedCards)]
+  const assemble = (base: string, parts: string[]) => {
+    if (!compact) return [...diagnostics, ...parts, base, ...rest].filter(Boolean).join('\n\n')
+    const split = base.indexOf('\n\n')
+    const [ask, notes] = split === -1 ? [base, ''] : [base.slice(0, split), base.slice(split + 2)]
+    return [...diagnostics, ask, ...parts, ...rest, notes].filter(Boolean).join('\n\n')
+  }
+  const prompt = assemble(basePrompt, context.parts)
 
   // The board as it was the moment before the agent touched it. The difference between this
   // and the same read at the close is what this run could be answerable for; which of it
   // really is its own — and not a neighbouring run's — is settled at the close by
   // `claimChanges`, and that is what earns a card the refine that follows.
   const before = markBoard()
-  // Where the pictures the sheet was pasted into go is the connector's own answer
-  // (agent/harnesses/types.ts): one that reads a path out of the words has them in the
-  // prompt already (agent/prompts.ts), and one with a flag per file is handed them here.
-  const takes = active.images
   active.renderer?.setRequiredImages?.(record.pictures ?? [])
-  const shots = takes?.as === 'args' ? (record.pictures ?? []).flatMap((file) => takes.args(file)) : []
-  const [cmd, ...args] = [...active.argv, ...shots]
+  const { command: cmd, args, stdin } = promptInput(active, prompt)
   const workDir = active.cwd ?? REPO_ROOT
   // How long this run may say nothing. Read once, here, like every other setting a run
   // uses: a limit changed mid-run belongs to the next run.
@@ -250,17 +306,16 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   // in the conversation rather than spelled on the command line, and its stdin stays open,
   // because that is the half of the conversation this end writes (agent/wire/client.ts).
   const client = active.client
-  if (active.harness === 'codex' && !client) log.write('[Codex] Custom command preserved; managed background cleanup is unavailable for this command shape.\n')
   const restartBase = !client || record.cardId !== null || record.retry?.launching ? undefined
-    : record.resumedFrom ? restartPrompt(requestOf(record), record.deliveryId)
+    : record.resumedFrom ? restartPrompt(requestOf(record), record.deliveryId, false)
     : record.continues && !record.continues.fork ? spec.prompt : undefined
-  const restart = restartBase ? [restartBase, discardedCardsPrompt(record.discardedCards)].filter(Boolean).join('\n\n') : undefined
+  const freshContext = restartBase ? contextUpdate(undefined, blocks(undefined)) : undefined
+  const restart = restartBase && freshContext ? assemble(restartBase, freshContext.parts) : undefined
   // A printing agent that reads its turns off stdin (#1540) is handed the prompt there, and
   // stdin stays open until a turn ends with nothing left in the background.
-  const stdinPrompt = client ? undefined : active.stdinPrompt
   // Spelled out rather than written inline so both shapes stay one spawn: stdin is a pipe
   // for a conversation and closed for a command that only prints.
-  const stdio: [StdioNull | StdioPipe, StdioPipe, StdioPipe] = [client || stdinPrompt ? 'pipe' : 'ignore', 'pipe', 'pipe']
+  const stdio: [StdioNull | StdioPipe, StdioPipe, StdioPipe] = [client || stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe']
   // stdout and stderr are pipes whichever shape this is; only stdin differs.
   let child: ChildProcessByStdio<Writable | null, Readable, Readable>
   if (record.retry?.launching && !await executionHeld(executionOf())) {
@@ -276,10 +331,16 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
     return 1
   }
   if (record.retry?.launching) {
-    const nextAttempt = record.retry.attempt + 1
+    const nextAttempt = budget ? budget.take() : record.retry.attempt + 1
+    if (nextAttempt === undefined || nextAttempt > MAX_RETRY_ATTEMPTS + 1) {
+      log.end()
+      await closeRun(sessionId, { status: 'error', code: null, error: joinNotes(record.retry.reason, pauseLine('limit')), retryPause: 'limit', failure: record.failure })
+      letGo()
+      return 1
+    }
     patch(sessionId, (r) => {
       if (!r.retry?.launching) return
-      r.retry.attempt++
+      r.retry.attempt = nextAttempt
       delete r.retry.launching
     })
     event({
@@ -288,7 +349,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
         state: 'retrying',
         source: record.failure?.source ?? 'runtime',
         runtime: runtimeInfo(),
-        attempt: nextAttempt,
+        attempt: nextAttempt - 1,
         maxAttempts: record.retry.of,
         summary: record.failure?.summary ?? record.retry.reason,
         ...(record.failure?.detail ? { detail: record.failure.detail } : {}),
@@ -299,7 +360,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
     })
   }
   try {
-    const start = spawnable(cmd!, client || stdinPrompt ? args : [...args, prompt], {
+    const start = spawnable(cmd, args, {
       // Where this run works: the project, or — inside a delivery with a worktree of its
       // own (#303) — that worktree. Settled when the run was planned and written down with
       // it, so the spawn, the connector's own folder flag and `PWD` are one answer.
@@ -347,7 +408,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   const drainEvents = () => {
     for (const e of renderer?.events?.() ?? []) event(e)
   }
-  let inputOpen = !!stdinPrompt && !!child.stdin
+  let inputOpen = stdin !== undefined && !!child.stdin
   const endInput = () => {
     if (!inputOpen) return
     inputOpen = false
@@ -355,7 +416,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   }
   if (inputOpen) {
     child.stdin!.on('error', () => {})
-    child.stdin!.write(stdinPrompt!(prompt))
+    child.stdin!.write(stdin!)
   }
   // A turn that ends with nothing left in the background is the last one.
   const completed = () => !!record.deliveryId && findDelivery(record.deliveryId)?.status === 'finished'
@@ -371,11 +432,30 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   // Both ids are written into the record the first time the stream names them, and never
   // looked for again — every write takes the record's lock, and a run's output arrives in
   // hundreds of chunks.
+  const bindStudioSession = (id: string | undefined) => {
+    if (task && id && record.studioPin) saveStudioSession(task, id, record.studioPin)
+  }
+  let runtimeSession = resumeSessionId(record)
+  let sent = context.sent
+  let recordedSession: string | undefined
+  saveContext = () => {
+    if (!runtimeSession || runtimeSession === recordedSession || !Object.keys(sent).length) return
+    saveRuntimeContext(scope, record.harness, runtimeSession, sent)
+    recordedSession = runtimeSession
+  }
   let sawResumeId = !!record.resumeId
+  bindStudioSession(resumeSessionId(record))
   let sawModel = false
   const gotResumeId = (id: string | undefined, restarted = false) => {
-    if (restarted) sawResumeId = catchResumeId(sessionId, id, true)
-    else if (!sawResumeId) sawResumeId = catchResumeId(sessionId, id)
+    if (restarted || !sawResumeId) {
+      sawResumeId = catchResumeId(sessionId, id, restarted)
+      if (sawResumeId) {
+        runtimeSession = id
+        if (restarted && freshContext) sent = freshContext.sent
+        bindStudioSession(id)
+        if (submitted) saveContext()
+      }
+    }
   }
   const gotModel = (model: string | undefined) => {
     if (!sawModel) sawModel = catchModel(sessionId, model)
@@ -545,7 +625,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       let retryHistory: RetryRecord[] | undefined = held.retryHistory ? [...held.retryHistory] : undefined
       let sessionAction: SessionAction | undefined
       if (failure && !sub && !taskCompleted) {
-        const attempt = held.retry?.attempt ?? 1
+        const attempt = Math.max(held.retry?.attempt ?? 1, budget?.attempt() ?? 1)
         const missingSession = isSessionMissingFailure(failure)
         const mark = runMark(sessionId, agentStartedAt)
         const root = child.pid ? { pid: child.pid, since: agentStartedAt, identity: held.agentIdentity } : undefined
@@ -557,7 +637,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
         const unconfirmedCleanup = pendingOperations.size > 0 || !!blocker || spoken?.cleanup?.status === 'unconfirmed'
           || failure.code === 'codex_ownership_unconfirmed'
           || (client?.managedProcess && silent && (uncertainAtIdle || !idleStopConfirmed(spoken?.cleanup, session)))
-        const canResetReplay = isStopped && !unconfirmedCleanup && !pendingOperations.size
+        const canResetReplay = isStopped && !unconfirmedCleanup && !pendingOperations.size && !submitted
           && (held.unspawned === true || (structured && !hadEffects && !record.resumedFrom))
         const recovery = missingSession
           ? (canResetReplay ? 'replay' : 'unsafe')
@@ -568,18 +648,8 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
               unconfirmedCleanup,
             })
         sessionAction = recovery === 'unsafe' ? 'pause_unsafe' : recovery === 'replay' ? 'reset_replay' : 'resume'
-        const nowIso = new Date().toISOString()
-        const retryRecord: RetryRecord = {
-          attempt,
-          source: failure.source,
-          runtime: runtimeInfo(),
-          summary: failure.summary,
-          ...(failure.detail ? { detail: failure.detail } : {}),
-          ...(failure.code ? { code: failure.code } : {}),
-          sessionAction,
-          at: nowIso,
-        }
-        retryHistory = [...(retryHistory ?? []), retryRecord]
+        const failedAttempt = retryRecord(failure, attempt, runtimeInfo(), sessionAction)
+        retryHistory = [...(retryHistory ?? []), failedAttempt]
         if (recovery === 'unsafe') {
           retryPause = 'unsafe'
         } else {
@@ -604,18 +674,22 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
                 state: 'waiting',
                 source: failure.source,
                 runtime: runtimeInfo(),
-                attempt: attempt + 1,
+                attempt,
                 maxAttempts: pending.of,
                 summary: failure.summary,
                 ...(failure.detail ? { detail: failure.detail } : {}),
                 ...(failure.code ? { code: failure.code } : {}),
                 nextRetryAt: new Date(pending.at).toISOString(),
                 sessionAction,
-                at: nowIso,
+                at: failedAttempt.at,
               },
             })
             log.write(`\n[board] ${retryLine(pending, attempt)}\n`)
-            if (!stoppedByUser()) await sleep(Math.max(0, pending.at - Date.now()))
+            if (!stoppedByUser()) {
+              const stopped = new Promise<void>(resolve => { wakeUp = resolve })
+              await waitForRetry(pending.at, stopped)
+              wakeUp = undefined
+            }
             retrying = true
           }
         }
@@ -632,7 +706,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
               ...(failure.detail ? { detail: failure.detail } : {}),
               ...(failure.code ? { code: failure.code } : {}),
               sessionAction,
-              at: nowIso,
+              at: failedAttempt.at,
             },
           })
         }
@@ -649,7 +723,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
             state: 'recovered',
             source: lastRetry.source,
             runtime: runtimeInfo(),
-            attempt: held.retry?.attempt ?? (retryHistory.length + 1),
+            attempt: Math.max(1, (held.retry?.attempt ?? retryHistory.length + 1) - 1),
             maxAttempts: held.retry?.of ?? MAX_RETRY_ATTEMPTS,
             summary: lastRetry.summary,
             ...(lastRetry.code ? { code: lastRetry.code } : {}),
@@ -669,6 +743,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
           : carriedId
             ? record.sessionCostFrom ?? lastSessionTotal(carriedId, readRuns())
             : undefined
+      if (status === 'done') saveContext()
       const totalCost = sessionTotal === undefined ? reported : ownCost(sessionTotal, totalFrom)
       const usage = spoken ? spoken.usage : renderer?.usage?.()
       // A connector the board TALKS to hands its reading back with the turn rather than on

@@ -1,4 +1,4 @@
-// Compare 支持图片、视频和右侧分镜；shots 切分共享播放时间轴。
+import { previewComponents } from '../references'
 
 export type CompareTag = { a: string; b: string; label: string; aLabel: string; bLabel: string; shots: string }
 export type Shot = { id: string; start: number; end: number; name: string }
@@ -6,7 +6,7 @@ export type Shot = { id: string; start: number; end: number; name: string }
 export const COMPARE_IMAGES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg']
 export const COMPARE_VIDEOS = ['mp4', 'webm', 'mov']
 
-const TAG = /^<Compare\b([^<>]*?)\/>$/
+const TAG = new RegExp(`^<${previewComponents.compare.name}\\b([^<>]*?)\\/>$`)
 const ATTR = /([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g
 
 /** The attributes of a block that is exactly one `<Compare … />` tag — `null` for anything else. */

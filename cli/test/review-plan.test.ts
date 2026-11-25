@@ -103,3 +103,16 @@ it('limits the work and Preview instructions to the dispatched runnable stages',
   assert.match(reviewBoundary(review, ['assigned', 'approved']), /Review authorization changed/)
   assert.match(reviewBoundary(review, []), /Wait for review/)
 })
+
+it('uses the Studio instructions for adopted Preview IDs while keeping other task instructions', () => {
+  const review: TaskReview = {
+    revision: 29, plan: null, stages: [],
+    preview_definitions: [
+      { id: 'market-research', title: { en: 'Old research', zh: '旧调研' }, instructions: 'Old instructions.', components: ['Asset'] },
+      { id: 'custom', title: { en: 'Custom', zh: '自定义' }, instructions: 'Task instructions.', components: ['Set'] },
+    ],
+  }
+  const prompt = reviewBoundary(review, undefined, [{ id: 'market-research' }])
+  assert.doesNotMatch(prompt, /market-research|Old instructions|Allowed Preview Components: Asset/)
+  assert.match(prompt, /<Preview id="custom">\nTask instructions\.\nAllowed Preview Components: Set\./)
+})

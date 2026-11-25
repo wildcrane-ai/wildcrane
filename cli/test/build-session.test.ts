@@ -1,3 +1,5 @@
+import { savePin, STUDIO_SNAPSHOT_ENV } from '../src/lib/agent/cloud-studios.ts'
+import { boardCommand } from '../src/lib/agent/command.ts'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -108,7 +110,7 @@ describe('交付的构建会话续接（#368）', () => {
     const opened = await openResume(old.sessionId, { deliveryId: old.deliveryId!, notes: '保留已完成的修改' })
     if ('error' in opened) throw new Error(opened.error)
     const prompt = readSpec(opened.run.sessionId)!.prompt
-    assert.equal(prompt, `Continue delivery ${old.deliveryId}. The delivery has not recorded completion. Finish its unchecked todos, then run akb raw delivery complete ${old.deliveryId}, with --commit <sha> --branch <name> in a git project.\n\n保留已完成的修改`)
+    assert.equal(prompt, `Continue delivery ${old.deliveryId}. The delivery has not recorded completion. Finish its unchecked todos, then run ${boardCommand()} delivery complete ${old.deliveryId}, with --commit <sha> --branch <name> in a git project.\n\n保留已完成的修改`)
   })
 
   it('缺失真实会话 ID 时在原交付目录接续', async () => {
@@ -120,8 +122,48 @@ describe('交付的构建会话续接（#368）', () => {
     assert.equal(result.run.cwd, old.cwd)
     assert.equal(result.run.resumeId, undefined)
     const prompt = result.spec.prompt
-    assert.match(prompt, /raw card implement 1 --print/)
+    assert.match(prompt, /task implement 1 --print/)
     assert.doesNotMatch(prompt, /discussion/)
+  })
+
+  it('reintroduces the bound Studio on an explicit fresh delivery session', async (t) => {
+    const captured = path.join(root, 'prompt.txt')
+    fs.writeFileSync(path.join(root, 'unused-agent.mjs'), `
+      import fs from 'node:fs';
+      import { createInterface } from 'node:readline';
+      for await (const line of createInterface({ input: process.stdin })) {
+        fs.writeFileSync(${JSON.stringify(captured)}, JSON.parse(line).message.content);
+        break;
+      }
+      console.log(JSON.stringify({ type: 'result', result: 'Saved' }));
+    `)
+    const studio = (version: number) => ({
+      id: 'wf_builtin_coding', name: 'Coding', version,
+      files: {
+        'STUDIO.md': '---\nname: Coding\n---\nBound Studio text.',
+        'skills/check/SKILL.md': `---\nname: check\ndescription: Check v${version}.\n---\nReusable checks.`,
+      },
+    })
+    for (const [key, value] of Object.entries({ AI4KANBAN_TASK: 'task_build_1121',
+      [STUDIO_SNAPSHOT_ENV]: JSON.stringify({ studio: 'wf_builtin_coding', version: 11210 }),
+    })) {
+      const old = process.env[key]
+      process.env[key] = value
+      t.after(() => { if (old === undefined) delete process.env[key]; else process.env[key] = old })
+    }
+    savePin('task_build_1121', studio(11210))
+    const old = build()
+    savePin('task_build_1121', studio(11211))
+    process.env[STUDIO_SNAPSHOT_ENV] = JSON.stringify({ studio: 'wf_builtin_coding', version: 11211 })
+    const fresh = await openResume(old.sessionId, { deliveryId: old.deliveryId!, fresh: true })
+    if ('error' in fresh) assert.fail(fresh.error)
+    assert.equal(await watchRun(fresh.run.sessionId), 0)
+    const input = fs.readFileSync(captured, 'utf8')
+    assert.match(input, /Task card: .+\n\nStudio: Coding\./)
+    const skill = /Check v11210\. \(file: (.+)\)$/.exec(input.split('\n').find(line => line.includes('Check v11210.')) ?? '')?.[1]
+    assert.ok(skill && path.isAbsolute(skill))
+    assert.match(fs.readFileSync(skill, 'utf8'), /Reusable checks/)
+    assert.doesNotMatch(input, /Check v11211|Bound Studio text/)
   })
 
   it('原会话不存在时保留交付并提供原任务', async () => {
@@ -142,7 +184,7 @@ describe('交付的构建会话续接（#368）', () => {
     assert.ok(rows[0]!.argv?.includes('--resume'))
     const rebuilt = await openResume(rows[0]!.sessionId, { deliveryId: old.deliveryId!, fresh: true })
     assert.ok(!('error' in rebuilt))
-    assert.match(rebuilt.spec.prompt, /raw card implement 1 --print/)
+    assert.match(rebuilt.spec.prompt, /task implement 1 --print/)
     assert.doesNotMatch(rebuilt.spec.prompt, /discussion/)
   })
 
@@ -183,7 +225,7 @@ describe('交付的构建会话续接（#368）', () => {
       }))
       const opened = openRun({ action: 'implement', id: 1 }, 'Complete the task.', [])
       if ('error' in opened) throw Error(opened.error)
-      const total = scenario === 'unconfirmed' ? 1 : 4
+      const total = scenario === 'unconfirmed' ? 1 : 5
       const resume: NonNullable<Parameters<typeof watchRun>[1]> = async (id, options) => {
         const previous = readStore().runs.find(r => r.sessionId === id)!
         assert.ok(previous.retry?.pending)

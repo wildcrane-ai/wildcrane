@@ -60,6 +60,7 @@ export const CURSOR: Harness = {
 
   stopsOnRateLimit: false,
 
+  discussionImages: 'client',
   client: (values) => createAcpClient({ tool: 'cursor', model: values.model, mcpConfig: values.mcpConfig }),
 
   adoptsSessionId: false,

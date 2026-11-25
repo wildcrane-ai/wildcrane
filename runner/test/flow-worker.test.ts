@@ -6,6 +6,7 @@ import path from 'node:path'
 import { createRequire } from 'node:module'
 import { after, afterEach, before, beforeEach, it } from 'node:test'
 import { canKeepFlow, reclaimFlowWorkers, stopFlowWorker, watchFlowWorker } from '../src/flow-worker'
+import { processesStopped } from '../../cli/src/lib/agent/stop'
 import { tryLock } from '../../cli/src/lib/lock'
 import { openTaskFolder, withBoard } from '../src/task-folder'
 import { defaultDeps } from '../src/jobs'
@@ -249,6 +250,94 @@ async function history(id: string, patch: Record<string, unknown> = {}) {
   job.state = 'finished'
   return file
 }
+
+const refineJob = (id = 'job') => {
+  process.env.FAKE_AKB = JSON.stringify({ refine: { result: 'Refined once', status: 'planned' } })
+  return cloud.dispatch({ id, task: 'task_1', project: 'prj_1', projectDir: folder(), number: 2,
+    runtime: 'claude-code', flow: { studio: 'wf_builtin_coding', verb: 'refine' } })
+}
+
+it('backs off after claim failures and runs the same waiting job once (#1116)', async () => {
+  const job = refineJob()
+  const requests: number[] = []
+  cloud.onClaim = () => {
+    requests.push(Date.now())
+    if (requests.length <= 2) return 'unavailable'
+  }
+  launch()
+  await until(() => job.taskRecovery?.attempt === 1)
+  assert.equal(job.state, 'waiting')
+  assert.equal(job.claims, 0)
+  await until(() => job.taskRecovery?.attempt === 2)
+  assert.deepEqual(job.taskRecovery, { code: 'claim', attempt: 2 })
+  assert.equal(job.state, 'waiting')
+  assert.equal(commands('refine').length, 0)
+  await until(() => job.state === 'finished', 15_000)
+  assert.equal(job.outcome, 'done', `${log}\n${job.reason}`)
+  await reclaimed(recordOf(job.id))
+  assert.equal(job.taskRecovery, undefined)
+  assert.equal(job.claims, 1)
+  assert.equal(commands('refine').length, 1)
+  assert.equal(requests.length, 3)
+  assert.ok(requests[1]! - requests[0]! >= 1000)
+  assert.ok(requests[2]! - requests[1]! >= 2000)
+  assert.match(log, /retrying job claim/)
+  assert.match(log, /service_unavailable 503 Claim temporarily unavailable/)
+})
+
+it('recovers an old waiting record only after its descendant exits (#1116)', async () => {
+  const id = 'legacy-claim-1116'
+  const file = await history(id)
+  const job = refineJob(id)
+  const mark = { name: 'AI4KANBAN_EXECUTION', value: JSON.stringify({ job: job.id, machine }) }
+  const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: true,
+    env: { ...process.env, [mark.name]: mark.value } })
+  try {
+    await new Promise<void>((resolve) => descendant.once('spawn', resolve))
+    launch()
+    await until(() => cloud.jobReads >= 3)
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).token, `token-${id}`)
+    assert.equal(job.taskRecovery, undefined)
+    assert.equal(job.claims, 0)
+  } finally {
+    const closed = new Promise<void>((resolve) => descendant.once('close', () => resolve()))
+    descendant.kill('SIGKILL')
+    await closed
+  }
+  assert.ok(processesStopped(mark), 'the test descendant must have exited')
+  await until(() => job.state === 'finished', 15_000).catch((error) => {
+    throw new Error(`${error}\n${log}\n${fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''}\n${JSON.stringify(calls())}`)
+  })
+  assert.equal(job.outcome, 'done', `${log}\n${job.reason}`)
+  await reclaimed(file)
+  assert.equal(job.claims, 1)
+  assert.equal(commands('refine').length, 1)
+})
+
+it('preserves an unknown claim and hands a granted lease to existing recovery (#1116)', async () => {
+  const job = refineJob()
+  cloud.onClaim = (id) => {
+    cloud.onClaim = undefined
+    cloud.unavailableJobRead = id
+    return 'lose-response'
+  }
+  launch()
+  const file = recordOf(job.id)
+  await until(() => fs.existsSync(file) && JSON.parse(fs.readFileSync(file, 'utf8')).ended === true)
+  const failed = fs.readFileSync(file, 'utf8')
+  await reclaimFlowWorkers(machine, sweepDeps(), job.id, true)
+  assert.equal(fs.readFileSync(file, 'utf8'), failed)
+  assert.equal(job.state, 'claimed')
+  assert.equal(commands('refine').length, 0)
+  assert.deepEqual(cloud.jobFinishes, [])
+  cloud.unavailableJobRead = null
+  await until(() => job.state === 'finished', 15_000)
+  assert.equal(job.outcome, 'done', `${log}\n${job.reason}`)
+  await reclaimed(file)
+  assert.equal(job.claims, 2)
+  assert.deepEqual(cloud.jobFinishes.map(({ outcome }) => outcome), ['update_prepare', 'update_resume', 'done'])
+  assert.equal(commands('refine').length, 1)
+})
 
 it('reclaims legacy history at startup, including missing ended, and keeps orphan files (#696)', async () => {
   const ended = await history('ended')

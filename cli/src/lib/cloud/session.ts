@@ -145,6 +145,12 @@ export type TokenResult =
   | { ok: false; reason: 'expired'; error?: string }
   | { ok: false; reason: 'unreachable'; error: string }
 
+export const CLOUD_ACCESS_HINTS = {
+  'signed-out': 'Not signed in to WildCrane Cloud. Sign in from Configuration → Cloud in the WildCrane app, then try again.',
+  expired: 'Your WildCrane Cloud sign-in has expired. Sign in again from Configuration → Cloud in the WildCrane app, then try again.',
+  unreachable: 'Could not reach WildCrane Cloud. Check your connection and try again.',
+}
+
 /**
  * A token good to send right now, refreshing it first when it is about to run out.
  *

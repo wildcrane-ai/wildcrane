@@ -29,6 +29,11 @@ export type RunEvent =
   | { kind: 'log'; data: { text: string } }
   | { kind: 'context'; data: { used: number; limit: number } }
 
+export function turnSubmitted(event: RunEvent): boolean {
+  return event.kind === 'phase' && event.data.phase === 'submitted'
+    || event.kind === 'message' && !!event.data.text.trim() || event.kind === 'tool_call' || event.kind === 'plan'
+}
+
 export type EventCollector = ReturnType<typeof createEventCollector>
 
 const toolKind = (v: unknown): ToolKind => (TOOL_KINDS as readonly string[]).includes(str(v)) ? (v as ToolKind) : 'other'
@@ -105,6 +110,9 @@ export function createEventCollector() {
   return {
     activity: () => activity,
     progress: () => { activity++ },
+    submitted(): void {
+      queue.push({ kind: 'phase', data: { phase: 'submitted', at: new Date().toISOString() } })
+    },
     /** One ACP `session/update`'s `update`. Thoughts and housekeeping updates yield nothing. */
     update(raw: unknown): void {
       const u = obj(raw)

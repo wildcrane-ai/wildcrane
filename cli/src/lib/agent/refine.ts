@@ -158,7 +158,11 @@ export function refinementRequest(req: CommandRequest): AgentRequest | { error: 
         : `a refine would not move #${card.id}`,
     }
   }
-  return { action: 'clarify', id: card.id, title: card.title, notes: req.notes, refineRound: 1, ...(req.carry ? { carry: req.carry } : {}) }
+  return {
+    action: 'clarify', id: card.id, title: card.title, notes: req.notes, refineRound: 1,
+    ...(req.session ? { session: req.session } : {}),
+    ...(req.carry ? { carry: req.carry } : {}),
+  }
 }
 
 export async function startRefinement(

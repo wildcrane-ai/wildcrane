@@ -17,7 +17,7 @@ It uses the CLI's local login and credits; WildCrane billing is unchanged.
 | `POST /v1/runtimes/{id}/test` | Existing asynchronous connection test on the bound computer |
 
 Existing ownership, computer and task authorization apply. No new endpoints or MCP tools.
-This integration does not install a WildCrane plugin in Antigravity or use remote agents.
+To use WildCrane from an Antigravity CLI session, install the [WildCrane plugin](../../plugins/antigravity/README.md).
 
 ## Chat pictures
 

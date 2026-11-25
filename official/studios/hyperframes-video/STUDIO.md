@@ -3,6 +3,9 @@ name: Product video
 names:
   zh: 产品视频
 description: Plan, make or revise product videos and their requested supporting assets.
+summaries:
+  zh: 先确认脚本，再渲染成片。
+  en: Approve the script, then the video renders.
 needsArtifact: true
 icon: product-video
 previews:
@@ -11,22 +14,33 @@ previews:
     title:
       en: Script
       zh: 脚本
+    description:
+      en: Approve narration, pacing, and scene outline.
+      zh: 确认旁白文案、节奏与场景大纲。
   demo-shots:
     icon: shots
     title:
       en: Demo shots
       zh: 演示截图
+    description:
+      en: Review captured product screens and clips.
+      zh: 审阅录制或截取的产品画面。
   storyboard:
     icon: shots
     title: {en: Storyboard, zh: 分镜}
+    description: {en: "Review shot-by-shot visuals, timing, and transitions.", zh: "逐镜审阅画面构图、时长与转场。"}
   cover:
     icon: image
     title: {en: Cover, zh: 封面}
+    description: {en: "Review the video thumbnail or cover frame.", zh: "审阅视频封面图。"}
   video:
     icon: video
     title:
       en: Video
       zh: 成片
+    description:
+      en: Watch the rendered video before delivery.
+      zh: 审阅渲染完成的最终视频。
 ---
 
 Make or revise only the requested product-video outputs. Reuse existing work and change only affected shots, narration or assets; the catalog below is optional, not a checklist. A script-only request does not call for voice samples, a video or a cover. HyperFrames is the default production framework; read its installed skill when creating or editing a composition, and load other skills only as needed.
@@ -127,7 +141,7 @@ Use the first available source for each file:
 3. **Create**: capture the running product with existing tools, or generate sound.
 4. **Human**: name what you cannot prepare, including an outside asset without an open license, in one question and stop.
 
-- **Recorder**: obtain your bundled `references/hyperframes-editor/record.mjs` with `akb raw file hyperframes-video references/hyperframes-editor/record.mjs` and keep it in the project. Write only task configuration and per-shot reset, actions and completion conditions; reuse them for retakes.
+- **Recorder**: obtain your bundled `references/hyperframes-editor/record.mjs` with `akb studio file hyperframes-video references/hyperframes-editor/record.mjs` and keep it in the project. Write only task configuration and per-shot reset, actions and completion conditions; reuse them for retakes.
 - **Capture**: follow the demo procedure; restore and verify the starting state before every take and preserve unrelated work. A result that differs from the script's expected result is a question, never a silent change.
 - **Narration**: generate it from the exact scripted lines with the approved voice: `akb tts --tier premium` for a hosted voice unless the user asks for cheaper, local Kokoro for a Kokoro ID, `af_heart` / `zf_xiaobei` when the source names none; name the tier in your section. Never switch voice, tier or service silently; regenerate only narration whose text or voice changed. For a human voice, reuse the supplied recording or ask for it.
 - **Checks**: assets you make or generate and repository assets are trusted; use an outside asset only under an open license, checked for quality and match with the script. Remove secrets, personal data and private paths.
@@ -159,7 +173,7 @@ Make a cover only when requested, using the method recorded in the Brief. If it 
 ## Methods
 
 - **Layout**: compose existing material — product screenshots, frames from the film, interface elements — and render it locally. Choose the material, composition and tools yourself.
-- **Generated**: create the image with `akb image --aspect <ratio> --tier premium [--ref <file>]… --out <file> "<prompt>"`, which spends the user's Pro credits per image; pass a lower tier only when the user asks for cheaper, and name the tier in your section. Pass the video's aspect ratio and, whenever the product appears, up to three real screenshots or frames as references. Regenerate only for a defect review finds, at most three times per run.
+- **Generated**: create the image with `akb image --aspect <ratio> --tier premium [--ref <file>]… --out <file> "<prompt>"`, which charges the WildCrane API rate for each delivered image; pass a lower tier only when the user asks for cheaper, and name the tier in your section. Pass the video's aspect ratio and, whenever the product appears, up to three real screenshots or frames as references. Regenerate only for a defect review finds, at most three times per run.
 - **No credits**: when Cloud refuses for the plan or for used-up credits, use layout and say so in your section.
 - **Failure**: when the command fails otherwise, put its message in one question offering to retry or switch to layout, and stop; once answered, record the chosen method in the Brief.
 - **No silent switch**: apart from no credits, when the named method cannot deliver, ask the user; never use the other method unasked.

@@ -14,7 +14,7 @@ export function executorRecord(): () => void {
   fs.writeFileSync(file, '{}', { mode: 0o600 })
   return () => fs.rmSync(file, { force: true })
 }
-/** 先封住候补进程，再等待真实执行者完成停止。 */
+/** 作废当前账号代次，并等待执行进程退出。 */
 export async function stopExecutors(): Promise<boolean> {
   fs.mkdirSync(runnerHome(), { recursive: true, mode: 0o700 })
   fs.writeFileSync(epochFile(), `${Date.now()}-${process.pid}`, { mode: 0o600 })

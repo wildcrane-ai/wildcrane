@@ -20,18 +20,19 @@ import { launch, provenNewer } from './launcher'
 import { WEB_URL, taskUrl } from './urls'
 import { refusal } from './folders'
 import { machineId, runnerHome, useRunnerHome } from './home'
-import { checkReleased, pluginInfo, type PluginInfo } from './plugin-version'
-import { EXIT_OUTDATED, VERSION } from './protocol'
+import { linesFor } from './i18n'
+import { pluginInfo, type PluginInfo } from './plugin-version'
+import { EXIT_ALREADY_RUNNING, EXIT_OUTDATED, VERSION } from './protocol'
 import { LABELS } from './runtimes'
 import { versionDir } from './update'
 import * as settings from './settings'
 import { closeSettings, openSettings } from './settings-server'
 
-export type Host = 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'zcode' | 'kimi' | 'grok' | 'opencode'
+export type Host = 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'zcode' | 'kimi' | 'grok' | 'opencode' | 'antigravity'
 
 /** ZCode runs the Claude Code plugin and sets both roots; a ZCode root alone was inherited from a ZCode shell. */
 export function hostOf(arg: string | undefined, env: NodeJS.ProcessEnv): Host {
-  if (arg === 'codex' || arg === 'cursor' || arg === 'dsh' || arg === 'kimi' || arg === 'grok' || arg === 'opencode') return arg
+  if (arg === 'codex' || arg === 'cursor' || arg === 'dsh' || arg === 'kimi' || arg === 'grok' || arg === 'opencode' || arg === 'antigravity') return arg
   return env.ZCODE_PLUGIN_ROOT && env.ZCODE_PLUGIN_ROOT === env.CLAUDE_PLUGIN_ROOT ? 'zcode' : 'claude-code'
 }
 
@@ -123,7 +124,7 @@ async function draftOf(id: string) {
 /** The Runner: started once signed in, closed with the host. */
 let runner: { close(): Promise<void>; renew(): void } | null = null
 /** `outdated`: Cloud refused this Runner and it could not update; it stays off until the host restarts. */
-let runnerState: 'off' | 'waiting' | 'running' | 'outdated' = 'off'
+let runnerState: 'off' | 'already-running' | 'running' | 'outdated' = 'off'
 let host: Host = 'claude-code'
 /** This plugin's `akb` for a session the Runner did not start. */
 let akbFile: string | null = null
@@ -142,7 +143,7 @@ function writeShim(): void {
 }
 
 function run(): void {
-  if (runner || runnerState === 'outdated' || process.env.WILDCRANE_JOB || !readSession()) return
+  if (runner || runnerState === 'outdated' || runnerState === 'already-running' || process.env.WILDCRANE_JOB || !readSession()) return
   runnerState = 'running'
   const abort = new AbortController()
   const entry = path.join(path.dirname(fileURLToPath(import.meta.url)), 'runner.mjs')
@@ -151,15 +152,13 @@ function run(): void {
     signal: abort.signal, quiet: true, kind: host,
     onSpawn: (send) => { renew = () => send('renew') },
     onMessage: (message) => {
-      if (message.type === 'waiting') runnerState = 'waiting'
       if (message.type === 'connected') { runnerState = 'running'; writeShim() }
     },
   })
-  const stopped = done.then((code) => code === EXIT_OUTDATED ? { reason: 'outdated' as const } : { reason: 'refused' as const, message: 'Runner 已停止' })
   runner = { close: async () => { abort.abort(); await done }, renew: () => renew() }
-  void stopped.then((stop) => {
+  void done.then((code) => {
     runner = null
-    runnerState = stop.reason === 'outdated' ? 'outdated' : 'off'
+    runnerState = code === EXIT_OUTDATED ? 'outdated' : code === EXIT_ALREADY_RUNNING ? 'already-running' : 'off'
   })
 }
 
@@ -175,7 +174,11 @@ const DSH_UPDATE = 'run `dsh plugin --profile web add wildcrane-dsh@latest` in a
 const KIMI_UPDATE = 'run `/plugins` in Kimi Code, update WildCrane, then restart Kimi Code'
 const GROK_UPDATE = 'run `grok plugin update wildcrane` in a terminal, then reopen the Grok Build session'
 const OPENCODE_UPDATE = 'run `npx --yes wildcrane-opencode@latest update`, then reopen OpenCode. Pinned versions stay pinned; see the plugin README to change the pin'
-const updateSteps = (as: Host, plugin: PluginInfo) => (as === 'opencode' ? OPENCODE_UPDATE : as === 'grok' ? GROK_UPDATE : as === 'dsh' ? DSH_UPDATE : as === 'kimi' ? KIMI_UPDATE : plugin.source === 'git' ? CODEX_UPGRADE : CODEX_SWITCH)
+const ANTIGRAVITY_UPDATE = 'run `agy plugin install https://github.com/wildcrane-ai/wildcrane/tree/antigravity-plugin` in a terminal, then reopen Antigravity CLI'
+const HOST_UPDATE: Partial<Record<Host, string>> = {
+  dsh: DSH_UPDATE, kimi: KIMI_UPDATE, grok: GROK_UPDATE, opencode: OPENCODE_UPDATE, antigravity: ANTIGRAVITY_UPDATE,
+}
+const updateSteps = (as: Host, plugin: PluginInfo) => HOST_UPDATE[as] ?? (plugin.source === 'git' ? CODEX_UPGRADE : CODEX_SWITCH)
 
 /** Cloud refused the Runner and it could not update itself; a restart downloads it again. */
 const OUTDATED = {
@@ -186,12 +189,13 @@ const OUTDATED = {
   dsh: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart dsh.",
   opencode: "WildCrane's Runner is out of date and could not update. Check the network, then restart OpenCode.",
   grok: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Grok Build.",
+  antigravity: "WildCrane's Runner is out of date and could not update. Check the network, then restart Antigravity CLI.",
   kimi: "WildCrane's Runner is out of date and could not update, so tasks no longer run on this computer. Tell the user to check the network, then restart Kimi Code.",
 }
 
 const LOCAL = `This WildCrane plugin was installed from a local folder, so it gets no updates. Tell the user once in this conversation how to switch to the source that updates: ${CODEX_SWITCH}.`
 
-/** Codex, dsh and Kimi Code have no panel, so a newer release reaches the user through `next`. */
+/** Hosts without their own update UI announce a newer release through `next`. */
 const NEWER = (as: Host, plugin: PluginInfo) =>
   `WildCrane plugin ${plugin.latest} is out; this computer has ${plugin.version}, and tasks still run. Tell the user once in this conversation, with the steps: ${updateSteps(as, plugin)}.`
 
@@ -209,16 +213,14 @@ const NOT_ADDED = 'This folder is not a WildCrane project yet. Call wildcrane_op
 /** What the signed-in state shows that `next` reads: `refused` is unset when Cloud was not reached. */
 export type Seen = { connections: Connection[]; folder: unknown; refused?: string | null; web: string }
 
-/** One line for the model, the first that holds: an outdated Runner, then for hosts without a panel no
- *  tool ready, this folder not added, then a local Codex install, or a newer release for Codex, dsh and Kimi Code
- *  (Cursor and ZCode update their own). Claude Code's `/wildcrane` gives its update line itself. */
 export function nextOf(as: Host, state: typeof runnerState, plugin: PluginInfo, seen?: Seen): string | null {
+  if (state === 'already-running') return linesFor(false).alreadyRunning()
   if (state === 'outdated') return OUTDATED[as]
   if (as === 'claude-code') return null
   if (as === 'codex' && plugin.source === 'local') return LOCAL
   if (seen && !seen.connections.some((c) => c.state === 'ready')) return NOT_READY(seen.connections, seen.web)
   if (seen && seen.folder === null && seen.refused === null) return NOT_ADDED
-  return (as === 'codex' || as === 'dsh' || as === 'kimi' || as === 'grok' || as === 'opencode') && plugin.version && plugin.latest ? NEWER(as, plugin) : null
+  return (as === 'codex' || HOST_UPDATE[as]) && plugin.version && plugin.latest ? NEWER(as, plugin) : null
 }
 
 async function state(cwd: string) {
@@ -335,6 +337,7 @@ const UPDATE_COMMANDS = 'claude plugin marketplace update wildcrane && claude pl
 /** `/wildcrane`'s update line: an outdated Runner first, then a newer plugin. */
 export function noticeOf(lang: 'zh' | 'en', state: typeof runnerState, plugin: PluginInfo): string | null {
   const zh = lang === 'zh'
+  if (state === 'already-running') return linesFor(zh).alreadyRunning()
   if (state === 'outdated') return zh
     ? 'Runner 版本过旧且未能自动更新，任务已暂停。检查网络后重启 Claude Code。'
     : 'The Runner is out of date and could not update, so tasks are paused. Check the network, then restart Claude Code.'
@@ -380,9 +383,9 @@ export async function panel(args: Panel): Promise<unknown> {
 const GoalInput = z.object({
   id: z.string().optional().describe('A goal from wildcrane_draft_read to update; leave out for a new one.'),
   title: z.string().max(200),
-  outcome: z.string().describe('What the user gets, in at most 150 words, in their language.'),
-  acceptance: z.array(z.string()).describe('`Done when` checks a reviewer can verify.'),
-  studio: z.string().describe('One of the studio ids wildcrane_draft_read lists.'),
+  outcome: z.string().optional().describe('What the user gets, in at most 150 words, in their language.'),
+  acceptance: z.array(z.string()).optional().describe('`Done when` checks a reviewer can verify.'),
+  studio: z.string().optional().describe('One of the studio ids wildcrane_draft_read lists.'),
   review_plan: reviewPlanSchema.optional(),
   review_flow: z.string().max(20_000).optional(),
   preview_definitions: previewDefinitionsSchema.optional(),
@@ -392,15 +395,13 @@ const GoalInput = z.object({
 const linked = (id: string, goals: Goal[]) =>
   goals.map(goalOf).map(goal => ({ ...goal, url: goal.task?.url ?? discussionUrl(id) }))
 
-// Older MCP consumers still read the ideas alias.
-const draftText = <T extends { goals: unknown }>(draft: T) => text({ ...draft, ideas: draft.goals })
-
-/** Shared MCP hosts bind explicitly; every first read opens a separate discussion. */
+/** These hosts pass back the discussion ID because MCP has no stable chat identity. */
+const passesDiscussionId = (as: Host) => as === 'dsh' || as === 'grok' || as === 'antigravity'
 const PROCESS = `process-${crypto.randomUUID()}`
 type Meta = { threadId?: unknown; 'x-codex-turn-metadata'?: { workspaces?: Record<string, unknown> } } | undefined
 const threadOf = (meta: Meta) => {
   if (host === 'opencode' && (typeof meta?.threadId !== 'string' || !meta.threadId.trim())) throw new Error('OpenCode session identity is missing. Reload the WildCrane plugin and retry.')
-  return `${host}:${(host === 'dsh' || host === 'grok') ? crypto.randomUUID() : typeof meta?.threadId === 'string' && meta.threadId ? meta.threadId : PROCESS}`
+  return `${host}:${passesDiscussionId(host) ? crypto.randomUUID() : typeof meta?.threadId === 'string' && meta.threadId ? meta.threadId : PROCESS}`
 }
 const pathOf = (given: string | undefined, meta: Meta) => given || Object.keys(meta?.['x-codex-turn-metadata']?.workspaces ?? {})[0] || ''
 
@@ -418,17 +419,16 @@ export function server(): McpServer {
     try { return text(await openSettings(settings.settingsAction, context)) }
     catch { return { ...text({ error: 'settings_unavailable', message: '无法打开本机设置，请重试。' }), isError: true } }
   })
-  const saveSchema = { discussionId: z.string(), expectedVersion: z.number().int(), goals: z.array(GoalInput).max(10).optional(), ideas: z.array(GoalInput).max(10).optional() }
-  const save: ToolCallback<typeof saveSchema> = async ({ discussionId, expectedVersion, goals, ideas }) => {
+  const saveSchema = { discussionId: z.string(), expectedVersion: z.number().int(), goals: z.array(GoalInput).max(10) }
+  const save: ToolCallback<typeof saveSchema> = async ({ discussionId, expectedVersion, goals }) => {
     if (process.env.WILDCRANE_JOB) return jobDraft()
     if (!readSession()) return { ...text(host === 'claude-code' ? PANEL_SIGNED_OUT : SIGNED_OUT), isError: true }
-    if ((goals === undefined) === (ideas === undefined)) return { ...text({ error: 'bad_request', message: 'Provide exactly one of goals or ideas.' }), isError: true }
-    const saved = await api.saveDraft(discussionId, expectedVersion, goals ?? ideas!)
+    const saved = await api.saveDraft(discussionId, expectedVersion, goals)
     if (saved.ok) {
-      return draftText({ saved: true, url: discussionUrl(discussionId), version: saved.value.version, goals: linked(discussionId, saved.value.goals) })
+      return text({ saved: true, url: discussionUrl(discussionId), version: saved.value.version, goals: linked(discussionId, saved.value.goals) })
     }
     if (saved.discussion) {
-      return draftText({ saved: false, reason: 'The goals have changed. Merge your changes with the latest goals and save again.', url: discussionUrl(discussionId), version: saved.discussion.version, goals: linked(discussionId, saved.discussion.goals) })
+      return text({ saved: false, reason: 'The goals have changed. Merge your changes with the latest goals and save again.', url: discussionUrl(discussionId), version: saved.discussion.version, goals: linked(discussionId, saved.discussion.goals) })
     }
     return { ...text({ saved: false, ...failure(saved) }), isError: true }
   }
@@ -436,12 +436,12 @@ export function server(): McpServer {
 
   if (host !== 'claude-code') {
     mcp.registerTool('wildcrane_draft_read', {
-      description: (host === 'dsh' || host === 'grok')
+      description: passesDiscussionId(host)
         ? "Read a WildCrane discussion: its goals, their version, the studios a goal can use, and its web page. Without `discussionId` it opens a new one in the project of `path`; pass the returned `discussion` on every later call in this chat."
         : "Read this session's WildCrane discussion: its goals, their version, the studios a goal can use, and its web page. Opens one on first use, in the project of `path`.",
       inputSchema: {
         path: z.string().optional().describe('The current working directory. The component runs elsewhere and cannot see it.'),
-        discussionId: z.string().optional().describe((host === 'dsh' || host === 'grok') ? 'Leave out only on the first call in this chat.' : "Leave out for this session's discussion."),
+        discussionId: z.string().optional().describe(passesDiscussionId(host) ? 'Leave out only on the first call in this chat.' : "Leave out for this session's discussion."),
       },
     }, async ({ path: given, discussionId }, extra) => {
       if (process.env.WILDCRANE_JOB) return jobDraft()
@@ -467,7 +467,7 @@ export function server(): McpServer {
         const name = list.ok ? list.value.folders.find((f) => f.project === draft.project)?.name : undefined
         project = { name: name ?? draft.project, board: boardUrl(draft.project) }
       }
-      return draftText({
+      return text({
         ...draft,
         project,
         ...(akbFile ? { akb: akbFile } : {}),
@@ -484,7 +484,7 @@ export function server(): McpServer {
       const found = (await connections()).connections
       const akb = akbFile ? { akb: akbFile } : {}
       if (!now.signedIn) return text({ signedIn: false, ...akb, signing: settings.signingState(), connections: found })
-      const recent = (await chats()).chats.map((c) => ({ title: c.title, goals: c.goals, ideas: c.goals, at: c.at, dir: c.dir, url: discussionUrl(c.discussion) }))
+      const recent = (await chats()).chats.map((c) => ({ title: c.title, goals: c.goals, at: c.at, dir: c.dir, url: discussionUrl(c.discussion) }))
       const { next: _, ...rest } = now
       const next = nextOf(host, runnerState, now.plugin, { connections: found, folder: 'folder' in now ? now.folder : null, refused: 'refused' in now ? now.refused : undefined, web: now.web })
       return text({ ...rest, ...akb, ...(next ? { next } : {}), dir: dir ? home(dir) : null, recent, connections: found })
@@ -527,7 +527,7 @@ export function server(): McpServer {
     if (!readSession()) return { ...text(PANEL_SIGNED_OUT), isError: true }
     if (!discussionId && !sessionId) return { ...text({ error: 'bad_request', message: 'Give discussionId or sessionId.' }), isError: true }
     const draft = discussionId ? await draftOf(discussionId) : await sessionDraft(sessionId!, process.cwd())
-    return 'error' in draft ? text(draft) : draftText(draft)
+    return text(draft)
   })
   mcp.registerTool('wildcrane_draft_save', { description: saveWhat, inputSchema: saveSchema }, save)
   mcp.registerTool('wildcrane_panel', {
@@ -564,5 +564,5 @@ export async function main(as: Host = 'claude-code'): Promise<void> {
   accountWatch = setInterval(() => { if (!ending) run() }, 1000)
   accountWatch.unref()
   run()
-  if (!process.env.WILDCRANE_JOB) void checkReleased()
+  if (!process.env.WILDCRANE_JOB) pluginInfo(host)
 }

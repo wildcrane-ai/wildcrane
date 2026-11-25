@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { SESSIONS_DIR, setBoardRoot } from '../src/lib/paths.ts'
 import { openRun, patch, peekRun } from '../src/lib/agent/sessions.ts'
-import { setBoardProvider } from '../src/lib/board/index.ts'
 import { watchRun } from '../src/lib/agent/watch.ts'
 import { BACKGROUND_WAIT } from '../src/lib/agent/settings.ts'
 import { forgetMachineState, restoreMachineHome, uiConfigOf } from './helpers/board.ts'
@@ -85,7 +84,6 @@ beforeEach(() => {
   forgetMachineState(root)
   fs.mkdirSync(path.join(root, 'docs', 'kanban', 'todo'), { recursive: true })
   setBoardRoot(root)
-  setBoardProvider(null)
 })
 
 afterEach(() => {

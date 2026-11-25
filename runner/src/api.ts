@@ -1,7 +1,8 @@
+import { readStudioDownload } from '../../cli/src/lib/shared/studio-package'
 import type { ArchiveCompletion, ArchiveCompletionReceipt } from '../../cli/src/lib/shared/delivery-evidence'
 import type { SourceProblem } from '../../cli/src/lib/shared/preview-blocks'
 import type { ReplyPart } from '../../cli/src/lib/shared/reply-parts'
-import { decodeGoals, goalRoute, type Goal, type GoalEnvelope, type GoalField } from '../../cli/src/lib/shared/goal'
+import { goalRoute, type Goal, type GoalDraft } from '../../cli/src/lib/shared/goal'
 // The Runner's calls to Cloud (cloud/src/runners.ts), over plain `fetch`.
 //
 // Every call answers rather than throws: `code` is the service's refusal, and a missing
@@ -21,8 +22,17 @@ export type Call<T> = { ok: true; value: T } | { ok: false; error: string; code?
 /** Every connector a job can run on, in the board's order. */
 export const RUNTIMES = ['claude-code', 'codex', 'cursor', 'opencode', 'kimi', 'dsh', 'zcode', 'grok', 'antigravity'] as const
 
+export interface ReplyContext { review: string; setup: string }
+
+export interface ReplyHistoryMessage {
+  role: 'user' | 'agent'
+  body: string
+  image_names?: string[] | null
+}
+
 export interface Job {
   taskReview?: import("../../cli/src/lib/shared/review-plan").TaskReview
+  reviewAtDispatch?: boolean
   handoff?: { kind: 'check' | 'execution'; action?: 'queue' | 'continue' | 'restart' | 'runtime'; started?: boolean; recovering?: boolean; isolation?: string; progressIsolation?: string | null; verb?: Flow['verb']; evidence?: string | null } | null
   id: string
   runtime: (typeof RUNTIMES)[number]
@@ -69,6 +79,7 @@ export interface Job {
   discussion?: JobDiscussion | null
   /** A task chat's reply: the user's message it answers (#2065). */
   chat?: { message: string; body: string } | null
+  replyInput?: { body: string; historyOnDemand?: true; history?: string | null; firstCardChat?: boolean; previousReviewRevision: number | null; previousContext?: ReplyContext | null }
   /** A review of these tasks' chats, which this computer answered (#2065). */
   review?: { tasks: string[] } | null
   /** One of the project's periodic agents (#2068), on no task. */
@@ -103,6 +114,8 @@ export interface Flow {
   review_stages?: string[]
   review_revision?: number
   sync_recovery_of?: string
+  recovery_attempts?: number
+  verify_delivery?: { id?: string; confirmed?: boolean; landing?: JobReport['landing']; attempts?: number }
   historical_recovery?: boolean
   historical_conflict?: boolean
   feedback?: string
@@ -138,8 +151,6 @@ interface JobDiscussion {
   catalog?: StudioCatalog
 }
 
-type WireJob = Omit<Job, 'discussion'> & { discussion?: GoalEnvelope<JobDiscussion> | null }
-
 export interface RuntimeReport {
   name: Job['runtime']
   installed: boolean
@@ -166,7 +177,7 @@ export interface SettingDecl {
 
 /** Raised by Cloud when it no longer takes this Runner's protocol. 9 keeps keys (#2135); 10 stops
  *  a flow job, pausing its board runs (#2128); 11 holds the computer's lock (#2161); 14 shares local settings and account revocation; 18 says Studio (#645). */
-export const PROTOCOL = 30
+export const PROTOCOL = 31
 
 const TIMEOUT_MS = 20_000
 
@@ -216,12 +227,12 @@ export async function request<T>(method: Method, route: string, body?: unknown, 
 /** Files move slower than calls. */
 const FILE_TIMEOUT_MS = 10 * 60_000
 
-export async function download(route: string): Promise<Call<Uint8Array>> {
-  const sent = await send('GET', route, undefined, true, FILE_TIMEOUT_MS)
+export async function download(route: string, studioBytes?: number): Promise<Call<Uint8Array>> {
+  const sent = await send('GET', route, undefined, true, studioBytes === undefined ? FILE_TIMEOUT_MS : 45_000)
   if (!sent.ok) return sent
   if (!sent.value.ok) return answerOf<never>(sent.value)
   try {
-    return { ok: true, value: new Uint8Array(await sent.value.arrayBuffer()) }
+    return { ok: true, value: studioBytes === undefined ? new Uint8Array(await sent.value.arrayBuffer()) : await readStudioDownload(sent.value, studioBytes) }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
   }
@@ -254,37 +265,21 @@ export const readRunner = () => request<{ runner: { machineName: string; connect
 
 export const release = (machineId: string) => request<{ released: boolean }>('POST', '/v1/runner/release', { machineId })
 
-function decodeAnswer<T, R>(answer: Call<T>, decode: (value: T) => R): Call<R> {
-  if (!answer.ok) return answer
-  try { return { ok: true, value: decode(answer.value) } }
-  catch (e) { return { ok: false, code: 'bad_response', error: String(e) } }
-}
+export const listJobs = (machineId: string) =>
+  request<{ jobs: Job[] }>('GET', `/v1/runner/jobs?machine=${q(machineId)}`)
 
-const legacyGoalJobs = new Set<string>()
-function readJobGoals({ discussion, ...job }: WireJob, claimed = false): Job {
-  if (!discussion) return { ...job, discussion }
-  const { field, value } = decodeGoals(discussion)
-  if (claimed) {
-    if (field === 'ideas') legacyGoalJobs.add(job.id)
-    else legacyGoalJobs.delete(job.id)
-  }
-  return { ...job, discussion: value }
-}
-
-export const listJobs = async (machineId: string) =>
-  decodeAnswer(await request<{ jobs: WireJob[] }>('GET', `/v1/runner/jobs?machine=${q(machineId)}`),
-    ({ jobs }) => ({ jobs: jobs.map(job => readJobGoals(job)) }))
-
-export const readJob = async (job: string) =>
-  decodeAnswer(await request<{ job: WireJob }>('GET', `/v1/runner/jobs/${q(job)}`), held => ({ job: readJobGoals(held.job) }))
+export const readJob = (job: string) =>
+  request<{ job: Job }>('GET', `/v1/runner/jobs/${q(job)}`)
 
 const move = <T>(job: string, what: string, body: Record<string, unknown>) =>
   request<T>('POST', `/v1/runner/jobs/${q(job)}/${what}`, body)
 
-export const claimJob = async (machineId: string, job: string, reply = false) =>
-  decodeAnswer(await move<{ claimed: true; job: WireJob } | { claimed: false; reason: string; retired?: boolean }>(
-    job, 'claim', { machineId, ...(reply ? { reply: true } : {}) }),
-    answer => answer.claimed ? { ...answer, job: readJobGoals(answer.job, true) } : answer)
+export const claimJob = (machineId: string, job: string, reply = false) =>
+  move<{ claimed: true; job: Job } | { claimed: false; reason: string; retired?: boolean }>(
+    job, 'claim', { machineId, ...(reply ? { reply: true } : {}) })
+
+export const readReplyHistory = (machineId: string, job: string) =>
+  request<{ messages: ReplyHistoryMessage[] }>('GET', `/v1/runner/jobs/${q(job)}/history?machine=${q(machineId)}`)
 
 /** `stop`: the user stopped the chat reply this job writes (#2133). */
 export const renewJob = (machineId: string, job: string, progress?: ConversationProgress | { taskRecovery: TaskRecovery | null; attempt?: never }) => move<{ renewed: boolean; stop?: boolean; catalog?: StudioCatalog; projectDir?: string }>(job, 'renew', { machineId, ...(progress ? { progress } : {}) })
@@ -333,9 +328,15 @@ export interface Subagents {
 
 export interface JobReport {
   deliveryCompleted?: boolean
+  deliveryDirect?: boolean
   deliveryId?: string
+  archive?: Omit<ArchiveCompletion, 'task'>
+  recoveryAttempts?: number
   replyApprovalSynced?: boolean
-  recovery?: { safe: boolean; stopped: boolean; resumable: boolean }
+  replyWriteSynced?: true
+  replyReviewRevision?: number
+  replyContext?: ReplyContext
+  recovery?: { safe: boolean; stopped: boolean; resumable: boolean; writeback?: true }
   processesStopped?: boolean
   evidence?: string
 
@@ -374,26 +375,14 @@ export const cancelReplyApproval = (machineId: string, job: string) => move(job,
 export const approveReply = (machineId: string, job: string, fields: { card_version: number; review_revision: number; stage?: string; comment?: string }) =>
   move<{ id: string; status: 'pending' | 'committed' | 'cancelled'; task: string; reason?: string }>(job, 'approve', { machineId, fields })
 
-// In-flight checkpoints from older Runners may still contain the wire format.
-function reportForCloud(job: string, report: JobReport & { ideas?: GoalEnvelope<JobDiscussion>['ideas'] }) {
-  if (report.goals === undefined && report.ideas === undefined) return report
-  const { field, value: { goals, ...rest } } = decodeGoals(report)
-  const outputField = legacyGoalJobs.has(job) ? 'ideas' : field
-  return { ...rest, [outputField]: goals.map(({ task, ...goal }) => ({ ...goal, task: task?.id ?? null })) }
-}
-
-export const finishJob = async (
+export const finishJob = (
   machineId: string,
   job: string,
   outcome: 'done' | 'failed' | 'conflict' | 'stopped' | 'update_prepare' | 'update_resume' | 'interrupted',
   reason = '',
   report?: JobReport,
-) => {
-  const done = await move<{ finished: boolean; prepared?: boolean; resumed?: boolean }>(job, 'finish',
-    { machineId, outcome, reason, ...(report ? { report: reportForCloud(job, report) } : {}) })
-  if (done.ok && done.value.finished) legacyGoalJobs.delete(job)
-  return done
-}
+) => move<{ finished: boolean; prepared?: boolean; resumed?: boolean }>(job, 'finish',
+  { machineId, outcome, reason, ...(report ? { report } : {}) })
 
 /** One file of a landed commit's diff (#2109); `patch` is its hunks, absent when too large. */
 export interface DiffFile {
@@ -549,14 +538,15 @@ export async function commitBoard(project: string, job: string | null, machine: 
   }
 }
 
-/** The studio version a task runs on: `STUDIO.md` and its agents' folders (#2040). */
+/** The current published Studio and files for a task. */
 export interface TaskStudio {
+  object?: string
+  deleted?: boolean
   historicalPreviews?: Record<string, unknown>
   studio: string
-  version: number
+  version?: number
   name?: string
   files: Record<string, string>
-  /** A built-in: akb ships its studio and agents, so only its skills are written. */
   builtin?: boolean
 }
 
@@ -564,9 +554,10 @@ export const readTaskStudio = (task: string) => request<TaskStudio>('GET', `/v1/
 
 export interface StudioCatalog { account: string; version: string }
 export interface TaskRecovery {
-  code: 'recovering' | 'folder' | 'login' | 'storage' | 'allowance'
+  code: 'recovering' | 'folder' | 'login' | 'storage' | 'allowance' | 'claim'
   attempt?: number
   at?: number
+  step?: 'sync'
 }
 
 export interface ConversationProgress {
@@ -665,42 +656,28 @@ export interface Discussion {
   updated_at: string
 }
 
-type WireDiscussion = GoalEnvelope<Discussion>
-const discussionFields = new Map<string, GoalField>()
-function readDiscussionGoals(d: WireDiscussion): Discussion {
-  const { field, value } = decodeGoals(d)
-  discussionFields.set(value.id, field)
-  return value
-}
-
 /** Without a project, the discussion is the personal workspace's, in no project. */
-export const openDiscussion = async (project: string | null, requestId: string, host: 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'kimi' | 'grok' | 'opencode' = 'claude-code') =>
-  decodeAnswer(await request<WireDiscussion>('POST', '/v1/discussions/external', { ...(project ? { project } : {}), requestId, host }), readDiscussionGoals)
+export const openDiscussion = (project: string | null, requestId: string, host: 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'kimi' | 'grok' | 'opencode' | 'antigravity' = 'claude-code') =>
+  request<Discussion>('POST', '/v1/discussions/external', { ...(project ? { project } : {}), requestId, host })
 
-export const readDiscussion = async (id: string) =>
-  decodeAnswer(await request<WireDiscussion>('GET', `/v1/discussions/${q(id)}`), readDiscussionGoals)
+export const readDiscussion = (id: string) =>
+  request<Discussion>('GET', `/v1/discussions/${q(id)}`)
 
-/** 版本冲突时附带当前讨论。 */
-export async function saveDraft(id: string, expectedVersion: number, goals: unknown[]): Promise<Call<Discussion> & { discussion?: Discussion }> {
-  const field = discussionFields.get(id) ?? 'ideas'
-  const sent = await send('PUT', `/v1/discussions/${q(id)}/draft`, { expectedVersion, [field]: goals }, true, TIMEOUT_MS)
+/** A version conflict includes the latest discussion. */
+export async function saveDraft(id: string, expectedVersion: number, goals: GoalDraft[]): Promise<Call<Discussion> & { discussion?: Discussion }> {
+  const sent = await send('PUT', `/v1/discussions/${q(id)}/draft`, { expectedVersion, goals }, true, TIMEOUT_MS)
   if (!sent.ok) return sent
-  if (sent.value.status !== 409) return decodeAnswer(await answerOf<WireDiscussion>(sent.value), readDiscussionGoals)
-  const answer = (await sent.value.json().catch(() => null)) as { error?: { code?: string; message?: string }; discussion?: WireDiscussion } | null
-  const refusal = { ok: false as const, error: answer?.error?.message ?? 'Cloud answered 409', code: answer?.error?.code ?? 'refused' }
-  if (!answer?.discussion) return refusal
-  const normalized = decodeAnswer({ ok: true, value: answer.discussion }, readDiscussionGoals)
-  return normalized.ok ? { ...refusal, discussion: normalized.value } : normalized
+  if (sent.value.status !== 409) return answerOf<Discussion>(sent.value)
+  const answer = (await sent.value.json().catch(() => null)) as { error?: { code?: string; message?: string }; discussion?: Discussion } | null
+  return { ok: false, error: answer?.error?.message ?? 'Cloud answered 409', code: answer?.error?.code ?? 'refused', discussion: answer?.discussion }
 }
 
-const discussionGoalRoute = (id: string, goal: string) => goalRoute(id, goal, discussionFields.get(id) ?? 'ideas')
+export const setGoalStudio = (id: string, goal: string, studio: string) =>
+  request<Discussion>('PATCH', goalRoute(id, goal), { studio })
 
-export const setGoalStudio = async (id: string, goal: string, studio: string) =>
-  decodeAnswer(await request<WireDiscussion>('PATCH', discussionGoalRoute(id, goal), { studio }), readDiscussionGoals)
-
-export const dropGoal = async (id: string, goal: string) =>
-  decodeAnswer(await request<WireDiscussion>('DELETE', discussionGoalRoute(id, goal)), readDiscussionGoals)
+export const dropGoal = (id: string, goal: string) =>
+  request<Discussion>('DELETE', goalRoute(id, goal))
 
 /** `project` places a goal from an unassigned discussion. */
 export const startGoal = (id: string, goal: string, expectedVersion: number, project?: string) =>
-  request<{ id: string; key?: string }>('POST', `${discussionGoalRoute(id, goal)}/start`, { expectedVersion, ...(project ? { project } : {}) })
+  request<{ id: string; key?: string }>('POST', `${goalRoute(id, goal)}/start`, { expectedVersion, ...(project ? { project } : {}) })

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { locate, locateArchived } from '../cards'
 import { parseFrontmatter } from '../frontmatter'
-import { die, RULES } from '../paths'
+import { die } from '../paths'
 import type { Meta } from '../types'
 import { heldStudioName } from './cloud-studios'
 import { translating } from './language'
@@ -34,9 +34,6 @@ export function knownStudio(id: string): string {
   if (!flow) die(`no studio called "${id.trim()}" here.`, { kind: 'no-such-studio', studio: id.trim() })
   return flow!.id
 }
-export const studioRuleFile = (id: string) => path.join(RULES, 'studios', `${id}.md`)
-export function userStudioRules(flow: Studio): string { try { return fs.readFileSync(studioRuleFile(flow.id), 'utf8').trim() } catch { return '' } }
-
 /** The id a card carries, straight off its file. Empty when the card is not there or carries
  *  no `studio:` key. */
 export const cardStudioId = (id: number): string => cardMeta(id)?.studio ?? ''

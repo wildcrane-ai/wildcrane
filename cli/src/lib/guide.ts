@@ -22,6 +22,8 @@ import addTask from '../guide/add-task.md'
 import archive from '../guide/archive.md'
 import board from '../guide/board.md'
 import cardChat from '../guide/card-chat.md'
+import taskUiEn from '../guide/task-ui-en.md'
+import taskUiZh from '../guide/task-ui-zh.md'
 import updateStudio from '../guide/update-studio.md'
 import describeProject from '../guide/describe-project.md'
 import discussGoal from '../guide/discuss-goal.md'
@@ -59,8 +61,10 @@ export const GUIDES: Guide[] = [
   { name: 'add-task', when: 'turn one idea into a card', text: addTask },
   { name: 'follow-up', when: 'place additional work and prepare context for a follow-up card', text: followUp },
   { name: 'discuss-goal', when: 'help decide what is worth building, and shape it into goals to start as tasks', text: discussGoal },
-  { name: 'troubleshoot', when: '定位软件故障的根因与修复方向', text: troubleshoot },
+  { name: 'troubleshoot', when: 'Find the cause of a software failure and how to fix it.', text: troubleshoot },
   { name: 'card-chat', when: "answer a card's conversation, and act on what each turn settles", text: cardChat },
+  { name: 'task-ui-en', when: 'look up task-page buttons in English', text: taskUiEn },
+  { name: 'task-ui-zh', when: 'look up task-page buttons in Chinese', text: taskUiZh },
   { name: 'update-studio', when: "change one of this workspace's studios so new tasks run the new version", text: updateStudio },
   { name: 'implement', when: 'build a settled card and stop cleanly on an execution blocker', text: implement },
   { name: 'settle-background', when: 'finish this task’s remaining background work', text: settleBackground },

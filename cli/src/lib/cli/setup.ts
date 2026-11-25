@@ -33,8 +33,8 @@ export function declareSetup(program: Command, cli: SetupCliOptions): void {
   }
 
   dirOption(program.command('update'))
-    .summary('修复已有看板并检查 CLI 新版本')
-    .description('修复已有看板并提示 CLI 升级命令。没有看板时，请通过插件连接云端项目。')
+    .summary('Repair an existing board and check for CLI updates.')
+    .description('Repair an existing board and show how to upgrade the CLI. If no board exists, link this folder to a WildCrane project from the plugin.')
     .action(async function (this: Command) {
       const dir = where(this)
       const named = (this.optsWithGlobals() as { board?: string }).board ?? process.env.AI4KANBAN_BOARD?.trim()

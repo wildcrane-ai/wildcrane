@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { SESSIONS_DIR, setBoardRoot } from '../src/lib/paths.ts'
 import { openRun, patch } from '../src/lib/agent/sessions.ts'
-import { setBoardProvider } from '../src/lib/board/index.ts'
 import { harnessByName } from '../src/lib/agent/harnesses/index.ts'
 import { openPlan, planRun, startableBinary } from '../src/lib/agent/resolve.ts'
 import { watchRun } from '../src/lib/agent/watch.ts'
@@ -47,7 +46,6 @@ beforeEach(() => {
   delete process.env.CODEX_CLI_PATH
   delete process.env.AI4KANBAN_PATH_ONLY
   setBoardRoot(root)
-  setBoardProvider(null)
   fs.mkdirSync(path.join(root, 'docs/kanban/todo'), { recursive: true })
   fs.writeFileSync(path.join(root, 'docs/kanban/next-id'), '1\n')
   fs.writeFileSync(path.join(root, 'docs/kanban/todo/README.md'), '# Tasks\n')

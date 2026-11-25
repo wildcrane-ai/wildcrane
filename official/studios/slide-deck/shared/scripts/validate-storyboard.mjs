@@ -4,7 +4,7 @@
 //   node scripts/validate-storyboard.mjs <card asset folder>/storyboard.json [--json]
 //
 // Runtime: Node 18 or later, nothing else. Save it with
-// `akb raw file slide-deck shared/scripts/validate-storyboard.mjs > validate-storyboard.mjs`.
+// `akb studio file slide-deck shared/scripts/validate-storyboard.mjs > validate-storyboard.mjs`.
 // Previews are `.assets/<card id>/<path>` paths, read from the JSON's own folder, which is
 // named after the card; subfolders such as `pages/` are allowed. A preview is an image or a
 // static `.html`/`.tsx` page; only images are measured. Exits 0 when the file

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 
-import { runBoard } from '../lib/board-cli'
+import { BOARD_LINK_HINT, runBoard } from '../lib/board-cli'
 import { missingConfigKeys } from '../lib/config-template'
 import { BoardError, say } from '../lib/io'
 import type { MoveResult } from '../lib/types'
@@ -48,15 +48,14 @@ async function boardMove(root: string, args: string[], board?: string | null): P
 
 export async function cmdUpdate(ctx: SetupContext): Promise<MoveResult> {
   const report = new Report()
-  say(`wildcrane ${SKILL_VERSION} — updating ${ctx.dir}`)
+  say(`Updating board at ${ctx.dir}.`)
   const from = null
   say('')
   const repaired = await repairBoard(ctx.dir, report, ctx.board)
   report.sayDid()
   report.sayNotes()
   say('')
-  if (repaired) say(`看板已检查至 ${SKILL_VERSION}。发布记录：${REPO}/releases`)
-  say('Your cards, config, and memory were left alone. Review `git diff` before committing.')
+  if (repaired) say(`Release notes: ${REPO}/releases`)
   sayCommandVersion()
   return { updated: ctx.dir, from, to: SKILL_VERSION }
 }
@@ -66,7 +65,7 @@ async function repairBoard(root: string, report: Report, named?: string | null):
   const kept = path.join(root, '.akb', 'kanban')
   const board = named ?? (fs.existsSync(legacy) ? legacy : kept)
   if (!fs.existsSync(board)) {
-    report.notes.push('未找到看板，请通过插件连接云端项目。')
+    report.notes.push(`No board found. ${BOARD_LINK_HINT}.`)
     return false
   }
   report.sayDid()
@@ -76,21 +75,23 @@ async function repairBoard(root: string, report: Report, named?: string | null):
   return true
 }
 function checkConfig(board: string, report: Report): void {
-  const current = read(path.join(board, 'config.md'))
+  const file = path.join(board, 'config.md')
+  const current = read(file)
   if (!current) return
   const added = missingConfigKeys(current)
   if (added.length) {
     report.notes.push(
-      `this release adds ${added.map((k) => `**${k}**`).join(', ')} to the config — add the line to docs/kanban/config.md and fill it in`,
+      `Fill in ${added.join(', ')} in ${file}.`,
     )
   }
 }
 
 function checkModules(board: string, report: Report): void {
-  const map = read(path.join(board, 'modules.md'))
+  const file = path.join(board, 'modules.md')
+  const map = read(file)
   if (map && map.includes(UNFILLED)) {
     report.notes.push(
-      'docs/kanban/modules.md is still blank — write it from the repo (`akb guide module-map`)',
+      `${file} is still blank. Run \`akb guide module-map\` from the project.`,
     )
   }
 }
@@ -98,15 +99,12 @@ function sayCommandVersion(): void {
   const latest = latestVersion()
   say('')
   if (latest && isOlder(SKILL_VERSION, latest)) {
-    say(`This command is ${SKILL_VERSION}; ${latest} is out. It can't replace itself while it runs:`)
-    say('')
-    say(`    ${NEWER_LINE}`)
-    say('')
-    say('Then run `akb update` again — a newer command is what brings newer flows.')
+    say(`This command is ${SKILL_VERSION}. Version ${latest} is available.`)
+    say(`Run \`${NEWER_LINE}\`, then \`akb update\`.`)
   } else if (latest) {
     say(`This command is ${SKILL_VERSION} — the newest published.`)
   } else {
-    say(`This command is ${SKILL_VERSION}. A newer one: \`${NEWER_LINE}\``)
+    say(`This command is ${SKILL_VERSION}. Could not check for updates.`)
   }
 }
 function latestVersion(): string | null {

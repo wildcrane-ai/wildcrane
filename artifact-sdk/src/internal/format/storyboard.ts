@@ -1,4 +1,4 @@
-// Storyboard 与 Studio 标签独占段落，label 为可选标题。
+import { previewComponents } from '../references'
 
 const attr = (name: string) => new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`)
 const SRC_ATTR = attr('src')
@@ -18,5 +18,5 @@ const blockTag = (name: string) => {
   }
 }
 
-export const storyboardAttrs = blockTag('Storyboard')
-export const studioAttrs = blockTag('Studio')
+export const storyboardAttrs = blockTag(previewComponents.storyboard.name)
+export const studioAttrs = blockTag(previewComponents.studio.name)

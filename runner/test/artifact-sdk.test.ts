@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { collect } from '../../artifact-sdk/src/internal/collect'
 import { manifestOf, mapReferences } from '../../artifact-sdk/src/internal/manifest'
-import { bodyReferences } from '../../artifact-sdk/src/internal/references'
+import { bodyReferences, captionsPath, overlayPath } from '../../artifact-sdk/src/internal/references'
+import { mockupTags } from '../../artifact-sdk/src/internal/tags'
+import { documentPreviewKey, OFFICE_TYPES, PDF } from '../../artifact-sdk/src/internal/document'
 import { groupFrames } from '../../artifact-sdk/src/internal/format/spritesheet'
 import { Previews, type Artifact, type ArtifactVersion, type Services } from '../../artifact-sdk/src/internal/previews'
 import { connect, type Context } from '../../artifact-sdk/src/index'
@@ -46,6 +48,77 @@ describe('SDK 资源声明与依赖图', () => {
 
   it('收集跨行标签与附件，跳过跨行代码示例', () => {
     assert.deepEqual(bodyReferences('<Asset\n    src="zh.png"\n    variants=\'{"中文":"zh.png","English":"en.png"}\'\n/>\n`跨行\n<Asset src="code.png" />\n`\n[附件](notes.pdf)').map(r => r.src), ['zh.png', 'zh.png', 'en.png', 'notes.pdf'])
+  })
+
+  it('collects video overlays independently and follows relative HTML and CSS files', () => {
+    const video = `<Asset src="film.mp4" variants='{"English":"film.mp4","中文":"film.mp4","Audio description":"film.mp4"}' overlay='{"English":"titles/en.html","中文":"titles/zh.htm"}' />`
+    const shared = '<Asset src="loop.webm" overlay="titles/en.html" loop />'
+    const [tag, loop] = mockupTags(`${video}\n${shared}`)
+    assert.equal(overlayPath(tag!.overlay, 'English'), 'titles/en.html')
+    assert.equal(overlayPath(tag!.overlay, '中文'), 'titles/zh.htm')
+    assert.equal(overlayPath(tag!.overlay, 'Audio description'), undefined)
+    assert.equal(overlayPath(loop!.overlay, 'English'), 'titles/en.html')
+    assert.deepEqual(bodyReferences(`${video}\n${shared}`).map(ref => ref.src), [
+      'film.mp4', 'film.mp4', 'film.mp4', 'film.mp4', 'titles/en.html', 'titles/zh.htm', 'loop.webm', 'titles/en.html',
+    ])
+
+    const files: Record<string, string> = {
+      '/c/film.mp4': '',
+      '/c/titles/en.html': '<link rel="stylesheet" href="style.css"><img src="../star.svg">',
+      '/c/titles/style.css': '@font-face { src: url(../fonts/title.woff2); }',
+      '/c/star.svg': '', '/c/fonts/title.woff2': '',
+    }
+    const graph = collect(video, '/c/card.md', {
+      resolve: (src, owner) => {
+        const key = new URL(src, `file://${owner}`).pathname
+        if (!Object.hasOwn(files, key)) throw new Error('file not found')
+        return { key, file: key }
+      },
+      read: file => files[file]!, retained: () => [],
+    })
+    assert.deepEqual(graph.map(node => [node.key, node.error]), [
+      ['/c/film.mp4', undefined], ['/c/star.svg', undefined], ['/c/fonts/title.woff2', undefined],
+      ['/c/titles/style.css', undefined], ['/c/titles/en.html', undefined], ['titles/zh.htm', 'file not found'],
+    ])
+  })
+
+  it('collects a caption for each exact media variant and leaves invalid pairings unbound', () => {
+    const asset = `<Asset src="a.mp4" variants='{"English":"a.mp4","中文":"b.mp4"}' captions='{"中文":"b.vtt","English":"a.srt"}' />`
+    const [tag] = mockupTags(asset)
+    assert.equal(captionsPath(tag!.captions, 'English'), 'a.srt')
+    assert.equal(captionsPath(tag!.captions, '中文'), 'b.vtt')
+    assert.equal(captionsPath(tag!.captions, 'toString'), undefined)
+    assert.deepEqual(bodyReferences(asset).slice(3), [{ src: 'a.srt', types: ['asset'] }, { src: 'b.vtt', types: ['asset'] }])
+    for (const captions of ['a.srt', '{"English":"a.srt"}', '{"English":"a.srt","中文":"https://example.test/b.vtt"}']) {
+      const invalid = asset.replace(/captions='[^']*'/, `captions='${captions}'`)
+      assert.equal(mockupTags(invalid)[0]!.captions, undefined)
+      assert.equal(bodyReferences(invalid).length, 3)
+    }
+    const single = '<Asset src="podcast.mp3" captions="podcast.vtt" />'
+    assert.equal(captionsPath(mockupTags(single)[0]!.captions, null), 'podcast.vtt')
+    assert.equal(bodyReferences(single)[1]?.src, 'podcast.vtt')
+  })
+
+  it('reads and downloads the pinned subtitle bytes, handling invalid or unavailable cues independently', async () => {
+    const srt = '\uFEFF1\r\n00:00:02,125 --> 00:00:04,000\r\n<b>First &amp; second</b>\r\nNext line\r\n'
+    const vtt = 'WEBVTT\n\nNOTE comment\nignored\n\nintro\n00:05.500 --> 00:08.000 align:start\n<v Narrator>你好\n'
+    const sub = art('sub', 'asset', [version(1, null, 'application/x-subrip'), version(2, null, 'text/vtt')])
+    const missing = art('missing', 'asset', [version(3, null, 'text/vtt')])
+    const service = preview([sub, missing], {
+      'first.srt': { artifact: sub.id, version: 1 },
+      'second.vtt': { artifact: sub.id, version: 2 },
+      'missing.vtt': { artifact: missing.id, version: 3 },
+    }, { readFile: async url => {
+      if (url.startsWith('file-3-')) throw Error('offline')
+      return new Blob([url.startsWith('file-1-') ? srt : vtt])
+    } })
+    const first = service.captionsOfSrc('first.srt')
+    assert.deepEqual(await first.load!(), [{ start: 2.125, end: 4, text: 'First & second\nNext line' }])
+    assert.equal(first.download?.name, 'first.srt')
+    const original = await first.download!.load()
+    assert.deepEqual(new Uint8Array(await (await fetch(original)).arrayBuffer()), new TextEncoder().encode(srt))
+    assert.deepEqual(await service.captionsOfSrc('second.vtt').load!(), [{ start: 5.5, end: 8, text: '你好' }])
+    assert.deepEqual(await service.captionsOfSrc('missing.vtt').load!(), [])
   })
 
   it('循环仍抛错；缺失文件、无效 JSON 和不符合声明的分镜记在节点上（#457、#458）', () => {
@@ -151,6 +224,32 @@ describe('SDK 资源声明与依赖图', () => {
 })
 
 describe('SDK 内置预览运行时', () => {
+  it('uses the original filename and pinned bytes for model assets (#1077)', async () => {
+    for (const format of ['glb', 'blend'] as const) {
+      const name = `model.${format}`
+      const src = `.assets/1081/${name}`
+      const pinned = version(1, null, 'application/octet-stream')
+      const files = [art('model', 'asset', [pinned, version(2, null, 'application/octet-stream')], `assets_1081_${name}`)]
+      const p = preview(files, { [src]: { artifact: 'model', version: 1 } }, {
+        readFile: async url => {
+          assert.equal(url, pinned.file!.url)
+          return new Blob(['original bytes'])
+        },
+      })
+      const view = p.viewOfSrc(src)
+      assert.ok(view.model)
+      assert.equal(view.model.format, format)
+      assert.equal(view.model.file.name, name)
+      assert.equal(view.download, view.model.file)
+      const href = await view.model.file.load()
+      try {
+        assert.equal(await (await fetch(href)).text(), 'original bytes')
+      } finally {
+        URL.revokeObjectURL(href)
+      }
+    }
+  })
+
   it('各内置类型通过 SDK 读取当前内容与文件，错误可见', async () => {
     const artifacts = [art('html', 'html', [version(1, { html: '<main>页面</main>' })]), art('hf.hf.html', 'html', [version(1, '<div>动画</div>')]), art('image', 'image', [version(1, null, 'image/png')]), art('video', 'video', [version(1, null, 'video/mp4')]), art('audio', 'video', [version(1, null, 'audio/mpeg')]), art('md', 'markdown', [version(1, { markdown: '# 内容' })]), art('file', 'asset', [version(1, { value: 1 })])]
     const p = preview(artifacts)
@@ -162,6 +261,38 @@ describe('SDK 内置预览运行时', () => {
     assert.equal((await p.viewOfArtifact('md').deferred!.load()).article!.text, '# 内容')
     assert.match(await p.viewOfArtifact('file').file!.load(), /^blob:/)
     assert.equal((await preview(artifacts, {}, { readFile: async () => { throw new Error('offline') } }).viewOfArtifact('image').deferred!.load()).error, '读取失败')
+  })
+
+  it('routes delimited tables, converted documents, models and download-only files in order', async () => {
+    const csv = 'Item,Total\nA,5'
+    const tsv = 'Item\tTotal\nB\t8'
+    const files = [
+      art('csv', 'asset', [version(1, null, 'text/csv')], 'revenue.CSV'),
+      art('tsv', 'asset', [version(1, null, 'application/octet-stream')], 'old-file'),
+      art('doc', 'asset', [version(1, null, OFFICE_TYPES['.docx'])], 'report.docx'),
+      art('pdf', 'asset', [version(1, null, PDF)], 'report.pdf'),
+      art('blend', 'asset', [version(1, null, 'application/octet-stream')], 'model.BLEND'),
+      art('zip', 'asset', [version(1, null, 'application/zip')], 'source.zip'),
+    ]
+    const pins = { 'costs.tsv': { artifact: 'tsv', version: 1 }, 'report.csv': { artifact: 'doc', version: 1 } }
+    const p = preview(files, { ...pins, [documentPreviewKey('doc', 1)]: { artifact: 'pdf', version: 1 } }, {
+      readFile: async url => new Blob([url.endsWith('text/csv') ? csv : url.endsWith('octet-stream') ? Buffer.from('\uFEFF' + tsv, 'utf16le') : '%PDF-']),
+    })
+    const csvView = p.viewOfArtifact('csv')
+    assert.equal(csvView.delimited?.delimiter, ',')
+    assert.deepEqual(await csvView.delimited?.load(), { text: csv })
+    const tsvView = p.viewOfSrc('costs.tsv')
+    assert.equal(tsvView.delimited?.delimiter, '\t')
+    assert.deepEqual(await tsvView.delimited?.load(), { text: tsv })
+
+    const docView = p.viewOfSrc('report.csv')
+    assert.equal(await (await docView.document?.load?.())?.text(), '%PDF-')
+    assert.equal(docView.download?.name, 'report.docx')
+    assert.equal(preview(files, pins).viewOfSrc('report.csv').document?.load, null)
+    assert.equal(p.viewOfArtifact('blend').model?.format, 'blend')
+    const zip = p.viewOfArtifact('zip')
+    assert.equal(zip.file?.name, 'source.zip')
+    assert.equal(zip.deferred, undefined)
   })
 
   it('分镜、HTML 幻灯片、两侧与 shots 遵守清单固定版本，包括文件 JSON 和旧路径', async () => {

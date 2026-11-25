@@ -25,7 +25,6 @@ import {
   readRefineAsks,
 } from '../src/lib/agent/sessions.ts'
 import type { AgentAction, RunRecord } from '../src/lib/agent/types.ts'
-import { setBoardProvider } from '../src/lib/board/index.ts'
 import { withStore } from '../src/lib/agent/store.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
 import { forgetMachineState } from './helpers/board.ts'
@@ -41,7 +40,6 @@ beforeEach(() => {
   fs.writeFileSync(path.join(root, 'docs', 'kanban', 'todo', 'README.md'), '# Open tasks\n')
   fs.writeFileSync(path.join(root, 'docs', 'kanban', 'next-id'), '8\n')
   setBoardRoot(root)
-  setBoardProvider(null)
 })
 
 after(() => fs.rmSync(root, { recursive: true, force: true }))

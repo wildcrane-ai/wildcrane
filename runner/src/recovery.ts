@@ -4,12 +4,14 @@ import path from 'node:path'
 
 import { killMarked, processesStopped, type Mark } from '../../cli/src/lib/agent/stop'
 import { agentRecovery, isSessionMissingFailure, readFailure, readRetryHistory, readRetryPause, readRetryPlan, type ExecutionFailure, type RetryPause, type RetryPlan, type RetryRecord } from '../../cli/src/lib/agent/retry'
-import type { RunEvent } from '../../cli/src/lib/agent/wire'
+import type { LocalReplyPart } from '../../cli/src/lib/shared/reply-parts'
+import { turnSubmitted, type RunEvent } from '../../cli/src/lib/agent/wire/events'
 import { cloudLanguage } from '../../cli/src/lib/agent/language'
 import { idleStopConfirmed } from '../../cli/src/lib/agent/wire/codex-background-types'
 import * as api from './api'
-import type { Job, JobReport } from './api'
+import type { Job, JobReport, ReplyContext } from './api'
 import { runnerHome } from './home'
+import { migrateGoalData } from './goal-migration'
 import type { SyncStep } from './sync-retry'
 
 export const recoveryBlocked = (job: Job) => cloudLanguage(job) === 'zh'
@@ -23,17 +25,25 @@ export interface BoardRunSpend extends Pick<JobReport, 'usage' | 'costUsd' | 'co
 }
 
 export interface Checkpoint {
-  syncRetry?: { step: SyncStep; attempt: number; at: number }
+  studioSnapshot?: import('../../cli/src/lib/agent/cloud-studios').StudioPin
+  retryRound?: string
+  syncRetries?: Partial<Record<SyncStep, { attempt: number; at: number; record?: RetryRecord }>>
+  syncFailure?: { failure: ExecutionFailure; pause: RetryPause; safe: boolean }
+  ending?: { outcome: 'done' | 'failed' | 'conflict' | 'stopped'; reason: string; report?: JobReport; unconfirmed?: boolean }
   reconcileRetry?: { attempt: number; at: number }
   taskRecovery?: api.TaskRecovery
+  verifyingDelivery?: boolean
   boardRepair?: { reason: string; run: string }
-  flowRun?: { id: string; finished: boolean; from?: string; failure?: ExecutionFailure; retryPause?: RetryPause; priorSpend?: BoardRunSpend[] }
+  flowRun?: { id: string; finished: boolean; deliveryId?: string; from?: string; failure?: ExecutionFailure; retryPause?: RetryPause; priorSpend?: BoardRunSpend[] }
   forkSource?: string
   reviewMarks?: ReturnType<typeof import('./chats').reviewMarks>
   reviewedRejections?: import('./triage').Laid
-  boardContinuation?: { report: JobReport; facts: string; prompt: string; validation?: boolean }
+  boardContinuation?: { report: JobReport; facts: string; prompt: string; validation?: boolean; sessionTotal?: number | null }
   approvalRequested?: boolean
   approvalCancelled?: boolean
+  replyInitializing?: boolean
+  replyReviewRevision?: number
+  replyContext?: ReplyContext
   mark?: Mark
   managedProcess?: boolean
   cleanup?: import('../../cli/src/lib/agent/wire/codex-background').Cleanup
@@ -43,6 +53,7 @@ export interface Checkpoint {
   flowResume?: boolean
   session?: string
   submitted?: boolean
+  submissionUnknown?: boolean
   started?: boolean
   opaque?: boolean
   effects?: boolean
@@ -53,19 +64,27 @@ export interface Checkpoint {
   launching?: true
   attempts?: (Pick<JobReport, 'session' | 'usage' | 'costUsd' | 'costIncomplete'> & { resume?: string | null })[]
   partialReply?: string
+  replyParts?: { cwd: string; parts: LocalReplyPart[] }
+  replyImages?: { job: string; files: Record<string, { id?: string; status: 'saved' | 'not_saved' }> }
   pending: string[]
+  goalsVersion?: number
   completed?: { outcome: 'done' | 'failed'; reason?: string; report: JobReport }
 }
+
+export const retryFileOf = (id: string) => path.join(runnerHome(), 'checkpoints', `${encodeURIComponent(id)}.retry`)
 
 const fileOf = (id: string) => path.join(runnerHome(), 'checkpoints', `${encodeURIComponent(id)}.json`)
 
 export function readCheckpoint(id: string): Checkpoint | null {
   try {
-    const held = JSON.parse(fs.readFileSync(fileOf(id), 'utf8')) as Checkpoint
+    const held = JSON.parse(fs.readFileSync(fileOf(id), 'utf8')) as Checkpoint & { syncRetry?: { step: SyncStep; attempt: number; at: number } }
     if (!held || !Array.isArray(held.pending) || !held.pending.every((id) => typeof id === 'string')) throw new Error('进度格式错误')
-    if (held.syncRetry && (!Number.isSafeInteger(held.syncRetry.attempt) || held.syncRetry.attempt < 1 || !Number.isFinite(held.syncRetry.at))) {
-      delete held.syncRetry
+    const pending = held.syncRetry
+    if (pending && Number.isSafeInteger(pending.attempt) && pending.attempt >= 1 && Number.isFinite(pending.at)) {
+      held.syncRetries ??= {}
+      held.syncRetries[pending.step] ??= { attempt: pending.attempt, at: pending.at }
     }
+    delete held.syncRetry
     held.failure = readFailure(held.failure)
     held.retryPause = readRetryPause(held.retryPause)
     held.retryHistory = readRetryHistory(held.retryHistory)
@@ -74,6 +93,9 @@ export function readCheckpoint(id: string): Checkpoint | null {
       if (!pending) held.retry.at = held.retry.pending.at ?? 0
       held.retry.pending = pending
     }
+    const migrated = [held.completed?.report, held.ending?.report, held.boardContinuation?.report]
+      .map(report => report && migrateGoalData(report)).some(Boolean)
+    if (migrated) saveCheckpoint(id, held)
     return held
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
@@ -90,14 +112,13 @@ export function saveCheckpoint(id: string, checkpoint: Checkpoint): void {
 }
 
 export function clearCheckpoint(id: string): void {
+  const checkpoint = readCheckpoint(id)
   fs.rmSync(fileOf(id), { force: true })
+  if (checkpoint) fs.rmSync(retryFileOf(checkpoint.retryRound ?? id), { force: true })
 }
 
 export function checkpointEvent(checkpoint: Checkpoint, event: RunEvent): void {
-  if (event.kind === 'phase' && event.data.phase === 'submitted'
-    || event.kind === 'message' && event.data.text.trim() || event.kind === 'tool_call' || event.kind === 'plan') {
-    checkpoint.submitted = true
-  }
+  if (turnSubmitted(event)) checkpoint.submitted = true
   if (event.kind === 'tool_call') {
     const { toolCallId, status, kind } = event.data
     if (!['read', 'search', 'fetch'].includes(kind)) checkpoint.effects = true
@@ -125,7 +146,7 @@ export async function stopReply(id: string, timeout: number): Promise<boolean> {
 }
 
 export function replayable(checkpoint: Checkpoint): boolean {
-  return checkpoint.submitted !== true && checkpoint.effects !== true && (checkpoint.effects === false || checkpoint.started === false) && !checkpoint.pending.length && !checkpoint.opaque && !checkpoint.launching
+  return !checkpoint.submissionUnknown && checkpoint.submitted !== true && checkpoint.effects !== true && (checkpoint.effects === false || checkpoint.started === false) && !checkpoint.pending.length && !checkpoint.opaque && !checkpoint.launching
 }
 
 export const isReply = (job: Job) => !job.flow && !!(job.chat || job.discussion)
@@ -146,7 +167,7 @@ export function checkpointRecovery(job: Job, checkpoint: Checkpoint, stopped: bo
   }
   return agentRecovery({
     stopped,
-    completed: !!checkpoint.completed || board && checkpoint.flowRun?.finished,
+    completed: !!checkpoint.ending || !!checkpoint.completed || board && checkpoint.flowRun?.finished,
     session: board ? checkpoint.flowRun?.id : checkpoint.opaque && !checkpoint.boardContinuation ? undefined : checkpoint.session,
     replayable: canReplay,
     unconfirmedCleanup,

@@ -126,7 +126,10 @@ export function createAntigravityRenderer(expectedSession?: string, cwd = proces
       session = got || session
       const id = String(step.step_index ?? '')
       if (step.state === 'DONE' && step.step_type === 'user_input' && typeof step.step_index === 'number'
-        && Number.isSafeInteger(step.step_index) && step.step_index > prompt) prompt = step.step_index
+        && Number.isSafeInteger(step.step_index) && step.step_index > prompt) {
+        prompt = step.step_index
+        events.submitted()
+      }
       if (step.state === 'DONE' && ['agent_response', 'checkpoint'].includes(str(step.step_type))) countCost(step)
       if (step.step_type === 'agent_response') {
         const text = str(step.text_delta)

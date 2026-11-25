@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { PreviewDefinition } from './preview-definitions.ts'
+import { taskOnlyPreviews, type PreviewDefinition } from './preview-definitions.ts'
 
 const id = z.string().trim().min(1).max(100)
 export const reviewNodeSchema = z.object({
@@ -24,6 +24,7 @@ export interface TaskReview {
 }
 
 export interface SavedPreviewInputs {
+  body?: string | null
   sections: Record<string, { body: string; sources: string[] }>
   assets: Record<string, { artifact: string; version?: number; status?: string; error?: string; dependencies?: string[] }>
 }
@@ -193,12 +194,20 @@ function reviewInstruction(authorization: ReviewAuthorization): string {
   }
 }
 
-export function reviewBoundary(review: TaskReview, assigned?: readonly string[]): string {
+const reviewWriteRules = 'Read akb task review before reporting running/done with its revision. Sync content and assets before done. Revise a stage before changing its approved output. Only stage approval accepts reviewable outputs.'
+
+export function taskReviewBoundary(review: TaskReview, assigned?: readonly string[]): string {
+  return [
+    reviewInstruction(reviewAuthorization(review, assigned)),
+    reviewWriteRules,
+  ].join('\n')
+}
+
+export function reviewBoundary(review: TaskReview, assigned?: readonly string[], studio: readonly { id: string }[] = []): string {
   const { preview_definitions = [], ...state } = review
   const authorization = reviewAuthorization(review, assigned)
-  const definitions = authorization.kind === 'stages' && assigned
-    ? preview_definitions.filter(p => authorization.nodes.some(node => node.previews.includes(p.id)))
-    : preview_definitions
+  const definitions = taskOnlyPreviews(studio, preview_definitions).filter(p =>
+    authorization.kind !== 'stages' || !assigned || authorization.nodes.some(node => node.previews.includes(p.id)))
   return [
     'Task review: ' + JSON.stringify(state),
     reviewInstruction(authorization),
@@ -207,6 +216,6 @@ export function reviewBoundary(review: TaskReview, assigned?: readonly string[])
       ...(p.components ? [`Allowed Preview Components: ${p.components.join(', ') || 'none'}.`] : []),
       '</Preview>',
     ].join('\n')),
-    'Read akb task review before reporting running/done with its revision. Sync content and assets before done. Revise a stage before changing its approved output. Only stage approval accepts reviewable outputs.',
+    reviewWriteRules,
   ].join('\n')
 }

@@ -28,8 +28,12 @@ const PROGRAM = (() => {
   if (/[\\/](_npx|dlx)[\\/]/.test(entry)) return `npx --yes ${NAME}@${VERSION}`
   const base = path.basename(entry).toLowerCase().replace(/\.(cmd|ps1|exe)$/, '')
   if (base === 'akb' || base === NAME) return 'akb'
-  return `node ${nearPath(entry)}`
+  return `node ${shellWord(nearPath(entry))}`
 })()
+
+function shellWord(value) {
+  return /^[\w./:@=-]+$/.test(value) ? value : `"${value.replace(/["`$\\]/g, '\\$&')}"`
+}
 
 // How a path is spelled in something a person is meant to paste back.
 //

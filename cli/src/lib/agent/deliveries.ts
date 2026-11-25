@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { locate, locateArchived } from '../cards'
-import { cardFile } from '../board/revision'
+import { cardFile } from '../cards'
 import { parseFrontmatter } from '../frontmatter'
 import { approvedCardRequirements } from '../shared/delivery-evidence'
 import { DELIVERIES, REPO_ROOT, rel } from '../paths'
@@ -176,24 +176,20 @@ export function cardAudits(cardId: number): DeliveryRecord[] {
 export interface LandedDelivery {
   cardId: number
   title: string
-  /** The studio the delivery ran on; a record that names none ran on the default. */
-  studio: string
+  studio: string | null
   at: number
   commit: string
 }
 
 /** Every landing with a commit, oldest first — optionally only those after `since` (ms) or on
- *  one studio. Read from the permanent records, which outlive the archived card file. */
-export function landedDeliveries(filter: { since?: number; studio?: string } = {}): LandedDelivery[] {
+ *  one date. Read from the permanent records, which outlive the archived card file. */
+export function landedDeliveries(filter: { since?: number } = {}): LandedDelivery[] {
   const out: LandedDelivery[] = []
   for (const audit of allAudits()) {
     const landing = audit.landing
     if (typeof audit.cardId !== 'number' || landing?.status !== 'landed' || !landing.commit) continue
-    // A delivery frozen before studios were recorded was a Coding one.
-    const studio = audit.studio?.id || 'coding'
     if (filter.since !== undefined && !(landing.at > filter.since)) continue
-    if (filter.studio !== undefined && studio !== filter.studio) continue
-    out.push({ cardId: audit.cardId, title: audit.title, studio, at: landing.at, commit: landing.commit })
+    out.push({ cardId: audit.cardId, title: audit.title, studio: audit.studio?.id ?? null, at: landing.at, commit: landing.commit })
   }
   return out.sort((a, b) => a.at - b.at)
 }
@@ -317,7 +313,7 @@ export function resumeRefusal(delivery: DeliveryRecord, store?: Store): RunRefus
   const live = store ?? readStore()
   const holder = activeIn(live, delivery.cardId)
   if (holder && holder.deliveryId !== id) {
-    const command = `${boardCommand()} raw delivery cancel ${holder.deliveryId}`
+    const command = `${boardCommand()} delivery cancel ${holder.deliveryId}`
     return refusal(
       'deliveryHeld',
       `delivery ${holder.deliveryId} is building #${card} now — end that one first with \`${command}\`.`,
@@ -649,7 +645,7 @@ export function heldByDelivery(cardId: number, program?: string): string | undef
   const cmd = program ?? boardCommand()
   const state = deliveryState(delivery, openQuestions(cardId))
   const answer =
-    `Answer it with \`${cmd} raw card resolve ${cardId}\`.`
+    `Answer it with \`${cmd} task resolve ${cardId}\`.`
   const doing = state.paused
     ? `is waiting on you on #${cardId} — ${state.line} — so the board won't change the card. ` +
       `${answer} Or take the card back with `
@@ -657,6 +653,6 @@ export function heldByDelivery(cardId: number, program?: string): string | undef
         `so the board won't change it. Take the card back with `
   return (
     `delivery ${delivery.deliveryId} ${doing}` +
-    `Discard on the card page, or \`${cmd} raw delivery cancel ${delivery.deliveryId}\` to end it here.`
+    `Discard on the card page, or \`${cmd} delivery cancel ${delivery.deliveryId}\` to end it here.`
   )
 }

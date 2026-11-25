@@ -1,7 +1,9 @@
+import { isMap, parseDocument, Scalar } from 'yaml'
 import { parseStudioFile, type StudioDef } from '../agent/studio-def.ts'
 import { withoutCode, sourcePosition, type SourceProblem } from './preview-blocks.ts'
 import type { StudioDiagram } from '../agent/studio-diagram.ts'
 import { GUIDE_TOPICS } from './guide-topics.ts'
+import { isStudioScreenshot } from './studio-screenshots.ts'
 
 export type StudioFiles = Record<string, string>
 
@@ -12,10 +14,12 @@ export const SHARED_DIR = 'shared/'
 export const RULES_FILE = 'shared/RULES.md'
 /** Which studio and version a fetched folder came from (#564): written on every read, never stored. */
 export const VERSION_FILE = 'version.json'
+export const PUBLICATION_FILE = '.publication.json'
+export const STUDIO_CATALOG_FILE = 'catalog.json'
 export const versionText = (id: string, version: number) => `${JSON.stringify({ id, version })}\n`
 
 const KB = 1024
-export const FILE_LIMITS = { file: 2 * KB * KB, total: 2 * KB * KB, count: 500, path: 512 }
+export const FILE_LIMITS = { file: 2 * KB * KB, total: 10 * KB * KB, count: 500, path: 512 }
 
 /** A marketplace studio's id: `wf_builtin_<folder>`, `-` as `_`. */
 export const officialId = (folder: string) => `wf_builtin_${folder.replace(/-/g, '_')}`
@@ -42,12 +46,50 @@ export function iconFrom(files: StudioFiles) {
 /** The studio drawn for its detail page (#451), as akb draws a card's; null when unreadable. */
 export function diagramFrom(_files: StudioFiles): StudioDiagram | null { return null }
 
-const SEGMENT = /^[\w.-]+$/
+const encoder = new TextEncoder()
+export const safeStudioPath = (file: string) =>
+  encoder.encode(file).length <= FILE_LIMITS.path && !/[<>:"\\|?*\x00-\x1f\x7f]/.test(file) && file.split('/').every(part =>
+    !!part && encoder.encode(part).length <= 255 && !/[. ]$/.test(part) && !/^(?:\.git$|(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$))/i.test(part))
 
-/** An official studio's marketplace details (#437): `ABOUT.md`, `ABOUT.<lang>.md` and the
- *  images under `screenshots/`, each held as a data URL. */
+const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+export const skillFile = (name: string) => 'skills/' + name + '/SKILL.md'
+export type StudioSkill = { name: string; description: string }
+
+function skillMetadata(source: string, directory: string): StudioSkill | string {
+  const front = /^\uFEFF?---[^\S\r\n]*\r?\n([\s\S]*?)^---[^\S\r\n]*(?:\r?\n|$)/m.exec(source)
+  if (!front || front.index !== 0) return 'Start SKILL.md with YAML frontmatter'
+  const doc = parseDocument(front[1]!)
+  if (doc.errors.length || !isMap(doc.contents)) return 'Use valid YAML frontmatter with unique keys'
+  let data: Record<string, unknown>
+  try {
+    data = doc.toJS({ maxAliasCount: 0 }) as Record<string, unknown>
+  } catch {
+    return 'Use literal YAML metadata'
+  }
+  const { name, description, license, compatibility, metadata, 'allowed-tools': allowedTools, ...extra } = data
+  if (name !== directory || !SKILL_NAME.test(directory) || directory.length > 64) return 'Set name to match the containing skill directory (1–64 lowercase letters, digits and single hyphens)'
+  if (typeof description !== 'string' || !description.trim() || [...description].length > 1024) return 'Set description to 1–1024 characters'
+  if (license !== undefined && typeof license !== 'string') return 'Set license to a string'
+  if (compatibility !== undefined && (typeof compatibility !== 'string' || !compatibility.trim() || [...compatibility].length > 500)) return 'Set compatibility to 1–500 characters'
+  if (metadata !== undefined && (!metadata || typeof metadata !== 'object' || Array.isArray(metadata) || Object.values(metadata).some(value => typeof value !== 'string'))) return 'Set metadata to a map of strings'
+  if (allowedTools !== undefined && typeof allowedTools !== 'string') return 'Set allowed-tools to a string'
+  if (Object.keys(extra).length) return 'Use standard Agent Skills fields and put custom fields under metadata'
+  return { name: directory, description: description.trim().replace(/\s+/g, ' ') }
+}
+
+export function studioSkills(files: StudioFiles): StudioSkill[] {
+  return Object.keys(files).sort().flatMap(file => {
+    const match = /^skills\/([^/]+)\/SKILL\.md$/.exec(file)
+    if (!match) return []
+    const skill = skillMetadata(files[file]!, match[1]!)
+    return typeof skill === 'string' ? [] : [skill]
+  })
+}
+
+export const isStudioGuide = (file: string) => /^(?:README|ABOUT)(?:\.[a-zA-Z0-9-]+)?\.md$/.test(file)
+
 export const isAboutFile = (file: string) =>
-  /^ABOUT(\.[a-z]{2})?\.md$/.test(file) || /^screenshots\/[\w.-]+\.(png|jpe?g|webp)$/.test(file)
+  /^ABOUT(\.[a-z]{2})?\.md$/.test(file) || isStudioScreenshot(file)
 
 /** Its `ABOUT` in `lang`, else English: the Markdown, with each `![caption](screenshots/…)`
  *  line taken out as a screenshot. */
@@ -63,19 +105,28 @@ export function aboutFrom(files: StudioFiles, lang: string | null) {
   return { about, screenshots }
 }
 
-const bytes = (text: string) => new TextEncoder().encode(text).length
+export const studioScreenshotPrefix = (path: string) =>
+  'data:' + (path.endsWith('.png') ? 'image/png' : /\.jpe?g$/.test(path) ? 'image/jpeg' : 'image/webp') + ';base64,'
 
-const isSharedFile = (file: string) => {
-  const parts = file.split('/')
-  return parts.length > 1 && parts[0] === 'shared' && parts.slice(1).every((p) => SEGMENT.test(p) && p !== '.' && p !== '..')
+export function studioFileBody(path: string, text: string): { bytes: Uint8Array<ArrayBuffer>; binary: boolean } {
+  if (isStudioScreenshot(path)) {
+    const prefix = studioScreenshotPrefix(path)
+    if (text.startsWith(prefix)) {
+      const data = text.slice(prefix.length)
+      if (/^[A-Za-z0-9+/]*={0,2}$/.test(data) && data.length % 4 === 0) {
+        const raw = atob(data)
+        if (btoa(raw) === data) return { bytes: Uint8Array.from(raw, c => c.charCodeAt(0)), binary: true }
+      }
+    }
+  }
+  const bytes = encoder.encode(text)
+  if (new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes) !== text) throw Error('Invalid UTF-8.')
+  return { bytes, binary: false }
 }
 
-/** `<top>/<name>/<path>` → `[name, path]`; null for any other path. */
-function folderPath(file: string, top: string): [string, string] | null {
-  const parts = file.split('/')
-  if (parts.length < 3 || parts[0] !== top || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(parts[1] as string)) return null
-  if (parts.slice(2).some((p) => !SEGMENT.test(p) || p === '.' || p === '..')) return null
-  return [parts[1] as string, parts.slice(2).join('/')]
+export function studioSizeProblem(file: string, size: number, total: number): FilesProblem | undefined {
+  if (size > FILE_LIMITS.file) return { file, reason: 'is larger than 2 MiB', tooLarge: true }
+  if (total > FILE_LIMITS.total) return { file: 'files', reason: 'are larger than 10 MiB together', tooLarge: true }
 }
 
 /** `{ mcpServers: { <name>: { command, args? } } }`: local servers that need no credentials. */
@@ -107,7 +158,7 @@ export function formatStudioProblem({ file, line, column, reason, hint }: FilesP
   return `${location}: ${reason}${hint ? `. ${hint}` : ''}`
 }
 
-/** `official` lets the files carry skills and MCP servers. */
+/** `official` allows MCP servers. */
 export function checkStudioFiles(value: unknown, official = false, checks: StudioFileChecks = {}): Checked {
   const read = inspect(value, official, checks)
   const first = read.problems[0]
@@ -124,44 +175,63 @@ function inspect(value: unknown, official: boolean, { allowLegacyPreviewCopy, al
     return { problems }
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fail('files', 'must be an object of path → text')
-  const files = Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([file]) => file !== VERSION_FILE))
+  const files: Record<string, unknown> = Object.assign(Object.create(null), Object.fromEntries(Object.entries(value).filter(([file]) => file !== VERSION_FILE && file !== PUBLICATION_FILE)))
   const entries = Object.entries(files)
   if (entries.length > FILE_LIMITS.count) return fail('files', `holds at most ${FILE_LIMITS.count} files`, true)
 
   let total = 0
   const skills = new Set<string>()
+  const paths = new Map<string, { path: string; file: boolean }>([VERSION_FILE, PUBLICATION_FILE].map(file => [file, { path: file, file: true }]))
+  const pathProblem = (file: string, reason: string) =>
+    problems.push({ file, reason, code: 'studio-path', hint: 'Use a safe relative file path unique within the Studio.' })
   for (const [file, text] of entries) {
     if (typeof text !== 'string' || text.includes('\u0000')) {
       fail(file, 'is not a text file')
       continue
     }
-    if (file.length > FILE_LIMITS.path) {
-      fail(file, `the path is longer than ${FILE_LIMITS.path} characters`)
-      continue
-    }
-    const size = bytes(text)
-    if (size > FILE_LIMITS.file) return fail(file, `is larger than ${FILE_LIMITS.file / KB} KB`, true)
+    let size: number
+    try { size = studioFileBody(file, text).bytes.length } catch { fail(file, 'is not valid UTF-8'); continue }
     total += size
-    if (total > FILE_LIMITS.total) return fail('files', `are larger than ${FILE_LIMITS.total / KB / KB} MB together`, true)
-    if (file === STUDIO_FILE || file === CARD_TEMPLATE_FILE) continue
-    if (official && file === MCP_FILE) {
-      const problem = mcpProblem(text)
+    const limit = studioSizeProblem(file, size, total)
+    if (limit) return fail(limit.file, limit.reason, true)
+    if (!safeStudioPath(file)) {
+      pathProblem(file, 'Unsafe Studio path')
+      continue
+    }
+    const parts = file.split('/')
+    for (let i = 1; i <= parts.length; i++) {
+      const at = parts.slice(0, i).join('/')
+      const key = at.normalize('NFC').toLowerCase()
+      const prior = paths.get(key)
+      if (prior && (prior.path !== at || prior.file || i === parts.length)) {
+        pathProblem(file, 'Path conflicts with ' + prior.path)
+        break
+      }
+      paths.set(key, { path: at, file: i === parts.length })
+    }
+    if (file.toLowerCase() === STUDIO_CATALOG_FILE && (!official || file !== STUDIO_CATALOG_FILE)) {
+      pathProblem(file, 'The root catalog.json is reserved for official Studio metadata')
+    }
+    if (file === MCP_FILE) {
+      const problem = official ? mcpProblem(text) : 'MCP servers are available to official Studios'
       if (problem) fail(file, problem)
-      continue
     }
-    if (official && isAboutFile(file)) continue
-    if (official && file.startsWith('skills/')) {
-      if (!folderPath(file, 'skills')) fail(file, 'is not inside skills/<name>/')
-      else skills.add(file.split('/')[1] as string)
-      continue
+    if (parts[0] === 'skills') {
+      const name = parts[1]
+      if (parts.length < 3 || !name || !SKILL_NAME.test(name) || name.length > 64) {
+        pathProblem(file, 'Expected skills/<name>/<path> with a valid Agent Skills name')
+      } else skills.add(name)
     }
-    if (isSharedFile(file)) continue
-    if (/^(?:references|scripts)\//.test(file) && file.split('/').every(p => SEGMENT.test(p) && p !== '.' && p !== '..')) continue
-    fail(file, `use ${STUDIO_FILE}, ${CARD_TEMPLATE_FILE}, references/, scripts/ or shared/`)
   }
 
   for (const name of skills) {
-    if (files[`skills/${name}/SKILL.md`] === undefined) fail(`skills/${name}/SKILL.md`, 'is missing')
+    const file = skillFile(name)
+    const text = files[file]
+    const problem = text === undefined ? 'SKILL.md is missing' : typeof text === 'string' ? skillMetadata(text, name) : null
+    if (typeof problem === 'string') problems.push({
+      file, line: 1, column: 1, code: 'studio-skill', message: problem, reason: problem,
+      hint: 'Follow the Agent Skills specification at https://agentskills.io/specification.',
+    })
   }
 
   const source = files[STUDIO_FILE]
@@ -174,47 +244,40 @@ function inspect(value: unknown, official: boolean, { allowLegacyPreviewCopy, al
     if (typeof text !== 'string' || !file.endsWith('.md')) continue
     const masked = withoutCode(text)
     const reference = (offset: number, link: string, message: string) => problems.push({ file, ...sourcePosition(text, offset), path: link, code: 'studio-reference', message, reason: message, hint: 'Use an existing safe relative resource or a shipped AKB Guide.' })
-    for (const match of masked.matchAll(/!?\[[^\]]*\]\(([^\s)]+)(?:\s+[^)]*)?\)/g)) {
+    for (const match of masked.matchAll(/!?\[[^\]]*\]\((<[^>\r\n]+>|[^\s)]+)(?:\s+[^)]*)?\)/g)) {
       const link = match[1]!.replace(/^<|>$/g, '')
       if (/^(?:https?:|mailto:|#)/i.test(link)) continue
       let decoded: string
       try { decoded = decodeURIComponent(link.split(/[?#]/)[0]!) } catch { reference(match.index!, link, 'Invalid resource URL'); continue }
       if (/^(?:[a-z][\w+.-]*:|[/\\])|\\/i.test(decoded) || decoded.split('/').includes('..')) { reference(match.index!, link, 'Unsafe resource path'); continue }
       const target = [...file.split('/').slice(0, -1), ...decoded.split('/').filter(p => p !== '.')].join('/')
-      if (!Object.hasOwn(files, target)) reference(match.index!, link, `Missing resource ${target}`)
+      const guideScreenshot = match[0].startsWith('!') && isStudioGuide(file) && isStudioScreenshot(target)
+      if (!Object.hasOwn(files, target) && !guideScreenshot) reference(match.index!, link, `Missing resource ${target}`)
     }
     for (const match of text.matchAll(/akb guide ([a-z][a-z-]*)/g)) if (!GUIDE_TOPICS.includes(match[1]!)) reference(match.index!, match[1]!, `Unknown AKB Guide ${match[1]}`)
   }
   return { problems, def, files: files as StudioFiles }
 }
 
-/** An official studio's files as a new own studio (#444): `STUDIO.md` and `agents/`, its
- *  `name` replaced by `name` and its `names` dropped, or else each marked as a copy. Fails on
- *  what an own studio cannot hold. */
+/** Copy reusable files into a new workspace Studio with a new name. */
 export function cloneFiles(files: StudioFiles, name?: string): { files: StudioFiles } | { refused: string } {
-  const refused = Object.keys(files).find((file) => file === MCP_FILE || file.startsWith('skills/'))
-  if (refused) return { refused: refused === MCP_FILE ? MCP_FILE : `${refused.split('/').slice(0, 2).join('/')}/` }
-  const kept = Object.fromEntries(Object.entries(files).filter(([file]) => !isAboutFile(file)))
+  if (Object.hasOwn(files, MCP_FILE)) return { refused: MCP_FILE }
+  const kept = Object.fromEntries(Object.entries(files).filter(([file]) => file !== VERSION_FILE))
   const source = kept[STUDIO_FILE] ?? ''
   const read = parseStudioFile('studio', source, STUDIO_FILE)
   if ('problem' in read) return { files: kept }
-  const lines = source.split('\n')
-  const end = lines.indexOf('---', 1)
-  const head: string[] = []
-  for (let i = 1; i < end; i++) {
-    const line = lines[i] as string
-    if (/^names\s*:/.test(line)) {
-      while (i + 1 < end && /^\s/.test(lines[i + 1] as string)) i++
-      continue
+  kept[STUDIO_FILE] = source.replace(/^---\r?\n([^]*?)\r?\n---(?:\r?\n|$)/, (_front, yaml: string) => {
+    const document = parseDocument(yaml)
+    const quoted = (value: string) => Object.assign(new Scalar(value), { type: Scalar.QUOTE_DOUBLE })
+    document.set('name', quoted(name ?? `${read.def.name} (copy)`))
+    if (name) document.delete('names')
+    else if (read.def.names) {
+      for (const [lang, text] of Object.entries(read.def.names)) {
+        document.setIn(['names', lang], quoted(lang === 'zh' ? `${text}（副本）` : `${text} (copy)`))
+      }
     }
-    if (!/^name\s*:/.test(line)) head.push(line)
-  }
-  const names = name ? {} : Object.fromEntries(Object.entries(read.def.names ?? {}).map(([lang, said]) => [lang, lang === 'zh' ? `${said}（副本）` : `${said} (copy)`]))
-  const named = [
-    `name: ${JSON.stringify(name ?? `${read.def.name} (copy)`)}`,
-    ...(Object.keys(names).length ? ['names:', ...Object.entries(names).map(([lang, said]) => `  ${lang}: ${JSON.stringify(said)}`)] : []),
-  ]
-  kept[STUDIO_FILE] = ['---', ...named, ...head, ...lines.slice(end)].join('\n')
+    return `---\n${document.toString({ lineWidth: 0 })}---\n`
+  })
   return { files: kept }
 }
 

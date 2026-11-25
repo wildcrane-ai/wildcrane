@@ -31,6 +31,8 @@ export type FlowGroup = 'card' | 'delivery' | 'triage' | 'memory'
 export interface FlowOption {
   flags: string
   description: string
+  /** Accepted by the scheduler and hidden from public help. */
+  internal?: boolean
   /** The only values accepted, when there is a fixed set of them. */
   choices?: readonly string[]
   /** A whole number in this range, when the value is a count. */
@@ -74,10 +76,10 @@ const RUNTIME_OPTION: FlowOption = {
 
 // A Cloud task's session (#2146), over the card's own planning session.
 const CARRY_OPTIONS: FlowOption[] = [
-  { flags: '--new-session', description: 'start planning in a new session' },
-  { flags: '--session <id>', description: "the agent session to carry on, over the card's own" },
-  { flags: '--fork', description: 'with --session: start from a copy of it' },
-  { flags: '--transcript <file>', description: 'the discussion the card came from, read when no session is carried on' },
+  { internal: true, flags: '--new-session', description: 'start planning in a new session' },
+  { internal: true, flags: '--session <id>', description: "the agent session to carry on, over the card's own" },
+  { internal: true, flags: '--fork', description: 'with --session: start from a copy of it' },
+  { internal: true, flags: '--transcript <file>', description: 'the discussion the card came from, read when no session is carried on' },
 ]
 
 export const FLOWS: Flow[] = [

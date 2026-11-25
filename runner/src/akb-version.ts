@@ -46,15 +46,15 @@ function writeAkbState(state: State): void {
   fs.renameSync(staging, stateFile())
 }
 
-function contractOf(dir: string): number | null {
+function packageInfo(dir: string): { akbContract?: number; canonicalCommands?: boolean } {
   try {
-    return (JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')) as { akbContract?: number }).akbContract ?? null
+    return (JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')) as { akbContract?: number; canonicalCommands?: boolean }) ?? {}
   } catch {
-    return null
+    return {}
   }
 }
 
-const usable = (dir: string) => fs.existsSync(entryOf(dir)) && contractOf(dir) === AKB_CONTRACT
+const usable = (dir: string) => fs.existsSync(entryOf(dir)) && packageInfo(dir).akbContract === AKB_CONTRACT
 
 /** The akb to start a step on. Its folder's time says when it was last chosen. */
 export function currentAkb(): Akb {
@@ -68,7 +68,7 @@ export function currentAkb(): Akb {
   } catch {
     // Only the cleanup reads it.
   }
-  return { command: process.execPath, args: akbArgs(entryOf(dir)), version: current, shim: path.join(dir, 'shim') }
+  return { command: process.execPath, args: akbArgs(entryOf(dir)), version: current, canonicalCommands: packageInfo(dir).canonicalCommands === true, shim: path.join(dir, 'shim') }
 }
 
 const answers = (dir: string, version: string) =>
@@ -89,7 +89,7 @@ function useVersion(current: string | null): void {
 async function fetchVersion(version: string): Promise<void> {
   const got = await installPackage(AKB, version)
   if (!got.ok) return console.error(`runner: akb ${version} was not fetched: ${got.detail}`)
-  if (contractOf(got.dir) !== AKB_CONTRACT || !(await answers(got.dir, version))) {
+  if (packageInfo(got.dir).akbContract !== AKB_CONTRACT || !(await answers(got.dir, version))) {
     console.error(`runner: akb ${version} failed its check and will not be used`)
     const state = readAkbState()
     return writeAkbState({ ...state, bad: [...new Set([...state.bad, version])] })

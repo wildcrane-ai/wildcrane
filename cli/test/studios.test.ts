@@ -7,7 +7,8 @@ import { parseStudioFile } from '../src/lib/agent/studio-def.ts'
 import { studioFileText } from '../src/lib/agent/studio-file.ts'
 import { checkStudioFiles, cloneFiles, previewCatalog, hashInput, landsOf } from '../src/lib/shared/studio-files.ts'
 import { parsePreviewBlocks } from '../src/lib/shared/preview-blocks.ts'
-import { migrateStudio, migrateTask } from '../src/lib/shared/studio-migration.ts'
+import { parseReviewFlow, reviewDependencies } from '../src/lib/shared/review-plan.ts'
+import { migrateTask } from '../src/lib/shared/studio-migration.ts'
 import { packOfficial } from '../../official/pack.ts'
 import { cmdStudioValidate } from '../src/commands/studio.ts'
 import { studioRulesBlock, buildAsk } from '../src/lib/agent/prompts.ts'
@@ -162,19 +163,27 @@ it('migrates old groups idempotently without losing Sets, file versions or sourc
   assert.ok(first.historical['historical-orphan'])
   assert.deepEqual(migrateTask(first.body, first.previews, { 'api-designer': 'api-docs' }, first.historical), first)
   assert.equal(first.body.split('<!-- agent -->')[1], old.split('<!-- agent -->')[1])
-  const converted = migrateStudio({ 'STUDIO.md': '---\nname: Old\npreviews: [writer]\nland: []\n---\n\nDo requested work.', 'agents/writer/AGENT.md': '---\nname: writer\ndescription: Write notes\n---\n\nWrite a short document.' })
-  assert.ok(checkStudioFiles(converted.files, false, { allowLegacyPreviewCopy: true, allowLegacyLand: true }).ok)
-  assert.ok(!Object.keys(converted.files).some(p => p.startsWith('agents/')))
-  assert.deepEqual(migrateStudio(converted.files).files, converted.files)
 })
 
 it('packs all built-ins on the same format and exposes only ID and output instructions to sessions', () => {
   const packed = packOfficial(process.env.AI4KANBAN_STUDIOS!)
-  assert.equal(packed.length, 7)
+  assert.equal(packed.length, 6)
   const builder = packed.find(s => s.id === 'wf_builtin_studio_builder')!
   const definition = checkStudioFiles(builder.files, true)
   assert.ok(definition.ok)
-  assert.deepEqual(definition.def.previews.map(p => p.id), ['studio', 'files'])
+  const previews = definition.def.previews
+  assert.deepEqual(previews.map(p => p.id), ['market-research', 'studio', 'files'])
+  assert.deepEqual(previews[0]?.title, { en: 'Market research', zh: '市场调研' })
+  const direct = parseReviewFlow('Studio', previews)
+  assert.equal(direct[0]?.id, 'studio')
+  assert.deepEqual(direct[0]?.after, [])
+  assert.deepEqual(reviewDependencies(direct), [])
+  const research = parseReviewFlow('Market research -> Studio', previews)
+  assert.deepEqual(parseReviewFlow('市场调研 -> 工作台', previews), research)
+  assert.deepEqual(reviewDependencies(research), [
+    { id: 'market-research', after: [], previews: ['market-research'] },
+    { id: 'studio', after: ['market-research'], previews: ['studio'] },
+  ])
   const template = /```markdown\n(---\n[^]*?)```/.exec(definition.def.rules)?.[1]
   assert.ok(checkStudioFiles({ 'STUDIO.md': template }).ok)
   assert.match(template!, /^## Work\n[^]+^## Land\n[^]+^## Previews\n\n<Preview id="draft">/m)

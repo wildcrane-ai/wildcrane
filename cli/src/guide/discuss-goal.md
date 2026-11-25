@@ -4,9 +4,9 @@ Research how the requested outcome can be achieved before defining a Goal. Expla
 
 - **Investigations**: finish checks and diagnosis here; save a change only when findings establish it. Report unverified work plainly.
 - **Goals**: save independent deliverables separately. Update existing goals rather than duplicate them.
-- **Studio**: choose the fitting installed Studio, preferring the user's choice; read its Additional Notes with `akb studio rule <studio>` and honor their scope.
-- **Select Previews**: read the chosen Studio's `STUDIO.md` with `akb raw file <studio> STUDIO.md` and linked Studio files as needed with `akb raw file <studio> <path>`. Match deliverables that need review to Studio Previews. Define a Goal Preview for a result that needs review and lacks a Studio Preview.
-- **Review** independent Previews in parallel by default. Use Studio or Goal Preview names, e.g. `--review 'Tech choices + UI design'`. Add `->` when the next group needs the previous group's approvals. Verify the saved plan.
+- **Studio**: choose the fitting installed Studio, preferring the user's choice; honor its rules' scope.
+- **Select Previews**: follow "Preview selection" in `akb guide board`, defining a custom Preview with `--preview-definitions-file` when needed.
+- **Review** independent Previews in parallel by default. Use Studio or custom Preview names, e.g. `--review 'Tech choices + UI design'`. Add `->` when the next group needs the previous group's approvals. Verify the saved plan.
 - **Review state**: pass `--review ''` for no extra approval, leave the plan undecided while a decision is missing, and omit the option when keeping a saved plan.
 - **Decisions**: ask only about choices the user must make, and recommend an option.
 - **Save**: in a web discussion, use `akb goal` in the current session, including on retry. Say the goal is ready to save when the reply ends. If the command still fails, say it was not saved.

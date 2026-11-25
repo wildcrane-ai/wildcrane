@@ -1,6 +1,8 @@
 // What of a board lives in its project's `Board` (#2081), shared by the Worker and the Runner:
 // both filter by the same rule. No imports, so either side can take it as it is.
 
+import { parseFrontmatter } from '../frontmatter.ts'
+
 /** The board folders kept in Cloud; anything else on a board is this computer's own. */
 const ROOTS = ['todo/', '.archive/', 'memory/', 'studios/', 'triage/', 'assets/', 'rules/']
 
@@ -8,7 +10,8 @@ const ROOTS = ['todo/', '.archive/', 'memory/', 'studios/', 'triage/', 'assets/'
 export const SETTINGS = ['modules.md', 'config.md']
 
 /** A settings file: one of those, an agent's rule, or the rule for a studio's cards. */
-export const isSettingsPath = (path: string) => SETTINGS.includes(path) || /^rules\/(?:studios\/[^/]+|proposer|project-writer|dismissal-reviewer|memory-pruner)\.md$/.test(path)
+export const isSettingsPath = (path: string) => SETTINGS.includes(path) || path === projectConfigFile
+  || isStudioConfigPath(path) || /^rules\/(?:proposer|project-writer|dismissal-reviewer|memory-pruner)\.md$/.test(path)
 
 /** A file over this goes up as an asset, not on the board. */
 export { BOARD_FILE_LIMIT } from './file-limits.ts'
@@ -65,8 +68,17 @@ export const OWN_FOLDER = /^wf-(?!builtin-)[a-z0-9-]+$/
 export const studioName = (id: string) =>
   id.startsWith('wf_builtin_') ? id.slice('wf_builtin_'.length).replace(/_/g, '-') : studioFolder(id)
 
-/** The user's rule for every card on a studio (#2152). */
-export const studioRuleFile = (id: string) => `rules/studios/${studioName(id)}.md`
+export const projectConfigFile = 'rules/config.md'
+export const studioConfigFile = (id: string) => `rules/studios/${studioName(id)}/config.md`
+export const legacyStudioRuleFile = (id: string) => `rules/studios/${studioName(id)}.md`
+export const isStudioConfigPath = (path: string) => /^rules\/studios\/[^/]+(?:\/config)?\.md$/.test(path)
+
+export const studioConfigConflict = (config: string | undefined, legacy: string | undefined) =>
+  !!config?.trim() && !!legacy?.trim() && config.trim() !== legacy.trim()
+
+export function studioConfigText(config: string | undefined, legacy: string | undefined): string {
+  return ((studioConfigConflict(config, legacy) ? legacy : config ?? legacy) ?? '').trim()
+}
 
 export interface CardFront {
   title?: string
@@ -74,23 +86,13 @@ export interface CardFront {
   previews?: string[]
 }
 
-const unquote = (value: string) => value.trim().replace(/^(["'])(.*)\1$/, '$2')
-
 /** The frontmatter fields indexed by Cloud. */
 export function cardFront(body: string): CardFront {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(body)
-  if (!match) return {}
-  const out: CardFront = {}
-  for (const line of match[1]!.split(/\r?\n/)) {
-    const field = /^(title|status|previews):\s*(.*)$/.exec(line)
-    if (!field) continue
-    const [, key, value = ''] = field
-    if (key === 'title' && value.trim()) out.title = unquote(value)
-    else if (key === 'status' && value.trim()) out.status = unquote(value)
-    else if (key === 'previews') {
-      const flow = /^\[(.*)\]\s*$/.exec(value.trim())
-      if (flow) out.previews = flow[1]!.split(',').map(unquote).filter(Boolean)
-    }
+  const { meta } = parseFrontmatter(body)
+  if (!meta) return {}
+  return {
+    ...(typeof meta.title === 'string' && meta.title.trim() ? { title: meta.title } : {}),
+    ...(typeof meta.status === 'string' && meta.status ? { status: meta.status } : {}),
+    ...(meta.previews ? { previews: meta.previews } : {}),
   }
-  return out
 }

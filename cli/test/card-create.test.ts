@@ -46,7 +46,7 @@ describe('card creation', () => {
       assert.ok(error instanceof BoardError)
       assert.equal(error.kind, 'needs-cloud')
       assert.equal(error.exitCode, 1)
-      assert.match(error.message, /akb raw create/)
+      assert.match(error.message, /akb task create --title/)
       assert.match(error.message, /Cloud 分配编号/)
       assert.doesNotMatch(error.message, /--id|web app|idea/i)
       return true

@@ -154,16 +154,16 @@ akb task remove WC-13 "Not needed this quarter"
 目标包含结果和 `## Done when` 验收清单：
 
 ```sh
-akb goal new --title <title> --body-file <file> [--studio <id>] [--previews <ids>]
-akb goal save --id <goal> [--title <title>] [--body-file <file>] [--studio <id>] [--previews <ids>]
+akb goal new --title <title> --body-file <file> [--studio <id>] [--review <flow> | --review-file <file>] [--preview-definitions-file <file>]
+akb goal save --id <goal> [--title <title>] [--body-file <file>] [--studio <id>] [--review <flow> | --review-file <file>] [--preview-definitions-file <file>]
 akb goal drop --id <goal>
 akb goal start --id <goal>
 akb guide discuss-goal
 ```
 
-保存不会开始任务；网页讨论的 start 标记本轮结束后开始，外部会话立即发起。`--previews ui,api` 选择审阅要点，空字符串清空，省略保留同一工作台的选择。Codex 与 Claude Code 会话使用同一命令；成功结果附讨论链接。10 个目标上限不变。未登录时报下节的 `signed_out`。`akb raw goal` 与 `akb raw idea` 已删除；`guide discuss-idea` 保留兼容。
+保存只更新草稿。网页讨论中，`start` 在本轮回复结束后发起任务，Runner 通过 `KANBAN_GOALS` 传递包含 `workspace?`、`studios` 和 `goals` 的草稿文件。外部会话中，`start` 立即发起并返回讨论链接。每个讨论最多保留 10 个目标。
 
-`akb raw previews --triggers --studio <id> [--workspace <id>] [--json]` 只列该工作台启用的要点；讨论中可省略工作空间。详见 [目标审阅接口](../docs/api/goal-previews.md)。
+目标审阅要点及查询语义见 [目标审阅接口](../docs/api/goal-previews.md)。
 
 ## 软件故障根因定位
 
@@ -172,18 +172,26 @@ akb guide discuss-goal
 `akb --json guide troubleshoot` 返回 `guide: "troubleshoot"` 和 `text`，沿用现有 JSON 结果封装。
 
 
+## 本地任务与运行
+
+先运行 `akb help`，再用对应子命令的 `--help` 查参数。
+
+- **建卡**：`akb task create --title "<title>" [--studio <id>]` 由 Cloud 分配编号并立即写入当前看板。返回编号及路径。正文直接在卡片文件里补写，审阅和问题分别用 `task review` 和 `task update-questions`。
+- **看板**：`akb board list` 查看本地卡片，`task inspect` 查看本地卡片和执行记录，`task validate` 校验，`task update` 更新字段。Cloud 任务继续用 `task list` 和 `task show`。
+- **流程**：`akb task refine|revise|resolve|implement <id> …` 启动本地流程。加 `--print` 在当前会话读取流程。用 `akb run list`、`run log`、`run stop` 或 `run resume` 管理本地运行。
+
 ## Preview
 
-`akb raw previews [--studio <id>] [--json]` 列出 Studio 声明的 Preview ID 和制作说明。任务会话按需制作产物，审阅与批准使用 `akb task review` 和 `akb task approve`。
+`akb studio previews [--studio <id>] [--json]` 列出 Studio 声明的 Preview ID 和制作说明。任务会话按需制作产物，审阅与批准使用 `akb task review` 和 `akb task approve`。
 
 ## 完成交付
 
 所属交付的当前运行登记自己的工作台步骤。最后一步同时结束交付并归档，返回既有归档交接。
 
 ```sh
-akb raw delivery complete <id> [--commit <sha> --branch <name>] --json
-akb raw delivery cancel <id> --json
-akb raw delivery resume <id> --json
+akb delivery complete <id> [--commit <sha> --branch <name>] --json
+akb delivery cancel <id> --json
+akb delivery resume <id> --json
 ```
 
 `id` 接受卡片或交付编号。软件步骤提供已合入的完整 40 或 64 位提交号和目标分支，两项必须同时提供。
@@ -197,4 +205,4 @@ Builder 自行创建分支和 worktree、处理冲突、检查并合入，登记
 `cancel` 停止运行并结束交付，保留磁盘成果。`resume` 返回交付与运行编号，继续原会话或从既有成果恢复。
 交付外仍可使用 `akb task archive <task>` 手动归档。`delivery conflict`、`delivery blocked` 和 `delivery discard` 已移除。
 
-工作台只存于云端（#409）：`akb studio list` 列出当前工作区可用的工作台，各版本缓存在本机 `studios/`；`akb raw studio validate <文件夹>` 检查一个工作台文件夹，`akb raw studio rename` 只在「搭建工作台」任务里写草稿，`delete`、`agent` 已移除，改在网页上管理。
+工作台只存于云端（#409）：`akb studio list` 列出当前工作区可用的工作台，各版本缓存在本机 `studios/`；`akb studio validate <文件夹>` 检查一个工作台文件夹，`akb studio file <studio> <path>` 读取工作台文件，`akb studio preview <card> --folder <draft> --base <baseline>` 冻结待审阅版本。

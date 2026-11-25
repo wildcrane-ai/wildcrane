@@ -3,13 +3,14 @@ import { connectionStopped, stopConnection } from './connection-process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { agentRecovery, isSessionMissingFailure, pauseLine, recoveryPrompt } from './retry'
+import { agentRecovery, isSessionMissingFailure, pauseLine, recoveryPrompt, RETRY_FILE_ENV } from './retry'
+import { workspaceTask } from '../cloud/tasks'
+import { activeStudioPin, missingStudioVersion, readStudioSession, readVersion } from './cloud-studios'
 import { executionHeld, executionOf } from '../cloud/execution'
 
-import { boardCardIds, locate, locateArchived } from '../cards'
+import { boardCardIds, cardFile, locate, locateArchived } from '../cards'
 import { parseFrontmatter } from '../frontmatter'
-import { setCardStatusOn } from '../board'
-import { cardFile } from '../board/revision'
+import { setCardStatusOn } from '../board/local'
 // pidAlive lives with the lock, which needs the same question answered about whoever holds it.
 import { pidAlive } from '../lock'
 import { warn } from '../io'
@@ -41,7 +42,7 @@ import { reportsSessionTotal } from './own-cost'
 import { durationLine, pruneLogs, readLogTail, splitLog } from './log'
 import { adoptsSessionId, harnessLabel, onOwnEndpoint, planFork, planResume, planRun, resumesUnder, shipsHarness, type RunPlan } from './resolve'
 import { moveRunPictures } from './pictures'
-import { buildRun, restartPrompt, restartable, resumePrompt } from './prompts'
+import { buildRun, compactTaskPrompt, restartPrompt, restartable, resumePrompt } from './prompts'
 import { agentForRun } from './runner'
 import { killMarked, killTreeOnWindows, killUnderOnWindows, probeProcesses, processesStopped, runMark } from './stop'
 import { readRuntimes, runRuntimeById } from './runtimes'
@@ -132,6 +133,7 @@ const RUN_STATUS: Partial<Record<AgentAction, string>> = {
  *  the command that starts a run and the process that runs it are not the same process. */
 export interface RunSpec {
   sessionId: string
+  studioAtLaunch?: boolean
   plan: RunPlan
   prompt: string
   /** What the board owes this run's log before the agent's own output — a spec agent's
@@ -207,7 +209,7 @@ function stampDuration(run: RunRecord, endedAt: number): void {
 
 export async function setCardStatus(cardId: number, status: string): Promise<void> {
   try {
-    await setCardStatusOn(cardId, status)
+    setCardStatusOn(cardId, status)
   } catch {
     // the board would not take the write — leave the stage as it is
   }
@@ -572,7 +574,7 @@ function lockedBy(
 // The text the user typed for a run, pulled from whichever field carries it.
 function runInput(req: AgentRequest): string | undefined {
   const text = req.description ?? req.reason ?? req.notes ?? ''
-  return text.trim() || undefined
+  return text.trim() ? text : undefined
 }
 
 /** The title of the card a run names, so its prompt can say what the task is called. */
@@ -605,6 +607,7 @@ export function openRun(
   sessionId: string = randomUUID(),
   /** The session this planning run carries on or forks (#1304), in place of a fresh one. */
   said?: CarriedSession,
+  studioAtLaunch = false,
 ): { run: RunRecord; spec: RunSpec } | RunRefusal {
   const retired = retiredStudioRun(req.action)
   if (retired) return retired
@@ -657,9 +660,14 @@ export function openRun(
   // goes in the log rather than being swallowed: a run on another tool than the one asked
   // for is the first thing to check when its output looks wrong.
   if (plan.note) notes = [...notes, plan.note]
+  const task = workspaceTask()
+  const carriedPin = task && said?.continues ? readStudioSession(task, said.continues) : null
+  const pin = carriedPin ?? (task ? activeStudioPin(task) : null)
+  if (pin && !readVersion(pin.studio, pin.version)) return refusal('studioOffline', missingStudioVersion(pin))
   const record: RunRecord = {
     sessionId,
     cloudExecution: executionOf(),
+    studioPin: pin ?? undefined,
     cardId,
     action: req.action,
     deliveryId: joining?.deliveryId,
@@ -721,6 +729,7 @@ export function openRun(
     sessionId,
     plan,
     prompt,
+    studioAtLaunch,
     ...(notes.length ? { notes } : {}),
     ...(said?.continues ? { again: { ...req, session: 'new', flowId: record.flowId } } : {}),
   }
@@ -858,6 +867,8 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   const prev = findRun(runs, id)
   if (prev === null) return ambiguousRun(id)
   if (!prev) return unknownRun(id)
+  const pin = prev.studioPin
+  if (pin && !readVersion(pin.studio, pin.version)) return refusal('studioOffline', missingStudioVersion(pin))
   if (prev.status === 'running') return refusal('runGoing', 'that run is still going')
   const retired = retiredStudioRun(prev.action)
   if (retired) return retired
@@ -867,12 +878,13 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   // 构建已结束但尚未进入落地时，继续原会话核对进度。
   const delivery = build ? findDelivery(build.deliveryId) : undefined
   if (build && (prev.action !== 'implement' || prev.deliveryId !== build.deliveryId || delivery?.status !== 'active')) {
-    return refusal('deliveryTakenOver', '原构建不属于当前待续跑的交付，不会启动新会话。', { id: build.deliveryId })
+    return refusal('deliveryTakenOver', 'The original build belongs to a different delivery. Check the delivery before resuming.', { id: build.deliveryId })
   }
   const ended = endedDeliveryRefusal(prev)
   if (ended) return ended
   const automatic = typeof options === 'object' && options.automatic === true
-  const pending = !forced && prev.status !== 'stopped' ? prev.retry?.pending : undefined
+  const pending = !forced && prev.status !== 'stopped' && (automatic || !process.env[RETRY_FILE_ENV])
+    ? prev.retry?.pending : undefined
   if (automatic && !pending) return refusal('runContinued', 'The automatic retry is no longer pending.')
   const resetReplay = pending?.sessionAction === 'reset_replay'
   const session = forced || resetReplay ? undefined : resumeSessionId(prev)
@@ -909,7 +921,7 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
     const started = await planRetry(prev, ask, sessionId, cwd)
     if ('error' in started) return started
     ;({ plan, fresh } = started)
-    const restart = restartPrompt({ ...requestOf(prev), runtime: plan.runtime }, prev.deliveryId)
+    const restart = restartPrompt({ ...requestOf(prev), runtime: plan.runtime }, prev.deliveryId, false)
     fresh.prompt = restart ?? ['Continue work.', fresh.prompt].join('\n\n')
     if (!lacksSession(prev) && !forced) fresh.retry = false
   }
@@ -919,12 +931,17 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   }
 
   // Read before the resumed run joins the delivery, which clears its stop.
-  const buildResume = prev.action === 'implement' && prev.deliveryId ? resumePrompt(prev.deliveryId, prev.action) : undefined
+  const buildResume = prev.action === 'implement' && prev.deliveryId ? resumePrompt(prev.deliveryId, prev.action, prev.cardId ?? undefined) : undefined
   const opened = await resumeHeld(prev, plan, sessionId, resuming, fresh, !!pending)
   if ('error' in opened) return opened
   if (!opened.spec.prompt && buildResume) opened.spec.prompt = buildResume
-  if (build?.notes?.trim()) opened.spec.prompt = [opened.spec.prompt || resumePrompt(prev.deliveryId, prev.action), build.notes.trim()].join('\n\n')
-  if (session && requireSession && !pending) opened.spec.prompt = [recoveryPrompt, opened.spec.prompt].filter(Boolean).join('\n\n')
+  if (build?.notes?.trim()) opened.spec.prompt = [opened.spec.prompt || resumePrompt(prev.deliveryId, prev.action, prev.cardId ?? undefined), build.notes].join('\n\n')
+  if (session && requireSession && !pending) {
+    const cardId = prev.cardId ?? undefined
+    const prompt = opened.spec.prompt || (compactTaskPrompt({ action: prev.action, id: cardId })
+      ? resumePrompt(prev.deliveryId, prev.action, cardId) : '')
+    opened.spec.prompt = [recoveryPrompt, prompt].filter(Boolean).join('\n\n')
+  }
   if (build || buildResume || pending || requireSession) writeSpec(opened.spec)
   return opened
 }
@@ -942,7 +959,7 @@ async function planRetry(
     ...(runtime ? { pin: runtime } : {}),
     ...(shipsHarness(prev.harness) ? { harness: prev.harness } : {}),
   })
-  const { prompt, notes } = buildRun({ ...ask, title: titleOf(ask.id), runtime: plan.runtime, pictures: prev.pictures })
+  const { prompt, notes } = buildRun({ ...ask, title: titleOf(ask.id), runtime: plan.runtime, pictures: prev.pictures }, false)
   return { plan, fresh: { prompt, notes: note ? [...notes, note] : notes, retry: true } }
 }
 
@@ -968,6 +985,7 @@ async function resumeHeld(
   const record: RunRecord = {
     sessionId,
     cloudExecution: executionOf(),
+    studioPin: prev.studioPin ?? (workspaceTask() ? activeStudioPin(workspaceTask()!) ?? undefined : undefined),
     cardId: prev.cardId,
     createdCardIds: prev.createdCardIds,
     triage: prev.triage,
@@ -997,8 +1015,8 @@ async function resumeHeld(
           ...(prev.retry && prev.result ? { result: prev.result } : {}),
         }),
     failure: automatic ? prev.retry?.pending?.failure : undefined,
-    retry: prev.retry ? { ...prev.retry, pending: undefined, launching: automatic ? true : undefined } : undefined,
-    ...(prev.retryHistory?.length ? { retryHistory: prev.retryHistory } : {}),
+    retry: prev.retry && automatic ? { ...prev.retry, pending: undefined, launching: automatic ? true : undefined } : undefined,
+    ...(automatic && prev.retryHistory?.length ? { retryHistory: prev.retryHistory } : {}),
     logPath: logPathOf(sessionId),
     specAgent: prev.specAgent,
     cards: prev.cards,
@@ -1050,8 +1068,11 @@ async function resumeHeld(
     })
   }
   // AGy can persist an empty conversation before saving its first prompt.
-  const prompt = fresh?.prompt ?? (prev.harness === 'antigravity' ? readSpec(prev.sessionId)?.prompt : undefined) ?? ''
-  const spec: RunSpec = { sessionId, plan, prompt, ...(fresh?.notes.length ? { notes: fresh.notes } : {}) }
+  const pendingAgY = prev.harness === 'antigravity' && !prev.submitted && !prev.result
+    ? readSpec(prev.sessionId) : null
+  const prompt = fresh?.prompt ?? pendingAgY?.prompt ?? ''
+  const studioAtLaunch = !!fresh || !pendingAgY?.prompt || pendingAgY.studioAtLaunch === true
+  const spec: RunSpec = { sessionId, plan, prompt, studioAtLaunch, ...(fresh?.notes.length ? { notes: fresh.notes } : {}) }
   writeSpec(spec)
   if (prev.harness === 'antigravity') dropSpec(prev.sessionId)
   // A resume spawns a process and works like any other run, so it counts as one — and
@@ -1319,7 +1340,7 @@ export type ReconcileResult =
       base?: string
     }
   | { kind: 'none' }
-  | { kind: 'unverified'; deliveryId?: string; diagnostic: string }
+  | { kind: 'unverified'; deliveryId?: string; diagnostic: string; retryable?: boolean }
 
 function verifyDeliveryRunsStopped(
   runs: RunRecord[],
@@ -1406,6 +1427,7 @@ export async function reconcileCardDelivery(cardId: number): Promise<ReconcileRe
           kind: 'unverified',
           deliveryId: activeOrLatest.deliveryId,
           diagnostic: refused.error,
+          retryable: false,
         }
       }
       const processError = verifyDeliveryRunsStopped(store.runs, activeOrLatest.deliveryId, cardId)
@@ -1414,6 +1436,7 @@ export async function reconcileCardDelivery(cardId: number): Promise<ReconcileRe
           kind: 'unverified',
           deliveryId: activeOrLatest.deliveryId,
           diagnostic: processError,
+          retryable: false,
         }
       }
       const lastRun = store.runs
@@ -1447,7 +1470,7 @@ export async function releaseCardDelivery(cardId: number): Promise<
 > {
   const execution = executionOf()
   if (execution && !(await executionHeld(execution))) {
-    return { ok: false, error: '无法确认当前执行的 Cloud 授权，无法释放原交付写锁。' }
+    return { ok: false, error: 'Could not confirm Cloud authorization to release the delivery lock.' }
   }
   const reaped: RunRecord[] = []
   const restore: RunRecord[] = []
@@ -1465,7 +1488,7 @@ export async function releaseCardDelivery(cardId: number): Promise<
         return {
           ok: false,
           deliveryId: active.deliveryId,
-          error: `原交付仍有运行中的进程 (${liveRun.sessionId})，无法释放写锁。`,
+          error: `The delivery lock is held by a running process (${liveRun.sessionId}).`,
         }
       }
       const processError = verifyDeliveryRunsStopped(store.runs, active.deliveryId, cardId)
@@ -1494,7 +1517,7 @@ export async function resumeDelivery(
 ): Promise<{ ok: boolean; deliveryId?: string; landed?: boolean; carryOn?: DeliveryCarryOn } & Partial<RunRefusal>> {
   if (!id.trim()) return { ok: false, ...refusal('deliveryUnnamed', 'name the delivery to carry on', { action: 'resume' }) }
   const execution = executionOf()
-  if (execution && !await executionHeld(execution)) return { ok: false, error: '无法确认本次续跑的执行权，交付保持原状，请稍后再点「续跑」。' }
+  if (execution && !await executionHeld(execution)) return { ok: false, error: 'Could not confirm permission to resume this delivery. Try again later.' }
   const put = resumeRecord(id, execution)
   if (!put.ok) return put
   const delivery = put.delivery

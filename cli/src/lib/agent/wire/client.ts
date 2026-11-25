@@ -37,6 +37,7 @@ export interface ClientTurn {
   prepareUntil?: number
   /** What to ask the agent to do. */
   prompt: string
+  imageFiles?: readonly string[]
   /** The folder the work happens in. */
   cwd: string
   /** The conversation to carry on, when this run continues an earlier one. Absent opens a
@@ -66,6 +67,8 @@ export interface ClientTurn {
 export interface TurnEnd {
   cleanup?: import('./codex-background-types').Cleanup
   ok: boolean
+  /** Setup failed before any prompt reached the agent. */
+  canFallback?: boolean
   replyParts?: LocalReplyPart[]
   /** The agent's closing message. */
   result?: string

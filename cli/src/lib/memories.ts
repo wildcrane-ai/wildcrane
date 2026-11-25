@@ -8,7 +8,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { rawMove } from './agent/command'
+import { boardCommand } from './agent/command'
 import { type SpecAgent } from './agents/parse'
 import { parseYamlBlock, splitFrontmatter, type YamlValue } from './agents/yaml'
 import { RESERVED_MEMORY_DIR, STUDIO_MEMORY_DIR } from './memory'
@@ -89,7 +89,7 @@ export function globalMemoryBlock(agent: SpecAgent): string {
     'follow its rules whenever you change it:',
     '',
     ...kept.map((m) => {
-      const rules = m.builtIn ? `\`${rawMove(`memory-file ${m.name}`)}\`` : `\`${GLOBAL_MEMORY_FILE}\` in that folder`
+      const rules = m.builtIn ? `\`${boardCommand()} memory file ${m.name}\`` : `\`${GLOBAL_MEMORY_FILE}\` in that folder`
       return `- \`${m.name}\` — ${m.description.replace(/[.。]$/, '')}: \`${m.dir}/\`; rules: ${rules}`
     }),
   ].join('\n')

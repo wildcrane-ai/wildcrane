@@ -49,16 +49,16 @@ CLI handler sources are linked in [the command inventory](coverage-akb.md).
 | `GET /v1/projects/{id}` | Get a project | `project list; task commands (scope lookup)` | [Project settings and board](../../web/src/pages/Settings.tsx) | Indirect read; no dedicated command | [route](../../cloud/src/v1/index.ts#L1027) |
 | `PATCH /v1/projects/{id}` | Update a project | — | [Project settings: name](../../web/src/pages/Settings.tsx) | No AKB; G02 | [route](../../cloud/src/v1/index.ts#L1028) |
 | `DELETE /v1/projects/{id}` | Delete a project | — | [Project settings: delete](../../web/src/pages/Settings.tsx) | No AKB; G02 | [route](../../cloud/src/v1/index.ts#L1030) |
-| `GET /v1/projects/{id}/board` | Read the project's board files | `raw conflict resolve <id>` reads current versions | [Task board/card](../../web/src/pages/Board.tsx) | Transport; G07 covers missing user-facing reads | [route](../../cloud/src/v1/index.ts#L1031) |
+| `GET /v1/projects/{id}/board` | Read the project's board files | `board conflict resolve <id>` reads current versions | [Task board/card](../../web/src/pages/Board.tsx) | Transport; G07 covers missing user-facing reads | [route](../../cloud/src/v1/index.ts#L1031) |
 | `POST /v1/projects/{id}/board/archive-completions` | Reconcile completed archives after Runner sync | — | — | Runner session and synchronized archive versions required | [route](../../cloud/src/v1/index.ts) |
-| `POST /v1/projects/{id}/board/commits` | Write what a Runner changed on the board | `raw conflict resolve <id> --expect <revision> --file <path>` | — | Saved conflict batches only; [contract](board-conflicts.md), current execution required | [route](../../cloud/src/v1/index.ts#L1032) |
+| `POST /v1/projects/{id}/board/commits` | Write what a Runner changed on the board | `board conflict resolve <id> --expect <revision> --file <path>` | — | Saved conflict batches only; [contract](board-conflicts.md), current execution required | [route](../../cloud/src/v1/index.ts#L1032) |
 | `POST /v1/projects/{id}/import` | Import a local board's cards and files | — | — | API only: board import | [route](../../cloud/src/v1/index.ts#L1037) |
 | `GET /v1/projects/{id}/agents` | List a project's agents | `studio instructions <agent> (read)` | [Project settings: agents](../../web/src/pages/Settings.tsx) | Partial: instructions view; G04 | [route](../../cloud/src/v1/index.ts#L1042) |
 | `PUT /v1/projects/{id}/agents/{agent}` | Set an agent's schedule, or a board agent's rule | `studio instructions <agent> --text <text> or --file <path>` | [Project settings: rule and schedule](../../web/src/pages/Settings.tsx) | Partial: rule only, no schedule; G04 | [route](../../cloud/src/v1/index.ts#L1043) |
 | `POST /v1/projects/{id}/agents/{agent}/run` | Run a scheduled agent now | `— (raw agent run starts a local scheduled agent)` | [Project settings: run agent now](../../web/src/pages/Settings.tsx) | No equivalent Cloud dispatch; G04 | [route](../../cloud/src/v1/index.ts#L1045) |
-| `GET /v1/studios` | List studios | `studio; studio list; raw previews --triggers --studio <id> --workspace <id>` | [Studios: installed](../../web/src/pages/Studios.tsx) | Covered | [route](../../cloud/src/v1/index.ts#L1047) |
+| `GET /v1/studios` | List studios | `studio; studio list; studio previews --triggers --studio <id> --workspace <id>` | [Studios: installed](../../web/src/pages/Studios.tsx) | Covered | [route](../../cloud/src/v1/index.ts#L1047) |
 | `POST /v1/studios` | Create a studio | `studio create <folder> --request-id <id> [--workspace <id>]` | [Studio builder task: publish local files](../../web/src/pages/Studios.tsx) | Covered (agent-assisted UI) | [route](../../cloud/src/v1/index.ts#L1048) |
-| `GET /v1/studios/{id}` | Get a studio | `studio pull <id> [folder]; studio push <folder> --dry-run` | [Studio detail](../../web/src/pages/Studios.tsx) | Covered | [route](../../cloud/src/v1/index.ts#L1049) |
+| `GET /v1/studios/{id}` | Get a studio | `studio pull <id> [folder]; studio clone <id> <folder>; studio push <folder> --dry-run` | [Studio detail](../../web/src/pages/Studios.tsx) | Covered | [route](../../cloud/src/v1/index.ts#L1049) |
 | `PATCH /v1/studios/{id}` | Update a studio | `studio push <folder> [--request-id <id>]` | [Studio builder task: update local files](../../web/src/pages/Studios.tsx) | Covered (expected version from version.json) | [route](../../cloud/src/v1/index.ts#L1050) |
 | `DELETE /v1/studios/{id}` | Delete a studio | — | [Studios: delete [force=true]](../../web/src/pages/Studios.tsx) | No AKB; G05 | [route](../../cloud/src/v1/index.ts#L1051) |
 | `GET /v1/marketplace/studios` | List official studios | — | [Studios: discover](../../web/src/pages/Studios.tsx) | No AKB; G05 | [route](../../cloud/src/v1/index.ts#L1053) |
@@ -73,23 +73,23 @@ CLI handler sources are linked in [the command inventory](coverage-akb.md).
 | `DELETE /v1/runtimes/{id}` | Delete a runtime | — | [AI tools/settings: delete](../../web/src/components/Settings.tsx) | No AKB; G03 | [route](../../cloud/src/v1/index.ts#L1063) |
 | `POST /v1/runtimes/{id}/test` | Test a runtime | `— (agent check checks local installation)` | [AI tools/settings: test connection](../../web/src/components/Settings.tsx) | No equivalent; G03 | [route](../../cloud/src/v1/index.ts#L1064) |
 | `GET /v1/tasks` | List tasks | `task list [--project <id> or --workspace <id>] [--status <status>]` | [Board; archive](../../web/src/pages/Board.tsx) | Partial: no scope=active or requestKey query; G06 | [route](../../cloud/src/v1/index.ts#L1066) |
-| `POST /v1/tasks` | Create a task | `task create <request...> --studio <id> [--project <id>]; raw create (linked project)` | [New task; triage: build now](../../web/src/pages/NewGoal.tsx) | Partial: see creation parameters in G06 | [route](../../cloud/src/v1/index.ts#L1067) |
+| `POST /v1/tasks` | Create a task | `task create <request...> --studio <id> [--project <id>]; task create --title <title> (linked project)` | [New task; triage: build now](../../web/src/pages/NewGoal.tsx) | Partial: see creation parameters in G06 | [route](../../cloud/src/v1/index.ts#L1067) |
 | `GET /v1/tasks/{id}` | Get a task | `task show <task>` | [Task page](../../web/src/pages/CardPage.tsx) | Covered | [route](../../cloud/src/v1/index.ts#L1068) |
-| `PATCH /v1/tasks/{id}` | Update a task | `— (raw update edits local card metadata)` | — | API only; local metadata is not this API | [route](../../cloud/src/v1/index.ts#L1074) |
+| `PATCH /v1/tasks/{id}` | Update a task during review or an active chat | `task runtime <task> <runtime>` | — | Status, title and project updates are HTTP-only | [route](../../cloud/src/v1/index.ts#L1173) |
 | `POST /v1/tasks/{id}/archive` | Archive and complete an eligible task | `task archive <task>` | — | Cloud confirms the archived card and completed task | [route](../../cloud/src/v1/index.ts) |
 | `POST /v1/tasks/{id}/cancel` | Cancel a task | `task remove <task> [reason...] [--discard]` | [Task: remove](../../web/src/pages/CardPage.tsx) | Covered | [route](../../cloud/src/v1/index.ts#L1075) |
 | `POST /v1/tasks/{id}/stop` | Stop a running task | `task stop <task>` | [Task: stop execution](../../web/src/pages/CardPage.tsx) | Covered | [route](../../cloud/src/v1/index.ts#L1076) |
 | `POST /v1/tasks/{id}/restore` | Restore a removed or completed task without starting | `task restore <task>` | [Archive/removed task: restore removed or completed task](../../web/src/components/Restore.tsx) | Covered; restores without starting | [route](../../cloud/src/v1/index.ts#L1077) |
-| `POST /v1/tasks/{id}/discard` | Discard a build | `— (raw delivery cancel is local)` | [Task: discard build](../../web/src/pages/CardPage.tsx) | No equivalent Cloud operation; G07 | [route](../../cloud/src/v1/index.ts#L1078) |
+| `POST /v1/tasks/{id}/discard` | Discard a build | `— (delivery cancel is local)` | [Task: discard build](../../web/src/pages/CardPage.tsx) | No equivalent Cloud operation; G07 | [route](../../cloud/src/v1/index.ts#L1078) |
 | `GET /v1/tasks/{id}/runtimes` | List task runtimes | — | [Task: resume with another runtime](../../web/src/pages/CardPage.tsx) | No AKB; G06 | [route](../../cloud/src/v1/index.ts#L1079) |
 | `GET /v1/tasks/{id}/bill` | Read task cost details | — | [Task: cost bill](../../web/src/pages/CardPage.tsx) | No AKB; G07 | [route](../../cloud/src/v1/index.ts#L1080) |
 | `GET /v1/tasks/{id}/handoff` | Retired handoff read | — | — | Retired: machine affinity removed | [route](../../cloud/src/v1/index.ts#L1081) |
 | `POST /v1/tasks/{id}/handoff` | Retired handoff write | — | — | Retired: machine affinity removed | [route](../../cloud/src/v1/index.ts#L1082) |
 | `POST /v1/tasks/{id}/execute` | Start work from the prepared review revision | — | [Task: Execute](../../web/src/pages/CardPage.tsx) | Atomic authorization of ready stages | [route](../../cloud/src/v1/index.ts) |
 | `POST /v1/tasks/{id}/resume` | Resume task, optionally choosing runtime | `task resume <task>` | [Task: resume](../../web/src/pages/CardPage.tsx) | Partial: no runtime parameter; G06 | [route](../../cloud/src/v1/index.ts#L1083) |
-| `GET /v1/tasks/{id}/studio` | Get a task's studio version | `raw file <studio> <path> (pinned files)` | [Task: Studio/Preview instructions](../../web/src/pages/CardPage.tsx) | Partial indirect read, no dedicated JSON view; G07 | [route](../../cloud/src/v1/index.ts#L1089) |
+| `GET /v1/tasks/{id}/studio` | Get a task's studio version | `studio file <studio> <path> (pinned files)` | [Task: Studio/Preview instructions](../../web/src/pages/CardPage.tsx) | Partial indirect read, no dedicated JSON view; G07 | [route](../../cloud/src/v1/index.ts#L1089) |
 | `GET /v1/tasks/{id}/card` | Read the task's card | `task show <task>; task update-questions <task> (baseline)` | [Task: card sheet](../../web/src/pages/CardPage.tsx) | Covered (show returns body) | [route](../../cloud/src/v1/index.ts#L1090) |
-| `GET /v1/tasks/{id}/subtasks` | Get a group root's subtasks | `— (raw inspect reads local facts)` | [Task: subtasks](../../web/src/pages/CardPage.tsx) | No Cloud read command; G07 | [route](../../cloud/src/v1/index.ts#L1091) |
+| `GET /v1/tasks/{id}/subtasks` | Get a group root's subtasks | `— (task inspect reads local facts)` | [Task: subtasks](../../web/src/pages/CardPage.tsx) | No Cloud read command; G07 | [route](../../cloud/src/v1/index.ts#L1091) |
 | `GET /v1/tasks/{id}/diff` | Get a task's landed changes | — | [Task: landed changes](../../web/src/pages/CardPage.tsx) | No AKB; G07 | [route](../../cloud/src/v1/index.ts#L1092) |
 | `PATCH /v1/tasks/{id}/questions` | Edit the task's open questions | `task update-questions <task> --append/--update/--drop/--clear; choices --option/--recommended-option/--mode/--agent` | [Task: answer/drop questions](../../web/src/pages/CardPage.tsx) | Covered for direct Cloud edits; baseline read automatically | [route](../../cloud/src/v1/index.ts#L1093) |
 | `PUT /v1/tasks/{id}/card` | Save the task's card | `— (edit local body, Runner sync)` | — | Agent/API write; not an editor UI gap | [route](../../cloud/src/v1/index.ts#L1098) |
@@ -101,7 +101,7 @@ CLI handler sources are linked in [the command inventory](coverage-akb.md).
 | `POST /v1/tasks/{id}/chat/continue` | Retry or continue the latest failed task reply | — | [Task: retry/continue reply, choose runtime](../../web/src/pages/CardPage.tsx) | No AKB; G08 | [route](../../cloud/src/v1/index.ts#L1112) |
 | `POST /v1/tasks/{id}/chat/stop` | Stop the agent's reply on a task | `task chat <task> --stop` | [Task: stop reply](../../web/src/pages/CardPage.tsx) | Covered (separate from execution stop) | [route](../../cloud/src/v1/index.ts#L1113) |
 | `GET /v1/chats` | List your chats | — | [Chats: project, waiting, external source](../../web/src/pages/Chats.tsx) | No AKB; G10 | [route](../../cloud/src/v1/index.ts#L1114) |
-| `POST /v1/discussions` | Start a discussion | `— (goal new opens an external-host discussion)` | [New idea: start discussion with text/images/runtime](../../web/src/pages/NewGoal.tsx) | No equivalent; G10 | [route](../../cloud/src/v1/index.ts#L1123) |
+| `POST /v1/discussions` | Start a discussion | `— (goal new opens an external-host discussion)` | [New discussion: send a message with text/images/runtime](../../web/src/pages/NewGoal.tsx) | No equivalent; G10 | [route](../../cloud/src/v1/index.ts#L1123) |
 | `POST /v1/discussions/external` | Open an external-host discussion (not only Claude Code) | `goal new (host session; no explicit discussion selector)` | [Chats: external-host conversation](../../web/src/pages/Chats.tsx) | Indirect/session-bound support | [route](../../cloud/src/v1/index.ts#L1124) |
 | `GET /v1/discussions/{id}` | Read a discussion | `goal new/save/drop/start (context read)` | [Discussion page](../../web/src/pages/Discussion.tsx) | Partial: no read/list command; G10 | [route](../../cloud/src/v1/index.ts#L1126) |
 | `DELETE /v1/discussions/{id}` | Delete a discussion | — | [Chats: delete discussion](../../web/src/pages/Chats.tsx) | No AKB; G10 | [route](../../cloud/src/v1/index.ts#L1127) |
@@ -110,14 +110,11 @@ CLI handler sources are linked in [the command inventory](coverage-akb.md).
 | `PUT /v1/discussions/{id}/draft` | Save a discussion's goals | `goal new --title <text> --body-file <path> --studio <id>; goal save --id <goal> [fields]` | [Agent drafts shown in discussion](../../web/src/pages/Discussion.tsx) | Covered in current conversation (expectedVersion automatic) | [route](../../cloud/src/v1/index.ts#L1131) |
 | `POST /v1/discussions/{id}/chat/continue` | Retry or continue the latest failed discussion reply | — | [Discussion: retry/continue](../../web/src/pages/Discussion.tsx) | No AKB; G10 | [route](../../cloud/src/v1/index.ts#L1132) |
 | `POST /v1/discussions/{id}/chat/stop` | Stop the agent's reply | — | [Discussion: stop reply](../../web/src/pages/Discussion.tsx) | No AKB; G10 | [route](../../cloud/src/v1/index.ts#L1133) |
-| `PATCH /v1/discussions/{id}/ideas/{idea}` | Change an goal's studio | `goal save --id <goal> --studio <id> (via whole draft)` | [Discussion: change Studio (compatibility alias)](../../web/src/pages/Discussion.tsx) | Indirect/session-bound; G11 | [route](../../cloud/src/v1/index.ts#L1134) |
-| `DELETE /v1/discussions/{id}/ideas/{idea}` | Discard an goal | `goal drop --id <goal> (via whole draft)` | [Discussion: drop goal (compatibility alias)](../../web/src/pages/Discussion.tsx) | Covered in current conversation | [route](../../cloud/src/v1/index.ts#L1137) |
-| `POST /v1/discussions/{id}/ideas/{idea}/start` | Start an goal | `goal start --id <goal> (uses goals path)` | [Discussion: start goal (compatibility alias)](../../web/src/pages/Discussion.tsx) | Partial: G11 | [route](../../cloud/src/v1/index.ts#L1139) |
-| `PATCH /v1/discussions/{id}/goals/{goal}` | Change an goal's studio | `goal save --id <goal> --studio <id> (via whole draft)` | [Discussion: change Studio](../../web/src/pages/Discussion.tsx) | Indirect/session-bound; G11 | [route](../../cloud/src/v1/index.ts#L1140) |
-| `DELETE /v1/discussions/{id}/goals/{goal}` | Discard an goal | `goal drop --id <goal> (via whole draft)` | [Discussion: drop goal](../../web/src/pages/Discussion.tsx) | Covered in current conversation | [route](../../cloud/src/v1/index.ts#L1143) |
+| `PATCH /v1/discussions/{id}/goals/{goal}` | Change a Goal's studio | `goal save --id <goal> --studio <id> (via whole draft)` | [Discussion: change Studio](../../web/src/pages/Discussion.tsx) | Indirect/session-bound; G11 | [route](../../cloud/src/v1/index.ts#L1140) |
+| `DELETE /v1/discussions/{id}/goals/{goal}` | Withdraw a Goal | `goal drop --id <goal> (via whole draft)` | [Discussion: drop goal](../../web/src/pages/Discussion.tsx) | Covered in current conversation | [route](../../cloud/src/v1/index.ts#L1143) |
 | `POST /v1/discussions/{id}/goals/{goal}/start` | Start or refine a Goal | `goal start --id <goal>` | [Discussion: Goal actions](../../web/src/pages/Discussion.tsx) | Partial: no project/action/machine; G11 | [route](../../cloud/src/v1/index.ts#L1145) |
-| `GET /v1/triage` | List triage items | `— (raw triage check reads local source identity)` | [Triage: open/history, project, state, order](../../web/src/pages/Triage.tsx) | No equivalent Cloud listing; G12 | [route](../../cloud/src/v1/index.ts#L1147) |
-| `POST /v1/triage` | Propose a triage item | `— (raw triage add writes local board)` | — | API only; raw item sync is indirect | [route](../../cloud/src/v1/index.ts#L1148) |
+| `GET /v1/triage` | List triage items | `— (triage check reads local source identity)` | [Triage: open/history, project, state, order](../../web/src/pages/Triage.tsx) | No equivalent Cloud listing; G12 | [route](../../cloud/src/v1/index.ts#L1147) |
+| `POST /v1/triage` | Propose a triage item | `— (triage add writes local board)` | — | API only; raw item sync is indirect | [route](../../cloud/src/v1/index.ts#L1148) |
 | `POST /v1/triage/{id}/dismiss` | Dismiss a triage item | — | [Triage: dismiss, reason](../../web/src/pages/Triage.tsx) | No AKB; G12 | [route](../../cloud/src/v1/index.ts#L1149) |
 | `POST /v1/triage/{id}/restore` | Restore a dismissed triage item | — | [Triage: restore](../../web/src/pages/Triage.tsx) | No AKB; G12 | [route](../../cloud/src/v1/index.ts#L1151) |
 | `GET /v1/rejections` | List what the planner has not learned | `raw review-dismissals (agent reads)` | — | Agent/internal workflow, not a UI gap | [route](../../cloud/src/v1/index.ts#L1152) |
@@ -196,9 +193,12 @@ Service: Cloud Worker. Compatibility means still reachable in the current router
 | `GET /v1/lark/{cloud}/connected` | OAuth nonce return | — | Lark/Feishu redirect | Callback, excluded from gaps | [index.ts](../../cloud/src/index.ts) |
 | `POST /v1/lark/{cloud}/callback` | Encrypted/signed events and challenge | — | Lark/Feishu message | Callback, excluded from gaps | [index.ts](../../cloud/src/index.ts) |
 | `GET /card/{board}/{task}` | Redirect to ai4kanban://card/… | — | External card link | Compatibility redirect | [index.ts](../../cloud/src/index.ts) |
-| `POST /v1/speech` | Generate narration; verified Pro credits | `tts <text...> --voice <name> [--tier <tier>] --out <file>` | — | Covered; no current Web generator | [index.ts](../../cloud/src/index.ts) |
-| `POST /v1/image` | Generate image; verified Pro credits | `image <prompt...> --aspect <ratio> [--tier <tier>] [--ref <file>] --out <file>` | — | Covered; no current Web generator | [index.ts](../../cloud/src/index.ts) |
-| `POST /v1/music` | Generate instrumental track; verified Pro credits | `music <prompt...> [--seconds <n>] --out <file>` | — | Covered; no current Web generator | [index.ts](../../cloud/src/index.ts) |
+| `POST /v1/speech` | Generate narration; WildCrane API balance | `tts <text...> --voice <name> [--tier <tier>] --out <file>` | — | Covered; no current Web generator | [index.ts](../../cloud/src/index.ts) |
+| `POST /v1/image` | Generate image; WildCrane API balance | `image <prompt...> --aspect <ratio> [--tier <tier>] [--ref <file>] --out <file>` | — | Covered; no current Web generator | [index.ts](../../cloud/src/index.ts) |
+| `POST /v1/music` | Generate instrumental track; WildCrane API balance | `music <prompt...> [--seconds <n>] --out <file>` | — | Covered; no current Web generator | [index.ts](../../cloud/src/index.ts) |
+| `POST /v1/transcriptions` | Queue transcription of a task audio artifact version | `transcribe` | — | Covered | [transcriptions.ts](../../cloud/src/transcriptions.ts) |
+| `GET /v1/transcriptions?artifact=…&version=…` | Read the caller's most recently accepted job for an audio version | — | — | Public API | [transcriptions.ts](../../cloud/src/transcriptions.ts) |
+| `GET /v1/transcriptions/{id}` | Read a transcription job and its result | `transcribe` | — | Covered | [transcriptions.ts](../../cloud/src/transcriptions.ts) |
 
 `/v1/events` dispatch is conditional: `after` or an API-key bearer selects public V1;
 a session without `after` selects the old feed. Public V1 has only GET here, so POST with
@@ -210,9 +210,10 @@ Service: Cloud Worker; verified session except the signed Creem webhook. UI call
 
 | Method and path | Purpose / access | AKB | UI entry | Coverage / classification | Source |
 | --- | --- | --- | --- | --- | --- |
-| `GET /v1/billing` | Read plan, trial, credits, rates, quota | — | Settings/Subscribe | No billing/quota command; G13 | [billing.ts](../../cloud/src/billing.ts) |
+| `GET /v1/pricing` | Read the public hosting, top-up and API catalog | — | Pricing | Public | [billing-catalog.ts](../../cloud/src/billing-catalog.ts) |
+| `GET /v1/billing` | Read plan, renewal price, limits, API balance and pricing | — | Settings/Subscribe | No billing/quota command; G13 | [billing.ts](../../cloud/src/billing.ts) |
 | `POST /v1/billing/trial` | Start trial | — | Settings/Subscribe | No AKB; G13 | [billing.ts](../../cloud/src/billing.ts) |
-| `POST /v1/billing/checkout` | Buy pro/storage/credits; period/source | — | Subscribe/Buy credits | No AKB; G13 (storage is API-only here) | [billing.ts](../../cloud/src/billing.ts) |
+| `POST /v1/billing/checkout` | Buy Pro, storage or an API top-up | — | Subscribe/Top up | No AKB; G13 (storage is API-only here) | [billing.ts](../../cloud/src/billing.ts) |
 | `POST /v1/billing/confirm` | Confirm checkoutId or subscriptionId | — | Checkout return | No AKB; G13 | [billing.ts](../../cloud/src/billing.ts) |
 | `POST /v1/billing/portal` | Open customer billing portal | — | Settings: manage billing | No AKB; G13 | [billing.ts](../../cloud/src/billing.ts) |
 | `POST /v1/billing/resume` | Undo scheduled subscription cancellation | — | — | API only; no current UI caller | [billing.ts](../../cloud/src/billing.ts) |
@@ -304,9 +305,6 @@ Service: Cloud Worker. All require the service-role bearer and have no UI or AKB
 
 | Method and path | Purpose / access | AKB | UI entry | Coverage / classification | Source |
 | --- | --- | --- | --- | --- | --- |
-| `GET /internal/single-studio-migration/snapshot` | Read migration snapshot | — | — | Internal operation | [index.ts](../../cloud/src/index.ts) |
-| `POST /internal/single-studio-migration/apply` | Apply checked snapshot | — | — | Internal operation | [index.ts](../../cloud/src/index.ts) |
-| `POST /internal/workspaces/{workspace}/studio-authoring-migration` | Migrate Studio authoring | — | — | Internal operation | [index.ts](../../cloud/src/index.ts) |
 | `POST /internal/workspaces/{workspace}/board-move` | Move board files | — | — | Internal operation | [index.ts](../../cloud/src/index.ts) |
 | `POST /internal/workspaces/{workspace}/triage-move` | Move triage items | — | — | Internal operation | [index.ts](../../cloud/src/index.ts) |
 | `POST /internal/projects/{project}/schedules-move` | Move schedules | — | — | Internal operation | [index.ts](../../cloud/src/index.ts) |
@@ -347,6 +345,7 @@ Services are named by the synthetic hosts below. Methods are the actual callers�
 | `POST https://diff-call/wait` | Wait for computer diff answer | — | — | Internal binding only | [diff.ts](../../cloud/src/diff.ts) |
 | `POST https://diff-call/answer` | Return computer diff answer | — | — | Internal binding only | [diff.ts](../../cloud/src/diff.ts) |
 | `POST https://music-call/` | Run alarm-backed hosted music call | — | — | Internal binding only | [music.ts](../../cloud/src/music.ts) |
+| `POST https://transcription-run/` | Schedule a transcription job | — | — | Internal binding only | [transcriptions.ts](../../cloud/src/transcriptions.ts) |
 
 ## Runner loopback HTTP
 

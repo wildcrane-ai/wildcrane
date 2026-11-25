@@ -51,14 +51,14 @@ describe('a command with no subcommand', () => {
   })
 })
 
-describe('akb and akb raw (#551)', () => {
+describe('canonical command discovery and legacy routes', () => {
   const words = (help: string) => [...help.split('Commands:')[1]!.matchAll(/^ {2}(\S+)/gm)].map((m) => m[1])
 
-  it('akb lists only Cloud and tool commands; raw lists the local ones', async () => {
+  it('lists the public command groups and keeps explicit raw help available', async () => {
     const top = await captured(() => runAgent(['help'], { program: 'akb', cwd }))
     assert.deepEqual(words(top.out).sort(), [
-      'account', 'agent', 'goal', 'guide', 'help', 'image', 'music', 'project', 'raw', 'runner', 'studio',
-      'task', 'telemetry', 'template', 'tts', 'update', 'workspace',
+      'account', 'agent', 'board', 'components', 'delivery', 'goal', 'guide', 'help', 'image', 'memory', 'music',
+      'project', 'run', 'runner', 'studio', 'task', 'telemetry', 'template', 'transcribe', 'triage', 'tts', 'update', 'workspace',
     ])
     const raw = words((await captured(() => runAgent(['raw', 'help'], { program: 'akb', cwd }))).out)
     for (const word of ['card', 'delivery', 'run', 'triage', 'memory', 'previews', 'components', 'agent', 'studio', 'create']) {
@@ -66,11 +66,26 @@ describe('akb and akb raw (#551)', () => {
     }
   })
 
+  it('shows public options and keeps scheduler flags out of help', async () => {
+    for (const [argv, visible, hidden] of [
+      [['task', 'create'], '--title', /--body-file|--no-body|--previews|--question/],
+      [['task', 'implement'], '--print', /--(?:new-session|session|fork|transcript|follow|events)\b/],
+      [['run', 'resume'], '--fresh', /--require-session/],
+      [['memory', 'review'], '--task', /--(?:print|follow|events)\b/],
+      [['studio', 'previews'], '--studio', /--triggers/],
+    ] as const) {
+      const help = await captured(() => runAgent([...argv, '--help'], { cwd }))
+      assert.equal(help.code, 0)
+      assert.ok(help.out.includes(visible), help.out)
+      assert.doesNotMatch(help.out, hidden)
+    }
+  })
+
   it('an old name refuses and names the new path', async () => {
     for (const [argv, said] of [
-      [['delivery', 'complete', 'd_42'], '`akb delivery` is now `akb raw delivery`.'],
-      [['prune-memory'], '`akb prune-memory` is now `akb raw memory prune`.'],
-      [['studio', 'diagram', 'coding', '1'], '`akb studio diagram` is now `akb raw studio diagram`.'],
+      [['create'], '`akb create` is now `akb task create`.'],
+      [['resume'], '`akb resume` is now `akb run resume`.'],
+      [['studio', 'diagram', 'coding', '1'], 'Freeze a Studio draft with `akb studio preview <card> --folder <draft> --base <baseline>`.'],
       [['cloud', 'image'], '`akb cloud` is gone: use `akb account`, `akb image`, `akb tts`, `akb music` or `akb template`.'],
     ] as const) {
       const { code, err } = await captured(() => runAgent([...argv], { program: 'akb', cwd }))

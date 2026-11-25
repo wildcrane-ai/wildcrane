@@ -21,7 +21,6 @@ import { findDelivery } from '../src/lib/agent/deliveries.ts'
 import { BoardError, quietlyAsync } from '../src/lib/io.ts'
 import { cancelDelivery, openRun, leftBoardOnLanding, leftBoardRejected, patch, peekRun } from '../src/lib/agent/sessions.ts'
 import { withStore } from '../src/lib/agent/store.ts'
-import { setBoardProvider } from '../src/lib/board/index.ts'
 import { watchRun } from '../src/lib/agent/watch.ts'
 import { forgetMachineState } from './helpers/board.ts'
 
@@ -112,7 +111,6 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-landed-card-'))
   forgetMachineState(root)
   setBoardRoot(root)
-  setBoardProvider(null)
   file = path.join(root, 'docs/kanban/todo/1-feature.md')
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, card)

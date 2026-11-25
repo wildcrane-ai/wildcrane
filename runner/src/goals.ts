@@ -5,25 +5,41 @@ import type { Job } from './api'
 import type { Goal } from '../../cli/src/lib/shared/goal'
 import { readGoalDraft, writeGoalDraft } from '../../cli/src/lib/goal-draft'
 import { runnerHome } from './home'
+import { migrateGoalData, type SavedGoalData } from './goal-migration'
 import { readSession } from '../../cli/src/lib/cloud/session'
 import { accountGeneration } from './settings-control'
 
-export const goalsFileOf = (job: Pick<Job, 'id'>) => path.join(runnerHome(), 'ideas', `${job.id}.json`)
+export const goalsFileOf = (job: Pick<Job, 'id'>) => path.join(runnerHome(), 'goals', `${job.id}.json`)
 
-export async function writeGoals(job: Job & { discussion: NonNullable<Job['discussion']> }, list: typeof api.listStudios, preserveGoals = false): Promise<{ file: string } | { error: string }> {
+export async function writeGoals(
+  job: Job & { discussion: NonNullable<Job['discussion']> }, list: typeof api.listStudios,
+  preserveGoals = false, sourceId?: string | null,
+): Promise<{ file: string; preserved: boolean } | { error: string }> {
   const file = goalsFileOf(job)
   try {
-    const goals = preserveGoals && fs.existsSync(file) ? readGoalDraft(file).value.goals : job.discussion.goals
+    const ids = sourceId && sourceId !== job.id ? [job.id, sourceId] : [job.id]
+    const saved = preserveGoals ? ids.flatMap(id => [
+      { path: goalsFileOf({ id }), legacy: false },
+      { path: path.join(runnerHome(), 'ideas', `${id}.json`), legacy: true },
+    ]).find(entry => fs.existsSync(entry.path)) : undefined
+    const goals = !saved ? job.discussion.goals : saved.legacy ? migrateDraft(saved.path) : readGoalDraft(saved.path).goals
     const studios = await studioSnapshot(job.discussion.workspace, job.discussion.catalog, list)
     fs.mkdirSync(path.dirname(file), { recursive: true })
-    // A Runner can carry an older AKB that only edits the legacy draft format.
-    writeGoalDraft(file, { workspace: job.discussion.workspace, studios, goals }, 'ideas')
-    return { file }
+    writeGoalDraft(file, { workspace: job.discussion.workspace, studios, goals })
+    if (saved && saved.path !== file) fs.rmSync(saved.path, { force: true })
+    return { file, preserved: !!saved }
   } catch (e) { return { error: e instanceof Error ? e.message : String(e) } }
 }
 
+function migrateDraft(file: string): Goal[] {
+  const draft = JSON.parse(fs.readFileSync(file, 'utf8')) as SavedGoalData | null
+  if (draft) migrateGoalData(draft)
+  if (!Array.isArray(draft?.goals)) throw new Error('The goals array is missing or invalid.')
+  return draft.goals
+}
+
 export function readGoals(file: string): Goal[] | undefined {
-  try { return readGoalDraft(file).value.goals }
+  try { return readGoalDraft(file).goals }
   catch { return undefined }
   finally { fs.rmSync(file, { force: true }) }
 }

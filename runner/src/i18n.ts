@@ -1,10 +1,5 @@
 // The few lines the Runner prints, in Chinese or English after the system language.
 
-import type { Holder } from './lock'
-
-const ZH_HOLDER: Record<Holder, string> = { 'claude-code': 'Claude Code', codex: 'Codex', cursor: 'Cursor', dsh: 'dsh', zcode: 'ZCode', kimi: 'Kimi Code', terminal: '本机终端' }
-const EN_HOLDER: Record<Holder, string> = { 'claude-code': 'Claude Code', codex: 'Codex', cursor: 'Cursor', dsh: 'dsh', zcode: 'ZCode', kimi: 'Kimi Code', terminal: 'the terminal' }
-
 const ZH = {
   signIn: (url: string) => `请在浏览器中登录 WildCrane：\n${url}`,
   signedIn: () => '已登录',
@@ -18,10 +13,7 @@ const ZH = {
   updated: (version: string) => `已更新到 ${version}`,
   rolledBack: (version: string) => `新版本未能启动，已退回 ${version}`,
   nodeTooOld: (range: string) => `新版本需要 Node ${range}，请升级 Node。本次继续使用当前版本。`,
-  waitingHere: (holder?: Holder) => {
-    const who = holder ? ZH_HOLDER[holder] : '本机另一个程序'
-    return `${who}已在运行一个 WildCrane 实例，负责接收所有运行任务。当前实例已暂停，${who}关闭后将由当前实例接替。`
-  },
+  alreadyRunning: () => '本机已有 WildCrane Runner 正在运行，无法启动第二个实例。',
   stopped: () => '已停止',
 }
 
@@ -40,10 +32,7 @@ const EN: Lines = {
   updated: (version) => `Updated to ${version}`,
   rolledBack: (version) => `The new version did not start — back on ${version}`,
   nodeTooOld: (range) => `The new version needs Node ${range}. Update Node; running the current version for now.`,
-  waitingHere: (holder) => {
-    const who = holder ? EN_HOLDER[holder] : 'another app on this computer'
-    return `${who[0]!.toUpperCase()}${who.slice(1)} is already running a WildCrane instance that takes all run tasks. This instance is paused and takes over when ${who} closes.`
-  },
+  alreadyRunning: () => 'A WildCrane Runner is already running on this computer. A second instance cannot start.',
   stopped: () => 'Stopped',
 }
 

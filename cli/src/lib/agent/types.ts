@@ -325,7 +325,9 @@ export interface RunRecord {
    *  spawns. A harness that mints an id of its own keeps it in `resumeId`. */
   sessionId: string
   cloudExecution?: import('../cloud/execution').CloudExecution
+  studioPin?: import('./cloud-studios').StudioPin
   pendingWrites?: boolean
+  submitted?: boolean
   cardId: number | null
   /** Cards this run created through `akb raw create`, held until it closes so an overlapping
    *  run cannot adopt and refine its half-written cards. */
@@ -460,8 +462,8 @@ export type DeliveryEnding =
 
 /** Why a build ended with its delivery still active. The task page shows the first sentence. */
 export const NOT_COMPLETED = 'The delivery has not recorded completion.'
-export const notCompletedWhy = (deliveryId: string): string =>
-  `${NOT_COMPLETED} Finish its unchecked todos, then run akb raw delivery complete ${deliveryId}, with --commit <sha> --branch <name> in a git project.`
+export const notCompletedWhy = (deliveryId: string, command = 'akb'): string =>
+  `${NOT_COMPLETED} Finish its unchecked todos, then run ${command} delivery complete ${deliveryId}, with --commit <sha> --branch <name> in a git project.`
 
 /** One step a delivery entered, as history. Resuming never trusts it — a stored position
  *  goes stale in exactly the crash it exists for — so it is read, not acted on. */
@@ -766,9 +768,6 @@ export interface AgentSession {
   resumeId: string
   cwd?: string
 }
-
-/** The session a run that creates cards was started from (#1222): an agent in a terminal. */
-export type ChatHandoff = AgentSession
 
 /** What a build with no card was handed, and everything its delivery is opened from: the
  *  sentence **Start now** typed (#428), or the plan the handoff was answered on (#481). */

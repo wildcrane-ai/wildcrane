@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "wildcrane": {
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/server/dist/start.mjs",
+        "antigravity"
+      ]
+    }
+  }
+}

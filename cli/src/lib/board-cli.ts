@@ -21,6 +21,7 @@ import { backfillCardStudios } from './card-studio-backfill'
 
 // `init` is the one move that may run where no board exists yet — it is what makes one.
 const MAKES_A_BOARD = 'init'
+export const BOARD_LINK_HINT = 'Link this folder to a WildCrane project from the plugin'
 
 // ---- finding the board -----------------------------------------------------
 
@@ -106,7 +107,7 @@ export function resolveBoard(
       die(`no such folder: ${folder}`, { kind: 'no-such-folder', dir: folder })
     }
     if (fs.existsSync(folder) && !isBoardDir(folder) && move !== MAKES_A_BOARD) {
-      die(`${folder} is not a board — it has no todo/ and config.md. ${installHint}。`, {
+      die(`${folder} is not a board — it has no todo/ and config.md. ${installHint}.`, {
         kind: 'no-board',
         dir: folder,
       })
@@ -119,7 +120,7 @@ export function resolveBoard(
     const kept = path.join(root, '.akb', 'kanban')
     if (!hasBoard(root) && move !== MAKES_A_BOARD && fs.existsSync(path.join(kept, 'todo'))) return whole({ root, board: kept }, move)
     if (!hasBoard(root) && move !== MAKES_A_BOARD) {
-      die(`no board in ${root} — it has no docs/kanban/. ${installHint}。`, {
+      die(`no board in ${root} — it has no docs/kanban/. ${installHint}.`, {
         kind: 'no-board',
         dir: root,
       })
@@ -133,7 +134,7 @@ export function resolveBoard(
   if (move === MAKES_A_BOARD) return { root: path.resolve(cwd), board: path.join(path.resolve(cwd), 'docs', 'kanban') }
   die(
     `no board here. Looked in ${path.resolve(cwd)} and every folder above it for docs/kanban/. ` +
-      `${installHint}，或用 --board 指定已有看板。`,
+      `${installHint}, or use --board to select an existing board.`,
     { kind: 'no-board', dir: path.resolve(cwd) },
   )
 }
@@ -191,7 +192,7 @@ export async function runBoard(argv: string[], options: RunBoardOptions = {}): P
   const {
     program = 'kanban',
     cwd = process.cwd(),
-    installHint = '通过插件连接云端项目',
+    installHint = BOARD_LINK_HINT,
     version = null,
     onAnswer,
   } = options
@@ -200,18 +201,24 @@ export async function runBoard(argv: string[], options: RunBoardOptions = {}): P
   return runProgram(buildBoardProgram({ program, cwd, installHint, version, onAnswer }), argv, program)
 }
 
-/** `--board`/`--dir`/`--json` typed before `raw` moved to just after it, so the board's tree
- *  reads them; null when the line is not a `raw` one (#2102). */
-export function rawArgv(argv: string[]): string[] | null {
-  const shared: string[] = []
+/** Ignore shared options when selecting the command tree. */
+function commandIndex(argv: string[]): number {
   let i = 0
   for (; i < argv.length; i++) {
     const arg = argv[i]
-    if (arg === '--json' || /^--(board|dir)=/.test(arg)) shared.push(arg)
-    else if ((arg === '--board' || arg === '--dir') && i + 1 < argv.length) shared.push(arg, argv[++i])
+    if (arg === '--json' || /^--(board|dir)=/.test(arg)) continue
+    if ((arg === '--board' || arg === '--dir') && i + 1 < argv.length) i++
     else break
   }
-  return argv[i] === 'raw' ? [...shared, ...argv.slice(i + 1)] : null
+  return i
+}
+
+export const commandWord = (argv: string[]): string => argv[commandIndex(argv)] ?? ''
+
+/** Hand shared options on either side of `raw` to the legacy parser. */
+export function rawArgv(argv: string[]): string[] | null {
+  const i = commandIndex(argv)
+  return argv[i] === 'raw' ? [...argv.slice(0, i), ...argv.slice(i + 1)] : null
 }
 
 export function prose(box: Sink | null): { output?: string; warnings?: string[] } {

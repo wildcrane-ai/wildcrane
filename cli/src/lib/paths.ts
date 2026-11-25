@@ -102,6 +102,9 @@ export function writeRootIgnoreIfMissing(): boolean {
   fs.writeFileSync(ROOT_GITIGNORE, `${text}${separator}${block}`)
   return true
 }
+export const shellWord = (value: string): string =>
+  /^[\w./:@=-]+$/.test(value) ? value : `"${value.replace(/["`$\\]/g, '\\$&')}"`
+
 export let BOARD_FLAG = ''
 
 /** Where a board folder's project is: the nearest `.git` at or above it, else `rootAbove`.
@@ -166,12 +169,12 @@ function setBoard(kanban: string, root: string, flag: string): string {
  *  walk up. `named` is whether `--dir` chose it, which is what BOARD_FLAG reports. */
 export function setBoardRoot(root: string, named = false): string {
   const project = path.resolve(root)
-  return setBoard(path.join(project, 'docs', 'kanban'), project, named ? ` --dir ${project}` : '')
+  return setBoard(path.join(project, 'docs', 'kanban'), project, named ? ` --dir ${shellWord(project)}` : '')
 }
 
 export function setBoardDir(board: string, root?: string): string {
   const folder = path.resolve(board)
-  return setBoard(folder, root ?? projectRootOf(folder), ` --board ${folder}`)
+  return setBoard(folder, root ?? projectRootOf(folder), ` --board ${shellWord(folder)}`)
 }
 
 setBoardRoot(process.cwd())

@@ -1,3 +1,4 @@
+import { boardCommand } from '../src/lib/agent/command.ts'
 // What a delivery records, and what it holds still while it records it (#301): the card as
 // it was approved, one id across every session, and a card the board won't change under a
 // delivery it isn't part of.
@@ -328,7 +329,7 @@ describe('a delivery with no card', () => {
     })
     assert.equal(
       resumePrompt(id, 'implement'),
-      `Continue delivery ${id}. The delivery has not recorded completion. Finish its unchecked todos, then run akb raw delivery complete ${id}, with --commit <sha> --branch <name> in a git project.`,
+      `Continue delivery ${id}. The delivery has not recorded completion. Finish its unchecked todos, then run ${boardCommand()} delivery complete ${id}, with --commit <sha> --branch <name> in a git project.`,
     )
   })
 

@@ -1,3 +1,5 @@
+import { assetCapabilities, TEXT_LIMIT } from '../../../artifact-sdk/src/internal/asset-formats'
+import { previewComponents, previewComponentNames, type PreviewComponent } from '../../../artifact-sdk/src/internal/references'
 import asset from '../components/Asset.md'
 import compare from '../components/Compare.md'
 import set from '../components/Set.md'
@@ -9,7 +11,7 @@ import { BoardError } from './io'
 import { boardText } from './paths'
 import { studioById } from './agent/studios'
 
-const DOCUMENTS: Record<string, string> = { Asset: asset, Compare: compare, Storyboard: storyboard, Set: set, Studio: studio }
+const DOCUMENTS: Record<PreviewComponent, string> = { Asset: asset, Compare: compare, Storyboard: storyboard, Set: set, Studio: studio }
 
 export interface PreviewComponentDoc {
   name: string
@@ -37,7 +39,31 @@ export function agentComponents(
   return [...docs.values()]
 }
 
-export const allComponents = (): PreviewComponentDoc[] => Object.entries(DOCUMENTS).map(([name, text]) => ({ name, text: boardText(text) }))
+export const allComponents = (): PreviewComponentDoc[] => previewComponentNames.map(name => ({
+  name,
+  text: boardText(DOCUMENTS[name]),
+}))
+
+export function componentUsage(names: string[]): PreviewComponentDoc[] {
+  const docs = allComponents()
+  return names.map(name => {
+    const doc = docs.find(doc => doc.name === name)
+    if (!doc) throw new BoardError(`Unknown Preview Component "${name}". Choose from ${previewComponentNames.join(', ')}.`, {
+      kind: 'unknown-component', component: name,
+    })
+    return doc
+  })
+}
+
+export function componentCapabilitiesText(): string {
+  const { asset, ...components } = previewComponents
+  return [
+    asset.name,
+    ...assetCapabilities().map(([name, formats]) => `  ${name.padEnd(11)}${formats}`),
+    ...Object.values(components).map(({ name, summary }) => `${name.padEnd(13)}${summary}`),
+    `Text and CSV/TSV: up to ${TEXT_LIMIT.toLocaleString('en-US')} characters. Originals are downloadable. Other formats: download only.`,
+  ].join('\n')
+}
 
 export function studioComponents(id: string): PreviewComponentDoc[] {
   const flow = studioById(id)

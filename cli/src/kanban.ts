@@ -11,7 +11,8 @@ import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { runAgent } from './lib/agent-cli'
-import { rawArgv, runBoard } from './lib/board-cli'
+import { commandWord, rawArgv, runBoard } from './lib/board-cli'
+import { shellWord } from './lib/paths'
 import { SKILL_VERSION } from './version'
 
 // What `bin/ai4kanban.mjs` loads.
@@ -34,45 +35,14 @@ function invokedDirectly(): boolean {
 
 if (invokedDirectly()) {
   const argv = process.argv.slice(2)
-  const raw = rawArgv(argv)
-  // The one word this door answers that the board's moves don't: the process that watches
-  // a run, spawned by whichever command started it. Spelled so it can never collide with a
-  // move.
-  if (argv[0] === '__watch') {
-    void runAgent(argv, { program: 'akb' }).then((code) => {
-      process.exitCode = code
-    })
-  } else if (raw || argv[0] === 'guide') {
-    // The two doors every flow names by hand — `akb raw <move>` and `akb guide <topic>` —
-    // answered here under the same spellings (#173). This file is the copy of the rules the
-    // board is actually running: without these, an
-    // agent on a machine with no `akb` on its PATH would have to translate every line of
-    // every flow into the legacy door below, or fetch a different version off npm.
-    //
-    // Neither word collides: there is no `raw` move and no `guide` move. The rest of the
-    // run commands are deliberately left out — they DO collide (`create`, `archive`,
-    // `reject` are board moves here), and a run never starts another run anyway.
-    if (argv[0] === 'guide') {
-      void runAgent(argv, { program: `node ${SELF}` }).then((code) => {
-        process.exitCode = code
-      })
-    } else {
-      void runBoard(raw ?? [], {
-        program: `node ${SELF} raw`,
-        version: `wildcrane ${SKILL_VERSION}`,
-      }).then((code) => {
-        process.exitCode = code
-      })
-    }
-  } else {
-    // Absolute, like the two doors above: what this prints is for a person to paste, and a
-    // path relative to a working directory that may be anywhere runs from that one folder
-    // and nowhere else.
-    void runBoard(argv, {
-      program: `node ${SELF}`,
-      version: `wildcrane ${SKILL_VERSION}`,
-    }).then((code) => {
-      process.exitCode = code
-    })
-  }
+  const program = `node ${shellWord(SELF)}`
+  const word = commandWord(argv)
+  const legacy = new Set(['create', 'update-questions', 'conflict', 'list', 'inspect', 'validate', 'file',
+    'agent-file', 'memory-file', 'reject', 'init', 'card', 'previews', 'components', 'reflect',
+    'review-dismissals', 'describe-project', 'version'])
+  // Older callers also address board moves directly on the bundled rules.
+  const result = legacy.has(word)
+    ? runBoard(argv, { program, version: `wildcrane ${SKILL_VERSION}` })
+    : runAgent(argv, { program })
+  void result.then((code) => { process.exitCode = code })
 }

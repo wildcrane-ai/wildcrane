@@ -29,6 +29,7 @@ export function runEnv(env: NodeJS.ProcessEnv, value: string): NodeJS.ProcessEnv
   return { ...env, [RUN_ENV]: value }
 }
 
+export const TASK_REQUEST_ENV = 'AI4KANBAN_TASK_REQUEST'
 export const SAVED_PREVIEW_FILE_ENV = 'AI4KANBAN_SAVED_PREVIEW_FILE'
 
 export function taskReviewContext() {

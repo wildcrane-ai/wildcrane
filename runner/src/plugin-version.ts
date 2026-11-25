@@ -10,6 +10,7 @@ import { compare } from './update'
 
 /** The released plugin: the marketplace installs the public repo's folder (#532). */
 export const RELEASED = 'https://raw.githubusercontent.com/wildcrane-ai/wildcrane/main/plugins/claude-code/.claude-plugin/plugin.json'
+const ANTIGRAVITY_RELEASED = 'https://raw.githubusercontent.com/wildcrane-ai/wildcrane/antigravity-plugin/plugin.json'
 const TIMEOUT_MS = 5_000
 const KEEP_MS = 6 * 60 * 60_000
 const RETRY_MS = 5 * 60_000
@@ -18,7 +19,7 @@ const RETRY_MS = 5 * 60_000
 const pluginRoot = (host: Host) => ((host === 'claude-code' || host === 'zcode') && process.env.CLAUDE_PLUGIN_ROOT) || path.resolve(path.dirname(process.argv[1] ?? ''), '..', '..')
 
 const CLAUDE_MANIFEST = path.join('.claude-plugin', 'plugin.json')
-const MANIFEST: Record<Host, string> = { 'claude-code': CLAUDE_MANIFEST, zcode: CLAUDE_MANIFEST, codex: 'plugin.json', grok: 'plugin.json', opencode: 'package.json', dsh: 'package.json', cursor: path.join('.cursor-plugin', 'plugin.json'), kimi: 'kimi.plugin.json' }
+const MANIFEST: Record<Host, string> = { 'claude-code': CLAUDE_MANIFEST, zcode: CLAUDE_MANIFEST, codex: 'plugin.json', grok: 'plugin.json', antigravity: 'plugin.json', opencode: 'package.json', dsh: 'package.json', cursor: path.join('.cursor-plugin', 'plugin.json'), kimi: 'kimi.plugin.json' }
 
 export function pluginVersion(host: Host = 'claude-code', root = pluginRoot(host)): string | null {
   const file = MANIFEST[host]
@@ -73,7 +74,7 @@ export function codexSource(home = process.env.CODEX_HOME || path.join(os.homedi
 export type PluginInfo = { version: string | null; latest: string | null; source?: 'git' | 'local' | null }
 
 export function pluginInfo(host: Host = 'claude-code'): PluginInfo {
-  void checkReleased()
+  void checkReleased(host === 'antigravity' ? ANTIGRAVITY_RELEASED : RELEASED)
   const version = pluginVersion(host)
   return { version, latest: newerOf(version, released?.value ?? null), ...(host === 'codex' ? { source: codexSource() } : {}) }
 }

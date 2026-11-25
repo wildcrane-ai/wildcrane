@@ -1,6 +1,6 @@
 # Add tasks
 
-Create new work with `akb task create`; read its `--help` for options.
+Create new work with `akb task create`; read its `--help` for options. When setting `--review`, `--review-file`, or `--preview-definitions-file` on a request, follow "Preview selection" in `akb guide board`.
 
 - **Modules**: read `docs/kanban/modules.md` and relevant project context; follow
   `akb guide module-map` when no tag fits.

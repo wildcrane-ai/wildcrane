@@ -20,13 +20,13 @@ import { cardSources } from '../card-sources'
 import { idPrefix, isGroupFolder, isLegacyRecurring, subtaskLines } from '../cards'
 import { TODO } from '../paths'
 import { parseFrontmatter } from '../frontmatter'
+import { todoSection } from '../shared/card-lines'
 // The reading rules a hosted page shares (#322): what a `## Todo` counts, what really blocks
 // a card, and how the bands are laid out.
 import {
   attachBlockers,
   countTodos,
 } from '../board/assemble'
-import { revisionOf } from '../board/revision'
 import { archivesOnApproval, studioFor } from '../agent/studios'
 import type {
   Card,
@@ -57,9 +57,6 @@ function buildCard(id: number, file: string, relFromTodo: string): Card | null {
   const plan = !!meta.studio && archivesOnApproval(flow)
   return {
     id,
-    // Derived from the file exactly as it is on disk (lib/board/revision.ts), so a card
-    // read here and a card read by the contract agree on what version this is.
-    revision: revisionOf(text),
     updatedAt: fs.statSync(file).mtime.toISOString(),
     relPath,
     title: meta.title,
@@ -72,7 +69,7 @@ function buildCard(id: number, file: string, relFromTodo: string): Card | null {
     ...(plan ? { deliversIn: 'plan' as const } : {}),
     modules: meta.modules,
     body: body.replace(/^\n+/, '').replace(/\s+$/, ''),
-    todos: countTodos(body),
+    todos: countTodos(todoSection(body)),
     isGroup: false, // readGroup flips this on the one card that is a root
     openBlockers: [], // filled by attachBlockers once every card has been read
   }

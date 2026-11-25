@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { parseReview, type StudioReview } from '../../../artifact-sdk/src/internal/format/studio'
 import { readStudioFolder } from '../lib/agent/studio-folder'
-import { checkStudioFiles, hashInput, VERSION_FILE, FILE_LIMITS, formatStudioProblem, type StudioFiles } from '../lib/shared/studio-files'
+import { checkStudioFiles, hashInput, VERSION_FILE, formatStudioProblem, type StudioFiles } from '../lib/shared/studio-files'
 import { locate } from '../lib/cards'
 import { ASSETS, die } from '../lib/paths'
 import { translating } from '../lib/agent/language'
@@ -21,21 +21,6 @@ const readVersion = (files: StudioFiles) => {
 }
 function readFolder(folder: string, baseline = false) {
   const root = fs.realpathSync(folder)
-  let count = 0, total = 0
-  const scan = (dir: string) => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (e.name.startsWith('.')) continue
-      const file = path.join(dir, e.name)
-      if (e.isSymbolicLink()) throw Error(`${file}: symbolic links are not allowed`)
-      if (e.isDirectory()) scan(file)
-      else {
-        const size = fs.statSync(file).size
-        total += size
-        if (++count > FILE_LIMITS.count || size > FILE_LIMITS.file || total > FILE_LIMITS.total) throw Error(`${file}: Studio file limit exceeded`)
-      }
-    }
-  }
-  scan(root)
   const files = readStudioFolder(root), checked = checkStudioFiles(files, readVersion(files)?.id.startsWith('wf_builtin_') === true, { allowLegacyLand: baseline })
   if (!checked.ok) die(`${folder}/${formatStudioProblem(checked)}`, 'studio-problems')
   const fingerprint = createHash('sha256').update(hashInput({ ...checked.files, ...(files[VERSION_FILE] ? { [VERSION_FILE]: files[VERSION_FILE]! } : {}) })).digest('hex')
@@ -64,9 +49,11 @@ export async function cmdStudioPreview(id: number, opts: { folder: string; base:
       fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, bytes)
       return file
     }
+    if (version) review.versionFile = draft.files[VERSION_FILE]
     const paths = [...new Set([...Object.keys(base?.files ?? {}), ...Object.keys(draft.files)])].filter(p => p !== VERSION_FILE).sort()
     for (const [i, file] of paths.entries()) {
-      const before = base?.files[file] ?? null, after = draft.files[file] ?? null
+      const before = base && Object.hasOwn(base.files, file) ? base.files[file]! : null
+      const after = Object.hasOwn(draft.files, file) ? draft.files[file]! : null
       review.files.push({ path: file, before: before === null ? null : save(`files/${i}/before.txt`, before), after: after === null ? null : save(`files/${i}/after.txt`, after), ...(before !== after ? { diff: save(`files/${i}/change.diff`, unified(before, after, file, staging)) } : {}) })
     }
     for (const p of ['a', 'b']) fs.rmSync(path.join(staging, p), { force: true })

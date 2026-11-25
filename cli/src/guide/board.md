@@ -11,12 +11,12 @@ docs/kanban/
 │   ├── README.md   the index — read it first
 │   └── <id>-<slug>.md
 │                   one card per file; a group keeps its cards in one folder
-├── rules/          `studios/<studio>.md` — Studio notes, set with `akb studio rule`
+├── rules/          `config.md` — project defaults; `studios/<studio>/config.md` — Studio configuration
 │                   `<agent>.md` — project background-task instructions, set with
 │                   `akb studio instructions`
 ├── triage/         items waiting to be sorted, one file each — not cards. Only
 │   │               Cloud's sort or Refine idea on the web's Triage page turns one
-│   │               into a card; `akb raw triage check <source-id>` finds an existing one
+│   │               into a card; `akb triage check <source-id>` finds an existing one
 │   ├── archived/   items a card was made of
 │   ├── dismissed/  items ignored, with the reason
 │   └── files/      dropped-in files
@@ -30,9 +30,10 @@ id 4): its Cloud task's number (`WC-4`). Only Cloud assigns one.
 
 ## Never hand-write a card's frontmatter
 
-`akb raw update`, `akb task update-questions` and `akb raw conflict resolve` manage a card's frontmatter,
-including its `previews`. Edit only the card's **body** by hand. `akb raw help`
-lists all operations; `akb raw help <move>` explains one operation.
+Edit the card body directly. Use `akb task update` for card fields,
+`akb task update-questions` for questions, and `akb task review` for the review plan.
+
+Find commands with `akb help`, then read the matching subcommand's `--help`.
 
 ## Content conflicts
 
@@ -55,5 +56,22 @@ only closed by hand.
 
 ## Task context
 
-Continue from the task's saved discussion, results and approved requirements. Follow explicit
-project and Studio rules. Read relevant memory on demand; do not write memory in task runs.
+Use `akb task show <task>` for the current card, Review, Preview references and saved materials.
+Check the current Studio instructions, shared rules and project and Studio configurations before
+working. Read linked files, applicable Preview definitions, component documentation and memory
+as needed. Write results in matching Preview blocks and preserve unrelated work. When reading scoped
+preferences for a specific output, match its configuration to the current action and the task's
+project (`akb task show <id> --json`).
+
+Reread configuration before Land and after a Setup answer. Studio preferences override project
+defaults for the same key. Ask through `akb guide update-questions` when a required Setup choice
+first matters. Pause the dependent action and use declared defaults for optional choices.
+Check required credentials on the executing Runner without printing secrets. Use a read-only
+check when available. If missing or invalid, ask the user to configure them locally or follow
+the Studio's fallback. Keep credentials out of cards, configuration, synced files and logs. Do not write memory in task runs.
+
+## Preview selection
+
+- **Read the Studio first**: before choosing Previews, read its `STUDIO.md` (`akb studio file <studio> STUDIO.md`), relevant linked files, and its configuration (`akb studio rule <studio>`).
+- **Built-in Previews first**: match deliverables that need review to the Studio's built-in Previews; never replace a built-in Preview with a custom one or mix a built-in Preview's deliverable into a custom Preview.
+- **Custom Previews as fallback**: define a custom Preview only when built-in Previews cannot cover a deliverable that needs review, and keep task plans and context in the card or goal body.

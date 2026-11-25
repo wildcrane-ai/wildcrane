@@ -230,11 +230,6 @@ export interface SourceLink {
 
 export interface Card {
   id: number
-  /** What version of this card was read (#312). A write passes it back as the revision it
-   *  expects, and a board that has moved on refuses with a conflict instead of overwriting
-   *  someone else's edit. Opaque: nothing but equality may be read into it, and it is
-   *  derived rather than stored, so it never reaches the card's portable frontmatter. */
-  revision: string
   /** When the card was last written (ISO): the file's mtime locally, `updatedAt` on Cloud.
    *  Absent when unknown. What puts a card in the board's Stale column (#1640). */
   updatedAt?: string

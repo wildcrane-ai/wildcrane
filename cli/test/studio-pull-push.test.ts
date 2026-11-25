@@ -1,14 +1,11 @@
-// `akb studio pull` / `push` (#544, #564): a pulled folder, with its visible `version.json`, pushes
-// back unchanged, screenshots come back as bytes, an edit saves the next version, and a version
-// moved in Cloud is refused.
-
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, it } from 'node:test'
+import { afterEach, beforeEach, it, type TestContext } from 'node:test'
 
 import { setBoardRoot } from '../src/lib/paths.ts'
+import { savePin, STUDIO_SNAPSHOT_ENV } from '../src/lib/agent/cloud-studios.ts'
 import { writeSession } from '../src/lib/cloud/session.ts'
 import { restoreMachineHome, run } from './helpers/board.ts'
 
@@ -40,7 +37,12 @@ beforeEach(() => {
   cloud = { version: 3, files: { 'STUDIO.md': STUDIO } }
   patched = []
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
-    const id = decodeURIComponent(String(url).slice(`${API}/v1/studios/`.length))
+    const route = new URL(url).pathname
+    if (route === '/v1/projects/prj_clone') return Response.json({ workspace: 'ws_clone' })
+    if (route === '/v1/studios') {
+      return Response.json({ data: [OWN, 'wf_builtin_coding'].map(id => ({ id, version: cloud.version })), next: null })
+    }
+    const id = decodeURIComponent(route.slice('/v1/studios/'.length))
     if (init?.method === 'PATCH') {
       const body = JSON.parse(String(init.body))
       if (body.expectedVersion !== cloud.version) return new Response(JSON.stringify({ error: { code: 'version_conflict', message: 'Studio moved; pull again.' } }), { status: 409 })
@@ -63,6 +65,18 @@ afterEach(() => {
 
 const note = (dir: string) => JSON.parse(fs.readFileSync(path.join(dir, 'version.json'), 'utf8'))
 
+function cloneBoard(t: TestContext) {
+  const dev = process.env.AI4KANBAN_STUDIOS
+  delete process.env.AI4KANBAN_STUDIOS
+  t.after(() => { if (dev !== undefined) process.env.AI4KANBAN_STUDIOS = dev })
+  const state = path.join(root, '.akb')
+  const board = path.join(state, 'kanban')
+  fs.mkdirSync(path.join(board, 'todo'), { recursive: true })
+  fs.writeFileSync(path.join(board, 'config.md'), '')
+  fs.writeFileSync(path.join(state, 'base.json'), JSON.stringify({ project: 'prj_clone' }))
+  return (id: string, folder: string, ...options: string[]) => run(root, ['--board', board, 'studio', 'clone', id, folder, ...options])
+}
+
 const pulled = (version: number) => {
   const dir = path.join(root, `layout-${version}`)
   fs.mkdirSync(dir, { recursive: true })
@@ -78,6 +92,99 @@ it('pulls screenshots back as bytes and refuses to push a built-in', async () =>
   assert.deepEqual(note(dir), { id: 'wf_builtin_coding', version: 3 })
   await refuses(root, ['studio', 'pull', 'coding', dir], /not empty/)
   await refuses(root, ['studio', 'push', dir], /Copy this studio/)
+})
+
+it('clones the latest built-in and workspace Studios as independent, validated drafts', async (t) => {
+  const clone = cloneBoard(t)
+  const fetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    const response = await fetch(url, init)
+    if (!new URL(String(url)).pathname.startsWith('/v1/studios/')) return response
+    const studio = await response.json() as { version: number; files: Record<string, string> }
+    studio.version = 5
+    studio.files['STUDIO.md'] = STUDIO.replace('name: Layout', 'name: |-\n  Layout\nnames: { zh: 布局 }').replaceAll('\n', '\r\n')
+    studio.files['CARD.md'] = 'Name the page.'
+    studio.files['skills/local/SKILL.md'] = '---\nname: local\ndescription: Prepare the local layout.\n---\nRead [style](references/style.md).\n'
+    studio.files['skills/local/references/style.md'] = 'Keep the original layout.'
+    studio.files['references/style.md'] = 'Match the project style.'
+    studio.files['shared/RULES.md'] = 'Use supported breakpoints.'
+    studio.files['scripts/check.mjs'] = 'export const check = () => true\n'
+    studio.files['ABOUT.zh.md'] = 'Market description.'
+    studio.files['README.md'] = '![Preview](screenshots/a.png)'
+    studio.files['README.zh.md'] = '使用指南'
+    studio.files['screenshots/a.png'] = `data:image/png;base64,${PNG.toString('base64')}`
+    return Response.json(studio)
+  }
+  const builtin = path.join(root, 'drafts', 'built-in')
+  const own = path.join(root, 'workspace-draft')
+  fs.mkdirSync(own)
+  const write = process.stdout.write
+  let stdout = ''
+  process.stdout.write = ((chunk: string) => { stdout += String(chunk); return true }) as typeof process.stdout.write
+  try { await clone('coding', builtin, '--json') }
+  finally { process.stdout.write = write }
+  const { ok, source, sourceVersion, folder } = JSON.parse(stdout)
+  assert.deepEqual({ ok, source, sourceVersion, folder }, { ok: true, source: 'coding', sourceVersion: 5, folder: builtin })
+  await clone('wf-01own', own, '--name', 'Responsive layout')
+  for (const [dir, expected] of [[builtin, /Layout \(copy\)[\s\S]*布局（副本）/], [own, /name: "Responsive layout"/]] as const) {
+    assert.match(fs.readFileSync(path.join(dir, 'STUDIO.md'), 'utf8'), expected)
+    assert.deepEqual(fs.readdirSync(dir).sort(), ['ABOUT.zh.md', 'CARD.md', 'README.md', 'README.zh.md', 'STUDIO.md', 'references', 'screenshots', 'scripts', 'shared', 'skills'])
+    assert.equal(fs.readFileSync(path.join(dir, 'README.zh.md'), 'utf8'), '使用指南')
+    assert.deepEqual(fs.readFileSync(path.join(dir, 'screenshots/a.png')), PNG)
+    assert.equal(fs.readFileSync(path.join(dir, 'references/style.md'), 'utf8'), 'Match the project style.')
+    assert.equal(fs.readFileSync(path.join(dir, 'skills/local/references/style.md'), 'utf8'), 'Keep the original layout.')
+    await run(root, ['studio', 'validate', dir])
+    await refuses(root, ['studio', 'push', dir], /version\.json/)
+  }
+  assert.doesNotMatch(fs.readFileSync(path.join(own, 'STUDIO.md'), 'utf8'), /names:/)
+  assert.deepEqual(patched, [])
+})
+
+it('lists only skill metadata and reads resources from the pinned execution version', async (t) => {
+  cloneBoard(t)
+  const board = path.join(root, '.akb', 'kanban')
+  const files = (version: number) => ({
+    'STUDIO.md': STUDIO,
+    'skills/layout/SKILL.md': '---\nname: layout\ndescription: Layout v' + version + '.\n---\n\nPrivate body for the selected skill.',
+    'skills/layout/style.txt': 'Style v' + version,
+  })
+  cloud.files = files(3)
+  const json = async (...args: string[]) => {
+    const write = process.stdout.write
+    let output = ''
+    process.stdout.write = ((chunk: unknown) => { output += String(chunk); return true }) as typeof write
+    try { await run(root, ['--board', board, 'studio', ...args, '--json']) } finally { process.stdout.write = write }
+    return JSON.parse(output)
+  }
+  assert.deepEqual((await json('skills', 'wf-01own')).skills, [{ name: 'layout', description: 'Layout v3.' }])
+  cloud = { version: 4, files: files(4) }
+  assert.deepEqual((await json('skills', 'wf-01own')).skills, [{ name: 'layout', description: 'Layout v4.' }])
+  savePin('task_layout', { id: OWN, version: 3, name: 'Layout', files: files(3) })
+  process.env.AI4KANBAN_TASK = 'task_layout'
+  process.env[STUDIO_SNAPSHOT_ENV] = JSON.stringify({ studio: OWN, version: 3 })
+  t.after(() => { delete process.env.AI4KANBAN_TASK; delete process.env[STUDIO_SNAPSHOT_ENV] })
+  assert.deepEqual((await json('skills', 'wf-01own')).skills, [{ name: 'layout', description: 'Layout v3.' }])
+  assert.equal((await json('file', OWN, 'skills/layout/style.txt')).text, 'Style v3')
+  fs.rmSync(path.join(root, 'home', 'studios', 'versions', OWN + '@3.json'))
+  await refuses(root, ['--board', board, 'studio', 'skills', 'wf-01own'], /Cannot recover Studio wf-01own v3/)
+})
+
+it('refuses incompatible sources and destinations before writing the clone', async (t) => {
+  const clone = cloneBoard(t)
+  const dir = path.join(root, 'draft')
+  const original = path.join(root, 'occupied')
+  fs.mkdirSync(original)
+  fs.writeFileSync(path.join(original, 'STUDIO.md'), 'Keep my draft.')
+  await assert.rejects(() => clone('coding', original), /not empty/)
+  assert.equal(fs.readFileSync(path.join(original, 'STUDIO.md'), 'utf8'), 'Keep my draft.')
+  for (const file of ['mcp.json']) {
+    cloud.files = { 'STUDIO.md': STUDIO, [file]: 'Unsupported in a workspace Studio.' }
+    await assert.rejects(() => clone('wf-01own', dir), /cannot carry/)
+    assert.equal(fs.existsSync(dir), false)
+  }
+  cloud.files = { 'STUDIO.md': STUDIO.split('## Land')[0]! }
+  await assert.rejects(() => clone('wf-01own', dir), /Missing ## Land/)
+  assert.equal(fs.existsSync(dir), false)
 })
 
 it('refuses to create or push files without a Land section before a publication request', async () => {

@@ -3,8 +3,8 @@
 Use these commands after approval, or within an explicit instruction to apply the change now.
 Keep the reviewed files, base version and publication request ID with the card’s assets.
 
-- **Restore**: if the draft folder is missing, unpack the approved ZIP into an empty folder.
-- **Validate**: run `akb raw studio validate <folder> --json` and match its fingerprint to the approved `<Studio>` review; any difference returns to review.
+- **Restore**: if the draft folder is missing, use the approved inputs from `akb task show <card>`. Save `akb studio file studio-builder scripts/restore-draft.mjs` as `restore-draft.mjs`, then run `node restore-draft.mjs <pinned review.json> <folder>` alongside the snapshot’s pinned source files. For an older draft that needs its original ZIP, unpack the approved ZIP into an empty folder.
+- **Validate**: run `akb studio validate <folder> --json` and match its fingerprint to the approved `<Studio>` review. Return to review if it differs.
 - **Create**: for a new studio, run `akb studio create <folder> --request-id <id>`; use `--workspace <workspace>` for a user-specified target.
 - **Update**: for an existing studio, run `akb studio push <folder> --request-id <id>`;
   keep the `version.json` supplied by pull unchanged before publication.

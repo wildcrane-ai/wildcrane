@@ -6,18 +6,7 @@ import path from 'node:path'
 import { shimDir } from '../src/akb'
 import { cardFlags } from '../src/flow'
 import { writeGoals, readGoals } from '../src/goals'
-import { decodeGoals } from '../../cli/src/lib/shared/goal'
-
-it('新旧读取协议指向同一组目标，缺失和不一致均拒绝', () => {
-  const old = { id: 'idea_old', title: 'Goal', outcome: 'Result', acceptance: ['Check'], workflow: 'wf_custom', previews: ['custom'], task: 'task_1' }
-  const goal = { id: old.id, title: old.title, outcome: old.outcome, acceptance: old.acceptance, studio: old.workflow,
-    review_plan: [{ id: 'review', after: [], previews: ['custom'] }], task: { id: 'task_1' } }
-  assert.deepEqual(decodeGoals({ ideas: [old] }), { field: 'ideas', value: { goals: [goal] } })
-  assert.deepEqual(decodeGoals({ goals: [goal], ideas: structuredClone([goal]) }), { field: 'goals', value: { goals: [goal] } })
-  assert.throws(() => decodeGoals({ goals: null } as never), { message: 'The goals array is missing or invalid.' })
-  assert.throws(() => decodeGoals({}), { message: 'The goals array is missing or invalid.' })
-  assert.throws(() => decodeGoals({ goals: [goal], ideas: [] }), { message: 'goals and ideas do not match.' })
-})
+import { readCheckpoint, saveCheckpoint } from '../src/recovery'
 
 it('讨论元数据跨分页保留目录与已选要点，落卡显式传递空列表', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'goal-previews-'))
@@ -38,10 +27,24 @@ it('讨论元数据跨分页保留目录与已选要点，落卡显式传递空�
     assert.deepEqual(data.studios[1].previews, [{ id: "custom", title: { zh: "审阅" }, instructions: "The requested output." }])
     assert.deepEqual(pages, [null, 'wf_first'])
     const revised = { ...goal, title: 'Unsaved local goal' }
-    fs.writeFileSync(result.file, JSON.stringify({ workspace: 'ws_1', studios: [], ideas: [revised] }))
-    await writeGoals({ id: 'job_1', discussion: { id: 'dsc_1', workspace: 'ws_1', goals: [goal] } } as never, async () => ({ ok: true, value: { data: [], next: null } }), true)
-    assert.deepEqual(readGoals(result.file), [revised])
-    assert.equal(fs.existsSync(result.file), false)
+    fs.rmSync(result.file)
+    const legacy = path.join(home, 'ideas', 'job_1.json')
+    fs.mkdirSync(path.dirname(legacy))
+    fs.writeFileSync(legacy, JSON.stringify({ workspace: 'ws_1', studios: [], ideas: [revised] }))
+    const recovered = await writeGoals({ id: 'job_2', discussion: { id: 'dsc_1', workspace: 'ws_1', goals: [goal] } } as never, async () => ({ ok: true, value: { data: [], next: null } }), true, 'job_1')
+    assert.ok('file' in recovered && recovered.preserved)
+    assert.equal(fs.existsSync(legacy), false)
+    assert.deepEqual(JSON.parse(fs.readFileSync(recovered.file, 'utf8')).goals, [revised])
+    assert.deepEqual(readGoals(recovered.file), [revised])
+
+    const oldGoal = { id: 'idea_1', title: 'Goal', outcome: 'Result', acceptance: ['Check'], workflow: 'wf_custom', previews: ['custom'], task: 'task_1' }
+    const report = { reply: 'Saved reply', ideas_version: 5, ideas: [oldGoal] }
+    saveCheckpoint('job_1', { pending: [], completed: { outcome: 'done', report: report as never } })
+    const resumed = readCheckpoint('job_1')?.completed?.report
+    const migrated = { ...goal, acceptance: ['Check'], review_plan: [{ id: 'review', after: [], previews: ['custom'] }], task: { id: 'task_1' } }
+    assert.deepEqual(resumed, { reply: 'Saved reply', goalsVersion: 5, goals: [migrated] })
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, 'checkpoints', 'job_1.json'), 'utf8')).completed.report, resumed)
+    assert.equal(fs.existsSync(recovered.file), false)
     assert.deepEqual(cardFlags({ number: 1 } as never, { previews: [] }), ['--previews', ''])
     assert.deepEqual(cardFlags({ number: 1 } as never, { previews: ['custom'] }), ['--previews', 'custom'])
   } finally {

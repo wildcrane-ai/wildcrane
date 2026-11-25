@@ -13,7 +13,6 @@ import { closeRun, listRuns, openResume, openRun, patch, peekRun } from '../src/
 import { startSubRun } from '../src/lib/agent/start.ts'
 import { readRuntimes } from '../src/lib/agent/runtimes.ts'
 import { withStore } from '../src/lib/agent/store.ts'
-import { setBoardProvider } from '../src/lib/board/index.ts'
 import { watchRun } from '../src/lib/agent/watch.ts'
 import { cmdSubStart, cmdSubWait } from '../src/commands/run.ts'
 import { RUN_ENV } from '../src/lib/agent/env.ts'
@@ -57,7 +56,6 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-sub-runs-'))
   forgetMachineState(root)
   setBoardRoot(root)
-  setBoardProvider(null)
   fs.mkdirSync(path.join(root, 'docs/kanban/todo'), { recursive: true })
   fs.writeFileSync(path.join(root, 'docs/kanban/next-id'), '1\n')
   fs.writeFileSync(path.join(root, 'docs/kanban/todo/README.md'), '# Tasks\n')

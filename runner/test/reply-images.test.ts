@@ -39,11 +39,11 @@ test('outside symlinks, missing files, URLs and forged MIME remain unavailable; 
   assert.match(JSON.stringify(read.parts), /`!\[x\]\(reply.png\)`/)
 })
 
-test('image-only replies retry twice at most, preserve one image, and never lose text on upload failure', async () => {
+test('image-only replies retain the placeholder when the upload handler fails', async () => {
   const raw = [{ type: 'image' as const, path: 'reply.png' }]
   let attempts = 0
   const parts = await saveReplyImages(raw, root, async () => { attempts++; throw Error('offline') })
-  assert.equal(attempts, 2)
+  assert.equal(attempts, 1)
   assert.deepEqual(parts, [{ type: 'image', id: undefined, status: 'not_saved', mime: 'image/png' }])
 })
 

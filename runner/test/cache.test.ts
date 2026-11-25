@@ -1,3 +1,4 @@
+import { decodeStudioZip, encodeStudioZip, sha256Bytes, studioFilesSha256 } from '../../cli/src/lib/shared/studio-package'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -6,7 +7,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { SESSIONS_FILE, projectStateDir } from '../../cli/src/lib/machine/project'
-import { savePin, saveVersion } from '../../cli/src/lib/agent/cloud-studios'
+import { loadPublishedStudio, readVersion, savePin, saveVersion } from '../../cli/src/lib/agent/cloud-studios'
 import { captureConflict } from '../../cli/src/lib/shared/board-conflicts'
 import { IDLE_MS, cacheDir, clearAkb, hold, markUnsent, markUsed, removeLegacy, sweepCache, sweepStudios } from '../src/cache'
 import { keepOnly } from '../src/folders'
@@ -182,4 +183,40 @@ describe('studio versions (#651)', () => {
     await sweepStudios()
     assert.deepEqual(held(), ['wf_blog@4.json', 'wf_blog@6.json'])
   })
+})
+
+it('deduplicates verified package downloads and replaces a corrupt version cache', async () => {
+  const id = 'wf_package'
+  const files = { 'STUDIO.md': '---\nname: Coding\n---\n', 'references/utf8.txt': '\ufeff中文', 'screenshots/demo.png': 'data:image/png;base64,AAE=' }
+  const { zip } = encodeStudioZip(files)
+  assert.deepEqual(decodeStudioZip(zip), files)
+  const malformed = zip.slice()
+  malformed[14] = malformed[14]! ^ 1
+  assert.throws(() => decodeStudioZip(malformed), /Invalid Studio ZIP/)
+  const version = 1
+  const pack = { version, filesSha256: await studioFilesSha256(files), zipSha256: await sha256Bytes(zip),
+    zipBytes: zip.length, downloadUrl: '/v1/studios/' + id + '/versions/1/package' }
+  const read = async () => ({ ok: true as const, value: { id, version, package: pack } })
+  let downloaded = 0
+  let body = malformed
+  const download = async () => {
+    downloaded++
+    await new Promise(resolve => setImmediate(resolve))
+    return { ok: true as const, value: body }
+  }
+  const load = () => loadPublishedStudio('/v1/studios/' + id, read, download)
+  assert.equal((await load()).ok, false)
+  assert.equal(readVersion(id, version), null)
+  body = zip
+  const concurrent = await Promise.all([load(), load(), load()])
+  assert.ok(concurrent.every(result => result.ok))
+  assert.equal(downloaded, 2)
+  const cache = path.join(runnerHome(), 'studios', 'versions', id + '@1.json')
+  const json = JSON.parse(fs.readFileSync(cache, 'utf8'))
+  json.files['references/utf8.txt'] = 'corrupt'
+  fs.writeFileSync(cache, JSON.stringify(json))
+  assert.equal(readVersion(id, version), null)
+  assert.equal((await load()).ok, true)
+  assert.deepEqual(readVersion(id, version)?.files, files)
+  assert.equal(downloaded, 3)
 })

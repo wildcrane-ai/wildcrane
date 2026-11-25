@@ -9,7 +9,7 @@
 ## 列出冲突
 
 ```sh
-akb raw conflict list --json
+akb board conflict list --json
 ```
 
 只读，无需联网，不同步或重试。标准 JSON 成功响应增加 `conflicts` 数组；每项包含 `id`、`state`、`paths`。`state` 为 `open` 或 `unconfirmed`，后者表示提交结果尚未确认；没有待处理项时返回空数组。
@@ -17,7 +17,7 @@ akb raw conflict list --json
 ## 读取冲突
 
 ```sh
-akb raw conflict show c_123 --json
+akb board conflict show c_123 --json
 ```
 
 只读，无需联网，不刷新云端。标准响应增加 `conflict`：
@@ -39,7 +39,7 @@ akb raw conflict show c_123 --json
 ## 提交解决结果
 
 ```sh
-akb raw conflict resolve c_123 --expect '<revision-from-show>' --file /tmp/resolution.json --json
+akb board conflict resolve c_123 --expect '<revision-from-show>' --file /tmp/resolution.json --json
 ```
 
 `--file` 为 UTF-8 JSON 文件；唯一顶层字段 `files` 列出记录中每个 `conflicted: true` 的路径及最终 `content`，每个路径恰好一次：

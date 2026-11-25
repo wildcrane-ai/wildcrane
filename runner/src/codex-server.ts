@@ -45,9 +45,14 @@ export async function codexServer() {
     const work = (async () => {
       const previous = readPrivate<NativeBackend>(backendFile(key))
       if (previous && previous.generation === generation && liveBackend(previous)) {
-        const probe = await nativeConnection(previous, () => {})
-        try { await initializeNative(probe) } finally { probe.close() }
-        return previous
+        try {
+          const probe = await nativeConnection(previous, () => {})
+          try { await initializeNative(probe) } finally { probe.close() }
+          idle.delete(previous.instance)
+          return previous
+        } catch (error) {
+          if (liveBackend(previous)) throw error
+        }
       }
       if (previous && liveBackend(previous)) throw Error('Codex backend belongs to an expired account session; stop it before reconnecting.')
       const backend: NativeBackend = { ...processIdentity(), key, instance: crypto.randomUUID(), generation, endpoint: nativeEndpoint(key) }
@@ -89,6 +94,7 @@ export async function codexServer() {
         backend.identity = processIdentityFor(child.pid!)
         if (!backend.identity) throw Error('Codex native process identity could not be confirmed.')
         writePrivate(backendFile(key), backend)
+        idle.delete(backend.instance)
         return backend
       } catch (error) { child.kill('SIGKILL'); throw error }
     })()
@@ -133,9 +139,9 @@ export async function codexServer() {
       let used = false
       const leases = path.join(nativeDirectory(), 'threads', backend.instance)
       try { used = fs.readdirSync(leases).filter(file => file.endsWith('.json')).some(file => !!readPrivate<ThreadLease>(path.join(leases, file))) } catch {}
-      if (used || pending.has(backend.key)) idle.delete(backend.key)
+      if (used || pending.has(backend.key)) idle.delete(backend.instance)
       else {
-        const since = idle.get(backend.key) ?? Date.now(); idle.set(backend.key, since)
+        const since = idle.get(backend.instance) ?? Date.now(); idle.set(backend.instance, since)
         if (Date.now() - since > (Number(process.env.WILDCRANE_CODEX_IDLE_MS) || 30_000) && liveBackend(backend)) {
           try { process.kill(backend.pid, 'SIGTERM') } catch {}
         }

@@ -16,12 +16,23 @@ export interface StudioDef {
   name: string
   names?: Record<string, string>
   description: string
+  summaries?: Record<string, string>
+  entrypoints?: string[]
   needsArtifact: boolean
   icon?: AgentIcon
   previews: StudioPreview[]
   rules: string
 }
 export const STUDIO_ID = PREVIEW_ID
+
+export function withoutStudioCatalog(source: string): string {
+  return source.replace(/^---\r?\n([^]*?)\r?\n---(?:\r?\n|$)/, (front, yaml: string) => {
+    const document = parseDocument(yaml)
+    const summaries = document.delete('summaries')
+    const entrypoints = document.delete('entrypoints')
+    return summaries || entrypoints ? `---\n${document.toString({ lineWidth: 0 })}---\n` : front
+  })
+}
 export const scalar = (value: string): string => (/\s#/.test(value) ? JSON.stringify(value) : yamlScalar(value))
 const titles = { type: 'object', minProperties: 1, propertyNames: { pattern: '^[a-z]{2,3}(?:-[A-Za-z0-9]+)*$' }, additionalProperties: { type: 'string', minLength: 1, pattern: '\\S' } }
 const icon = { anyOf: [
@@ -35,7 +46,9 @@ export const STUDIO_SCHEMA = {
   type: 'object', required: ['name'], additionalProperties: false,
   properties: {
     name: { type: 'string', minLength: 1, pattern: '\\S' }, names: titles,
-    description: { type: 'string' }, needsArtifact: { type: 'boolean' }, icon,
+    description: { type: 'string' }, summaries: titles,
+    entrypoints: { type: 'array', minItems: 1, maxItems: 10, uniqueItems: true, items: { type: 'string', pattern: PREVIEW_ID.source } },
+    needsArtifact: { type: 'boolean' }, icon,
     previews: { type: 'object', propertyNames: { pattern: PREVIEW_ID.source }, additionalProperties: {
       type: 'object', additionalProperties: false, properties: { title: titles, description: titles, icon },
     } },
@@ -43,8 +56,21 @@ export const STUDIO_SCHEMA = {
 } as const
 const validate = new Ajv({ allErrors: true, meta: false, validateSchema: false }).compile(STUDIO_SCHEMA)
 
+const comments = /<!--[^]*?(?:-->|$)/g
+const blank = (text: string) => text.replace(/[^\r\n]/g, ' ')
+const headingsOf = (body: string) =>
+  [...withoutCode(body).replace(comments, blank).matchAll(/^ {0,3}#{1,2}(?=[ \t\r\n]|$)[^\r\n]*/gm)]
+
+export function studioSetup(body: string): string {
+  const headings = headingsOf(body)
+  const index = headings.findIndex(h => /^ {0,3}##[ \t]+Setup(?:[ \t]+#+)?[ \t]*$/.test(body.slice(h.index, h.index + h[0].length)))
+  if (index === -1) return ''
+  const heading = headings[index]!
+  const section = body.slice(heading.index + heading[0].length, headings[index + 1]?.index).trim()
+  return section.replace(comments, '').trim() ? section : ''
+}
+
 function landSections(body: string, previews: PreviewBlock[]) {
-  const blank = (text: string) => text.replace(/[^\r\n]/g, ' ')
   let visible = '', at = 0
   for (const { start, end } of previews) {
     visible += body.slice(at, start) + blank(body.slice(start, end))
@@ -52,9 +78,7 @@ function landSections(body: string, previews: PreviewBlock[]) {
   }
   visible += body.slice(at)
 
-  const comments = /<!--[^]*?(?:-->|$)/g
-  const markdown = withoutCode(visible).replace(comments, blank)
-  const headings = [...markdown.matchAll(/^ {0,3}#{1,2}(?=[ \t\r\n]|$)[^\r\n]*/gm)]
+  const headings = headingsOf(visible)
   return headings.flatMap((heading, index) => {
     const start = heading.index
     const end = start + heading[0].length
@@ -120,6 +144,8 @@ export function parseStudioFile(id: string, source: string, from: string, { requ
   return { def: {
     id, name: (raw.name as string).trim(), ...(raw.names ? { names: raw.names as Record<string, string> } : {}),
     description: raw.description as string ?? '', needsArtifact: raw.needsArtifact as boolean ?? false,
+    ...(raw.summaries ? { summaries: raw.summaries as Record<string, string> } : {}),
+    ...(raw.entrypoints ? { entrypoints: raw.entrypoints as string[] } : {}),
     ...(raw.icon ? { icon: raw.icon as AgentIcon } : {}),
     previews: parsed.blocks.map(b => ({ id: b.id, instructions: b.instructions, ...map[b.id] })), rules: rules.trim(),
   } }

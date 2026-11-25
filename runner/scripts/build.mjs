@@ -13,7 +13,7 @@ import * as esbuild from 'esbuild'
 
 import { REQUIRE_SHIM } from '../../cli/scripts/shim.mjs'
 import { packageJsonPlugin } from './package-json.mjs'
-import { copySkills } from './plugin-skills.mjs'
+import { copySkills, SKILLS } from './plugin-skills.mjs'
 import { settingsClientPlugin } from './settings-client.mjs'
 
 const PKG_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -22,7 +22,7 @@ const VERSION = JSON.parse(fs.readFileSync(path.join(PKG_DIR, 'package.json'), '
 const CLI_DIR = path.join(PKG_DIR, '..', 'cli')
 const { version: CLI_VERSION, akbContract: AKB_CONTRACT } = JSON.parse(fs.readFileSync(path.join(CLI_DIR, 'package.json'), 'utf8'))
 const PLUGINS_DIR = path.join(PKG_DIR, '..', 'plugins')
-const PLUGIN_DISTS = ['claude-code', 'codex', 'cursor', 'dsh', 'kimi-code', 'grok', 'opencode'].map((host) => path.join(PLUGINS_DIR, host, 'server', 'dist'))
+const PLUGIN_DISTS = Object.keys(SKILLS).map((host) => path.join(PLUGINS_DIR, host, 'server', 'dist'))
 for (const dir of PLUGIN_DISTS) fs.rmSync(dir, { recursive: true, force: true })
 copySkills(PLUGINS_DIR)
 

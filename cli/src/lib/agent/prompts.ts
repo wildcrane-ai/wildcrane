@@ -1,4 +1,5 @@
 import { taskReviewContext } from './env'
+import { runnerProject, workspaceTask } from '../cloud/tasks'
 import { reviewPreviewIds } from '../shared/review-plan'
 import { deliveryStep } from './progress'
 // The one place a board action turns into words for an agent.
@@ -7,23 +8,25 @@ import { deliveryStep } from './progress'
 // button say exactly the same thing.
 
 import { studioComponents, componentDocsText } from '../components'
+import fs from 'node:fs'
 import path from 'node:path'
 import { locate, locateArchived } from '../cards'
 import { memoryDirectories } from '../memory'
 import { globalMemoryBlock } from '../memories'
 import { ARCHIVE, boardText, KANBAN, rel, MEMORY, REPO_ROOT } from '../paths'
 import { roleSettingsBlock } from '../agents'
-import { boardCommand, boardCommandFor, commandNote } from './command'
+import { boardCommand, commandNote } from './command'
 import { activeDelivery, deliveryFor, endedDelivery, findDelivery, withStudio } from './deliveries'
 import { field } from './facts'
 import { recordedOutputs } from './outputs'
 import { readArchive } from '../view/archive'
-import { DELIVERY_FLOWS } from './flows'
 import { agentImages } from './resolve'
 import { agentForRun, studioForRun } from './runner'
 import { studioFiles, studioSections } from './studio-shared'
 import { CARD_TEMPLATE_FILE } from '../shared/studio-files'
-import { cardMeta, studioFor, userStudioRules } from './studios'
+import { cardMeta, studioFor } from './studios'
+import { contextAction } from './runtime-context'
+import { studioConfigContext } from './studio-config'
 import { roleNamed } from './roles'
 import { ruleBlock, ruleOwner } from './rules'
 import { readRuns } from './store'
@@ -56,13 +59,20 @@ function stopReason(deliveryId: string): string | undefined {
   const ids = new Set(delivery.sessions)
   const last = readRuns().filter((r) => ids.has(r.sessionId) && r.action === 'implement' && r.status !== 'running').at(-1)
   if (!last) return undefined
-  if (last.status === 'done' && delivery.status === 'active') return notCompletedWhy(deliveryId)
+  if (last.status === 'done' && delivery.status === 'active') return notCompletedWhy(deliveryId, boardCommand())
   if (last.status === 'error' || last.status === 'interrupted') return firstLine(last.error)
   return undefined
 }
 
 /** Resume the same action; a build gets only its stop reason, since its session has the rest. */
-export function resumePrompt(deliveryId: string | undefined, action: AgentAction): string {
+export function resumePrompt(deliveryId: string | undefined, action: AgentAction, cardId?: number): string {
+  if (deliveryId && action === 'implement' && compactTaskPrompt({ action, id: cardId })) {
+    return deliveryResumePrompt(deliveryId, cardId!, stopReason(deliveryId))
+  }
+  if (cardId !== undefined && compactTaskPrompt({ action, id: cardId })) {
+    const command = boardCommand()
+    return [`Continue task #${cardId}. ${followTaskGuide(action, command)}`, commandAlias(command)].filter(Boolean).join('\n\n')
+  }
   if (!deliveryId || action !== 'implement') return RESUME_PROMPT
   return DELIVERY_RESUME.replace('%s', deliveryId).replace('%r', stopReason(deliveryId) ?? '').trim()
 }
@@ -70,7 +80,7 @@ export function resumePrompt(deliveryId: string | undefined, action: AgentAction
 /** Where a delivery's approved requirements are, for a build that starts a new session. */
 function deliveryRequirements(deliveryId: string, cardId: number | null): string {
   if (cardId !== null) {
-    return DELIVERY_RESUME_CARD.replace('%c', `${boardCommandFor(cardId)} raw card implement ${cardId} --print`)
+    return DELIVERY_RESUME_CARD.replace('%c', `${boardCommand()} task implement ${cardId} --print`)
   }
   const delivery = findDelivery(deliveryId)
   const approved = delivery?.approved.trim()
@@ -107,16 +117,21 @@ export const restartable = (run: { action: AgentAction; cardId: number | null; d
 
 /** Restart a lost conversation with its original action. Builds recover approved requirements;
  *  other restartable actions receive their own ask. */
-export function restartPrompt(req: AgentRequest, deliveryId?: string): string | undefined {
+export function restartPrompt(req: AgentRequest, deliveryId?: string, includeStudio = true): string | undefined {
   // A run that names neither a card nor a delivery has no ask to write down again.
   if (req.id === undefined && !req.deliveryId && !deliveryId) return undefined
+  if (deliveryId && req.action === 'implement' && compactTaskPrompt(req)) {
+    return [deliveryResumePrompt(deliveryId, req.id!, stopReason(deliveryId)), req.notes, pictureNote(req), settingsBlock(req), ruleBlock(req, frozenRules(req))]
+      .filter(Boolean).join('\n\n')
+  }
   if (deliveryId && req.action === 'implement') return [
     RESTART_LEAD,
     `Continue delivery ${deliveryId}. ${deliveryRequirements(deliveryId, req.id ?? null)}`.trim(),
-    studioRulesBlock({ ...req, deliveryId }),
+    commandNote(boardCommand()),
+    includeStudio && studioRulesBlock({ ...req, deliveryId }),
   ].filter(Boolean).join('\n\n')
   if (!RESTARTABLE.has(req.action)) return undefined
-  return [RESTART_LEAD, buildPrompt(req)].join('\n\n')
+  return [RESTART_LEAD, buildRun(req, includeStudio).prompt].join('\n\n')
 }
 
 // Nothing here asks a run to refine the card afterwards. A command does one job and stops;
@@ -132,10 +147,7 @@ const NO_IMPLEMENT = `(Unless the request explicitly asks for implementation, do
  *  Printed flows append those rules separately (`flow.ts`). */
 export function buildAsk(rawReq: AgentRequest, notes: string[] = []): string {
   const req = withStudio(rawReq)
-  // A delivery's runs work in that delivery's own worktree, so their board commands
-  // name the project's own copy outright (#303). Everything else runs in the project and
-  // spells the command the ordinary way.
-  const command = DELIVERY_FLOWS.has(req.action) ? boardCommandFor(req.id) : boardCommand()
+  const command = boardCommand()
   const ask = [actionPrompt(req, command, notes), pictureNote(req), commandNote(command)].filter(Boolean).join(' ')
   // `docs/kanban` in these words is this board's real folder (#407) — the same swap the
   // flows get, so the ask and the flow it names never disagree about where the board is.
@@ -155,7 +167,7 @@ const BOARD_FOLDER = '<board folder>'
 const CARD_FILE = '<card file>'
 const PROJECT_FOLDER = '<project folder>'
 
-function cardFileOf(id: number | undefined): string {
+export function cardFileOf(id: number | undefined): string {
   const found = id === undefined ? null : locate(id)
   return found ? (found.kind === 'group' ? path.join(found.target, 'root.md') : found.target) : ''
 }
@@ -171,7 +183,7 @@ function realPaths(text: string, req: AgentRequest): string {
     .join(REPO_ROOT)
 }
 
-export function studioRulesBlock(req: AgentRequest): string {
+export function studioRulesBlock(req: AgentRequest, includeConfig = true): string {
   const frozen = deliveryFor(req)?.studio
   const flow = studioFor(studioForRun(req))
   if (!flow && !frozen) return ''
@@ -180,17 +192,19 @@ export function studioRulesBlock(req: AgentRequest): string {
   const review = taskReviewContext()?.review
   const selected = review ? reviewPreviewIds(review.plan) : meta?.previews
   const previews = frozen?.previews ?? flow?.previews ?? []
-  const own = flow ? userStudioRules(flow) : ''
+  const rules = frozen?.rules ?? flow?.rules ?? ''
   const template = studioFiles(id)?.[CARD_TEMPLATE_FILE]?.trim()
   return [
-    '<studio>', frozen?.rules ?? flow?.rules ?? '',
+    '<studio>', rules,
     'Prepare only the outputs requested by this task. Previews describe outputs, not agents or approval stages. Revise saved work in place; keep unrelated outputs unchanged.',
     ...(selected?.length ? [`Selected Preview IDs: ${JSON.stringify(selected)}`] : []),
     ...previews.map(p => `<Preview id="${p.id}">\n${p.instructions}\n</Preview>`),
     'Write task results inside matching Preview tags. The app supplies display metadata. Review the plan and requested outputs together once; after approval, complete and record delivery even without Preview blocks.',
     '</studio>',
     ...(template ? [`<card-template>\n${template}\n</card-template>`] : []),
-    ...(own ? [`<rules>\n${own}\n</rules>`] : []),
+    includeConfig && studioConfigContext(id, runnerProject(KANBAN), contextAction(req.action), (file) => {
+      try { return fs.readFileSync(path.join(KANBAN, file), 'utf8') } catch { return undefined }
+    }),
     ...studioSections(id),
     ...memoryDirectories().map(dir => `Memory directory: ${dir}`),
   ].filter(Boolean).join('\n\n')
@@ -198,9 +212,9 @@ export function studioRulesBlock(req: AgentRequest): string {
 
 /** The words one run is given, this board's own rule for the flow last (#306). It goes
  *  after everything else the board writes, so nothing of the board's follows the user's. */
-export function buildPrompt(rawReq: AgentRequest, notes: string[] = []): string {
+export function buildPrompt(rawReq: AgentRequest, notes: string[] = [], includeStudio = true): string {
   const req = withStudio(rawReq)
-  return [buildAsk(req, notes), studioRulesBlock(req), settingsBlock(req), ruleBlock(req, frozenRules(req))]
+  return [buildAsk(req, notes), includeStudio && studioRulesBlock(req), settingsBlock(req), ruleBlock(req, frozenRules(req))]
     .filter(Boolean)
     .join('\n\n')
 }
@@ -273,10 +287,56 @@ function reflectBlocks(ids: number[]): string[] {
   ])
 }
 
-export function buildRun(req: AgentRequest): { prompt: string; notes: string[] } {
+const taskGuides: Partial<Record<AgentAction, string>> = {
+  clarify: 'refine',
+  resolve: 'resolve',
+  edit: 'revise',
+  approve: 'writing',
+  implement: 'implement',
+  archive: 'archive',
+}
+
+export function compactTaskPrompt(req: Pick<AgentRequest, 'id' | 'action'>): boolean {
+  return req.id !== undefined && !!workspaceTask() && !!taskGuides[req.action]
+}
+
+function followTaskGuide(action: AgentAction, command: string): string {
+  return `Follow \`${command} guide ${taskGuides[action]}\`.`
+}
+
+function commandAlias(command: string): string {
+  return /^akb(?: |$)/.test(command) ? '' : `Use \`${command}\` for \`akb\`.`
+}
+
+function deliveryResumePrompt(deliveryId: string, id: number, why?: string): string {
+  const command = boardCommand()
+  return [
+    `Continue delivery ${deliveryId} for task #${id}. ${followTaskGuide('implement', command)}`,
+    why,
+    commandAlias(command),
+  ].filter(Boolean).join('\n\n')
+}
+
+function cardTurn(req: AgentRequest): string {
+  const command = boardCommand()
+  return [
+    `Task #${req.id}${req.title ? ` — ${req.title}` : ''}. ${followTaskGuide(req.action, command)}`,
+    req.action === 'approve' && 'Prepare the unlocked Previews.',
+    req.action === 'edit' && 'Implement only if explicitly requested.',
+    req.action === 'resolve' && answeredNote(req.id, command),
+    req.session === 'fork' && 'Follow the current task when continuing from the discussion.',
+    commandAlias(command),
+    pictureNote(req),
+    req.notes,
+    settingsBlock(req),
+    ruleBlock(req, frozenRules(req)),
+  ].filter(Boolean).join('\n\n')
+}
+
+export function buildRun(rawReq: AgentRequest, includeStudio = true): { prompt: string; notes: string[] } {
   const notes: string[] = []
-  let prompt = buildPrompt(req, notes)
-  return { prompt, notes }
+  const req = withStudio(rawReq)
+  return { prompt: compactTaskPrompt(req) ? cardTurn(req) : buildPrompt(req, notes, includeStudio), notes }
 }
 
 /** What a conflict run is aimed at, and what its flow is typed with: the card
@@ -290,10 +350,8 @@ function answeredNote(cardId: number | undefined, command: string): string {
   const delivery = cardId === undefined ? undefined : activeDelivery(cardId)
   if (!delivery) return ''
   return (
-    `Delivery ${delivery.deliveryId} is already building this card. Once your answers are on it, say what they did ` +
-    `to what it was approved to build: \`${command} raw delivery answered ${delivery.deliveryId} ` +
-    `--changed|--unchanged "<why>"\`, before you drop the questions. Judge the meaning, not the words — say ` +
-    `nothing and the board carries the build on as unchanged.`
+    `Record how the answers affect delivery ${delivery.deliveryId} before closing the questions. Run \`${command} delivery answered ${delivery.deliveryId} --changed "<why>"\` ` +
+    `if the approved requirements changed, or \`${command} delivery answered ${delivery.deliveryId} --unchanged "<why>"\` otherwise.`
   )
 }
 
@@ -394,7 +452,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
     case 'review-memory':
       return [
         `Review what this board's conversations settled and write it into memory, following \`akb guide review-memory\`.`,
-        req.tasks?.length ? `The conversations are the ones \`${command} raw memory review --task ${req.tasks.join(' ')} --print\` prints.` : '',
+        req.tasks?.length ? `The conversations are the ones \`${command} memory review --task ${req.tasks.join(' ')} --print\` prints.` : '',
       ].filter(Boolean).join(' ')
     // The dismissal review (#929). The flow lists the dismissals and restored ids; the guide
     // holds every rule.
@@ -423,7 +481,7 @@ function actionPrompt(req: AgentRequest, command: string, notes: string[]): stri
     // The flow supplies conflict facts; the guide owns the procedure.
     case 'approve':
       return [
-        `Task ${req.id} ${named} has been approved: write the previews that were waiting on that Approve from the card as it stands.`,
+        `Prepare the newly unlocked Previews for task ${req.id} following \`${command} guide writing\`.`,
         req.notes ? `Extra notes: ${req.notes}` : '',
         `Don't ask me questions with human-in-the-loop. Leave any questions as open questions.`,
       ]

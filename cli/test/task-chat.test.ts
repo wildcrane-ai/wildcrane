@@ -20,7 +20,7 @@ let onJob: () => any
 let onStop: (body: any) => any
 const target = '11111111-1111-4111-8111-111111111111'
 const next = '22222222-2222-4222-8222-222222222222'
-const messages = Array.from({ length: 25 }, (_, i) => ({ id: `m${i}`, role: i % 2 ? 'agent' : 'user', body: `message ${i}`, created_at: new Date(1700000000000 + i * 1000).toISOString(), ...(i === 23 ? { stopped: true, image_names: ['image.png'] } : {}) }))
+const messages = Array.from({ length: 25 }, (_, i) => ({ id: `m${i}`, role: i % 2 ? 'agent' : 'user', body: `中文消息 ${i}`, created_at: new Date(1700000000000 + i * 1000).toISOString(), ...(i === 23 ? { stopped: true, image_names: ['image.png'] } : {}) }))
 
 beforeEach(async () => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'task-chat-'))
@@ -94,11 +94,15 @@ it('empty chats and send keep their existing semantics', async () => {
   chat.messages = []
   const value = (await run('WC-12')).lines[0]
   assert.equal(value.total, 0); assert.equal(value.reply.state, 'idle')
+  assert.match(value.output, /No chat history\.$/)
   const sent = await run('WC-12', 'Keep', 'this')
   assert.deepEqual(calls.at(-1), { route: '/v1/tasks/WC-12/chat', method: 'POST', body: { body: 'Keep this' } })
   assert.equal(sent.code, 0)
   assert.equal(sent.lines[0].status, 'queued')
   assert.match(sent.lines[0].output, /Reply pending/)
+  const body = '  中文消息\n\n'
+  assert.equal((await run('WC-12', body)).code, 0)
+  assert.deepEqual(calls.at(-1)?.body, { body })
 })
 it('rejects incompatible modes and invalid limits before any request', async () => {
   for (const args of [['--all', '--limit', '2'], ['hello', '--follow'], ['hello', '--all'], ['hello', '--stop'], ['--stop', '--follow'], ['--stop', '--all'], ['--stop', '--limit', '2'], ['--limit', '0'], ['--limit', '1.5']]) {
@@ -118,10 +122,15 @@ it('separates acceptance, startup, content and stop progress', async () => {
   }
 })
 it('stop only targets the observed reply, including queued stops and replacement races', async () => {
-  assert.equal((await run('WC-12', '--stop')).lines[0].stop.state, 'not_running')
+  setLanguage('zh')
+  const idle = (await run('WC-12', '--stop')).lines[0]
+  assert.equal(idle.stop.state, 'not_running')
+  assert.match(idle.output, /No active chat reply\.$/)
   assert.equal(calls.filter((c) => c.method === 'POST').length, 0)
   chat.job = target; chat.status = 'replying'
-  assert.equal((await run('WC-12', '--stop')).lines[0].stop.state, 'requested')
+  const requested = (await run('WC-12', '--stop')).lines[0]
+  assert.equal(requested.stop.state, 'requested')
+  assert.match(requested.output, /Stop requested\.$/)
   assert.deepEqual(calls.at(-1)?.body, { job: target })
   chat.status = 'runner_offline'
   assert.equal((await run('WC-12', '--stop')).lines[0].stop.state, 'requested')
@@ -130,9 +139,12 @@ it('stop only targets the observed reply, including queued stops and replacement
   onJob = () => ({ id: target, state: 'finished', outcome: 'stopped' })
   const stopped = (await run('WC-12', '--stop')).lines[0]
   assert.equal(stopped.stop.state, 'stopped'); assert.equal(stopped.reply.state, 'stopped')
+  assert.match(stopped.output, /Reply stopped\.$/)
   onStop = () => ({ ...chat, job: next })
   onJob = () => ({ id: target, state: 'finished', outcome: 'done' })
-  assert.equal((await run('WC-12', '--stop')).lines[0].stop.state, 'superseded')
+  const superseded = (await run('WC-12', '--stop')).lines[0]
+  assert.equal(superseded.stop.state, 'superseded')
+  assert.match(superseded.output, /The target reply ended or was replaced\.$/)
   assert.ok(calls.filter((c) => c.method === 'POST').every((c) => c.route.endsWith('/chat/stop') && c.body.job === target))
 })
 it('follow emits deduplicated log events and the original final result after replacement', async () => {
@@ -173,10 +185,16 @@ it('no active reply ends immediately; Ctrl+C only disconnects locally', async ()
   assert.equal(code, 130); assert.equal(lines.at(-1).error.kind, 'interrupted')
   assert.ok(calls.every((c) => c.method === 'GET'))
 })
-it('preserves login and permission refusals, and translates only prose labels', async () => {
+it('preserves login and permission refusals, and keeps the same English labels for either language', async () => {
+  setLanguage('en')
+  const baseline = await run('WC-12')
   setLanguage('zh')
-  const value = (await run('WC-12')).lines[0]
-  assert.match(value.output, /任务执行/); assert.equal(value.task.status, 'done')
+  const localized = await run('WC-12')
+  assert.deepEqual(localized, baseline)
+  const value = localized.lines[0]
+  assert.match(value.output, /Task execution: done\nChat reply: Idle/)
+  assert.match(value.output, /AI \[stopped\]\n中文消息 23\nimage\.png/)
+  assert.match(value.output, /Showing 20 of 25 messages\.$/)
   globalThis.fetch = (async () => Response.json({ error: { code: 'forbidden', message: 'No access.' } }, { status: 403 })) as typeof fetch
   const denied = await run('WC-12', '--follow')
   assert.equal(denied.code, 1); assert.equal(denied.lines.at(-1).error.kind, 'forbidden')
@@ -215,6 +233,7 @@ it('a denied log stream cannot be reported as a completed reply', async () => {
 })
 
 it('prints Runner wire-format message deltas and current activity in prose', async () => {
+  setLanguage('zh')
   chat.job = target; chat.status = 'replying'
   let ready = false
   onJob = () => ready ? { id: target, state: 'finished', outcome: 'done', reply: 'Final body' } : { id: target, state: 'claimed', outcome: null }
@@ -222,6 +241,7 @@ it('prints Runner wire-format message deltas and current activity in prose', asy
     socket.send(JSON.stringify({ type: 'events', events: [
       { seq: 0, kind: 'message', text: '', data: { text: 'Live reply delta' } },
       { seq: 1, kind: 'tool_call', text: '', data: { title: 'Inspecting assets', status: 'in_progress' } },
+      { seq: 2, kind: 'phase', text: '', data: { phase: 'started' } },
     ] }))
     ready = true
   })
@@ -232,6 +252,7 @@ it('prints Runner wire-format message deltas and current activity in prose', asy
     assert.equal(await runAgent(['task', 'chat', 'WC-12', '--follow']), 0)
     assert.match(out.join('\n'), /Live reply delta/)
     assert.match(out.join('\n'), /Activity: Inspecting assets/)
+    assert.match(out.join('\n'), /Progress: started/)
     assert.match(out.join('\n'), /Final body/)
   } finally { console.log = log }
 })

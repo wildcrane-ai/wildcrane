@@ -4,25 +4,36 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { isAboutFile, type StudioFiles } from '../shared/studio-files.ts'
+import { FILE_LIMITS, PUBLICATION_FILE, VERSION_FILE, isAboutFile, studioSizeProblem, type StudioFiles } from '../shared/studio-files.ts'
 
 const MIME: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' }
 
-/** Every file under `dir`, as `/`-separated paths; dot files and folders are skipped. */
+/** Every file under the folder except Git and publication metadata. */
 export function filesOf(dir: string, base = dir): string[] {
-  return fs.readdirSync(dir, { withFileTypes: true }).filter(e => !e.name.startsWith('.')).flatMap(e => {
+  return fs.readdirSync(dir, { withFileTypes: true }).filter(e => e.name.toLowerCase() !== '.git' && (dir !== base || e.name !== PUBLICATION_FILE)).flatMap(e => {
     const full = path.join(dir, e.name)
-    if (e.isSymbolicLink()) throw new Error(`${full}: symbolic links are not allowed`)
+    if (!e.isFile() && !e.isDirectory()) throw new Error(full + ': only regular files and directories are allowed')
     return e.isDirectory() ? filesOf(full, base) : [path.relative(base, full).split(path.sep).join('/')]
   })
 }
 
 export function readStudioFile(dir: string, file: string): string {
   const full = path.join(dir, file)
-  return isAboutFile(file) && !file.endsWith('.md')
-    ? `data:${MIME[path.extname(file)]};base64,${fs.readFileSync(full).toString('base64')}`
-    : fs.readFileSync(full, 'utf8')
+  const bytes = fs.readFileSync(full)
+  if (isAboutFile(file) && !file.endsWith('.md')) return 'data:' + MIME[path.extname(file)] + ';base64,' + bytes.toString('base64')
+  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) }
+  catch { throw new Error(file + ': expected a UTF-8 text file') }
 }
 
-export const readStudioFolder = (dir: string): StudioFiles =>
-  Object.fromEntries(filesOf(dir).sort().map((f) => [f, readStudioFile(dir, f)]))
+export function readStudioFolder(dir: string): StudioFiles {
+  const files = filesOf(dir).sort()
+  if (files.filter(file => file !== VERSION_FILE).length > FILE_LIMITS.count) throw new Error('Studio file count limit exceeded')
+  let total = 0
+  return Object.fromEntries(files.map(file => {
+    const size = fs.statSync(path.join(dir, file)).size
+    if (file !== VERSION_FILE) total += size
+    const problem = studioSizeProblem(file, size, total)
+    if (problem) throw new Error(problem.file + ': ' + problem.reason)
+    return [file, readStudioFile(dir, file)]
+  }))
+}

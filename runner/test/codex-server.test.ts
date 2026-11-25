@@ -15,6 +15,7 @@ import { projectStateDir } from '../../cli/src/lib/machine/project'
 import { IDLE_TIMEOUT } from '../../cli/src/lib/agent/idle'
 import { openResume, openRun, patch, peekRun } from '../../cli/src/lib/agent/sessions'
 import { setBoardRoot } from '../../cli/src/lib/paths'
+import { RETRY_FILE_ENV, retryBudget } from '../../cli/src/lib/agent/retry'
 import { watchRun } from '../../cli/src/lib/agent/watch'
 
 const previous = process.env.WILDCRANE_HOME
@@ -138,11 +139,25 @@ for (const scenario of ['recover', 'release-rpc', 'restart', 'budget', 'unknown'
     assert.equal(continued.run.resumeId, previous.resumeId)
     latest = continued.run.sessionId
     seen.push(previous.resumeId!)
-    patch(latest, run => { run.pid = process.pid })
+    patch(latest, run => {
+      run.pid = process.pid
+      if (scenario === 'budget') run.cloudExecution = execution
+    })
     await watchRun(latest, resume, backoff)
     return { run: continued.run, spawned: true }
   }
-  patch(latest, run => { run.pid = process.pid })
+  const budgetFile = path.join(workspace, 'runner-retries')
+  const budget = retryBudget(budgetFile)
+  if (scenario === 'budget') {
+    budget.take()
+    budget.take()
+    process.env[RETRY_FILE_ENV] = budgetFile
+  }
+  const execution = { job: crypto.randomUUID(), machine: crypto.randomUUID() }
+  patch(latest, run => {
+    run.pid = process.pid
+    if (scenario === 'budget') run.cloudExecution = execution
+  })
   try {
     const watching = watchRun(latest, resume, backoff)
     const submitted = () => read().slice(offset).some(call => call.method === 'turn/start')
@@ -175,7 +190,7 @@ for (const scenario of ['recover', 'release-rpc', 'restart', 'budget', 'unknown'
     const trace = read().slice(offset)
     const starts = trace.filter(call => call.method === 'turn/start')
     const thread = starts[0]?.params.threadId
-    const expected = scenario === 'budget' ? 4 : ['recover', 'release-rpc', 'restart'].includes(scenario) ? 2 : 1
+    const expected = scenario === 'budget' ? 3 : ['recover', 'release-rpc', 'restart'].includes(scenario) ? 2 : 1
     assert.equal(starts.length, expected, record.error)
     assert.equal(starts.filter(call => call.params.input[0].text === request).length, 1)
     assert.ok(starts.every(call => call.params.threadId === thread))
@@ -196,7 +211,8 @@ for (const scenario of ['recover', 'release-rpc', 'restart', 'budget', 'unknown'
       }
     }
     if (scenario === 'budget') {
-      assert.equal(record.retry?.attempt, 4)
+      assert.equal(record.retry?.attempt, 5)
+      assert.equal(retryBudget(budgetFile).take(), undefined)
       assert.equal(record.retryPause, 'limit')
     } else if (scenario === 'unknown' || scenario === 'live') {
       assert.equal(record.retryPause, 'unsafe')
@@ -207,6 +223,7 @@ for (const scenario of ['recover', 'release-rpc', 'restart', 'budget', 'unknown'
     }
   } finally {
     if (scenario === 'stop-release') fs.writeFileSync(releaseGate, '')
+    if (scenario === 'budget') delete process.env[RETRY_FILE_ENV]
     IDLE_TIMEOUT.milliseconds = oldIdle
     for (const [key, value] of Object.entries(previousEnv)) {
       if (value === undefined) delete process.env[key]
@@ -248,7 +265,23 @@ it('retains execution subscriptions and adopts services without a shared daemon 
  const different=await peer(['-c','model="changed"']);await assert.rejects(different.rpc.call('thread/resume',{threadId:id}),/cannot change execution settings/);await different.close()
  const b=await peer();const resumed=await b.rpc.call('thread/resume',{threadId:id});assert.deepEqual(resumed.retainedThreads,[{id}]);assert.deepEqual(resumed.retainedTerminals,[{threadId:id,itemId:'service',processId:'42'}])
  assert.equal(((await b.rpc.call('thread/backgroundTerminals/list',{threadId:id})).data as any[]).length,1)
- await b.rpc.call('turn/start',{threadId:id,input:[{text:'finish-service'}]});await b.close()
+ await b.rpc.call('turn/start',{threadId:id,input:[{text:'leave-terminal'}]})
+ const settle = { ...b.hello.wildcrane as object, threadId: id, execution: 'unconfirmed', confirmed: false }
+ await assert.rejects(b.rpc.call('wildcrane/settled', { ...settle, kept: [{ threadId: id, itemId: 'temporary', processId: '43' }] }), /previously retained/)
+ const offset = read().length
+ const kept = await b.rpc.call('wildcrane/settled', { ...settle, kept: resumed.retainedTerminals })
+ assert.equal(kept.confirmed, false)
+ await b.close()
+ assert.equal(read().slice(offset).some(c => c.method === 'thread/backgroundTerminals/clean' && c.params.threadId === id), false)
+ const c = await peer()
+ await assert.rejects(c.rpc.call('thread/resume', { threadId: id }), /services changed/)
+ const observer = await nativeConnection(backends()[0]!, () => {})
+ try {
+  await initializeNative(observer)
+  assert.equal((await observer.rpc.call('thread/backgroundTerminals/terminate', { threadId: id, processId: '43' })).terminated, true)
+ } finally { observer.close() }
+ assert.deepEqual((await c.rpc.call('thread/resume', { threadId: id })).retainedTerminals, resumed.retainedTerminals)
+ await c.rpc.call('turn/start',{threadId:id,input:[{text:'finish-service'}]});await c.close()
  assert.equal(fs.existsSync(path.join(root,'codex-service-v2.json')),false)
 })
 it('isolates provider crashes and preserves saved-thread recovery',async()=>{
@@ -534,4 +567,71 @@ it('does not delete a new owner when reconciliation and resumption overlap (#773
   assert.equal(readPrivate<any>(file).pid, b.child.pid)
  } finally { observer.close() }
  await b.close()
+})
+
+it('confirms cleanup via probe connection or exited backend when native connection drops (#1018)', async () => {
+ const a = await peer()
+ const threadId = strThread(await a.rpc.call('thread/start', {}))
+ const backend = backends()[0]!, file = leaseFile(backend, threadId)
+ const offset = read().length
+ await a.rpc.call('turn/start', { threadId, input: [{ text: 'drop-connection' }] })
+ await until(() => !fs.existsSync(file) &&
+  a.notifications.some(n => n.method === 'wildcrane/cleanup' && n.params.status === 'confirmed'), 5000)
+ assert.equal(a.notifications.some(n => n.method === 'wildcrane/cleanup' && n.params.status === 'unconfirmed'), false)
+ assert.equal(read().slice(offset).some(row => row.method === 'turn/interrupt' && row.params.threadId === threadId), true)
+ await a.close()
+
+ // End-to-end via createCodexClient: mid-turn drop with running command still confirms cleanup so auto-retry can proceed.
+ const client = createCodexClient()
+ const proxy = spawn(process.execPath, [path.join(process.env.RUNNER_DIST!, 'codex-proxy.mjs'), fake, 'app-server'], {
+  env: { ...process.env, ...manager.env, WILDCRANE_HOME: root, AI4KANBAN_HOME: root, FAKE_CODEX_CALLS: calls },
+ })
+ try {
+  const end = await client.turn({
+   stdout: proxy.stdout,
+   stdin: proxy.stdin,
+   prompt: 'drop-connection',
+   cwd: root,
+   log: () => {},
+   gotResumeId: () => {},
+   gotModel: () => {},
+  })
+  assert.equal(end.ok, false)
+  assert.equal(end.cleanup?.status, 'confirmed')
+ } finally {
+  proxy.kill('SIGKILL')
+ }
+
+ // Backend process exit during turn also confirms cleanup without unconfirmed status.
+ const c = await peer()
+ const exitedThread = strThread(await c.rpc.call('thread/start', {}))
+ const exitedLease = leaseFile(backend, exitedThread)
+ await c.rpc.call('turn/start', { threadId: exitedThread, input: [{ text: 'crash' }] }).catch(() => {})
+ await until(() => !fs.existsSync(exitedLease), 5000)
+ assert.equal(c.notifications.some(n => n.method === 'wildcrane/cleanup' && n.params.status === 'confirmed'), true)
+ assert.equal(c.notifications.some(n => n.method === 'wildcrane/cleanup' && n.params.status === 'unconfirmed'), false)
+ await c.close()
+})
+
+it('preserves underlying error details when native connection fails (#1018)', async () => {
+ await assert.rejects(
+  nativeConnection({ pid: process.pid, instance: 'missing', generation: 'g', endpoint: `unix://${path.join(root, 'missing.sock')}`, key: 'k' }, () => {}),
+  error => {
+   assert.match(String(error), /Codex native listener did not answer \(.+\)/)
+   return true
+  },
+ )
+ const a = await peer()
+ const backend = backends()[0]!
+ const conn = await nativeConnection(backend, () => {})
+ const closed = once(conn.incoming, 'close')
+ // Trigger an abnormal socket close from the server side.
+ const id = strThread(await a.rpc.call('thread/start', {}))
+ await conn.rpc.call('initialize', { clientInfo: { name: 'test', version: '1' }, capabilities: { experimentalApi: true } })
+ conn.rpc.notify('initialized')
+ await conn.rpc.call('thread/resume', { threadId: id })
+ await conn.rpc.call('turn/start', { threadId: id, input: [{ text: 'drop-connection' }] }).catch(() => {})
+ await assert.rejects(closed, /Codex native connection (failed|closed)/)
+ conn.close()
+ await a.close()
 })

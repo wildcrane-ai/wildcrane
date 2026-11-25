@@ -11,7 +11,6 @@ import path from 'node:path'
 import { after, afterEach, beforeEach, describe, it } from 'node:test'
 
 import { ASSETS, setBoardRoot } from '../src/lib/paths'
-import { setBoardProvider } from '../src/lib/board'
 import { validateSpec } from '../src/lib/spec-contract'
 import { storyboardMarkers } from '../src/lib/storyboard'
 import { move } from './helpers/board'
@@ -209,14 +208,6 @@ describe("slide-deck's storyboard script", () => {
     assert.deepEqual(slideCodes((d) => { d.slides[0].copy = '212' }), ['/slides/0/copy invalid-value'])
   })
 
-  it('ships the same contract to carousel-renderer', () => {
-    // Each copy names its own path in its comments and description.
-    const code = (text: string) => text.split('\n').filter((l) => !l.startsWith('//')).join('\n')
-    const { description: _a, ...schema } = JSON.parse(agentFile('carousel-post/references/carousel-renderer/references/slides.schema.json'))
-    assert.deepEqual(schema, (({ description: _b, ...rest }) => rest)(slidesSchema))
-    assert.equal(code(agentFile('carousel-post/references/carousel-renderer/scripts/validate-storyboard.mjs')), code(agentFile(`${deck}/scripts/validate-storyboard.mjs`)))
-  })
-
   it('refuses shot fields, bad IDs and a missing preview field', () => {
     const got = slideCodes((d) => {
       d.slides[0].start = 0
@@ -278,7 +269,6 @@ A requirement.
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-storyboard-'))
     setBoardRoot(root)
-    setBoardProvider(null)
     file = path.join(root, 'docs/kanban/todo/1-video.md')
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, card(tag))
@@ -330,6 +320,11 @@ A requirement.
     fs.writeFileSync(path.join(ASSETS, '1', 'studio.json'), JSON.stringify({ version: 1, rounds: [[{ agent: 'writer', title: { en: 'Copy' } }]], land: [], scheduled: [] }))
     assert.deepEqual(validateSpec(file, card(wf), 1), [])
     assert.ok(validateSpec(file, card(`${wf}\nprose`), 1).some((e) => e.rule === 'studio-block'))
+    const dir = path.join(ASSETS, '1', 'studio-review')
+    fs.mkdirSync(dir)
+    fs.renameSync(path.join(ASSETS, '1', 'studio.json'), path.join(dir, 'review.json'))
+    assert.deepEqual(validateSpec(file, card('<Studio src=".assets/1/studio-review/review.json" />'), 1), [])
+    assert.deepEqual(validateSpec(file, card('<Studio src=".assets/1/../2/studio-review/review.json" />'), 1).map((e) => e.rule), ['studio-src'])
   })
 
   it('leaves a card without a marker to the old rules', () => {

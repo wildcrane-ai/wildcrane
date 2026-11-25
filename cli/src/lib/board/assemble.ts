@@ -2,7 +2,7 @@
 // folder is. Nothing here touches a filesystem, git or the coding agent.
 
 import type { Card } from '../view/types'
-import { subtaskLines } from '../leaving'
+import { subtaskLines } from '../leaving.ts'
 
 /** The number at the front of a card's filename, or of a group folder's name.
  *
@@ -22,9 +22,9 @@ export const isGroupFolder = (name: string): boolean => idPrefix(name) !== null
 export const LEGACY_RECURRING = 'recurring'
 export const isLegacyRecurring = (relFromTodo: string): boolean => relFromTodo.split(/[\\/]/)[0] === LEGACY_RECURRING
 
-/** How far a card's `## Todo` got. Every checkbox in the body counts, wherever it sits. */
+/** How far a card's `## Todo` got. Count the supplied checklist. */
 export function countTodos(body: string): { total: number; done: number } {
-  const matches = body.match(/^[ \t]*[-*]\s+\[( |x|X)\]/gm) || []
+  const matches = body.match(/^[ \t]*[-*][ \t]+\[( |x|X)\]/gm) || []
   const done = matches.filter((l) => /\[[xX]\]/.test(l)).length
   return { total: matches.length, done }
 }

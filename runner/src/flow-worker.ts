@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { readSession } from '../../cli/src/lib/cloud/session'
+import { invalidResponse } from '../../cli/src/lib/cloud/response'
 import { killMarked, processesStopped } from '../../cli/src/lib/agent/stop'
 import { pidAlive, tryLock } from '../../cli/src/lib/lock'
 import * as api from './api'
@@ -27,8 +28,13 @@ interface Worker {
   ended?: boolean
   markedAt?: number
   processAt?: number
+  claimAttempt?: number
+  claimFailure?: string
+  claimRetryAt?: number
 }
 
+interface ClaimRetry { at: number; attempt: number; failure: string }
+const CLAIM_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000]
 const FLOW_MARK = 'WILDCRANE_FLOW_WORKER'
 const directory = () => path.join(runnerHome(), 'flow-workers')
 const fileOf = (id: string) => path.join(directory(), `${encodeURIComponent(id)}.json`)
@@ -53,11 +59,11 @@ export function hasFlowWorker(id: string): boolean {
 }
 
 /** A launch is recorded before spawning; an uncertain launch is never replayed. */
-export function launchFlowWorker(id: string, machine: string, entry = flowWorkerEntry): void {
+export function launchFlowWorker(id: string, machine: string, entry = flowWorkerEntry, claimAttempt = 1): void {
   fs.mkdirSync(directory(), { recursive: true, mode: 0o700 })
   const account = readSession()?.subject
   if (!account) throw new Error('账号已退出，请重新登录。')
-  const worker: Worker = { id, token: crypto.randomUUID(), machine, account, generation: accountGeneration(), at: Date.now(), markedAt: Date.now() }
+  const worker: Worker = { id, token: crypto.randomUUID(), machine, account, generation: accountGeneration(), at: Date.now(), markedAt: Date.now(), claimAttempt }
   fs.writeFileSync(fileOf(id), JSON.stringify(worker), { flag: 'wx', mode: 0o600 })
   const log = fs.openSync(`${fileOf(id)}.log`, 'a', 0o600)
   try {
@@ -87,6 +93,8 @@ export async function watchFlowWorker(id: string, machine: string, detached: () 
         const claim = await api.claimJob(machine, id)
         if (claim.ok && claim.value.claimed && !detached()) {
           await api.finishJob(machine, id, 'failed', recoveryBlocked(remote.value.job))
+        } else if (!claim.ok) {
+          console.warn('runner: could not claim job with an unverified worker', { job: id, reason: claim.error, code: claim.code })
         }
       }
       return
@@ -182,12 +190,12 @@ export async function reclaimFlowWorkerAfterExit(id: string, machine: string, gi
   }
 }
 
-let reclaiming: Promise<void> | undefined
+let reclaiming: Promise<ClaimRetry | undefined> | undefined
 /** Serialize local candidates; a failed item keeps its record for the next sweep. */
-export async function reclaimFlowWorkers(machine: string, given?: Deps, only?: string): Promise<void> {
+export async function reclaimFlowWorkers(machine: string, given?: Deps, only?: string, retryWaiting = false): Promise<ClaimRetry | undefined> {
   if (reclaiming) {
     await reclaiming
-    if (only) return reclaimFlowWorkers(machine, given, only)
+    if (only) return reclaimFlowWorkers(machine, given, only, retryWaiting)
     return
   }
   const account = readSession()?.subject
@@ -206,7 +214,9 @@ export async function reclaimFlowWorkers(machine: string, given?: Deps, only?: s
         if (!worker || typeof worker.id !== 'string' || name !== `${encodeURIComponent(worker.id)}.json`
             || typeof worker.token !== 'string' || !worker.token || worker.machine !== machine
             || worker.account !== account || typeof worker.generation !== 'string'
-            || !Number.isFinite(worker.at)) continue
+            || !Number.isFinite(worker.at)
+            || worker.claimAttempt !== undefined && (!Number.isSafeInteger(worker.claimAttempt) || worker.claimAttempt < 1)
+            || worker.claimRetryAt !== undefined && !Number.isFinite(worker.claimRetryAt)) continue
         if (!writerStopped(worker)) {
           if (!only) void reclaimFlowWorkerAfterExit(worker.id, machine, given)
           continue
@@ -221,10 +231,18 @@ export async function reclaimFlowWorkers(machine: string, given?: Deps, only?: s
           if (!valid()) break
           if (!remote.ok || remote.value.job.id !== worker.id || !canKeepFlow(remote.value.job)) continue
           const job = remote.value.job
+          const checkpoint = job.state === 'finished' ? null : readCheckpoint(worker.id)
+          const updating = checkpoint?.updating && !checkpoint.pending.includes('unknown')
+          const failedClaim = worker.ended && (worker.claimFailure || (worker.claimAttempt === undefined && !checkpoint && 'Previous claim result was not recorded.'))
+          const attempt = worker.claimAttempt ?? 1
+          const retry = worker.generation === generation && job.state === 'waiting' && (!checkpoint || updating) && failedClaim ? {
+            attempt,
+            at: worker.claimRetryAt ?? Date.now() + CLAIM_BACKOFF_MS[Math.min(attempt - 1, CLAIM_BACKOFF_MS.length - 1)]!,
+            failure: failedClaim,
+          } : undefined
           if (worker.generation === generation && (job.state === 'claimed' || job.state === 'interrupted')) {
             const runner = await api.readRunner()
             if (!runner.ok || runner.value.runner?.machineId && runner.value.runner.machineId !== machine || !valid()) continue
-            const checkpoint = readCheckpoint(worker.id)
             const deps = given ?? defaultDeps(machine)
             const folder = job.projectDir ? folderFor(job) : null
             if (folder && 'refused' in folder) continue
@@ -235,10 +253,12 @@ export async function reclaimFlowWorkers(machine: string, given?: Deps, only?: s
               checkpoint.flowRun = evidence.run
               stopped = evidence.stopped
             }
-            if (!valid() || !writerStopped(worker)) continue
-            const recovered = await recoverInterruptedJob(machine, job, checkpoint, stopped, valid)
+            if (!valid() || !writerStopped(worker) || worker.claimFailure && !stopped || fs.readFileSync(file, 'utf8') !== original) continue
+            const beforeExecution = worker.claimFailure && worker.ended ? { pending: [], started: false } : null
+            if (beforeExecution) console.info('runner: recovering after a failed job claim', { job: worker.id, attempt, reason: worker.claimFailure })
+            const recovered = await recoverInterruptedJob(machine, job, checkpoint ?? beforeExecution, stopped, valid)
             if (!recovered?.resumed && !recovered?.finished) continue
-          } else if (job.state !== 'finished' && !(job.state === 'waiting' && readCheckpoint(job.id)?.updating)) continue
+          } else if (job.state !== 'finished' && !retry && !(job.state === 'waiting' && updating)) continue
           // Legacy workers have no inherited mark: also verify their board runs and checkpoint.
           if (!worker.markedAt) {
             const job = remote.value.job
@@ -250,20 +270,30 @@ export async function reclaimFlowWorkers(machine: string, given?: Deps, only?: s
             if (!await confirmFlowStopped({ task: job.task, cloudTask: job.task, project: job.project,
               cwd: folder.cwd, board, number: job.number ?? null, studio: job.studio ?? job.flow?.studio ?? null },
             job, { ...deps, machineId: machine, akb: deps.akb() })) continue
-            const checkpoint = readCheckpoint(worker.id)
-            if (checkpoint && (!checkpoint.mark || !processesStopped(checkpoint.mark, checkpoint.process))) continue
+            const saved = readCheckpoint(worker.id)
+            if (saved && (!saved.mark || !processesStopped(saved.mark, saved.process))) continue
           }
           if (!writerStopped(worker) || !valid() || fs.readFileSync(file, 'utf8') !== original) continue
+          if (retry && (worker.claimRetryAt === undefined || !retryWaiting || retry.at > Date.now())) {
+            if (worker.claimRetryAt === undefined) {
+              await api.renewJob(machine, worker.id, { taskRecovery: { code: 'claim', attempt: retry.attempt } })
+              if (!valid() || fs.readFileSync(file, 'utf8') !== original) continue
+              save({ ...worker, claimRetryAt: retry.at })
+            }
+            if (retryWaiting) return retry
+            continue
+          }
           fs.rmSync(`${file}.log`, { force: true })
           fs.rmSync(`${file}.stop`, { force: true })
           fs.unlinkSync(file)
           if (job.state === 'finished' && job.outcome === 'done') clearCheckpoint(job.id)
+          if (retry) return retry
         } finally { release() }
       } catch { /* Preserve the record for the next sweep. */ }
     }
   }
   reclaiming = sweep().finally(() => { reclaiming = undefined })
-  await reclaiming
+  return reclaiming
 }
 
 /** Own the whole job, including stage transitions and result upload, across Runner restarts. */
@@ -287,7 +317,20 @@ export async function runFlowWorker(id: string, token: string, given?: Deps, ent
   }, 100)
   try {
     const base = given ?? defaultDeps(worker.machine)
-    const deps: Deps = { ...base, api: { ...base.api, renewJob: async (...args) => {
+    const deps: Deps = { ...base, api: { ...base.api, claimJob: async (...args) => {
+      let claim = await base.api.claimJob(...args)
+      if (claim.ok && claim.value?.claimed !== false && (claim.value?.claimed !== true || claim.value.job?.id !== id)) {
+        const invalid = invalidResponse('a claim for this job')
+        claim = { ok: false, code: invalid.code, error: invalid.message }
+      }
+      const failure = !claim.ok ? [claim.code, claim.status, claim.error].filter(Boolean).join(' ')
+        : claim.value.claimed === false ? claim.value.reason || 'Cloud did not grant a lease.' : undefined
+      if (failure) {
+        worker.claimFailure = failure
+        console.warn('runner: job claim failed', { job: id, attempt: worker.claimAttempt ?? 1, reason: failure })
+      }
+      return claim
+    }, renewJob: async (...args) => {
       const runner = await api.readRunner()
       if (runner.ok && runner.value.runner?.machineId && runner.value.runner.machineId !== worker.machine) {
         return { ok: true, value: { renewed: false } }

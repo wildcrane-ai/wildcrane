@@ -220,7 +220,7 @@ it('delivers through the CLI after agent-owned conflict repair, checks and a new
   const candidate = fs.readFileSync(card, 'utf8').replace('<!-- agent -->', '## Worth noting after implementation\n\n- Preserved both edits.\n\n<!-- agent -->')
   assert.match(candidate, /Worth noting after implementation/)
   fs.writeFileSync(card, candidate)
-  const complete = ['raw', 'delivery', 'complete', deliveryId, '--commit', commit, '--branch', 'main', '--json']
+  const complete = ['delivery', 'complete', deliveryId, '--commit', commit, '--branch', 'main', '--json']
   const handoff = await run(root, complete)
   await closeRun('git-resumed', { status: 'interrupted' })
   const archived = path.join(path.dirname(card), '../.archive', path.basename(card))
@@ -228,7 +228,7 @@ it('delivers through the CLI after agent-owned conflict repair, checks and a new
   assert.match(saved, /Preserved both edits/)
   const reconciled = await reconcileCardDelivery(1)
   assert.deepEqual(reconciled, { kind: 'completed', deliveryId, sessionId: 'git-resumed', commit, branch: 'main' })
-  assert.deepEqual(await run(root, complete), handoff)
+  assert.deepEqual(await run(root, ['raw', ...complete]), handoff)
   assert.throws(() => completeDelivery(deliveryId, { commit: base, branch: 'other' }),
     new RegExp(`Recorded: ${commit} on main\\. Reported: ${base} on other`))
   assert.equal(git('rev-parse', 'main'), commit)

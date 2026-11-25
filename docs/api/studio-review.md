@@ -1,12 +1,12 @@
 # Studio file reviews
 
 ```sh
-akb raw studio preview 819 --folder ./draft --base ./baseline
+akb studio preview 819 --folder ./draft --base ./baseline
 ```
 
 - **Inputs**: a card, complete draft and unchanged baseline. Existing Studios need matching `{id, version}` in both `version.json` files; new Studios use `--base empty` without a version file.
 - **Output**: frozen files and real unified diffs under `.assets/<card>/studio-review/`. The command prints a `<Studio>` tag plus attachment tags; JSON output includes `file` (absolute snapshot path), `tag` and `files` (attachment Markdown).
-- **Review**: put `tag` in the studio Preview and nonempty `files` in the files Preview. Attachments pair full source with its diff under one label; three or more changed files use `<Set>`. Deleted files retain their diff.
+- **Review**: put `tag` in the studio Preview and nonempty `files` in the files Preview. Attachments include changes anywhere in the draft, including skills and custom directories. They pair full source with its diff under one label; three or more changed files use `<Set>`. Deleted files retain their diff.
 - **Trials**: use ordinary Preview Components in the studio Preview. No result manifest or Agent assignment is required.
 - **Failure**: invalid definitions report `studio-problems`; missing cards report `no-such-card`; invalid baselines or files report `bad-args`. Failed generation preserves the last snapshot.
 
@@ -37,8 +37,9 @@ The existing version 2 snapshot holds publication evidence, not a tab or role co
 ```
 
 - **Baseline**: `base` is null for a new Studio; otherwise it pins the published ID, version and validation fingerprint.
-- **Fingerprint**: matches `akb raw studio validate`, including the complete draft and its version file. Publication must match the approved snapshot.
+- **Fingerprint**: matches `akb studio validate`, including the complete draft and its version file. Publication must match the approved snapshot.
 - **Files**: the union of baseline and draft paths except version.json, including unchanged files. Paths are unique safe relative paths. A missing side is null; at least one side exists. Changed files have a diff, using `/dev/null` for additions and deletions.
+- **Restore**: rebuild the draft from the pinned `after` files, skipping deletions. The optional `versionFile` holds the exact pulled version file. Older snapshots use the canonical version file from `base` or the approved ZIP if needed.
 - **Source text**: frozen `.txt` files preserve the exact validated source; embedded Preview tags remain text.
 - **History**: old version 2 snapshots with `agents` and `results` remain readable, including their result dependencies. Files and results display without Agent tabs. Legacy `rounds / land / scheduled` diagrams remain readable. New snapshots omit both old fields; `--results` is retired.
 

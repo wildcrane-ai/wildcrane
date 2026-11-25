@@ -86,9 +86,21 @@ or Set for more than two files.
   hint; validators report errors without modifying files. The Agent fixes editable drafts
   from these diagnostics and reruns validation before continuing its authorized operation.
 
+## Skills and resources
+
+A Studio can keep text files at safe relative paths. The root version, publication and official catalog metadata files are reserved. Each optional Agent Skill has an
+entry at `skills/<name>/SKILL.md` and can include scripts, references and templates under
+the same directory. Use standard YAML metadata and Markdown instructions. For imports,
+record the source URL and fixed revision under `metadata`. [Agent Skills specification](https://agentskills.io/specification)
+
+A fresh runtime session receives a Markdown catalog with names, descriptions and
+absolute SKILL.md paths. The Agent reads a skill and its resources when it needs them.
+A new execution takes the latest publication. A continuing execution keeps its saved
+version, and recovery fails explicitly if that snapshot is unavailable.
+
 ## Validation diagnostics
 
-`akb raw studio validate <folder> --json` returns its existing action-result envelope.
+`akb studio validate <folder> --json` returns its existing action-result envelope.
 On success: `{folder, problems: [], fingerprint}`. On failure: a nonzero exit and
 `studio-problems`, containing structured problems with `file`, `line`, `column`, `path`,
 `code`, `message` and `hint`; no fingerprint is accepted. HTTP writes use the same problems
@@ -125,15 +137,16 @@ The examples use a folder `./release-notes` containing the `STUDIO.md` above.
 `--json` retains the standard CLI envelope; the fields below describe its action result.
 No command below starts an Agent or creates an approval.
 
-### `akb raw studio validate <folder> --json`
+### `akb studio validate <folder> --json`
 
-Reads STUDIO.md, its YAML display map, Land section, Preview delimiters and linked references. Returns
-`{folder, problems: [], fingerprint}`. Validation never looks up Agents.
+Validates the complete folder and returns `{folder, problems: [], fingerprint}`. The
+fingerprint covers skill files and resources. A draft with skills also returns `skillContext`,
+the runtime Markdown catalog with paths in that draft for a trial.
 Invalid definitions exit nonzero with `studio-problems`, including each file, field path, source line and reason.
 For example, `STUDIO.md:16:1 previews.prompts: preview-unclosed — add </Preview>`. An unreadable folder is `bad-args`.
 
 ```sh
-akb raw studio validate ./release-notes --json
+akb studio validate ./release-notes --json
 ```
 
 ### `akb studio create <folder> --request-id <id> [--workspace <id>]`
@@ -158,6 +171,21 @@ Studios retain the existing access error. The complete catalog, Preview metadata
 akb studio pull wf-example ./release-notes-edit
 ```
 
+### `akb studio clone <id> <folder> [--name <name>] [--json]`
+
+Copies the latest definition and reusable files of a Studio from `akb studio list` to a
+new or empty local folder. Omitting `--name` adds a copy suffix to the source names.
+The draft includes README, ABOUT and package screenshots. It excludes the source's `version.json`. Studios with
+MCP servers cannot be cloned. Skills and their resources are copied. The draft is validated before writing.
+
+The successful JSON response includes `{ok, source, sourceVersion, folder}`, where
+`source` is the listed ID and `folder` is the absolute destination. Review as a new Studio
+with `--base empty` and use `akb studio create` after approval.
+
+```sh
+akb studio clone blog-post ./technical-articles --name "Technical articles" --json
+```
+
 ### `akb studio push <folder> --request-id <id>`
 
 Replaces the complete definition against `version.json`. Returns
@@ -180,16 +208,24 @@ It has no format discriminator, `agent`, `after`, `land` or memory entries.
 akb studio list --json
 ```
 
-### `akb raw file <studio> <path>`
+### `akb studio skills <studio> [--json]`
 
-Reads a text resource from the task's pinned Studio version. Resources include
-`STUDIO.md`, `CARD.md`, and optional files under `references/`, `scripts/`, `shared/`.
-Returns `{studio, file, text}`. Bad paths return `no-such-studio-file` and list readable
-files; an unknown Studio remains `no-such-studio`. Reading does not execute a script.
+Lists skill names and descriptions. JSON returns `{skills: [{name, description}]}`.
+A Studio with no skills returns an empty list. Within an execution, the task's Studio
+uses the saved snapshot. Outside an execution, the command reads the current version.
 
-```sh
-akb raw file coding STUDIO.md
-```
+### `akb studio file <studio> <path> [--json]`
+
+Reads a Studio text file, including `skills/<name>/<path>`, using the same version
+selection as studio skills. JSON returns `{studio, file, text}`. An unknown path returns
+no-such-studio-file.
+
+### `akb components [component...]`
+
+Run without arguments for a compact list of built-in Preview Components, supported
+Asset formats, preview requirements, and download availability. Pass component names
+to print their usage in the requested order, for example `akb components Set Storyboard`.
+An unknown name returns `unknown-component`.
 
 ### `akb raw components --studio <id> [--docs] --json`
 
@@ -233,6 +269,12 @@ Returns existing Studio metadata, `version`, complete `files`, and the same
 ```sh
 curl -H 'Authorization: Bearer <credential>' 'https://api.ai4kanban.dev/v1/studios/wf_example'
 ```
+
+### `GET /v1/tasks/{id}/studio`
+
+Returns the task's Studio, including the current or requested version and complete
+files with any skill tree. The Runner saves this response when starting an execution
+and uses that snapshot for continued work.
 
 ### `POST /v1/studios`
 
@@ -281,10 +323,15 @@ explicit takeover rather than an automatic replacement session.
 
 ## Marketplace files
 
+The built-in Carousel Post Studio (`wf_builtin_carousel_post`) is omitted from
+`GET /v1/marketplace/studios` and `GET /v1/studios`. Its detail URLs, marketplace
+install and clone requests, task creation with that ID, and start requests for
+open Goals that use it return `404 not_found`.
+
 ### `POST /v1/marketplace/studios`
 
-The existing `{slug, files, dry_run?}` input accepts the single Studio definition. It uses the
-same validation, official-only file rules, creator permission and existing publication
+The existing `{slug, files, dry_run?}` input accepts the complete Studio, including its optional skill tree. It uses the
+same validation, marketplace file rules, creator permission and existing publication
 result. Invalid files return `bad_request` or `payload_too_large`; access errors stay as-is.
 
 ```sh
@@ -302,11 +349,23 @@ curl -H 'Authorization: Bearer <credential>' \
   'https://api.ai4kanban.dev/v1/marketplace/studios/wf_builtin_coding'
 ```
 
+### `GET /v1/studios/{id}/readme?workspace={workspaceId}&lang={languageTag}`
+
+Read the current Studio's user guide. Marketplace listings can be read before installation.
+A workspace Studio must belong to the requested workspace. A root `README.md` or
+`README.<locale>.md` can embed package images from `screenshots/<name>.png|jpg|jpeg|webp`.
+
+Nonblank documents match the exact language tag case-insensitively, then the base language,
+then the unsuffixed file. The same order applies to legacy ABOUT when no README matches.
+The response is `{ readme: { filename, lang, markdown, images } | null }`.
+`images` maps referenced package paths to bitmap data URLs. `lang` is null for an
+unsuffixed document.
+
 ### `POST /v1/marketplace/studios/{id}/clone`
 
 Copies the complete definition and resources using the existing optional
 `{workspace, name}` input, permission and idempotency rules. Returns the existing new
-Studio result, HTTP 201. Official-only skills and MCP files still make cloning fail with
+Studio result, HTTP 201. MCP files make cloning fail with
 `bad_request`; missing source IDs remain `not_found`. Cloning creates no Agent configuration.
 
 ```sh
@@ -335,16 +394,34 @@ STUDIO.md, display maps and linked resources in the version fingerprint. Normal 
 no H2/icon-comment, old directory or role execution fallback. Title/icon edits retain the
 same selected ID, reading position and file grouping. Existing approval consistency holds.
 
-### Local cutover tooling
+### Cutover history
 
-Use `node cloud/scripts/single-studio-migration.mjs --export <snapshot.json>` with the
-service credential to freeze database references and Board files. Plan offline with
-`--snapshot <snapshot.json> --out <new-folder>`; keep its untouched `backup.json` and
-`plan.json`, plus a database backup. Inspect conversion failures before applying.
+The production cutover is complete. Current task and Studio APIs read and write the
+converted data. Historical Preview IDs, task decisions and artifact versions stay
+available through the usual reads. See the [deployment record](../deploy.md#single-studio-cutover-820-and-873)
+for migration receipts and retirement details.
 
-`--apply <plan-folder>` stops old jobs, checks saved card revisions, writes converted
-cards and switches version references. Replaying the same plan does not dispatch work.
-Failed conversions stay stopped with a reason; repair and replan them explicitly.
-Original versions, decisions and artifact versions remain available as history. Verify
-restoration in an isolated database and Board store before a production cutover. Deploy
-CLI, Cloud, Runner and Web together; this task does not deploy or apply production data.
+## Published packages
+
+Studio publication accepts the existing JSON file map. The expanded ZIP may contain
+up to 10 MiB in total and 2 MiB per file. Limits use UTF-8 bytes and the original
+bytes of marketplace screenshots. An oversized file or package returns
+`413 payload_too_large` naming the limit.
+
+| Endpoint | Result |
+| --- | --- |
+| `GET /v1/studios/{id}?view=metadata` | The current version, Previews and its package reference. |
+| `GET /v1/tasks/{id}/studio?view=metadata[&version={version}]` | The task's current or specified version, with current and historical Previews. Deleted Studio handling is unchanged. |
+| `GET /v1/studios/{id}/versions/{version}/package` | ZIP for a readable Studio version. |
+| `GET /v1/tasks/{id}/studio/versions/{version}/package` | ZIP for the task's Studio version, using task read permission. |
+
+A package reference contains `version`, `filesSha256`, `zipSha256`, `zipBytes`
+and an authenticated API-relative `downloadUrl`. Downloads return
+`application/zip`, `Content-Length`, the quoted ZIP digest as `ETag` and
+`Cache-Control: private, no-store`. Missing or inaccessible versions return
+`404 not_found`. An unavailable registered object returns `503 service_unavailable`.
+Omit `view` for the original JSON response with files.
+
+Runners bind an execution to the version selected during preparation and validate
+the ZIP and file digests before caching it. Other tasks on the machine can reuse
+that version after confirming its metadata with Cloud.

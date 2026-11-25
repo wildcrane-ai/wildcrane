@@ -1,16 +1,18 @@
-import { taskHistoricalPreviews } from './agent/cloud-studios'
 import { parsePreviewBlocks } from './shared/preview-blocks'
 import { studioFor } from './agent/studios'
 import fs from 'node:fs'
 import path from 'node:path'
 
 import { enclosingGroupRoot, idPrefix, isLegacyRecurring, walkMd } from './cards'
-import { parseFrontmatter } from './frontmatter'
-import { ASSETS, rel, TODO } from './paths'
+import { ARCHIVE, ASSETS, rel, TODO } from './paths'
 import { compareAttrs, compareKind, shotsProblem, storyboardProblem, type Shot } from './compare'
 import { assetName, storyboardMarkers, storyboardTag, studioTag } from './storyboard'
 import { validatePreviewFiles } from './preview-files'
-import { dependencyCycle, LEVELS, STATUSES } from './validate'
+import { dependencyCycle } from './validate'
+import { scanCardLines } from './shared/card-lines'
+import { cardHeaderProblems, cardTodoProblems, type CardStudioContext } from './shared/card-structure'
+
+export { scanCardLines }
 
 export interface ContractError {
   file: string
@@ -25,37 +27,16 @@ export interface CardSource {
 }
 export type SpecSnapshot = Map<string, CardSource>
 
-/** Structural lines only; examples and comments cannot introduce card sections. */
-export function scanCardLines(lines: string[], start = 0) {
-  const visible = lines.map(() => '')
-  let fence: { char: string; length: number; line: number } | null = null
-  let comment = false
-  for (let i = start; i < lines.length; i++) {
-    const line = lines[i]!
-    const delimiter = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/)
-    if (fence) {
-      if (delimiter && delimiter[1]![0] === fence.char && delimiter[1]!.length >= fence.length && !delimiter[2]!.trim()) fence = null
-      continue
-    }
-    if (comment) { if (line.includes('-->')) comment = false; continue }
-    if (delimiter) { fence = { char: delimiter[1]![0]!, length: delimiter[1]!.length, line: i + 1 }; continue }
-    if (/^\s*<!--\s*agent\s*-->\s*$/.test(line)) { visible[i] = line; continue }
-    const clean = line.replace(/<!--.*?-->/g, '')
-    const open = clean.indexOf('<!--')
-    comment = open >= 0
-    visible[i] = comment ? clean.slice(0, open) : clean
-  }
-  return { visible, fence, comment }
-}
-
 /** Read raw files so malformed frontmatter cannot make a changed card disappear. */
-export function snapshotSpecs(): SpecSnapshot {
+export function snapshotSpecs(id?: number): SpecSnapshot {
   const out: SpecSnapshot = new Map()
-  if (!fs.existsSync(TODO)) return out
-  for (const file of walkMd(TODO)) {
-    if (isLegacyRecurring(path.relative(TODO, file))) continue
-    const id = idPrefix(path.basename(file) === 'root.md' ? path.basename(path.dirname(file)) : path.basename(file))
-    if (id !== null) out.set(file, { id, text: fs.readFileSync(file, 'utf8') })
+  for (const dir of id === undefined ? [TODO] : [TODO, ARCHIVE]) {
+    if (!fs.existsSync(dir)) continue
+    for (const file of walkMd(dir)) {
+      if (isLegacyRecurring(path.relative(dir, file))) continue
+      const number = idPrefix(path.basename(file) === 'root.md' ? path.basename(path.dirname(file)) : path.basename(file))
+      if (number !== null && (id === undefined || number === id)) out.set(file, { id: number, text: fs.readFileSync(file, 'utf8') })
+    }
   }
   return out
 }
@@ -73,84 +54,36 @@ function enclosingGroups(file: string): number[] {
 /** Format, plus a dependency cycle through the card's own group; other semantic planning decisions remain
  *  the agent's responsibility. With `id`, a storyboard the card points at must be a file in
  *  its asset folder. */
-export function validateSpec(file: string, text: string, id?: number): ContractError[] {
+export function validateSpec(file: string, text: string, id?: number, context?: CardStudioContext): ContractError[] {
   const errors: ContractError[] = []
   const add = (line: number, rule: string, message: string) => errors.push({ file: rel(file), line, rule, message })
-  const lines = text.replace(/\r\n/g, '\n').split('\n')
-  const end = lines.findIndex((line, i) => i > 0 && line.trim() === '---')
-  if (lines[0]?.trim() !== '---' || end < 0) {
-    add(1, 'frontmatter', 'Expected a leading --- frontmatter block and its closing ---. Restore both delimiters.')
-    return errors
-  }
-  const fields = new Map<string, { line: number; value: string }>()
-  for (let i = 1; i < end; i++) {
-    const line = lines[i]!
-    if (!line.trim() || /^\s|^#/.test(line)) continue
-    const match = line.match(/^([a-z_]+):\s*(.*)$/)
-    if (!match) { add(i + 1, 'frontmatter', `Invalid field ${JSON.stringify(line)}. Use key: value; indent list entries.`); continue }
-    const key = match[1]!
-    if (fields.has(key)) add(i + 1, 'duplicate-field', `Field ${key} is repeated. Keep one ${key}: entry.`)
-    fields.set(key, { line: i + 1, value: match[2]! })
-  }
-  for (const key of ['title', 'priority', 'status', 'blocked_by', 'related', 'modules', 'questions']) {
-    if (!fields.has(key)) add(1, 'missing-field', `Missing ${key}: in frontmatter. Restore it with the board's metadata commands.`)
-  }
-  const { meta } = parseFrontmatter(text)
-  if (typeof meta?.title !== 'string' || !meta.title.trim()) add(fields.get('title')?.line ?? 1, 'title', 'The title is empty. Set a non-empty title with akb raw update.')
-  for (const key of ['priority', 'status'] as const) {
-    const allowed = key === 'status' ? STATUSES : LEVELS
-    const value = fields.get(key)
-    if (value && !allowed.includes(value.value.replace(/^['"]|['"]$/g, ''))) {
-      add(value.line, key, `Invalid ${key} ${JSON.stringify(value.value)}. Expected ${allowed.join(', ')}; use akb raw update.`)
-    }
-  }
-  const approved = fields.get('preview_approved')
-  if (approved && approved.value !== 'true') {
-    add(approved.line, 'preview_approved', `Invalid preview_approved ${JSON.stringify(approved.value)}. Only the board writes it, as true; remove the line.`)
-  }
-  const rejected = fields.get('rejected')
-  if (rejected && rejected.value !== 'true') {
-    add(rejected.line, 'rejected', `Invalid rejected ${JSON.stringify(rejected.value)}. Only akb task remove writes it, as true; remove the line.`)
-  }
-  for (const key of ['rejected_reason', 'rejected_at', 'rejected_by']) {
-    const field = fields.get(key)
-    if (field && !rejected) add(field.line, key, `${key} is only kept on a rejected card. Only akb task remove writes it; remove the line.`)
-  }
-  for (const key of ['blocked_by', 'related', 'modules', 'questions']) {
-    const field = fields.get(key)
-    if (!field) continue
-    if (field.value !== '' && !/^\[.*\]$/.test(field.value)) {
-      add(field.line, 'list', `${key} must be a list: use [] when empty, [values], or indented list entries.`)
-    }
-    if (key === 'blocked_by' || key === 'related') {
-      const values = field.value.replace(/^\[|\]$/g, '').split(',').map((s) => s.trim()).filter(Boolean)
-      if (values.some((s) => !/^[1-9]\d*$/.test(s))) add(field.line, 'task-ids', `${key} must contain positive numeric task IDs, such as [12, 34].`)
-      if (key === 'blocked_by') {
-        const groups = enclosingGroups(file)
-        for (const g of groups.filter((g) => values.includes(String(g)))) {
-          add(field.line, 'dependency-cycle', `blocked_by names #${g}, a group this card is in; the group waits for this card, so neither can finish. Remove it with akb raw update.`)
-        }
-        // Moving a card into a group can close a cycle through other cards that no update checked.
-        if (id !== undefined && groups.length) {
-          for (const dep of values.filter((v) => /^\d+$/.test(v) && !groups.includes(Number(v))).map(Number)) {
-            const cycle = dependencyCycle(id, dep)
-            if (cycle) add(field.line, 'dependency-cycle', `blocked_by #${dep} makes a cycle: ${cycle.map((n) => `#${n}`).join(' → ')}. Drop one link with akb raw update <id> --blocked-by.`)
-          }
-        }
-      }
+  const header = cardHeaderProblems(file, text, context, true)
+  for (const p of header.problems) add(p.line, p.code, `${p.message}. ${p.hint}`)
+  if (!header.meta) return errors
+  const { lines, end, meta } = header
+  const groups = enclosingGroups(file)
+  for (const dep of meta.blocked_by) {
+    const line = header.fields.get('blocked_by')?.line ?? 1
+    if (groups.includes(dep)) {
+      add(line, 'dependency-cycle', `blocked_by names #${dep}, a group this card is in; the group waits for this card, so neither can finish. Remove it with akb task update.`)
+    } else if (id !== undefined && groups.length) {
+      const cycle = dependencyCycle(id, dep)
+      if (cycle) add(line, 'dependency-cycle', `blocked_by #${dep} makes a cycle: ${cycle.map((n) => `#${n}`).join(' → ')}. Set the remaining blockers with akb task update <id> --blocked-by <ids>.`)
     }
   }
 
   const preview = parsePreviewBlocks(text, file)
   for (const p of preview.problems) add(p.line, p.code, `${p.message}. ${p.hint}`)
-  const allowedPreviews = studioFor(meta?.studio)?.previews.map(p => p.id).concat(taskHistoricalPreviews())
+  const studio = studioFor(context?.studio ?? meta.studio)
+  const allowedPreviews = context?.previewIds ?? studio?.previews.map(p => p.id)
+  const historical = context?.historicalPreviews ?? []
   const inPreview = (line: number) => preview.blocks.some(b => {
     const start = text.slice(0, b.start).split('\n').length
     const end = text.slice(0, b.end).split('\n').length
     return line > start && line < end
   })
   for (const p of preview.blocks) {
-    if (allowedPreviews && !allowedPreviews.includes(p.id)) add(text.slice(0, p.start).split('\n').length, 'preview-id', `Unknown Preview ${p.id}. Use an ID from the task Studio.`)
+    if (allowedPreviews && !allowedPreviews.includes(p.id) && !historical.includes(p.id)) add(text.slice(0, p.start).split('\n').length, 'preview-id', `Unknown Preview ${p.id}. Use an ID from the task Studio.`)
     if (text.indexOf('<!-- agent -->') >= 0 && p.start > text.indexOf('<!-- agent -->')) add(text.slice(0, p.start).split('\n').length, 'section-half', 'Move Preview results above <!-- agent -->.')
   }
   const headings: { title: string; line: number }[] = []
@@ -192,8 +125,8 @@ export function validateSpec(file: string, text: string, id?: number): ContractE
     if (/^\s*<Storyboard\b/.test(line) && (storyboardTag(line) === null || lines[i - 1]?.trim() || lines[i + 1]?.trim())) {
       add(i + 1, 'storyboard-block', 'Put one self-closing <Storyboard src=".assets/<card id>/storyboard.json" /> tag on its own line, with blank lines around it.')
     }
-    if (/^\s*<Studio\b/.test(line) && (studioTag(line) === null || !/\blabel="[^"]+"/.test(line) || lines[i - 1]?.trim() || lines[i + 1]?.trim())) {
-      add(i + 1, 'studio-block', 'Put one self-closing <Studio src=".assets/<card id>/studio.json" label="..." /> tag on its own line, with blank lines around it.')
+    if (/^\s*<Studio\b/.test(line) && (!studioTag(line) || lines[i - 1]?.trim() || lines[i + 1]?.trim())) {
+      add(i + 1, 'studio-block', 'Put one self-closing <Studio src=".assets/<card id>/studio-review/review.json" /> tag on its own line, with blank lines around it.')
     }
     if (/^\s*<Compare\b/.test(line)) {
       const attrs = compareAttrs(line)
@@ -233,11 +166,7 @@ export function validateSpec(file: string, text: string, id?: number): ContractE
   }
   for (const title of required) if (!seen.has(title)) add(end + 2, 'missing-section', `Missing ## ${title}. Restore that section; keep its title in English.`)
   if (markers.length !== 1) add(markers[1] ?? end + 2, 'boundary', `Found ${markers.length} <!-- agent --> boundaries; expected exactly one, between the human and agent sections.`)
-  const todo = headings.find((h) => h.title === 'Todo')
-  if (todo) {
-    const next = headings.find((h) => h.line > todo.line)?.line ?? lines.length + 1
-    if (!visible.slice(todo.line, next - 1).some((line) => /^\s*[-*+]\s*\[[ xX]?\]/.test(line))) add(todo.line, 'todos', '## Todo needs at least one checkbox step, for example - [ ] Implement the requested behavior.')
-  }
+  for (const problem of cardTodoProblems(file, visible, inPreview)) add(problem.line, problem.code, `${problem.message}. ${problem.hint}`)
   if (id !== undefined) errors.push(...validateStoryboards(file, id, text), ...validatePreviewFiles(file, id, text))
   return errors
 }
@@ -349,10 +278,10 @@ export function validateStoryboards(file: string, id: number, text: string): Con
   const dir = path.join(ASSETS, String(id))
   for (const [tag, tagOf, rule, fix] of [
     ['Storyboard', storyboardTag, 'storyboard-src', 'Write the JSON there or fix the path.'],
-    ['Studio', studioTag, 'studio-src', 'Write it with `akb raw studio diagram <studio id> <card id>` or fix the path.'],
+    ['Studio', studioTag, 'studio-src', 'Fix the path or freeze the draft with `akb studio preview <card> --folder <draft> --base <baseline>` and use the returned Studio tag.'],
   ] as const) {
     for (const marker of storyboardMarkers(text, tagOf)) {
-      const named = assetName(marker.src, id, ['json'])
+      const named = assetName(marker.src, id, ['json'], tag === 'Studio')
       const add = (message: string) => errors.push({ file: rel(file), line: marker.line, rule, message })
       if (!('name' in named)) add(`${tag} src is ${named.actual}; expected ${named.expected}.`)
       else if (!inside(dir, named.name)) add(`${tag} src ${marker.src} names no file in this card's asset folder. ${fix}`)

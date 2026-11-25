@@ -67,3 +67,6 @@ export function moveRunPictures(from: string, to: string, files: string[] = []):
   }
   return files.map((file) => path.join(pictureBox(to), path.basename(file)))
 }
+
+export const attachmentPaths = (files: readonly string[]): string =>
+  files.length ? `\n\nAttached files:\n${files.map((file) => `- ${file}`).join('\n')}` : ''

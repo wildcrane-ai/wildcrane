@@ -1,0 +1,11 @@
+{
+  "name": "wildcrane",
+  "displayName": "WildCrane",
+  "version": "0.1.23",
+  "description": "Discuss goals, manage WildCrane tasks, and open local settings in Antigravity CLI.",
+  "author": {
+    "name": "WildCrane"
+  },
+  "homepage": "https://wildcrane.ai/",
+  "license": "Apache-2.0"
+}

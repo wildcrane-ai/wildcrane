@@ -1,12 +1,15 @@
 import type { Context } from '../index';
-import { documentPreviewKey, isDocumentPreview, officeExtension, OFFICE_TYPES, PDF } from './document';
+import { delimitedOf, documentExtension, isHyperframe, isTileset, modelOf, textLang, TEXT_LIMIT, workbookExtension } from './asset-formats';
+import { documentPreviewKey, isDocumentPreview, OFFICE_TYPES, PDF } from './document';
 import { fileManifest, relativeFileReference, splitFileReference } from './file-references';
 import { manifestOf, mapReferences, referencesOf, type Manifest } from './manifest';
 import { hyperframeDocument } from './hyperframe-document';
+import { parseCues } from './format/captions';
 import { parseReview } from './format/studio';
 import { schemaProblem } from './schema';
 import { parseShots, shotsProblem, storyboardShots, type Shot } from './format/compare';
-import type { CompareSides, CompareSpec, ComponentSpec, Drawn, MockupView, SpriteFiles, TiledMapFiles } from './mockup-tag';
+import type { CaptionFile, CompareSides, CompareSpec, ComponentSpec, Drawn, MockupView, SpriteFiles, TiledMapFiles } from './mockup-tag';
+import { GLB, spriteSheet } from './references';
 import { parseSpriteSheet } from './format/spritesheet';
 import { imageSize, parseStoryboard, type StoryboardFrame, type StoryboardFrameView, type StoryboardView } from './storyboard';
 
@@ -33,7 +36,6 @@ const urlOf = (blob: Blob) => {
   return url;
 };
 
-const isHyperframe = (name: string) => name.endsWith(".hf.html");
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
 /** What a component may do on this page: `saved` runs after a save landed; no `component` reader, no component. */
@@ -45,28 +47,9 @@ export type Host = {
   status?: (id: string) => "loading" | "failed" | undefined;
 };
 
+export { textLang } from './asset-formats';
+
 const SAVE_LIMIT = 256 * 1024;
-const TEXT_LIMIT = 1024 * 1024;
-
-const LANGS: Record<string, string> = {
-  ts: "typescript", tsx: "typescript", mts: "typescript", cts: "typescript",
-  js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
-  json: "json", jsonc: "json", yml: "yaml", yaml: "yaml", py: "python", go: "go",
-  sh: "bash", bash: "bash", zsh: "bash", sql: "sql", css: "css", scss: "css",
-  xml: "xml", svg: "xml", diff: "diff", patch: "diff", mmd: "mermaid", mermaid: "mermaid",
-};
-const PLAIN = new Set(["txt", "text", "log", "csv", "tsv", "toml", "ini", "env", "rs", "java", "kt", "swift", "rb", "php", "c", "h", "cpp", "hpp", "cs", "lua", "vue", "svelte", "graphql", "prisma", "dockerfile", "gitignore"]);
-
-/** The language a text file is coloured as, "" for plain text, or null for a file that is not text. */
-export function textLang(src: string, name: string, type = ""): string | null {
-  for (const path of [src, name]) {
-    const ext = /\.([\w-]+)$/.exec(path.split("/").pop()!)?.[1]?.toLowerCase();
-    if (ext && ext in LANGS) return LANGS[ext]!;
-    if (ext && PLAIN.has(ext)) return "";
-  }
-  return /^text\/|[/+](?:json|yaml|xml)\b/.test(type) ? "" : null;
-}
-
 export class Previews {
   private byId: Map<string, Artifact>;
   constructor(
@@ -195,6 +178,39 @@ export class Previews {
     });
   }
 
+  private overlays = new Map<string, () => Promise<string | null>>();
+
+  videoOverlayOfSrc(src: string | undefined): (() => Promise<string | null>) | undefined {
+    if (!src || this.shared.card?.assets[src]?.error) return;
+    const ref = this.refOfSrc(src);
+    if (ref?.art.type !== 'html') return;
+    let load = this.overlays.get(src);
+    if (!load) {
+      const { art, version } = ref;
+      let page: Promise<string | null> | undefined;
+      load = () => page ??= (async () => {
+        const text = await this.resource(art, version).text('html');
+        return text === null ? null : await this.withFiles(text, art, version, true);
+      })().catch(() => null);
+      this.overlays.set(src, load);
+    }
+    return load;
+  }
+
+  captionsOfSrc(src: string): CaptionFile {
+    const pin = this.shared.card?.assets[src];
+    if (pin?.error) return { src };
+    const ref = this.refOfSrc(src);
+    if (!ref?.version.file) return pin && this.host.status?.(pin.artifact) === 'loading' ? { src, loading: true } : { src };
+    const { art, version } = ref;
+    const file = version.file!;
+    return {
+      src,
+      download: this.fileOf(art, version, splitFileReference(src)[0].split('/').pop()!),
+      load: () => this.blobOf(file).then(blob => blob.text()).then(parseCues).catch(() => []),
+    };
+  }
+
   viewOfArtifact(id: string): MockupView {
     return this.once(`id:${id}`, () => {
       const ref = this.ref(id);
@@ -204,7 +220,7 @@ export class Previews {
 
   private viewOf(ref: Ref, src: string): MockupView {
     const view = this.drawOf(ref, src);
-    return view.component || view.error !== undefined ? view : { ...view, download: view.document?.file ?? view.delimited?.file ?? this.fileOf(ref.art, ref.version) };
+    return view.component || view.error !== undefined ? view : { ...view, download: view.document?.file ?? view.delimited?.file ?? view.model?.file ?? this.fileOf(ref.art, ref.version) };
   }
 
   private drawOf({ art, version: v }: Ref, src: string): MockupView {
@@ -296,9 +312,9 @@ export class Previews {
       }
       case "tiled":
         // A tileset on its own is a file, not a map.
-        if (/\.ts[xj]$/i.test(art.name)) return { src, file: this.fileOf(art, v) };
+        if (isTileset(art.name)) return { src, file: this.fileOf(art, v) };
         return { src, tiled: { file: this.fileOf(art, v), load: () => this.tiled(art, v) } };
-      case "spritesheet":
+      case spriteSheet.kind:
         return { src, sprite: { file: this.fileOf(art, v), load: () => this.sprite(art, v) } };
       case "compare":
         return { src, compare: { label: src, aLabel: '', bLabel: '', load: async () => {
@@ -308,24 +324,30 @@ export class Previews {
         } } };
       default: {
         const file = v.file;
-        const documentName = [art.name, src].find(name => /\.pdf$/i.test(name) || officeExtension(name));
+        const documentName = [art.name, src].find(documentExtension);
         const mime = file?.content_type.split(';')[0]!.trim().toLowerCase();
         if (file && (documentName || mime === PDF || Object.values(OFFICE_TYPES).some(type => type === mime))) {
           const key = documentPreviewKey(art.id, v.version);
           const pin = this.shared.card?.assets[key];
-          const native = mime === PDF || /\.pdf$/i.test(documentName ?? '');
+          const native = mime === PDF || documentExtension(documentName ?? '') === ".pdf";
           const pdf = native ? file : pin?.version && this.refOfSrc(key)?.version.file;
           const name = (documentName ?? withExt(art.name, mime!)).split('/').pop()!;
           return { src, document: { file: this.fileOf(art, v, name), load: pdf ? () => this.blobOf(pdf) : null } };
         }
-        if (file && [src, art.name].some(name => /\.xlsx$/i.test(name))) {
+        const model = modelOf(src) ?? modelOf(art.name);
+        if (file && (model || mime === GLB)) {
+          const name = (model?.name ?? withExt(art.name, GLB)).split("/").pop()!;
+          const format = model?.format ?? "glb";
+          return { src, model: { file: this.fileOf(art, v, name), format, load: () => this.blobOf(file) } };
+        }
+        if (file && [src, art.name].some(workbookExtension)) {
           return { src, workbook: { file: this.fileOf(art, v), load: () => this.blobOf(file) } };
         }
-        const delimitedName = [art.name, src.split("/").pop()!].find(name => /\.(csv|tsv)$/i.test(name));
-        if (file && delimitedName) {
+        const delimited = delimitedOf(art.name) ?? delimitedOf(src.split("/").pop()!);
+        if (file && delimited) {
           return { src, delimited: {
-            file: this.fileOf(art, v, delimitedName),
-            delimiter: /\.tsv$/i.test(delimitedName) ? "\t" : ",",
+            file: this.fileOf(art, v, delimited.name),
+            delimiter: delimited.delimiter,
             load: async () => {
               const blob = await this.blobOf(file);
               if (blob.size > 3 * TEXT_LIMIT + 3) return { text: null };
@@ -513,8 +535,7 @@ export class Previews {
     return out;
   }
 
-  /** A page whose own files reach it once it asks: a sandboxed page cannot read the review's blob URLs. */
-  private async withFiles(doc: string, art: Artifact, version: ArtifactVersion): Promise<string> {
+  private async withFiles(doc: string, art: Artifact, version: ArtifactVersion, localUrls = false): Promise<string> {
     const pageReferences = async (files: Map<string, Ref>, parents: ReadonlySet<string>): Promise<PageReference[]> => {
       return Promise.all([...files].filter(([, ref]) => !parents.has(ref.art.id)).map(async ([src, ref]) => {
         const blob = await this.blobOf(ref.version.file!);
@@ -532,7 +553,16 @@ export class Previews {
         return [src, { css, references: references.map(([source, file, hash]) => [tokens.get(source)!, file, hash]) }, fragment];
       }));
     };
-    const files = await pageReferences(this.filesOf(manifestOf(art.type), doc, art, version), new Set([art.id]));
+    const manifest = manifestOf(art.type);
+    const files = await pageReferences(this.filesOf(manifest, doc, art, version), new Set([art.id]));
+    if (localUrls) {
+      const url = (file: PageFile): string => file instanceof Blob ? urlOf(file) : urlOf(new Blob([
+        file.references.reduce((css, [token, child, hash]) => css.replaceAll(token, url(child) + hash), file.css),
+      ], { type: 'text/css' }));
+      const urls = new Map(files.map(([src, file, hash]) => [src, url(file) + hash]));
+      return mapReferences(manifest, doc, src => urls.get(src) ?? src) as string;
+    }
+    // Regular page previews create their URLs inside their opaque origin.
     return files.length ? injectFiles(doc, files) : doc;
   }
 
@@ -649,6 +679,7 @@ const EXTS: Record<string, string> = {
   "audio/wav": "wav",
   "audio/x-wav": "wav",
   "application/zip": "zip",
+  [GLB]: "glb",
 };
 
 /** The name with the extension its content type implies, unless it already ends in one. */

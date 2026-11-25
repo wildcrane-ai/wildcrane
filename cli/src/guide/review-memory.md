@@ -30,7 +30,7 @@ and that judgement is the whole job.
   `- ❌ **<mistake>** → ✅ <what the design should be instead, one line>.`, written as guidance
   for future tasks, not a history of the fix. Both go in the folder of the module each
   conversation is listed with. Each conversation names its `studio` and
-  involved `previews`. Read `akb raw file <studio> STUDIO.md`; when it has a memory policy,
+  involved `previews`. Read `akb studio file <studio> STUDIO.md`; when it has a memory policy,
   follow it for settled feedback on the affected Previews, preserving its scopes. Without a
   Preview memory policy, create no Preview memory; retain planner/module memory duties.
   Distill settled feedback into reusable preferences (dos) and corrections (don'ts), retaining

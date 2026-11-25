@@ -11,9 +11,8 @@ import fs from 'node:fs'
 
 import { machineName } from '../machine/identity'
 import { REPO_ROOT } from '../paths'
-import { splitCommand, quoteArg } from './argv'
+import { splitCommand } from './argv'
 import { harnessGaps } from './capabilities'
-import type { RunClient, StreamRenderer } from './wire'
 import {
   HARNESSES,
   type Harness,
@@ -25,12 +24,13 @@ import {
   namesFlag,
   uniqueIds,
 } from './harnesses'
-import { effectiveValues as valuesOf, isFilled, providerFor, settingArgs as argsOf, settingEnv, withSystemLanguage } from './run-settings'
+import { isFilled, providerFor } from './run-settings'
+import { commandOf, openLaunch, pinnedBy, sessionArgs, startableBinary } from './harnesses/launch'
 import { readStore } from './store'
 import { FLOWS, flowPath } from './flows'
 import { DISCUSSION_ROLE, hiddenRole, PLANNING_ROLE, roleForFlow } from './roles'
 import { commandBinary, pathLookup } from './installed'
-import { brokenEntryNote, chooseCopy, copyEnv, isCopy, locate, spawnName, SPAWN_MS } from './locate'
+import { locate } from './locate'
 import { runLanguage } from './language'
 import {
   missingRequired,
@@ -107,44 +107,7 @@ export function activeProviderOf({
   return providerFor(harness, { values, secretsSet })
 }
 
-/** The command one runtime runs: the hand-written `command` override in its settings, or the
- *  harness's own. One that names another binary or a path is the user's pick and stays exactly
- *  as written; otherwise its first word becomes the copy `locate` chose. This one string is what
- *  every reader takes, so the badge and the spawn read the same answer. */
-export function commandOf(block: Record<string, string>, harness: Harness): string {
-  const command = ownCommand(block, harness)
-  return pinnedBy(block, harness) ? command : locatedCommand(command, harness)
-}
-
-function ownCommand(block: Record<string, string>, harness: Harness): string {
-  const saved = block.command?.trim()
-  return saved && !harness.formerCommands?.includes(saved) ? saved : harness.command
-}
-
-const pinnedBy = (block: Record<string, string>, harness: Harness) =>
-  commandBinary(ownCommand(block, harness)) !== commandBinary(harness.command)
-
-// The resolved path goes back QUOTED, because the command string is re-split by every reader
-// (agent/argv.ts). Only the first word is rewritten: a hand-written argument is never re-spelt.
-function locatedCommand(command: string, harness: Harness): string {
-  const binary = commandBinary(command)
-  const spawns = spawnName(chooseCopy(harness), binary)
-  if (spawns === binary) return command
-  return `${quoteArg(spawns)}${command.slice(command.indexOf(binary) + binary.length)}`
-}
-
-/** The binary a spawn should use: the copy `locate` chooses at this moment, with the line the
- *  run owes its log if the PATH's copy couldn't start. A plan keeps the path it was written
- *  with, so this is what catches a copy replaced since. Anything but a copy of this CLI is left
- *  alone, and so is a pinned command. */
-export function startableBinary(binary: string, harness: Harness, pinned = false): { binary: string; note?: string } {
-  const own = commandBinary(harness.command)
-  if (pinned || !binary || (binary !== own && !isCopy(harness, binary))) return { binary }
-  const copy = chooseCopy(harness, SPAWN_MS)
-  if (!copy) return { binary }
-  const note = brokenEntryNote(copy, own, harness)
-  return { binary: spawnName(copy, own), ...(note ? { note } : {}) }
-}
+export { commandOf, startableBinary }
 
 /** What one runtime is set to: each declared setting's value, which of its keys
  *  docs/kanban/.env holds right now, and which settings the command already names so the
@@ -343,21 +306,16 @@ export function settingSaveError(key: string, value: string, ask: HarnessAsk = {
   return null
 }
 
-const settingArgs = (resolved: ResolvedHarness): string[] => argsOf(resolved.harness, resolved)
-
-// The environment one run gets (agent/run-settings.ts), with this runtime's keys read from
-// docs/kanban/.env — each runtime's own line, named after its id (#467).
-function runEnv(resolved: ResolvedHarness, cwd = REPO_ROOT): NodeJS.ProcessEnv {
-  const { harness, runtime } = resolved
-  if (resolved.executionSecrets) return settingEnv(harness, resolved, resolved.executionSecrets, cwd)
+function runSecrets(resolved: ResolvedHarness): Record<string, string> {
+  if (resolved.executionSecrets) return resolved.executionSecrets
   const file = readEnvFile()
   const secrets: Record<string, string> = {}
-  for (const setting of harness.settings) {
+  for (const setting of resolved.harness.settings) {
     if (setting.kind !== 'secret' || !setting.env) continue
-    const value = file[runtimeSecretVar(setting.env, runtime)]
+    const value = file[runtimeSecretVar(setting.env, resolved.runtime)]
     if (value) secrets[setting.key] = value
   }
-  return settingEnv(harness, resolved, secrets, cwd)
+  return secrets
 }
 
 // ---- one read per run ------------------------------------------------------
@@ -392,28 +350,7 @@ export interface RunPlan {
   cwd?: string
 }
 
-/** Everything one run needs at the moment it spawns. Exactly one of `renderer` and
- *  `client` is here, because a command either prints its work or holds a conversation
- *  about it — the harness says which, and the runner branches on it. */
-export interface ActiveRun extends RunPlan {
-  env: NodeJS.ProcessEnv
-  /** Reads this agent's stdout into log lines. */
-  renderer?: StreamRenderer
-  /** Talks to this agent over its own pipes (agent/wire/). */
-  client?: RunClient
-  /** The prompt as a stdin line, for a printing agent that reads its turns there (#1540). */
-  stdinPrompt?: (prompt: string) => string
-  /** This agent's own housekeeping chatter on stderr, which the log leaves out
-   *  (agent/harnesses/types.ts). Undefined for a harness that has none. */
-  quietStderr?: (line: string) => boolean
-  /** How this connector takes a picture on disk (#441) — a flag per file, or a path
-   *  written into the words. Undefined for one that can't see images at all. */
-  images?: ImageInput
-  /** Reads this connector's failure output for a provider that merely stumbled (#525).
-   *  Undefined for one that recognises none, whose runs never retry. */
-  /** Set when the PATH's copy couldn't start and argv runs a desktop app's instead. */
-  startNote?: string
-}
+type ActiveRun = RunPlan & ReturnType<typeof openLaunch>
 
 /** Work out how to start a fresh run. `cwd` is the folder it works in — the project, or a
  *  delivery's own worktree (#303) — and `agent` is the one doing the run (agent/runner.ts),
@@ -429,13 +366,11 @@ export function planRun(
 ): RunPlan & { note: string | null } {
   const resolved = resolveHarness({ agent, ...own })
   const { harness, command, runtime } = resolved
-  const argv = splitCommand(command)
   return {
     harness: harness.name,
     runtime: runtime.id,
     ...(agent ? { agent } : {}),
-    argv: [...argv, ...settingArgs(resolved), ...harness.extraArgs(argv, sessionId, cwd)],
-    resumeId: harness.adoptsSessionId ? sessionId : null,
+    ...sessionArgs(harness, splitCommand(command), resolved, cwd, { id: sessionId }),
     install: harness.install,
     cwd,
     note: harnessNote(resolved),
@@ -462,15 +397,11 @@ export function planResume(
   const resolved = resolveHarness({ agent, ...own, harness: harnessName })
   const { harness, command, runtime } = resolved
   if (!harness.resumes || (resolved.executionSecrets && !runtime.id)) return null
-  const argv = splitCommand(command)
   return {
     harness: harness.name,
     runtime: runtime.id,
     ...(agent ? { agent } : {}),
-    argv: [...argv, ...settingArgs(resolved), ...harness.resumeArgs(argv, resumeId, cwd)],
-    // The resumed turn runs under the id it resumed, so this run can be resumed again by
-    // the same id — a failure two turns deep is still recoverable.
-    resumeId,
+    ...sessionArgs(harness, splitCommand(command), resolved, cwd, { resume: resumeId }),
     install: harness.install,
     cwd,
   }
@@ -490,13 +421,11 @@ export function planFork(
   const resolved = resolveHarness({ agent, ...own, harness: harnessName })
   const { harness, command, runtime } = resolved
   if (!harness.forkArgs || harness.name !== harnessName || (resolved.executionSecrets && !runtime.id)) return null
-  const argv = splitCommand(command)
   return {
     harness: harness.name,
     runtime: runtime.id,
     ...(agent ? { agent } : {}),
-    argv: [...argv, ...settingArgs(resolved), ...harness.forkArgs(argv, resumeId, sessionId, cwd)],
-    resumeId: harness.adoptsSessionId ? sessionId : null,
+    ...sessionArgs(harness, splitCommand(command), resolved, cwd, { id: sessionId, resume: resumeId, fork: true }),
     install: harness.install,
     cwd,
   }
@@ -505,36 +434,17 @@ export function planFork(
 /** The environment and the parser for a plan, at the moment it spawns. Split from the plan
  *  because a plan is written to the board and an API key is not: the keys are read out of
  *  docs/kanban/.env here, into the child's environment and nowhere else. */
-export function openPlan(plan: RunPlan): ActiveRun {
+export function openPlan(plan: RunPlan, images?: readonly string[]): ActiveRun {
   const resolved = resolveHarness({ agent: plan.agent, pin: plan.runtime, harness: plan.harness })
   const { harness } = resolved
   const start = startableBinary(plan.argv[0] ?? '', harness, pinnedBy(resolved.runtime.settings, harness))
-  const started = [start.binary, ...plan.argv.slice(1)]
-  const { argv, env: planned, note } = withSystemLanguage(harness, started, runEnv(resolved, plan.cwd ?? REPO_ROOT), runLanguage())
-  const env = copyEnv(start.binary, planned)
-  const connection = harness.connection?.(argv)
   return {
     ...plan,
-    argv: connection?.argv ?? argv,
-    ...([start.note, note].some(Boolean) ? { startNote: [start.note, note].filter(Boolean).join('\n') } : {}),
-    env,
-    // The folder and the binary: what a renderer needs to go looking for what the stream
-    // left out (agent/harnesses/types.ts). argv's first word is the command's own binary,
-    // the same one the spawn resolves and an ENOENT names.
-    renderer: connection ? undefined : harness.renderer?.(plan.cwd ?? REPO_ROOT, argv[0], argv),
-    // The client is handed the settings that are actually in effect — the same ones that
-    // would have reached the run as flags, minus whatever the picked provider doesn't
-    // need — because for a connector that talks, a setting is something the conversation
-    // opens with rather than something argv carries.
-    client: connection?.client ?? harness.client?.(effectiveValues(resolved)),
-    // Read off the argv, so a plan written before the CLI took its turns on stdin still runs.
-    stdinPrompt: harness.stdinPrompt?.(argv),
-    quietStderr: harness.quietStderr,
-    images: harness.images,
+    ...openLaunch(harness, [start.binary, ...plan.argv.slice(1)], {
+      cwd: plan.cwd ?? REPO_ROOT, settings: resolved, secrets: runSecrets(resolved), language: runLanguage(), images, note: start.note,
+    }),
   }
 }
-
-const effectiveValues = (resolved: ResolvedHarness): Record<string, string> => valuesOf(resolved.harness, resolved)
 
 /** True when a run that went on this connector can be picked up again — this build still
  *  ships it and its CLI resumes. It is the run's OWN connector that is asked about, never
@@ -658,7 +568,7 @@ export function agentInfo(): AgentInfo {
       // The binary this card is answered on is the RESOLVED one, the same as every other
       // reader's: the connector grid is where "not installed" is drawn, and a CLI that ships
       // inside a desktop app would read as missing on the one screen that offers it.
-      const spawns = locatedCommand(cmd, option)
+      const spawns = commandOf({}, option)
       return {
         name,
         label,

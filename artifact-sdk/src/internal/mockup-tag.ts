@@ -1,5 +1,6 @@
 // Asset 与旧 Mockup 标签共用卡片资源清单和延迟加载视图。
 
+import type { Cue } from "./format/captions";
 import { type Shot } from "./format/compare";
 import type { Context as BridgeContext } from "../index";
 import type { StoryboardView } from "./storyboard";
@@ -75,9 +76,18 @@ export type DelimitedSpec = {
 
 export type DocumentSpec = { file: NonNullable<Drawn["file"]>; load: (() => Promise<Blob>) | null };
 
+export type ModelSpec = { file: NonNullable<Drawn["file"]>; format: "glb" | "blend"; load: () => Promise<Blob> };
+
 export type WorkbookSpec = { file: { name: string; load: () => Promise<string> }; load: () => Promise<Blob> };
 
 export type SpriteSpec = { file: { name: string; load: () => Promise<string> }; load: () => Promise<SpriteFiles> };
+
+export type CaptionFile = {
+  src: string;
+  loading?: true;
+  load?: () => Promise<Cue[]>;
+  download?: NonNullable<MockupView["download"]>;
+};
 
 /** What the card page draws for one tag: a preview still to load, or the note saying why not. */
 export type MockupView = Drawn & {
@@ -97,6 +107,7 @@ export type MockupView = Drawn & {
   tiled?: TiledSpec;
   sprite?: SpriteSpec;
   workbook?: WorkbookSpec;
+  model?: ModelSpec;
   document?: DocumentSpec;
   delimited?: DelimitedSpec;
   /** Its artifact is still being read. */

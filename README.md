@@ -50,6 +50,12 @@ Grok Build ([setup and recovery](plugins/grok/README.md)):
 grok plugin install wildcrane-ai/wildcrane@grok-plugin --trust
 ```
 
+Antigravity CLI ([setup and updates](plugins/antigravity/README.md)):
+
+```sh
+agy plugin install https://github.com/wildcrane-ai/wildcrane/tree/antigravity-plugin
+```
+
 The standalone CLI:
 
 ```sh

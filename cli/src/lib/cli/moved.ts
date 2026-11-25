@@ -1,21 +1,23 @@
 // Where a word that used to be a command went. Nothing runs: it only answers the refusal.
 
-import { FLOWS, flowPath } from '../agent/flows'
-
-const RAW_GROUPS = ['card', 'delivery', 'run', 'triage', 'previews', 'components', 'agent', 'review-dismissals', 'describe-project', 'reflect']
-
 /** The old word, and the line to type now. */
 export const MOVED: Record<string, string> = {
-  ...Object.fromEntries(FLOWS.filter((flow) => !flow.internal).map((flow) => [flow.command, `raw ${flowPath(flow)}`])),
-  ...Object.fromEntries(RAW_GROUPS.map((word) => [word, `raw ${word}`])),
-  create: 'raw create',
-  runs: 'raw run list',
-  log: 'raw run log',
-  stop: 'raw run stop',
-  resume: 'raw run resume',
-  cancel: 'raw delivery cancel',
-  discard: 'raw delivery cancel',
-  board: 'raw',
+  card: 'task --help',
+  create: 'task create',
+  refine: 'task refine',
+  revise: 'task revise',
+  resolve: 'task resolve',
+  implement: 'task implement',
+  approve: 'task approve',
+  previews: 'studio previews',
+  'review-memory': 'memory review',
+  'describe-project': 'memory describe-project',
+  runs: 'run list',
+  log: 'run log',
+  stop: 'run stop',
+  resume: 'run resume',
+  cancel: 'delivery cancel',
+  discard: 'delivery cancel',
   version: '--version',
 }
 

@@ -7,8 +7,8 @@ export const OFFICE_TYPES = {
 export type OfficeExtension = keyof typeof OFFICE_TYPES;
 
 export function officeExtension(name: string): OfficeExtension | undefined {
-  const ext = /\.(docx|pptx)$/i.exec(name)?.[0].toLowerCase();
-  return ext as OfficeExtension | undefined;
+  const ext = /\.[\w-]+$/.exec(name)?.[0].toLowerCase() as OfficeExtension;
+  return Object.hasOwn(OFFICE_TYPES, ext) ? ext : undefined;
 }
 
 export function isDocumentPreview(key: string): boolean {

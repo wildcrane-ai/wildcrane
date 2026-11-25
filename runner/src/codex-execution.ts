@@ -10,7 +10,7 @@ import { RpcError, type Message } from '../../cli/src/lib/agent/wire/rpc'
 import { obj, str, type Json } from '../../cli/src/lib/agent/wire/json'
 import { mcpEnvironment } from './codex-config'
 import { abandonedLeaseGroup, executionOwner, lockLeaseGroup, ownershipConflict, verifyStoppedThreads } from './codex-ownership'
-import { backgroundTerminals, backendFile, CODEX_TIMEOUT, codexDiagnostic, initializeNative, inspectNativeThread, interruptNativeThread, leaseFile, liveLease, nativeConnection, processIdentity, readPrivate, releaseNativeThread, writeLease, type NativeBackend, type ThreadLease } from './codex-native'
+import { backgroundTerminals, backendFile, CODEX_TIMEOUT, codexDiagnostic, initializeNative, inspectNativeThread, interruptNativeThread, leaseFile, liveBackend, liveLease, nativeConnection, processIdentity, readPrivate, releaseNativeThread, writeLease, type NativeBackend, type ThreadLease } from './codex-native'
 
 export async function codexExecution(backend: NativeBackend, config: Json, environment: NodeJS.ProcessEnv, cwd: string, send: (message: unknown) => void) {
   const identity = { ...processIdentity(), ...executionOwner(environment) }
@@ -21,6 +21,7 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
   const pending = new Set<Promise<void>>()
   let closing: Promise<void> | undefined
   let settled: ThreadLease['retained'] | undefined
+  let adopted: ThreadLease['retained'] | undefined
   let keeper = false
   let stoppingForRetry = false
   const state = (): ThreadLease => ({ ...identity, lease, instance: backend.instance, settings, threads: [...threads], ...(settled?.kept.length ? { retained: settled } : {}) })
@@ -144,16 +145,48 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
     } catch (error) { child.kill('SIGTERM'); throw error }
   }
   const cleanup = async () => {
+    const dropped = connection.incoming.destroyed
     await bounded(Promise.allSettled(pending), CODEX_TIMEOUT, 'Codex pending requests did not settle.')
     if (keeper) return
     for (const id of requests) connection.rpc.refuse(id, 'Execution disconnected.')
-    const results = await Promise.allSettled([...threads].map(async id => {
-      if (!owned(id)) return
-      await releaseNativeThread(connection, id, active.get(id), !settled)
-      remove(id)
-    }))
-    const failure = results.find(result => result.status === 'rejected')
-    if (failure?.status === 'rejected') throw failure.reason
+    const remaining = () => [...threads].filter(id => owned(id))
+    let failure: unknown
+    if (!connection.incoming.destroyed && remaining().length) {
+      const results = await Promise.allSettled(remaining().map(async id => {
+        await releaseNativeThread(connection, id, active.get(id), !settled)
+        remove(id)
+      }))
+      const rejected = results.find(result => result.status === 'rejected')
+      if (rejected?.status === 'rejected') failure = rejected.reason
+    }
+    if (connection.incoming.destroyed && remaining().length) {
+      if (!liveBackend(backend)) {
+        for (const id of remaining()) remove(id)
+        failure = undefined
+      } else {
+        const deadline = Date.now() + CODEX_TIMEOUT
+        let probe: Awaited<ReturnType<typeof nativeConnection>> | undefined
+        try {
+          probe = await nativeConnection(backend, () => {})
+          await initializeNative(probe)
+          const results = await Promise.allSettled(remaining().map(async id => {
+            await releaseNativeThread(probe!, id, active.get(id), !settled, deadline)
+            remove(id)
+          }))
+          const rejected = results.find(result => result.status === 'rejected')
+          failure = rejected?.status === 'rejected' ? rejected.reason : undefined
+        } catch (error) {
+          if (!liveBackend(backend)) {
+            for (const id of remaining()) remove(id)
+            failure = undefined
+          } else {
+            failure = error ?? failure
+          }
+        } finally { probe?.close() }
+      }
+    }
+    if (failure !== undefined) throw failure
+    if (dropped || connection.incoming.destroyed) send({ method: 'wildcrane/cleanup', params: { status: 'confirmed', lease } })
   }
 
   const close = () => closing ??= (async () => {
@@ -239,19 +272,29 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
         return
       }
       if (message.method === 'wildcrane/settled') {
-        if (params.instance !== backend.instance || params.lease !== lease || !threads.has(str(params.threadId)) || params.confirmed !== true || !str(params.execution)) throw Error('Codex cleanup ownership is unconfirmed.')
+        const root = str(params.threadId), execution = str(params.execution)
+        if (params.instance !== backend.instance || params.lease !== lease || !threads.has(root) || ![...threads].every(owned) || !execution) throw Error('Codex cleanup ownership is unconfirmed.')
+        if (active.size) throw Error('A Codex turn is still active.')
         const kept = Array.isArray(params.kept) ? params.kept.map(obj) : []
-        const actual: Json[] = []
-        for (const thread of threads) {
-          if (active.has(thread)) throw Error('A Codex turn is still active.')
-          actual.push(...await backgroundTerminals(connection.rpc, thread))
-        }
         const key = (value: Json) => JSON.stringify([value.threadId, value.itemId, value.processId])
-        if (new Set(kept.map(key)).size !== kept.length || actual.length !== kept.length || actual.some(value => !kept.some(item => key(item) === key(value)))) throw Error('Codex retained terminal state changed before handoff.')
-        settled = { root: str(params.threadId), execution: str(params.execution), kept }
+        const keys = new Set(kept.map(key))
+        const previousRetention = adopted
+        if (keys.size !== kept.length) throw Error('Codex retention contains duplicate terminals.')
+        if (params.confirmed === true) {
+          const actual: Json[] = []
+          for (const thread of threads) {
+            if (active.has(thread)) throw Error('A Codex turn is still active.')
+            actual.push(...await backgroundTerminals(connection.rpc, thread))
+          }
+          if (actual.length !== kept.length || actual.some(value => !keys.has(key(value)))) throw Error('Codex retained terminal state changed before handoff.')
+        } else if (params.confirmed !== false || !previousRetention || root !== previousRetention.root || !kept.length ||
+          kept.some(value => !previousRetention.kept.some(item => key(item) === key(value)))) {
+          throw Error('Codex cleanup is unconfirmed; only previously retained services can be handed off.')
+        }
+        settled = { root, execution, kept }
         for (const thread of threads) writeLease(backend, thread, state())
         if (kept.length) await keep()
-        send({ id, result: { confirmed: true, instance: backend.instance, lease } })
+        send({ id, result: { confirmed: params.confirmed, instance: backend.instance, lease } })
         return
       }
       if (['thread/start', 'thread/resume', 'thread/fork'].includes(message.method)) {
@@ -287,7 +330,8 @@ export async function codexExecution(backend: NativeBackend, config: Json, envir
           writeLease(backend, child, state())
         }
         result.retainedThreads = [...threads].map(id => ({ id }))
-        result.retainedTerminals = previous.retained!.kept
+        adopted = previous.retained
+        result.retainedTerminals = adopted.kept
         writeLease(backend, thread, state())
       }
       if (id !== undefined) send({ id, result })

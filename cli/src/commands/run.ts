@@ -18,20 +18,23 @@ import {
   openQuestions,
 } from '../lib/agent/deliveries'
 import { deliveryState } from '../lib/agent/pause'
+import { boardCommand } from '../lib/agent/command'
 import { insideRun, printFlow } from '../lib/agent/flow'
-import { SESSION_COST_ENV } from '../lib/agent/env'
+import { SESSION_COST_ENV, TASK_REQUEST_ENV } from '../lib/agent/env'
 import { taskChatsToReview } from '../lib/agent/memory-review'
 import { readLogTail, splitLog } from '../lib/agent/log'
 import { advancePhase, approvalRequest } from '../lib/agent/approve'
 import { refinementRequest, startRefinement } from '../lib/agent/refine'
 import {
   askForRefine,
+  cancelDelivery,
   getRun,
   listRuns,
   peekRun,
   planningRun,
   reconcileCardDelivery,
   releaseCardDelivery,
+  resumeDelivery,
   resumeSessionId,
   stopRun,
   titleOf,
@@ -52,16 +55,12 @@ import path from 'node:path'
 
 import { say } from '../lib/io'
 import { pidAlive } from '../lib/lock'
-import { die, BOARD_FLAG, KANBAN } from '../lib/paths'
+import { die, KANBAN } from '../lib/paths'
 import { REPLY_APPROVAL_ENV } from '../lib/cloud/reply-approval'
 import { approveTask, runnerProject, workspaceTask } from '../lib/cloud/tasks'
 import { findCard } from '../lib/view/read'
 import { creationRefusal } from '../lib/view/rules'
 import type { MoveResult } from '../lib/types'
-import {
-  cancelBoardDelivery as cancelDelivery,
-  resumeBoardDelivery as resumeDelivery,
-} from '../lib/board'
 
 // How long a `--follow` waits between reads of a run's log. Short enough that the log
 // reads as it happens, long enough that following a run is not a busy loop.
@@ -93,8 +92,7 @@ export async function cmdStartRun(
     if (creating) die(creating, { kind: 'card-being-created', action })
   }
   const inside = insideRun()
-  // Only the user approves a round (#1790).
-  if (inside && action === 'approve') die('only the user approves a round — stop here and leave the card for them.', { kind: 'run-refused', action })
+  if (inside && action === 'approve') die('only the user can approve a review stage — stop here and leave the card for them.', { kind: 'run-refused', action })
   // Runner 步骤已由 Cloud 批准；用户的本地命令仍交给 Cloud (#59)。
   const runnerApprove = action === 'approve' && workspaceTask() !== null
   const project = action === 'approve' && !runnerApprove ? runnerProject(KANBAN) : null
@@ -139,8 +137,8 @@ export async function cmdStartRun(
   const { run, spawned } = started
   if (!spawned) die(`couldn't start a process for run ${run.sessionId}`, { kind: 'spawn-failed' })
   say(`${action} — run ${run.sessionId}${run.deliveryId ? ` in delivery ${run.deliveryId}` : ''}`)
-  say(`  follow it: ${program} raw run log ${short(run.sessionId)} --follow${BOARD_FLAG}`)
-  say(`  stop it:   ${program} raw run stop ${short(run.sessionId)}${BOARD_FLAG}`)
+  say(`  follow it: ${boardCommand()} run log ${short(run.sessionId)} --follow`)
+  say(`  stop it:   ${boardCommand()} run stop ${short(run.sessionId)}`)
   if (follow) return await followStarted(run.sessionId, program, opts.events === true)
   return { sessionId: run.sessionId, action, cardId: run.cardId }
 }
@@ -225,7 +223,7 @@ function sayBeforeStart(req: CommandRequest, program: string): void {
   if (req.action === 'implement' && asked) {
     say(
       `#${req.id} has ${asked} open question${asked === 1 ? '' : 's'} — it is built, then holds at landing ` +
-        `until ${asked === 1 ? 'it is' : 'they are'} answered. Answer first with \`${program} raw card resolve ${req.id}\`.`,
+        `until ${asked === 1 ? 'it is' : 'they are'} answered. Answer first with \`${boardCommand()} task resolve ${req.id}\`.`,
     )
   }
 }
@@ -264,7 +262,7 @@ function readRequest(
   const words = (at: number): string | undefined => {
     const value = args[at]
     const text = Array.isArray(value) ? value.join(' ') : typeof value === 'string' ? value : ''
-    return text.trim() || undefined
+    return text.trim() ? (workspaceTask() ? text : text.trim()) : undefined
   }
 
   // The actions that name no card.
@@ -289,7 +287,9 @@ function readRequest(
   // Everything else works on one card.
   const id = args[0] as number
   const req: CommandRequest = { action, id, title: titleOf(id) }
-  req.notes = words(1)
+  const dispatchedRequest = process.env[TASK_REQUEST_ENV]
+  delete process.env[TASK_REQUEST_ENV]
+  req.notes = words(1) ?? (workspaceTask() && ['refine', 'implement'].includes(action) ? dispatchedRequest : undefined)
   // The one run's own runtime (#518) — declared by `implement` alone among these, so
   // nothing else can be given one.
   if (action === 'implement') req.runtime = opts.runtime
@@ -360,7 +360,7 @@ export async function cmdReleaseDelivery(cardId: number): Promise<MoveResult> {
 export async function cmdResumeDelivery(named: string): Promise<MoveResult> {
   const res = await resumeDelivery(named)
   if (!res.ok) die(res.error ?? 'that delivery could not be carried on', {
-    kind: 'run-refused', ...(res.kind === 'refused' ? { reason: res.reason, args: res.args } : {}),
+    kind: 'run-refused', reason: res.reason, args: res.args,
   })
   if (res.landed) return { deliveryId: res.deliveryId, landed: true, delivery: deliveryOutcome(res.deliveryId!) }
   const delivery = findDelivery(res.deliveryId!)!
@@ -469,7 +469,7 @@ export async function cmdSubWait(ids: string[], waitMs = WAIT_MS): Promise<MoveR
     say('')
   }
   if (running.length) {
-    say(`still running: ${running.map((r) => short(r.sessionId)).join(', ')} — run \`run wait\` again.`)
+    say(`still running: ${running.map((r) => short(r.sessionId)).join(', ')} — run \`${boardCommand()} run wait${ids.length ? ` ${ids.join(' ')}` : ''}\` again.`)
   }
   return {
     ended: ended.map((r) => ({ sessionId: r.sessionId, status: r.status, result: r.result })),
@@ -500,7 +500,7 @@ export async function cmdRuns(opts: { card?: number; all?: boolean }, program = 
   if (live.length) say('')
   say(
     live.length
-      ? `${live.length} running. Follow one with \`${program} raw run log <id> --follow${BOARD_FLAG}\`.`
+      ? `${live.length} running. Follow one with \`${boardCommand()} run log <id> --follow\`.`
       : 'nothing running.',
   )
   return { runs: shown }
@@ -763,8 +763,8 @@ function runLine(r: RunView, program = 'akb', indent = ''): string {
   if (r.durationMs !== undefined) bits.push(`in ${ago(r.durationMs)}`)
   if (r.model) bits.push(r.model)
   if (r.costUsd !== undefined) bits.push(`$${r.costUsd.toFixed(4)}`)
-  if (r.canResume) bits.push(`— continue it with \`${program} raw run resume ${short(r.sessionId)}${BOARD_FLAG}\``)
-  if (r.canRetry) bits.push(`— try it again with \`${program} raw run resume ${short(r.sessionId)}${BOARD_FLAG}\``)
+  if (r.canResume) bits.push(`— continue it with \`${boardCommand()} run resume ${short(r.sessionId)}\``)
+  if (r.canRetry) bits.push(`— try it again with \`${boardCommand()} run resume ${short(r.sessionId)}\``)
   const line = bits.join('  ')
   // The board's own last word rides on the row, not only in the log. `✓ done` beside a run
   // that left the board inconsistent reads as "nothing to see here", which is the one thing

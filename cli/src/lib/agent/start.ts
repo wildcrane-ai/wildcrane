@@ -98,9 +98,9 @@ function open(req: AgentRequest, sessionId: string): { run: RunRecord; spawned: 
   // its log opens by saying which it was (#1309).
   const planning = carriedSession(ask)
   const carried = planning?.carried
-  const { prompt, notes } = buildRun(carried ? { ...ask, session: carried.fork ? 'fork' : 'resume' } : ask)
+  const { prompt, notes } = buildRun(carried ? { ...ask, session: carried.fork ? 'fork' : 'resume' } : ask, false)
   if (planning) notes.unshift(planning.note)
-  const opened = openRun(ask, prompt, notes, sessionId, carried)
+  const opened = openRun(ask, prompt, notes, sessionId, carried, true)
   if ('error' in opened) {
     returnRunPictures(sessionId, req.box)
     return opened

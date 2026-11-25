@@ -3,7 +3,7 @@ import { closeSettings, openSettings, ownsSettings } from './settings-server'
 import { settingsAction, onSettingsChange } from './settings'
 import { launch } from './launcher'
 import { accountGeneration } from './settings-control'
-import { EXIT_OUTDATED, EXIT_REFUSED, VERSION } from './protocol'
+import { EXIT_ALREADY_RUNNING, EXIT_OUTDATED, EXIT_REFUSED, VERSION } from './protocol'
 
 export async function terminalSettings(entry: string): Promise<void> {
   const result = await openSettings(settingsAction, { path: process.cwd() })
@@ -17,7 +17,10 @@ export async function terminalSettings(entry: string): Promise<void> {
     const account = `${session?.subject}:${accountGeneration()}`
     if (running || !session || blocked === account) return
     running = new AbortController()
-    done = launch({ version: VERSION, entry }, { signal: running.signal }).then((code) => { running = null; if (code === EXIT_OUTDATED || code === EXIT_REFUSED) blocked = account })
+    done = launch({ version: VERSION, entry }, { signal: running.signal }).then((code) => {
+      running = null
+      if (code === EXIT_ALREADY_RUNNING || code === EXIT_OUTDATED || code === EXIT_REFUSED) blocked = account
+    })
   }
   onSettingsChange(run)
   const timer = setInterval(run, 1000)

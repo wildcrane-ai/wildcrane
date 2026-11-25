@@ -229,6 +229,9 @@
                     "loop": {
                       "type": "boolean"
                     },
+                    "playable": {
+                      "type": "boolean"
+                    },
                     "variants": {
                       "type": "object",
                       "additionalProperties": {
@@ -284,6 +287,9 @@
                             ]
                           },
                           "loop": {
+                            "type": "boolean"
+                          },
+                          "playable": {
                             "type": "boolean"
                           },
                           "variants": {

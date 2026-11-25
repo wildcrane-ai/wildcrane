@@ -1,3 +1,4 @@
+import { STUDIO_SNAPSHOT_ENV } from '../../cli/src/lib/agent/cloud-studios'
 // The akb the Runner carries (#2020), built beside it into `akb/` (scripts/build.mjs), or one
 // Cloud named (#171, akb-version.ts): run by path with this Node. An `akb` shim leads the PATH of
 // everything it starts, so a command a flow prints, or an agent types, reaches that copy and not
@@ -20,6 +21,7 @@ export interface Akb {
   command: string
   args: string[]
   version: string
+  canonicalCommands?: boolean
   /** The folder its `akb` shim lives in. */
   shim: string
 }
@@ -40,6 +42,7 @@ export const bundledAkb = (dist = HERE): Akb => ({
   command: process.execPath,
   args: akbArgs(path.join(dist, 'akb', 'bin', 'ai4kanban.mjs'), dist),
   version: AKB_VERSION,
+  canonicalCommands: true,
   shim: path.join(akbHome(), BUNDLED_SHIM),
 })
 
@@ -70,7 +73,7 @@ export function shimDir(akb: Akb): string {
 /** 清除上游运行标记，并向子 CLI 传递 Cloud 语言代码；空值禁止本机回退。 */
 export function akbEnv(akb: Akb, board?: string, task?: string, language?: 'zh' | 'en' | null, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
-  const dropped = ['AI4KANBAN_PREVIEW_BRIDGE', 'AI4KANBAN_REPLY_APPROVAL', 'AI4KANBAN_BOARD', 'AI4KANBAN_TASK', 'AI4KANBAN_EXECUTION', 'AI4KANBAN_SCHEDULED_AGENTS', LANGUAGE_ENV, SESSION_COST_ENV, EXECUTION_RUNTIMES_ENV]
+  const dropped = ['AI4KANBAN_PREVIEW_BRIDGE', 'AI4KANBAN_REPLY_APPROVAL', 'AI4KANBAN_BOARD', 'AI4KANBAN_TASK', 'AI4KANBAN_EXECUTION', 'AI4KANBAN_SCHEDULED_AGENTS', STUDIO_SNAPSHOT_ENV, LANGUAGE_ENV, SESSION_COST_ENV, EXECUTION_RUNTIMES_ENV]
   for (const [k, v] of Object.entries({ ...proxyEnv(), ...base })) if (!k.startsWith('KANBAN_') && !dropped.includes(k)) env[k] = v
   const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
   env[key] = [shimDir(akb), env[key]].filter(Boolean).join(path.delimiter)
@@ -93,6 +96,17 @@ export interface Ran {
 
 const KEEP = 256 * 1024
 
+/** Older CLI packages can still be selected under the same Runner contract. */
+function compatibleArgs(akb: Akb, args: string[]): string[] {
+  if (akb.canonicalCommands) return args
+  const [group, verb, ...rest] = args
+  if (group === 'run' || group === 'delivery') return ['raw', ...args]
+  if (group === 'task' && verb && ['refine', 'revise', 'resolve', 'implement'].includes(verb)) return ['raw', 'card', verb, ...rest]
+  if (group === 'memory' && verb === 'describe-project') return ['raw', verb, ...rest]
+  if (group === 'memory' && verb === 'review') return ['raw', ...args]
+  return args
+}
+
 /** Run one akb command to its end. `env` goes on top of `akbEnv`'s; `show` receives its output
  *  as it arrives. */
 export function runAkb(
@@ -109,7 +123,7 @@ export function runAkb(
     }
     let child: ChildProcess
     try {
-      child = spawn(akb.command, [...akb.args, ...args], { cwd: opts.cwd, env: { ...akbEnv(akb, opts.board, opts.task, opts.language), ...opts.env }, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] })
+      child = spawn(akb.command, [...akb.args, ...compatibleArgs(akb, args)], { cwd: opts.cwd, env: { ...akbEnv(akb, opts.board, opts.task, opts.language), ...opts.env }, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] })
     } catch (e) {
       return resolve({ code: null, out: '', last: e instanceof Error ? e.message : String(e) })
     }

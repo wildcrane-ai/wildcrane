@@ -1,7 +1,9 @@
+import { encodeStudioZip, sha256Bytes, studioFilesSha256 } from '../../cli/src/lib/shared/studio-package'
 import { zipSync, strToU8 } from 'fflate'
 import { PDFDocument } from 'pdf-lib'
 import { documentPreviewKey, PDF } from '../../artifact-sdk/src/internal/document'
 import { numberOfCard } from '../../cli/src/lib/shared/board-files'
+import { newCardWriteProblems } from '../../cli/src/lib/shared/card-structure'
 import { taskPreviewProblems } from '../../cli/src/lib/shared/task-preview-validation'
 import { IDLE_TIMEOUT } from '../../cli/src/lib/agent/idle'
 import { conflictList, conflictShow, pendingConflicts, withSyncLock } from '../../cli/src/lib/shared/board-conflicts'
@@ -19,10 +21,11 @@ import * as api from '../src/api'
 import type { RuntimeReport } from '../src/api'
 import { readCheckpoint, saveCheckpoint } from '../src/recovery'
 import { startRunner, type Runner } from '../src/connect'
-import { holdMachine } from '../src/lock'
+import { acquireMachine, RunnerAlreadyRunning } from '../src/lock'
 import { keepPresence } from '../src/presence'
 import { runnerHome, useRunnerHome } from '../src/home'
 import { mcpArgs, spentBy } from '../src/flow'
+import { canKeepFlow } from '../src/flow-worker'
 import { createAcpClient, createStreamRenderer, createCodexStreamRenderer } from '../../cli/src/lib/agent/wire'
 import { createCodexClient } from '../../cli/src/lib/agent/wire/codex'
 import { CLAUDE_REPLY } from '../../cli/test/claude-reply'
@@ -34,7 +37,7 @@ import { SYSTEM_LANGUAGE_EN, SYSTEM_LANGUAGE_ZH } from '../../cli/src/lib/agent/
 import { plan as runtimePlan } from '../src/runtimes'
 import { toWire, type Deps } from '../src/jobs'
 import { syncBackoff } from '../src/sync-retry'
-import { akbEnv, akbHome, runAkb } from '../src/akb'
+import { akbEnv, akbHome, bundledAkb, runAkb } from '../src/akb'
 import { readAkbState } from '../src/akb-version'
 import { AKB_CONTRACT } from '../src/protocol'
 import { agentDue, nextHour } from '../src/agents'
@@ -66,7 +69,7 @@ const cached = (project = 'prj_1') => path.join(fs.realpathSync(runnerHome()), '
 const fakeAkb = (version = '0.0.0-test') => ({ command: process.execPath, args: [FAKE_AKB], version, shim: path.join(runnerHome(), 'bin', 'akb', version, 'shim') })
 
 function fakeRuntime(script: string) {
-  return (runtime: string, prompt: string, cwd: string, resume?: string | null, model?: string | null, settings?: unknown, _fork?: boolean, line?: 'zh' | 'en' | null): Plan => {
+  return (runtime: string, prompt: string, cwd: string, resume?: string | null, model?: string | null, settings?: unknown, _fork?: boolean, line?: 'zh' | 'en' | null, _images?: readonly string[], _discussionImages?: Parameters<Deps['plan']>[9]): Plan => {
     planned.push({ runtime, prompt, cwd, resume, model, settings, line })
     return {
       command: process.execPath,
@@ -109,10 +112,17 @@ const out = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m })
 const note = (update) => out({ method: 'session/update', params: { sessionId: 's1', update } })
 rl.on('line', (line) => {
   const m = JSON.parse(line)
+  if (process.env.ACP_CAPTURE) {
+    require('node:fs').appendFileSync(process.env.ACP_CAPTURE, line + '\\n')
+    if (m.method === 'initialize') return out({ id: m.id, result: {
+      agentCapabilities: { promptCapabilities: { image: !process.env.ACP_TEXT_ONLY } },
+    } })
+  }
   if (m.method === 'session/load' && process.env.ACP_MISSING) return out({ id:m.id, error:{code:-32602,message:'Session not found'} })
   if (m.method === 'session/new' && process.env.ACP_NEW_FAIL) return out({ id:m.id, error:{code:-32603,message:'Cannot open conversation'} })
   if (m.method === 'session/new') return out({ id: m.id, result: { sessionId: 's1', models: { currentModelId: 'known-model' } } })
   if (m.method === 'session/prompt') {
+    if (process.env.ACP_PROMPT_FAIL) return out({ id: m.id, error: { code: -32603, message: 'Provider temporarily overloaded', data: { code: 'overloaded_error' } } })
     if (process.env.ACP_HANG) return
     if (process.env.ACP_HALF) return note({ sessionUpdate: 'agent_message_chunk', content: { text: 'Two ' } })
     note({ sessionUpdate: 'plan', entries: [{ content: 'Look', status: 'completed' }] })
@@ -393,7 +403,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       assert.equal(job.outcome, failed ? 'failed' : 'done')
       assert.equal(planned.length, 1)
       assert.equal(job.finishedLogEnded, true)
-      assert.equal(readCheckpoint(job.id), null)
+      await until(() => readCheckpoint(job.id) === null)
       if (failed) assert.match(job.reason!, /401 unauthorized/)
     })
   }
@@ -409,12 +419,11 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.match(job.reason!, /目录授权已变化/)
   })
 
-  it('退出账号停止真正执行者和候补会话，不再领取新任务', async () => {
+  it('退出账号停止执行者，不再领取新任务', async () => {
     const { signOut } = await import('../src/settings')
-    const job = cloud.dispatch({ id: 'active-logout' })
+    cloud.dispatch({ id: 'active-logout' })
     const active = start('setInterval(() => {}, 1000)')
     await until(() => planned.length === 1)
-    const standby = startRunner({ kind: 'codex', registration: async () => ({ machineId: MACHINE, machineName: 'studio', version: '0', runtimes: [] }), onWaiting: () => {} })
     try {
       const result = await signOut()
       assert.equal(result.error, undefined)
@@ -422,12 +431,12 @@ process.stdin.on('data', () => { if (read) return; read = true;
       await new Promise((resolve) => setTimeout(resolve, 300))
       assert.equal(next.claims, 0)
       assert.equal(fs.existsSync(path.join(runnerHome(), 'session.json')), false)
-    } finally { await active.close(); await standby.close() }
+    } finally { await active.close() }
   })
 
   it('uses the execution retry policy for chat, discussions and other jobs (#869)', async () => {
     const chat = cloud.dispatch({ id: 'j1', chat: { message: 'msg_1', body: 'Why?' } })
-    const idea = cloud.dispatch({ id: 'j2', discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
+    const idea = cloud.dispatch({ id: 'j2', discussion: { id: 'dsc_1', workspace: 'ws_1', goals: [] } })
     const other = cloud.dispatch({ id: 'j3' })
     const said = fakeRuntime('console.log("retries", process.env.CLAUDE_CODE_MAX_RETRIES)')
     start('', { plan: (...args: Parameters<typeof said>) => { const p = said(...args); return { ...p, env: { ...p.env, CLAUDE_CODE_MAX_RETRIES: '0' } } } })
@@ -576,7 +585,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
 
     it('reports the window a real Claude Code reply names, on a task and on an idea', async () => {
       const chat = cloud.dispatch({ id: 'j1', runtime: 'claude-code' })
-      const idea = cloud.dispatch({ id: 'j2', runtime: 'claude-code', discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
+      const idea = cloud.dispatch({ id: 'j2', runtime: 'claude-code', discussion: { id: 'dsc_1', workspace: 'ws_1', goals: [] } })
       start('', { plan: claude })
       await until(() => chat.state === 'finished' && idea.state === 'finished')
       assert.deepEqual(used(chat), { used: 23_821, limit: 1_000_000 })
@@ -604,7 +613,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
         const output = fs.readFileSync(path.join(process.cwd(), '../cli/test/fixtures/antigravity/cached.ndjson'), 'utf8')
         const task = cloud.dispatch({ id: 'agy-task-context', runtime: 'antigravity', model: 'known-model' })
         const discussion = cloud.dispatch({ id: 'agy-discussion-context', runtime: 'antigravity', model: 'known-model',
-          discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
+          discussion: { id: 'dsc_1', workspace: 'ws_1', goals: [] } })
         start('', { plan: (runtime, prompt, cwd, resume) => ({
           ...fakeRuntime(`process.stdout.write(${JSON.stringify(output)})`)(runtime, prompt, cwd, resume),
           renderer: createAntigravityRenderer(), model: () => 'known-model',
@@ -659,7 +668,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
         const output = fs.readFileSync(path.join(process.cwd(), '../cli/test/fixtures/antigravity/cached.ndjson'), 'utf8')
         const task = cloud.dispatch({ id: 'agy-task-local-limit', runtime: 'antigravity', model: 'known-model' })
         const discussion = cloud.dispatch({ id: 'agy-discussion-local-limit', runtime: 'antigravity', model: 'known-model',
-          discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
+          discussion: { id: 'dsc_1', workspace: 'ws_1', goals: [] } })
         start('', { plan: (runtime, prompt, cwd, resume) => ({
           ...fakeRuntime(`process.stdout.write(${JSON.stringify(output)})`)(runtime, prompt, cwd, resume),
           renderer: createAntigravityRenderer(), model: () => 'known-model',
@@ -697,7 +706,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     ].map(e => JSON.stringify(e)).join('\n') + '\n'
     const task = cloud.dispatch({ id: 'agy-limit-task', runtime: 'antigravity' })
     const discussion = cloud.dispatch({ id: 'agy-limit-discussion', runtime: 'antigravity',
-      discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
+      discussion: { id: 'dsc_1', workspace: 'ws_1', goals: [] } })
     start('', { plan: (...args) => {
       const renderer = createAntigravityRenderer()
       return { ...fakeRuntime(`process.stdout.write(${JSON.stringify(output)}); setInterval(() => {}, 1000)`)(...args),
@@ -710,7 +719,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       assert.equal(job.report?.reply, 'Saved work.')
       assert.equal(job.report?.session, 'agy-limited-session')
     }
-    assert.equal(planned.length, 5)
+    assert.equal(planned.length, 2)
   })
 
   it('joins neighbouring log text and cuts what Cloud would not keep', () => {
@@ -860,33 +869,22 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal(job.outcome, 'failed')
   })
 
-  it('hands an idea conversation its ideas and studios, and reports what the reply left (#2073)', async () => {
-    const ideas = [{ id: 'idea_1', title: 'Pricing page', outcome: 'Prices.', acceptance: [], studio: 'wf_builtin_coding', task: null }]
-    const job = cloud.dispatch({ id: 'j1', discussion: { id: 'dsc_1', workspace: 'ws_1', ideas } })
-    start(`const fs = require('node:fs'); const f = process.env.KANBAN_IDEAS; const held = JSON.parse(fs.readFileSync(f, 'utf8'));
+  it('hands a discussion its goals and studios, and reports what the reply left (#2073)', async () => {
+    const goals = [{ id: 'idea_1', title: 'Pricing page', outcome: 'Prices.', acceptance: [], studio: 'wf_builtin_coding', task: null }]
+    const job = cloud.dispatch({ id: 'j1', discussion: { id: 'dsc_1', workspace: 'ws_1', version: 3, goals } })
+    start(`const fs = require('node:fs'); const f = process.env.KANBAN_GOALS; const held = JSON.parse(fs.readFileSync(f, 'utf8'));
       if (held.studios[0].id !== 'wf_builtin_coding') process.exit(4);
-      held.ideas[0].start = true; fs.writeFileSync(f, JSON.stringify(held))`)
+      held.goals[0].start = true; fs.writeFileSync(f, JSON.stringify(held))`)
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'done')
-    assert.deepEqual((job.report as { ideas: unknown[] }).ideas, [{ ...ideas[0], start: true }])
-    assert.equal(fs.existsSync(path.join(runnerHome(), 'ideas', 'j1.json')), false)
-  })
-
-  it('新服务通过 goals 接收旧 CLI 编辑的草稿', async () => {
-    const ideas = [{ id: 'idea_1', title: 'Pricing page', outcome: 'Prices.', acceptance: [], studio: 'wf_builtin_coding', task: null }]
-    const job = cloud.dispatch({ id: 'j1', discussion: { id: 'dsc_1', workspace: 'ws_1', goals: ideas, ideas } })
-    start(`const fs = require('node:fs'); const f = process.env.KANBAN_IDEAS; const held = JSON.parse(fs.readFileSync(f, 'utf8'));
-      if (held.studios[0].id !== 'wf_builtin_coding') process.exit(4);
-      held.ideas[0].start = true; fs.writeFileSync(f, JSON.stringify(held))`)
-    await until(() => job.state === 'finished')
-    assert.equal(job.outcome, 'done')
-    assert.deepEqual((job.report as { goals: unknown[] }).goals, [{ ...ideas[0], start: true }])
-    assert.equal(fs.existsSync(path.join(runnerHome(), 'ideas', 'j1.json')), false)
+    assert.deepEqual((job.report as { goals: unknown[] }).goals, [{ ...goals[0], start: true }])
+    assert.equal(job.report?.goalsVersion, 3)
+    assert.equal(fs.existsSync(path.join(runnerHome(), 'goals', 'j1.json')), false)
   })
 
   for (const failure of ['retry', 'conflict', 'unavailable']) it(`网页讨论目标保存及回复状态 (${failure}, #982)`, async () => {
-    const ideas = [{ id: 'idea_1', title: 'Existing', outcome: 'Before', acceptance: [], studio: 'wf_builtin_coding', task: null }]
-    const job = cloud.dispatch({ id: 'job_web', language: 'zh', discussion: { id: 'dsc_web', workspace: 'ws_1', version: 4, ideas, goals: ideas } })
+    const goals = [{ id: 'idea_1', title: 'Existing', outcome: 'Before', acceptance: [], studio: 'wf_builtin_coding', task: null }]
+    const job = cloud.dispatch({ id: 'job_web', language: 'zh', discussion: { id: 'dsc_web', workspace: 'ws_1', version: 4, goals } })
     const attempts: { id: string; outcome: string; report?: api.JobReport }[] = []
     const akb = path.join(process.env.RUNNER_DIST!, 'akb', 'bin', 'ai4kanban.mjs')
     const body = path.join(runnerHome(), 'goal-body.md')
@@ -918,8 +916,8 @@ process.stdin.on('data', () => { if (read) return; read = true;
     await until(() => job.state === 'finished')
     const rejected = failure !== 'retry'
     assert.equal(cloud.discussions.length, 0)
-    assert.deepEqual(attempts.map(attempt => [attempt.id, attempt.outcome]), rejected
-      ? [[job.id, 'done'], [job.id, 'done'], [job.id, 'failed']] : [[job.id, 'done'], [job.id, 'done']])
+    assert.deepEqual(attempts.map(attempt => attempt.outcome), failure === 'unavailable'
+      ? ['done', 'done', 'done', 'done', 'done', 'failed'] : rejected ? ['done', 'done', 'failed'] : ['done', 'done'])
     assert.deepEqual(attempts[0]!.report, attempts[1]!.report)
     assert.equal(attempts[1]!.report?.goalsVersion, 4)
     assert.deepEqual(attempts[1]!.report?.goals?.map(goal => [goal.id, goal.title]), [['idea_1', 'Edited'], ['new_1', 'New goal']])
@@ -1050,14 +1048,491 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal(job.report!.stopped, true)
   })
 
-  for (const discussion of [false, true]) it(`AGy receives isolated pictures on fresh and resumed ${discussion ? 'discussion' : 'task chat'} turns (#825)`, async () => {
+  it('isolates Studio skills and keeps the original version on continued task chats', async () => {
+    const definition = '---\nname: Example\n---\n\nPrepare the requested draft.'
+    const studio = (id: string, version: number) => ({
+      studio: id, version, files: {
+        'STUDIO.md': definition,
+        'skills/draft/SKILL.md': '---\nname: draft\ndescription: Draft v' + version + '.\n---\n\nRead the format and run both scripts.',
+        'skills/draft/reference.txt': 'v' + version,
+        'skills/draft/scripts/collect.cjs': "process.stdout.write(require('node:fs').readFileSync(__dirname + '/../reference.txt', 'utf8'))",
+        'skills/draft/scripts/format.cjs': "process.stdout.write('Draft ' + require('node:fs').readFileSync(0, 'utf8'))",
+      },
+    })
+    const cwd = cloud.folder!('prj_1')
+    const projectSkill = path.join(cwd, '.agents/skills/draft/SKILL.md')
+    fs.mkdirSync(path.dirname(projectSkill), { recursive: true })
+    fs.writeFileSync(projectSkill, 'A project skill.')
+    let count = 0
+    start('', { plan: (...args) => {
+      const p = fakeRuntime('')(...args)
+      const session = args[3] ?? 'studio-session-' + ++count
+      const file = / \(file: (.+)\)$/m.exec(args[1])?.[1]
+      if (!file) return { ...p, session: () => session }
+      const script = [
+        "const fs = require('node:fs'), path = require('node:path')",
+        "const { execFileSync } = require('node:child_process')",
+        "const file = " + JSON.stringify(file),
+        "if (!fs.readFileSync(file, 'utf8').includes('run both scripts')) throw Error('Missing skill instructions')",
+        "const dir = path.dirname(file)",
+        "const data = execFileSync(process.execPath, [path.join(dir, 'scripts/collect.cjs')])",
+        "const draft = execFileSync(process.execPath, [path.join(dir, 'scripts/format.cjs')], { input: data })",
+        "fs.writeFileSync(" + JSON.stringify(path.join(cwd, session + '.txt')) + ", draft)",
+      ].join('\n')
+      return { ...p, args: ['-e', script], session: () => session }
+    } })
+    const launch = async (task: string, id: string, resume: string | null = null, firstCardChat = false) => {
+      const job = cloud.dispatch({
+        id, task, project: 'prj_1', number: 1, chat: { message: id, body: 'Draft' }, resume,
+        replyInput: { body: 'Draft', previousReviewRevision: null, firstCardChat },
+      })
+      await until(() => job.state === 'finished')
+      return job
+    }
+    let version = 1
+    cloud.service = async (_method, url) => {
+      const task = /^\/v1\/tasks\/task_(\d+)\/studio$/.exec(url.pathname)?.[1]
+      if (task === '1' || task === '2') return studio('wf_draft', version)
+      if (task === '3') return studio('wf_other', 1)
+      if (task === '4') return { studio: 'wf_plain', version: 1, files: { 'STUDIO.md': definition } }
+    }
+    const first = await launch('task_1', 'first')
+    assert.equal(first.outcome, 'done', first.reason)
+    const firstPrompt = planned.at(-1)!.prompt
+    assert.match(firstPrompt, /- draft: Draft v1\./)
+    assert.doesNotMatch(firstPrompt, /run both scripts|collect\.cjs/)
+    assert.equal(fs.readFileSync(path.join(cwd, first.report!.session + '.txt'), 'utf8'), 'Draft v1')
+
+    version = 2
+    const resumed = await launch('task_1', 'continued', String(first.report!.session), true)
+    assert.equal(resumed.outcome, 'done', resumed.reason)
+    assert.doesNotMatch(planned.at(-1)!.prompt, /Available skills/)
+    const [next, other] = await Promise.all([launch('task_2', 'new-version'), launch('task_3', 'other-studio')])
+    assert.equal(next.outcome, 'done', next.reason)
+    assert.equal(other.outcome, 'done', other.reason)
+    assert.equal(fs.readFileSync(path.join(cwd, next.report!.session + '.txt'), 'utf8'), 'Draft v2')
+    assert.equal(fs.readFileSync(path.join(cwd, other.report!.session + '.txt'), 'utf8'), 'Draft v1')
+    assert.ok(planned.some(turn => /wf_other@1/.test(turn.prompt)))
+    assert.equal(fs.readFileSync(projectSkill, 'utf8'), 'A project skill.')
+    assert.equal(fs.existsSync(path.join(cwd, '.claude/skills/draft')), false)
+
+    const plain = await launch('task_4', 'no-skills')
+    assert.equal(plain.outcome, 'done', plain.reason)
+    assert.doesNotMatch(planned.at(-1)!.prompt, /Available skills/)
+
+    fs.rmSync(path.join(runnerHome(), 'studios/versions/wf_draft@1.json'))
+    const lost = await launch('task_1', 'missing-version', String(first.report!.session))
+    assert.equal(lost.outcome, 'failed')
+    assert.match(lost.reason ?? '', /Cannot recover Studio wf-draft v1/)
+  })
+
+  for (const discussion of [true, false]) it(`sends Codex inputs for fresh, resumed, and rebuilt ${discussion ? 'discussions' : 'card chats'} (#1050)`, async () => {
+    const body = '  The newest message:\n\nCan you check this?\n'
+    const messages: api.ReplyHistoryMessage[] = Array.from({ length: 30 }, (_, i) => ({ role: 'user', body: `Past message ${i + 1}` }))
+    messages.push({ role: 'agent', body: 'Past reply', image_names: ['old.png'] })
+    const history = [...messages.slice(0, 30).map(m => `User: ${m.body}`), 'Agent: Past reply\n\n[Pictures: old.png]'].join('\n\n')
+    const session = 'thread-1050'
+    const calls = path.join(runnerHome(), 'codex-inputs.jsonl')
+    const script = `
+const fs = require('node:fs')
+const out = value => console.log(JSON.stringify(value))
+require('node:readline').createInterface({input: process.stdin}).on('line', line => {
+  const m = JSON.parse(line)
+  if (m.id === undefined) return
+  const answer = result => out({id: m.id, result})
+  const params = m.params ?? {}
+  if (m.method === 'thread/resume' || m.method === 'thread/start') {
+    fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({method: m.method, thread: params.threadId}) + '\\n')
+    if (params.threadId === 'missing') return out({id: m.id, error: {code: -32600, message: 'no rollout found for thread id missing'}})
+    return answer({thread: {id: params.threadId ?? '${session}'}})
+  }
+  if (m.method === 'turn/start') {
+    const [text, ...images] = params.input
+    const file = text.text.split(String.fromCharCode(96)).find(part => part.endsWith('/history.md'))
+    const history = file && fs.readFileSync(file, 'utf8')
+    const mode = file && (fs.statSync(file).mode & 0o777)
+    const bytes = images.map(image => fs.readFileSync(image.path, 'utf8'))
+    fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({method: m.method, input: params.input, history, mode, bytes}) + '\\n')
+    answer({turn: {id: 't'}})
+    const notify = (method, data) => out({method, params: {threadId: params.threadId, turnId: 't', ...data}})
+    notify('turn/started', {turn: {id: 't'}})
+    notify('item/completed', {item: {id: 'm', type: 'agentMessage', text: 'Seen.'}})
+    return notify('turn/completed', {turn: {id: 't', status: 'completed'}})
+  }
+  answer({})
+})
+`
+    const transport: NonNullable<Deps['plan']> = (...args) => ({ ...runtimePlan(...args), command: process.execPath, args: ['-e', script] })
+    const akb = () => ({ ...fakeAkb(), canonicalCommands: true })
+    start('', { plan: transport, akb })
+    const goals = [{ id: 'g1', title: 'Current goal', studio: 'coding', outcome: 'Outcome', acceptance: [], task: null }]
+    const reviewAt = (revision: number): NonNullable<FakeJob['taskReview']> => ({
+      revision, plan: [{ id: 'prompts', after: [], previews: ['prompts'] }],
+      stages: [{ id: 'prompts', status: 'ready', revision: 7, snapshot: { body: 'full review snapshot' } }],
+      approvals: [{ stage: 'prompts', revision: 7, starts: [] }],
+    })
+    let previousContext: NonNullable<FakeJob['replyInput']>['previousContext']
+    const turn = async (id: string, resume: string | null, previousReviewRevision: number | null, revision = 7, firstCardChat = false, status: 'ready' | 'running' = 'ready', expectedSession = session) => {
+      const review = reviewAt(revision)
+      review.stages[0]!.status = status
+      if (id !== 'fresh') cloud.replyHistories.set(id, messages)
+      const job = cloud.dispatch({
+        id, resume, runtime: 'codex', prompt: 'Legacy prompt with Pictures: old.png',
+        attachments: ['first', 'second'].map(bytes => ({ name: 'same.png', content: Buffer.from(bytes).toString('base64') })),
+        replyInput: { body, historyOnDemand: true, previousReviewRevision, firstCardChat, previousContext },
+        ...(discussion ? { discussion: { id: 'd1050', workspace: 'ws_1', goals: id === 'fresh' ? [] : goals } } : {
+          task: 'task_1', project: 'prj_1', number: 1, chat: { message: id, body }, taskReview: review,
+        }),
+      })
+      await until(() => job.state === 'finished')
+      assert.equal(job.outcome, 'done', job.reason)
+      assert.equal(job.report?.reply, 'Seen.')
+      assert.equal(job.report?.session, expectedSession)
+      if (!discussion) {
+        assert.equal(job.report?.replyReviewRevision, revision)
+        assert.ok(job.report?.replyContext)
+        previousContext = job.report.replyContext
+      }
+      const dir = path.join(runnerHome(), 'attachments', id)
+      await until(() => !fs.existsSync(dir))
+    }
+    await turn('fresh', null, null)
+    await turn('cleared', null, null)
+    await turn('resumed', session, 7)
+    if (!discussion) {
+      await turn('updated-review', session, 7, 8)
+      await turn('stale-first-chat-flag', session, null, 8, true)
+    }
+    await turn('rebuilt', 'missing', 7)
+    const entries = fs.readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    assert.deepEqual(entries.map(e => e.method), [
+      'thread/start', 'turn/start', 'thread/start', 'turn/start', 'thread/resume', 'turn/start',
+      ...(discussion ? [] : ['thread/resume', 'turn/start', 'thread/resume', 'turn/start']), 'thread/resume', 'thread/start', 'turn/start',
+    ])
+    assert.deepEqual(entries.filter(e => e.method === 'thread/resume').map(e => e.thread),
+      [session, ...(discussion ? [] : [session, session]), 'missing'])
+    const submitted = entries.filter(e => e.method === 'turn/start')
+    for (const entry of submitted) {
+      assert.deepEqual(entry.input.map((part: { type: string }) => part.type), ['text', 'localImage', 'localImage'])
+      assert.deepEqual(entry.bytes, ['first', 'second'])
+      assert.ok(entry.input[0].text.endsWith(body))
+      assert.doesNotMatch(entry.input[0].text, /Legacy prompt|Attached files:|same\.png|full review snapshot|Past message|Past reply/)
+    }
+    assert.equal(submitted[2].input[0].text, body)
+    const guide = discussion ? 'akb guide discuss-goal' : 'akb guide card-chat'
+    assert.equal(submitted[0].input[0].text.split(guide).length, 2)
+    assert.equal(submitted[0].history, undefined)
+    assert.equal(submitted[1].history, history + '\n')
+    assert.doesNotMatch(submitted[0].input[0].text, /Current Goals:/)
+    if (!discussion) {
+      assert.match(submitted[0].input[0].text,
+        /Task card: .+\n\nStudio: Coding\. Read `akb studio file coding STUDIO.md` before revising a draft\.\n\nReview r7 · prompts ready for approval/)
+      assert.equal(submitted[3].input[0].text, `Review updated r8 · prompts ready for approval\n\n${body}`)
+      assert.equal(submitted[4].input[0].text, body)
+      assert.equal(submitted[4].history, undefined)
+    }
+    const rebuilt = submitted.at(-1)
+    assert.equal(rebuilt.input[0].text.split(guide).length, 2)
+    assert.equal(rebuilt.history, history + '\n')
+    assert.equal(rebuilt.mode, 0o400)
+    if (discussion) assert.match(rebuilt.input[0].text, /Current Goals:\n- g1 · Current goal/)
+    else {
+      assert.match(rebuilt.input[0].text, /Review r7 · prompts ready for approval/)
+      cloud.put({ 'rules/config.md': `---
+preferences:
+  - projects: [prj_1, prj_secret]
+    actions: [chat]
+    text: New project defaults.
+  - actions: [refine]
+    text: Planning only preference.
+---` })
+      const lastPrompt = () => JSON.parse(fs.readFileSync(calls, 'utf8').trim().split('\n').at(-1)!).input[0].text
+      await turn('updated-config', session, 7)
+      assert.equal(lastPrompt(), `New project defaults.\n\n${body}`)
+      assert.doesNotMatch(lastPrompt(), /Review ·|akb guide/)
+      await turn('same-config', session, 7)
+      assert.equal(lastPrompt(), body)
+      await turn('updated-status', session, 7, 7, false, 'running')
+      assert.equal(lastPrompt(), `Review updated r7 · prompts running\n\n${body}`)
+      cloud.put({ 'rules/config.md': '' })
+      await turn('removed-config', session, 7, 7, false, 'running')
+      assert.equal(lastPrompt(), `Studio configuration cleared.\n\n${body}`)
+      assert.doesNotMatch(lastPrompt(), /Review ·|New project defaults/)
+      await runner?.close()
+      start('', { plan: transport, akb })
+      previousContext = undefined
+      await turn('no-context-receipt', session, 7, 7, false, 'running')
+      assert.equal(lastPrompt(), body)
+
+      const run = cloud.dispatch({
+        id: 'execute-before-chat', task: 'task_1', project: 'prj_1', number: 1, runtime: 'codex',
+        resume: 'execution-thread', prompt: 'Run the task', taskReview: reviewAt(7),
+      })
+      await until(() => run.state === 'finished')
+      assert.equal(run.outcome, 'done', run.reason)
+      assert.match(lastPrompt(), /Task card: .+\n\nStudio: Coding/)
+      previousContext = undefined
+      await turn('first-chat-on-execution', 'execution-thread', null, 7, true, 'ready', 'execution-thread')
+      assert.match(lastPrompt(), /akb guide card-chat[\s\S]*Review/)
+      assert.doesNotMatch(lastPrompt(), /Task card:|Studio:|Available skills|history/)
+      await turn('second-chat-on-execution', 'execution-thread', 7, 7, false, 'ready', 'execution-thread')
+      assert.equal(lastPrompt(), body)
+      // Changing runtime starts a fresh conversation.
+      const acp = path.join(runnerHome(), 'switched-runtime.jsonl')
+      await runner?.close()
+      start('', { akb, plan: (...args) => ({ ...runtimePlan(...args), command: process.execPath, args: ['-e', ACP_AGENT],
+        env: { ...process.env, ACP_CAPTURE: acp } }) })
+      const switched = cloud.dispatch({
+        id: 'switched', task: 'task_1', project: 'prj_1', number: 1, runtime: 'cursor',
+        resume: null, chat: { message: 'switched', body }, replyInput: { body, previousReviewRevision: null, previousContext },
+      })
+      await until(() => switched.state === 'finished')
+      assert.equal(switched.outcome, 'done', switched.reason)
+      const received = fs.readFileSync(acp, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+        .find(call => call.method === 'session/prompt').params.prompt
+      assert.match(received[0].text, /akb guide card-chat[\s\S]*Task card:[\s\S]*Studio: Coding/)
+      assert.ok(received[0].text.endsWith(body))
+    }
+    assert.deepEqual(cloud.replyHistoryReads, ['fresh', 'cleared', 'rebuilt'])
+  })
+
+  for (const discussion of [true, false]) it(`uses the same context rules through ACP for ${discussion ? 'discussions' : 'card chats'} (#1055)`, async () => {
+    const body = '  First line\n\n  Second line\n'
+    const history = 'User: Earlier request\n\nAgent: Earlier reply'
+    const session = 's1'
+    const log = path.join(runnerHome(), 'acp-turns.jsonl')
+    const png = fs.readFileSync('test/fixtures/codex-images/reply.png').toString('base64')
+    const script = ACP_AGENT.replace("if (m.method === 'session/prompt') {", `if (m.method === 'session/prompt') {
+      const fs = require('node:fs')
+      const [{text}, nativeImage] = m.params.prompt
+      const file = text.split(String.fromCharCode(96)).find(part => part.endsWith('/history.md'))
+      const image = text.split('\\n').find(line => line.endsWith('/shot.png'))?.slice(2)
+      fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({
+        text, session: m.params.sessionId, history: file && fs.readFileSync(file, 'utf8'),
+        image: nativeImage?.data ?? (image && fs.readFileSync(image).toString('base64')),
+      }) + '\\n')
+    `)
+    start('', { plan: (...args) => {
+      const p = runtimePlan(...args)
+      return { ...p, command: process.execPath, args: ['-e', script], env: {
+        ...p.env, ACP_CAPTURE: path.join(runnerHome(), 'acp-requests.jsonl'),
+        ...(args[3] === 'missing' ? { ACP_MISSING: '1' } : {}),
+      } }
+    } })
+
+    const goals = [{ id: 'g1', title: 'Current goal', studio: 'coding', outcome: 'Outcome', acceptance: [], task: null }]
+    const review: NonNullable<FakeJob['taskReview']> = { revision: 2, plan: [], stages: [] }
+    let previousContext: NonNullable<FakeJob['replyInput']>['previousContext']
+    for (const [id, resume] of [['fresh', null], ['resumed', session], ['with-image', session], ['rebuilt', 'missing']] as const) {
+      const job = cloud.dispatch({
+        id, resume, runtime: 'cursor', prompt: 'Legacy prompt',
+        attachments: id === 'with-image' || id === 'rebuilt' ? [{ name: 'shot.png', content: png }] : [],
+        replyInput: { body, history: id === 'fresh' ? null : history, previousReviewRevision: 2, previousContext },
+        ...(discussion ? { discussion: { id: 'd1055', workspace: 'ws_1', goals: goals } } : {
+          task: 'task_1', project: 'prj_1', number: 1, chat: { message: id, body }, taskReview: review,
+        }),
+      })
+      await until(() => job.state === 'finished')
+      assert.equal(job.outcome, 'done', job.reason)
+      assert.equal(job.report?.session, session)
+      previousContext = job.report?.replyContext
+    }
+    const [fresh, resumed, withImage, rebuilt, ...extra] = fs.readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    assert.deepEqual(extra, [])
+    const guide = discussion ? /akb guide discuss-goal/ : /akb guide card-chat/
+    const context = discussion ? /Current Goals:\n- g1 · Current goal/ : /Task card: .+\n\nStudio: .+\n\n(?:Consult .+\n\n)?Review · no extra review/
+    for (const entry of [fresh, rebuilt]) {
+      assert.match(entry.text, guide)
+      assert.match(entry.text, context)
+      assert.ok(entry.text.endsWith(body))
+    }
+    assert.deepEqual(resumed, { text: body, session })
+    if (discussion) assert.equal(withImage.text, body)
+    else {
+      assert.match(withImage.text, /^Attached files:\n- .+\/shot\.png\n\n/)
+      assert.ok(withImage.text.endsWith(body))
+    }
+    assert.equal(withImage.image, png)
+    assert.equal(rebuilt.image, png)
+    assert.equal(rebuilt.history, history + '\n')
+    assert.ok([fresh, resumed, withImage, rebuilt].every(entry => !entry.text.includes('Legacy prompt')))
+  })
+
+  for (const discussion of [true, false]) it(`does not replay an unconfirmed Codex submission when its ${discussion ? 'discussion' : 'card chat'} session is gone (#1050)`, async () => {
+    const log = path.join(runnerHome(), 'codex-recovery.log')
+    const script = `
+const fs = require('node:fs')
+const out = value => console.log(JSON.stringify(value))
+require('node:readline').createInterface({input: process.stdin}).on('line', line => {
+  const m = JSON.parse(line)
+  if (m.id === undefined) return
+  if (m.method === 'thread/start') out({id: m.id, result: {thread: {id: 'unconfirmed'}}})
+  else if (m.method === 'turn/start') {
+    fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(m.params.input) + '\\n')
+    if (m.params.threadId === 'unconfirmed') return process.exit(0)
+    out({id: m.id, result: {turn: {id: 't'}}})
+    out({method: 'turn/completed', params: {threadId: m.params.threadId, turn: {id: 't', status: 'completed'}}})
+  } else if (m.method === 'thread/resume') {
+    const id = m.params.threadId
+    fs.appendFileSync(${JSON.stringify(log)}, id + '\\n')
+    if (id === 'unconfirmed') out({id: m.id, error: {code: -32600, message: 'no rollout found for thread id unconfirmed'}})
+    else out({id: m.id, result: {thread: {id}}})
+  } else out({id: m.id, result: {}})
+})
+`
+    start('', { plan: (...args) => ({ ...runtimePlan(...args), command: process.execPath, args: ['-e', script] }) })
+    const input = {
+      replyInput: { body: 'One request', history: null, previousReviewRevision: null },
+      attachments: [{ name: 'one.png', content: 'aGk=' }],
+      ...(discussion ? { discussion: { id: 'd1050', workspace: 'ws_1', goals: [] } } : {
+        task: 'task_1', project: 'prj_1', number: 1, chat: { message: 'm1', body: 'One request' },
+      }),
+    }
+    const job = cloud.dispatch({ ...input, id: 'uncertain' })
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'failed')
+    assert.equal(job.report?.failure?.safeToRetry, false)
+    const [submitted, resumed, ...other] = fs.readFileSync(log, 'utf8').trim().split('\n')
+    assert.equal(resumed, 'unconfirmed')
+    assert.deepEqual(other, [])
+    assert.ok(JSON.parse(submitted!)[0].text.endsWith('One request'))
+    assert.equal(JSON.parse(submitted!)[1].type, 'localImage')
+
+    const recovered = cloud.dispatch({ ...input, id: 'manual-resume', resume: 'resumable',
+      manualRecovery: true, recoveryOf: 'no-local-receipt' })
+    await until(() => recovered.state === 'finished')
+    assert.equal(recovered.outcome, 'done', recovered.reason)
+    const [thread, continuation, ...extra] = fs.readFileSync(log, 'utf8').trim().split('\n').slice(2)
+    assert.equal(thread, 'resumable')
+    const parts = JSON.parse(continuation!)
+    assert.equal(parts.length, 1)
+    assert.match(parts[0].text, /Continue the interrupted turn/)
+    assert.equal(parts[0].text.split('akb guide card-chat').length, discussion ? 1 : 2)
+    assert.doesNotMatch(parts[0].text, /One request/)
+    assert.deepEqual(extra, [])
+
+    const missing = cloud.dispatch({ ...input, id: 'manual-missing', resume: 'unconfirmed',
+      manualRecovery: true, recoveryOf: 'no-local-receipt' })
+    await until(() => missing.state === 'finished')
+    assert.equal(missing.outcome, 'failed')
+    assert.equal(missing.report?.failure?.safeToRetry, false)
+    assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n').slice(4), ['unconfirmed'])
+  })
+
+  for (const runtime of ['cursor', 'kimi', 'antigravity', 'opencode'] as const) it(`routes Goal discussion images for ${runtime} (#1054)`, async () => {
+    const capture = path.join(runnerHome(), 'acp-input.jsonl')
+    const png = fs.readFileSync('test/fixtures/codex-images/reply.png').toString('base64')
+    const discussion = { id: 'd1054', workspace: 'ws_1', goals: [] }
+    start('', { plan: (...args) => {
+      const p = runtimePlan(...args)
+      assert.ok(p.converse)
+      assert.ok(p.args.includes('acp'))
+      return { ...p, command: process.execPath, args: ['-e', ACP_AGENT], env: { ...p.env, ACP_CAPTURE: capture,
+        ...(args[1].includes('no native capability') ? { ACP_TEXT_ONLY: '1' } : {}),
+      } }
+    } })
+    for (const [i, prompt] of ['fresh pixels', 'resumed pixels', 'no native capability'].entries()) {
+      const name = `turn-${i}.png`
+      const job = cloud.dispatch({ id: `pixels-1054-${i}`, runtime, discussion, prompt, resume: i ? 's1' : null,
+        attachments: [{ name, content: png }] })
+      await until(() => job.state === 'finished')
+      assert.equal(job.outcome, 'done', job.reason)
+      assert.equal(job.report?.session, 's1')
+    }
+    const calls = fs.readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    const turns = calls.filter(call => call.method === 'session/prompt')
+    assert.deepEqual(calls.filter(call => call.method === 'session/load').map(call => call.params.sessionId), ['s1', 's1'])
+    assert.equal(turns.length, 3)
+    for (const [i, { params }] of turns.entries()) {
+      const [text, ...images] = params.prompt
+      if (runtime === 'opencode' || i === 2) {
+        assert.deepEqual(images, [])
+        assert.ok(text.text.includes(path.join(runnerHome(), 'attachments', `pixels-1054-${i}`, `turn-${i}.png`)))
+      } else {
+        assert.doesNotMatch(text.text, /Attached files/)
+        assert.deepEqual(images, [{ type: 'image', mimeType: 'image/png', data: png }])
+      }
+    }
+  })
+
+  it('continues a legacy Goal discussion once with its attachment path when ACP cannot load it (#1054)', async () => {
+    const capture = path.join(runnerHome(), 'acp-input.jsonl')
+    const png = fs.readFileSync('test/fixtures/codex-images/reply.png').toString('base64')
+    const job = cloud.dispatch({ id: 'legacy-1054', runtime: 'kimi', resume: 'old-session', prompt: 'read this image',
+      discussion: { id: 'd1054', workspace: 'ws_1', goals: [] }, attachments: [{ name: 'new.png', content: png }] })
+    let fallbacks = 0
+    start('', { plan: (...args) => {
+      const p = runtimePlan(...args)
+      return { ...p, command: process.execPath, args: ['-e', ACP_AGENT],
+        env: { ...p.env, ACP_CAPTURE: capture, ACP_MISSING: '1' },
+        fallback: () => {
+          fallbacks++
+          const legacy = p.fallback!()
+          assert.deepEqual(legacy.args.slice(-4, -1), ['--session', 'old-session', '-p'])
+          const file = path.join(runnerHome(), 'attachments', job.id, 'new.png')
+          assert.ok(legacy.args.at(-1)?.includes(file))
+          assert.equal(fs.readFileSync(file).toString('base64'), png)
+          return { ...legacy, command: process.execPath, args: ['-e', 'console.log("continued")'] }
+        },
+      }
+    } })
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(job.report?.session, 'old-session')
+    assert.equal(fallbacks, 1)
+    assert.doesNotMatch(fs.readFileSync(capture, 'utf8'), /session\/(new|prompt)/)
+  })
+
+  it('keeps the submitted image turn on ACP and recovers with a continuation only', async () => {
+    const capture = path.join(runnerHome(), 'acp-recovery.jsonl')
+    const png = fs.readFileSync('test/fixtures/codex-images/reply.png').toString('base64')
+    const input = { runtime: 'antigravity' as const, prompt: 'Read the original image',
+      discussion: { id: 'd1058', workspace: 'ws_1', goals: [] }, attachments: [{ name: 'original.png', content: png }] }
+    const turns = () => fs.readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    let fallbacks = 0
+    start('', { plan: (...args) => {
+      const p = runtimePlan(...args)
+      assert.ok(p.fallback)
+      return { ...p, command: process.execPath, args: ['-e', ACP_AGENT],
+        env: { ...p.env, ACP_CAPTURE: capture, ...(!args[3] ? { ACP_PROMPT_FAIL: '1' } : {}) },
+        fallback: () => { fallbacks++; return p.fallback!() },
+      }
+    } })
+
+    const job = cloud.dispatch({ ...input, id: 'submitted-image' })
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.deepEqual(turns().filter(call => call.method === 'session/load').map(call => call.params.sessionId), ['s1'])
+    const prompts = turns().filter(call => call.method === 'session/prompt')
+    assert.equal(prompts.length, 2)
+    assert.deepEqual(prompts[0]?.params.prompt, [
+      { type: 'text', text: input.prompt },
+      { type: 'image', mimeType: 'image/png', data: png },
+    ])
+    const continuation = prompts[1]?.params.prompt
+    assert.equal(continuation?.length, 1)
+    assert.match(continuation[0].text, /Continue the interrupted turn/)
+    assert.doesNotMatch(continuation[0].text, /Read the original image|original\.png/)
+    assert.equal(fallbacks, 0)
+  })
+
+  for (const discussion of [false, true]) it(`AGy receives isolated pictures on fresh, resumed, and rebuilt ${discussion ? 'discussion' : 'task chat'} turns (#825)`, async () => {
     const session = '00000000-0000-4000-8000-000000000825'
     const png = fs.readFileSync('test/fixtures/codex-images/reply.png')
+    const body = '  Read the pictures in order\n'
     let turn = 0
+    let previousContext: NonNullable<FakeJob['replyInput']>['previousContext']
     start('', { plan: (...args) => {
       assert.equal(args[0], 'antigravity')
-      assert.equal(args[3], turn ? session : null)
-      assert.match(args[1], /Read the pictures in order/)
+      if (args[3] === 'missing') {
+        const p = runtimePlan(...args)
+        return { ...p, command: process.execPath, args: ['-e', ACP_AGENT], env: { ...p.env, ACP_MISSING: '1' } }
+      }
+      assert.equal(args[3], turn === 1 ? session : null)
+      assert.ok(args[1].endsWith(body))
+      if (turn === 1) assert.doesNotMatch(args[1], /akb guide|history/)
+      else assert.match(args[1], /akb guide/)
+      if (turn === 2) assert.match(args[1], /Earlier turn|history\.md/)
       const dir = path.join(runnerHome(), 'attachments', `pictures-${turn}`)
       const files = [...args[1].matchAll(/^- (.+\.png)$/gm)].map(m => m[1]!)
       assert.deepEqual(files, Array.from({ length: turn + 1 }, (_, i) => path.join(dir, `${i}.png`)))
@@ -1073,17 +1548,20 @@ process.stdin.on('data', () => { if (read) return; read = true;
       p.session = () => p.renderer!.resumeId?.()
       return p
     } })
-    for (turn = 0; turn < 2; turn++) {
-      const job = cloud.dispatch({ id: `pictures-${turn}`, runtime: 'antigravity', resume: turn ? session : null,
-        prompt: 'Read the pictures in order', attachments: Array.from({ length: turn + 1 }, (_, i) => ({ name: `${i}.png`, content: png.toString('base64') })),
-        ...(discussion ? { discussion: { id: 'd825', workspace: 'ws_1', ideas: [] } } : { task: 'task_1', project: 'prj_1', number: 1, chat: { message: `m${turn}`, body: 'Read the pictures in order' } }),
+    for (turn = 0; turn < 3; turn++) {
+      const job = cloud.dispatch({ id: `pictures-${turn}`, runtime: 'antigravity', resume: turn === 0 ? null : turn === 1 ? session : 'missing',
+        prompt: 'Legacy prompt',
+        replyInput: { body, history: turn ? 'User: Earlier turn' : null, previousReviewRevision: null, previousContext },
+        attachments: Array.from({ length: turn + 1 }, (_, i) => ({ name: `${i}.png`, content: png.toString('base64') })),
+        ...(discussion ? { discussion: { id: 'd825', workspace: 'ws_1', goals: [] } } : { task: 'task_1', project: 'prj_1', number: 1, chat: { message: `m${turn}`, body } }),
       })
       await until(() => job.state === 'finished')
       assert.equal(job.outcome, 'done', job.reason)
       assert.equal(job.report?.session, session)
+      previousContext = job.report?.replyContext
       await until(() => !fs.existsSync(path.join(runnerHome(), 'attachments', job.id)))
     }
-    assert.equal(planned.length, 2)
+    assert.equal(planned.length, 3)
   })
 
   for (const discussion of [false, true]) it(`AGy completes recovered image reads once in ${discussion ? 'discussion' : 'task chat'} (#828)`, async () => {
@@ -1111,7 +1589,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     } })
     const job = cloud.dispatch({ id: 'pictures-recovered', runtime: 'antigravity',
       attachments: ['0.png', '1.png'].map(name => ({ name, content: png })),
-      ...(discussion ? { discussion: { id: 'd828', workspace: 'ws_1', ideas: [] } }
+      ...(discussion ? { discussion: { id: 'd828', workspace: 'ws_1', goals: [] } }
         : { task: 'task_1', project: 'prj_1', number: 1, chat: { message: 'm828', body: 'Read both pictures' } }),
     })
     await until(() => job.state === 'finished')
@@ -1143,7 +1621,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.equal(job.outcome, 'done')
   })
 
-  for (const protocol of [false, true]) it(`five-minute idle recovery uses three retries: ${protocol ? 'protocol' : 'stream'}`, async () => {
+  for (const protocol of [false, true]) it(`five-minute idle recovery uses four retries: ${protocol ? 'protocol' : 'stream'}`, async () => {
     const original = IDLE_TIMEOUT.milliseconds
     IDLE_TIMEOUT.milliseconds = 100
     try {
@@ -1158,10 +1636,10 @@ process.stdin.on('data', () => { if (read) return; read = true;
         return p
       } })
       await until(() => job.state === 'finished')
-      assert.equal(planned.length, 4)
+      assert.equal(planned.length, 5)
       assert.equal(job.outcome, 'failed')
       assert.match(job.reason!, /idle timeout/)
-      assert.equal(readCheckpoint(job.id)?.retry?.attempt, 4)
+      assert.equal(readCheckpoint(job.id)?.retry?.attempt, 5)
       if (protocol) assert.match(String(job.report?.reply ?? ''), /Progress before interruption/)
     } finally { IDLE_TIMEOUT.milliseconds = original }
   })
@@ -1169,7 +1647,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
   for (const converse of [false, true]) for (const discussion of [false, true]) {
     it(`有限重试保留原消息与附件 ${converse ? 'ACP' : 'printed'} ${discussion ? 'discussion' : 'task'}`, async () => {
       const job = cloud.dispatch({ id: 'retry-turn', prompt: '原消息与上下文', attachments: [{ name: 'shot.png', content: 'aGk=' }],
-        ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', ideas: [] } } : { chat: { message: 'm1', body: '原消息' } }) })
+        ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', goals: [] } } : { chat: { message: 'm1', body: '原消息' } }) })
       let calls = 0
       start('', { plan: (...args) => {
         const failed = ++calls < 2
@@ -1202,7 +1680,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     const session = '00000000-0000-4000-8000-000000000796'
     const partial = '已完成文件更新，保留用户选择的方案。'
     const job = cloud.dispatch({ id: 'agy-interrupted', runtime: 'antigravity', prompt: '按已确认方案更新文件',
-      ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', ideas: [] } } : { chat: { message: 'm1', body: '按已确认方案更新文件' } }) })
+      ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', goals: [] } } : { chat: { message: 'm1', body: '按已确认方案更新文件' } }) })
     start('', { plan: (...args) => {
       const frames = [
         { event: 'init', conversation_id: session },
@@ -1214,7 +1692,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       return p
     } })
     await until(() => job.state === 'finished')
-    assert.equal(planned.length, 4)
+    assert.equal(planned.length, 5)
     assert.equal(job.outcome, 'failed', job.reason)
     assert.match(job.reason!, /request failed: EOF/)
     assert.equal(job.report?.reply, partial)
@@ -1223,7 +1701,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
   for (const discussion of [false, true]) it(`AGy 仅收到 init 时保存会话，重启后带原始请求续接 ${discussion ? 'discussion' : 'task'} (#830)`, async () => {
     const session = '00000000-0000-4000-8000-000000000830'
     const job = cloud.dispatch({ id: 'agy-early', runtime: 'antigravity', prompt: '用户决定：保留 Cedar830。',
-      ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', ideas: [] } } : { chat: { message: 'm1', body: '保留 Cedar830' } }) })
+      ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', goals: [] } } : { chat: { message: 'm1', body: '保留 Cedar830' } }) })
     const plan: NonNullable<Deps['plan']> = (...args) => {
       const resumed = !!args[3]
       const frames = [{ event: 'init', conversation_id: session },
@@ -1290,9 +1768,9 @@ process.stdin.on('data', () => { if (read) return; read = true;
     'authentication failed or timed out', 'permission denied: service unavailable',
     'invalid model selection: model is unavailable', '429 rate limit: service unavailable',
     'rpc error: code = ResourceExhausted desc = credits exhausted', 'Antigravity: CANCELED: network error',
-  ]) it(`AGy 不重试需要人工处理的错误 ${discussion ? 'discussion' : 'task'} ${reason} (#827)`, async () => {
+  ]) it(`AGy 按失败原因恢复或请用户处理 ${discussion ? 'discussion' : 'task'} ${reason} (#827)`, async () => {
     const job = cloud.dispatch({ id: 'agy-manual-failure', runtime: 'antigravity',
-      ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', ideas: [] } } : { chat: { message: 'm1', body: '继续' } }) })
+      ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', goals: [] } } : { chat: { message: 'm1', body: '继续' } }) })
     start('', { plan: (...args) => {
       const p = fakeRuntime('process.exit(1)')(...args)
       p.renderer!.events = () => []
@@ -1300,15 +1778,16 @@ process.stdin.on('data', () => { if (read) return; read = true;
       return p
     } })
     await until(() => job.state === 'finished')
-    assert.equal(planned.length, 4)
+    const needsUser = !/^(429|Antigravity)/.test(reason)
+    assert.equal(planned.length, needsUser ? 1 : 5)
     assert.equal(job.outcome, 'failed')
     assert.ok(job.reason?.startsWith(reason))
-    assert.equal(readCheckpoint(job.id)?.retry?.attempt, 4)
-    assert.equal(job.report?.failure?.pauseReason, 'limit')
+    assert.equal(readCheckpoint(job.id)?.retry?.attempt, needsUser ? 1 : 5)
+    assert.equal(job.report?.failure?.pauseReason, needsUser ? 'authorization' : 'limit')
   })
 
   for (const reason of ['quota exceeded', 'Please login first', 'unknown model error']) {
-    it(`未知或持续模型失败进入统一 4 次重试后挂起 ${reason}`, async () => {
+    it(`根据运行失败原因决定是否自动重试 ${reason}`, async () => {
       const job = cloud.dispatch({ id: 'model-failure', chat: { message: 'm1', body: '原消息' } })
       start('', { plan: (...args) => {
         const p = fakeRuntime('process.exit(1)')(...args)
@@ -1317,11 +1796,12 @@ process.stdin.on('data', () => { if (read) return; read = true;
         return p
       } })
       await until(() => job.state === 'finished')
-      assert.equal(planned.length, 4)
+      const needsUser = reason !== 'unknown model error'
+      assert.equal(planned.length, needsUser ? 1 : 5)
       assert.equal(job.outcome, 'failed')
       assert.ok(job.reason?.startsWith(reason))
-      assert.equal(readCheckpoint(job.id)?.retry?.attempt, 4)
-      assert.equal(job.report?.failure?.pauseReason, 'limit')
+      assert.equal(readCheckpoint(job.id)?.retry?.attempt, needsUser ? 1 : 5)
+      assert.equal(job.report?.failure?.pauseReason, needsUser ? 'authorization' : 'limit')
     })
   }
 
@@ -1353,9 +1833,9 @@ process.stdin.on('data', () => { if (read) return; read = true;
     })
   }
 
-  for (const failures of [[validation, validation, validation, validation], [disconnect, validation, disconnect, validation], [validation, disconnect, disconnect, disconnect]]) {
-    it(`shares cumulative 4-attempt retry slots across sources (${failures.map(f => f.source).join(',')})`, async () => {
-      const job = cloud.dispatch({ id: 'mixed-retry', discussion: { id: 'd1', workspace: 'ws_1', ideas: [] } })
+  for (const failures of [[validation, validation, validation, validation, validation], [disconnect, validation, disconnect, validation, disconnect], [validation, disconnect, disconnect, disconnect, disconnect]]) {
+    it(`shares four retry slots across sources (${failures.map(f => f.source).join(',')})`, async () => {
+      const job = cloud.dispatch({ id: 'mixed-retry', discussion: { id: 'd1', workspace: 'ws_1', goals: [] } })
       let calls = 0
       start('', { plan: (...args) => {
         const failure = failures[calls++]
@@ -1379,11 +1859,11 @@ process.stdin.on('data', () => { if (read) return; read = true;
     const job = cloud.dispatch({ id: 'pending-deadline', state: 'claimed', machine: MACHINE, chat: { message: 'm1', body: 'Continue' } })
     const at = Date.now() + 250
     saveCheckpoint(job.id, { updating, pending: [], started: true, effects: true, session: 'kept',
-      retry: { since: 0, attempt: 3, pending: { at, of: 4, failure: disconnect } } })
+      retry: { since: 0, attempt: 4, pending: { at, of: 4, failure: disconnect } } })
     let startedAt = 0
     start('', { plan: (...args) => {
       assert.equal(readCheckpoint(job.id)?.retry?.pending?.at, at)
-      assert.equal(readCheckpoint(job.id)?.retry?.attempt, 3)
+      assert.equal(readCheckpoint(job.id)?.retry?.attempt, 4)
       const p = fakeRuntime('process.exit(1)')(...args)
       startedAt = Date.now()
       p.renderer!.events = () => []
@@ -1393,7 +1873,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     await until(() => job.state === 'finished')
     assert.ok(startedAt >= at)
     assert.equal(planned.length, 1)
-    assert.equal(readCheckpoint(job.id)?.retry?.attempt, 4)
+    assert.equal(readCheckpoint(job.id)?.retry?.attempt, 5)
     assert.equal(readCheckpoint(job.id)?.retryPause, 'limit')
   })
 
@@ -1454,7 +1934,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     } })
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'failed')
-    assert.equal(planned.length, 4)
+    assert.equal(planned.length, 5)
     assert.equal(job.report?.reply, undefined)
   })
 
@@ -1474,7 +1954,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       saveCheckpoint('long-running-original', { mark: stopMark(), pending: [], started: true,
         submitted: true, effects: true, session: 'original-session', retry: { since: Date.now() - 7_200_000, attempt: 1 } })
       const job = cloud.dispatch({ id: 'long-running-recovered', recoveryOf: 'long-running-original',
-        ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', ideas: [] } } : { chat: { message: 'm1', body: '继续' } }) })
+        ...(discussion ? { discussion: { id: 'd1', workspace: 'ws_1', goals: [] } } : { chat: { message: 'm1', body: '继续' } }) })
       start('', { plan: (...args) => {
         const p = fakeRuntime('')(...args)
         p.converse = async (_child, event, _stop, deadline) => {
@@ -1492,7 +1972,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     })
   }
 
-  for (const [attempt, elapsed] of [[4, 0], [4, 120_001]]) {
+  for (const [attempt, elapsed] of [[5, 0], [5, 120_001]]) {
     it(`重启不重置已用预算 ${attempt} ${elapsed}`, async () => {
       const job = cloud.dispatch({ id: 'restart-budget', recoveryOf: 'interrupted-turn', machine: MACHINE, chat: { message: 'm1', body: '继续' } })
       saveCheckpoint(job.id, { mark: stopMark(), pending: [], effects: false, started: true,
@@ -1651,7 +2131,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
     } })
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'failed')
-    assert.deepEqual(planned.map(p => p.resume), ['absent', 'absent', 'absent', 'absent'])
+    assert.deepEqual(planned.map(p => p.resume), ['absent'])
     assert.equal(job.report?.session, 'absent')
   })
 
@@ -1665,11 +2145,11 @@ process.stdin.on('data', () => { if (read) return; read = true;
       return p
     } })
     await until(() => job.state === 'finished')
-    assert.equal(planned.length, 4)
+    assert.equal(planned.length, 5)
     assert.match(job.reason!, /session/i)
   })
 
-  it('换机会话登录失败沿用原会话且受统一预算限制', async () => {
+  it('换机会话登录失败时立即报告原因', async () => {
     const job = cloud.dispatch({ id: 'signed-out-session', resume: 'existing', chat: { message: 'm1', body: '继续' } })
     start('', { plan: (...args) => {
       const p = fakeRuntime('console.error("Please login first");process.exit(1)')(...args)
@@ -1679,7 +2159,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       return p
     } })
     await until(() => job.state === 'finished')
-    assert.deepEqual(planned.map(p => p.resume), ['existing', 'existing', 'existing', 'existing'])
+    assert.deepEqual(planned.map(p => p.resume), ['existing'])
     assert.match(job.reason!, /^Please login first/)
   })
 
@@ -1755,9 +2235,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
       assert.equal(childClosed, true)
       assert.equal(job.state, 'claimed')
       assert.equal(readCheckpoint(job.id)?.updating, true)
-      let tookOver = false
-      const next = holdMachine('terminal', () => { tookOver = true })
-      try { await until(() => tookOver) } finally { next.release() }
+      await (await acquireMachine('terminal'))()
     } finally {
       endTurn({ ok: true })
       await new Promise((resolve) => setTimeout(resolve, 50))
@@ -1840,15 +2318,16 @@ process.stdin.on('data', () => { if (read) return; read = true;
     assert.match(job.reason!, /previous execution could not be verified/)
   })
 
-  it('keeps the computer connected when another process takes over', async () => {
+  it('refuses a duplicate without registering or disconnecting the active Runner', async () => {
     const runner = start()
     await until(() => cloud.runner?.live === true)
-    let waiting = false
-    const next = holdMachine('claude-code', () => {}, () => (waiting = true))
-    await until(() => waiting)
-    await runner.close()
+    const duplicate = startRunner({
+      kind: 'claude-code',
+      registration: async () => { assert.fail('duplicate registered') },
+    })
+    assert.deepEqual(await duplicate.stopped, { reason: 'already-running' })
     assert.equal(cloud.runner?.live, true)
-    next.release()
+    await runner.close()
   })
 
   it('关闭时等待已发出的认领请求，并停止随后到达的任务（#316）', async () => {
@@ -1866,23 +2345,16 @@ process.stdin.on('data', () => { if (read) return; read = true;
       },
     } })
     await until(() => claimed)
-    let waiting = false
-    let taken = false
-    const next = holdMachine('codex', () => { taken = true }, () => { waiting = true })
     try {
-      await until(() => waiting)
       const closing = current.close()
-      assert.equal(taken, false)
+      await assert.rejects(acquireMachine('codex'), RunnerAlreadyRunning)
       allow()
       await closing
-      await until(() => taken)
+      await (await acquireMachine('codex'))()
       assert.equal(job.state, 'claimed')
       assert.equal(planned.length, 0)
-      assert.equal(cloud.runner!.live, true)
-    } finally {
-      allow()
-      next.release()
-    }
+      assert.equal(cloud.runner!.live, false)
+    } finally { allow() }
   })
 
   it('releases the computer when nothing takes over', async () => {
@@ -1901,7 +2373,7 @@ process.stdin.on('data', () => { if (read) return; read = true;
   it('registers with the recovery protocol', async () => {
     start()
     await until(() => cloud.registrations > 0)
-    assert.equal(cloud.protocol, 30)
+    assert.equal(cloud.protocol, 31)
   })
 
   it('stops as outdated when Cloud no longer takes its protocol', async () => {
@@ -1954,10 +2426,137 @@ describe('a task’s folder (#2037)', () => {
     return job
   }
 
+  it('runs with the complete checked package and downloads once per published version', async () => {
+    const studio = 'wf_own'
+    const route = '/v1/tasks/task_1/studio'
+    const files: Record<string, string> = { 'STUDIO.md': '---\nname: Coding\n---\n\nRead the approved files.\n' }
+    let remaining = 10 * 1024 * 1024 - Buffer.byteLength(files['STUDIO.md']!)
+    for (let index = 0; remaining > 0; index++) {
+      const size = Math.min(2 * 1024 * 1024, remaining)
+      files['references/full-' + index + '.txt'] = 'x'.repeat(size)
+      remaining -= size
+    }
+    const versions = new Map()
+    for (const version of [2, 3]) {
+      const versionFiles = version === 2 ? files : { ...files, 'references/full-0.txt': 'next version' }
+      const { zip } = encodeStudioZip(versionFiles)
+      versions.set(version, {
+        zip: Buffer.from(zip), package: {
+          version, filesSha256: await studioFilesSha256(versionFiles), zipSha256: await sha256Bytes(zip),
+          zipBytes: zip.length, downloadUrl: route + '/versions/' + version + '/package',
+        },
+      })
+    }
+    let latest = 2
+    const downloads: number[] = []
+    const selected: number[] = []
+    cloud.service = (_method, url) => {
+      if (url.pathname === route) {
+        assert.equal(url.searchParams.get('view'), 'metadata')
+        const version = Number(url.searchParams.get('version') ?? latest)
+        selected.push(version)
+        return { studio, version, package: versions.get(version).package }
+      }
+      for (const [version, saved] of versions) {
+        if (url.pathname === saved.package.downloadUrl) {
+          downloads.push(version)
+          return saved.zip
+        }
+      }
+    }
+    const check = (version: number, size: number) => {
+      const file = path.join(runnerHome(), 'studios', 'versions', studio + '@' + version + '.json')
+      return 'const assert = require("node:assert/strict"); const fs = require("node:fs");' +
+        'assert.equal(JSON.parse(process.env.AI4KANBAN_STUDIO_SNAPSHOT).version,' + version + ');' +
+        'const held = JSON.parse(fs.readFileSync(' + JSON.stringify(file) + ', "utf8"));' +
+        'assert.equal(Buffer.byteLength(held.files["references/full-0.txt"]),' + size + ');'
+    }
+    assert.equal((await runTask('package-first', check(2, 2 * 1024 * 1024))).outcome, 'done')
+    assert.equal((await runTask('package-second', check(2, 2 * 1024 * 1024))).outcome, 'done')
+    latest = 3
+    assert.equal((await runTask('package-next', check(3, 'next version'.length))).outcome, 'done')
+    const resumed = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1, studio }, cached())
+    resumed.studioSnapshot = { studio, version: 2 }
+    fs.rmSync(path.join(runnerHome(), 'studios', 'versions', studio + '@2.json'))
+    assert.deepEqual(await pull(resumed, MACHINE), { ok: true, value: undefined })
+    assert.deepEqual(downloads, [2, 3, 2])
+    assert.deepEqual(selected, [2, 2, 3, 2])
+  })
+
   const prepareBoard = async () => {
     const result = await pull(openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1')), MACHINE)
     assert.equal(result.ok, true, JSON.stringify(result))
   }
+
+  for (const entry of ['background', 'task'] as const) it(`reconciles board changes through ${entry} sync (#1062)`, async () => {
+    const archive = '.archive/12-restored.md'
+    const restoredCard = 'todo/12-restored.md'
+    const restored = '---\ntitle: Restored\nrestored: 2026-11-23\n---\nCloud copy\n'
+    const removed = '.archive/13-removed.md'
+    const note = 'memory/readme.md'
+    const noteBase = 'First\n\nMiddle\n\nLast\n'
+    cloud.put({ [archive]: 'Archived copy\n', [removed]: 'Removed\n', [note]: noteBase })
+    await prepareBoard()
+    const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cached())
+    const sync = () => entry === 'background' ? pullChanges(keptBoard(cached())!) : pull(ws, MACHINE)
+    const base = () => JSON.parse(fs.readFileSync(path.join(cached(), '.akb/base.json'), 'utf8'))
+    const local = (file: string, text: string) => fs.writeFileSync(path.join(board(), file), text)
+    local(archive, 'Unsent archive draft\n')
+    cloud.put({ [archive]: null, [restoredCard]: restored, [removed]: null })
+    const restoredAt = cloud.head
+    assert.deepEqual(await sync(), { ok: true, value: undefined })
+    assert.equal(read(restoredCard), restored)
+    assert.equal(read(`.sync/restored/${restoredAt}/${archive}`), 'Unsent archive draft\n')
+    assert.ok(!fs.existsSync(path.join(board(), archive)))
+    assert.ok(!fs.existsSync(path.join(board(), removed)))
+    assert.equal(base().deleted[`projects/prj_1/${removed}`], restoredAt)
+    assert.equal(readHead(ws), restoredAt)
+
+    const remote = noteBase.replace('Last', 'Cloud edit')
+    const draft = noteBase.replace('First', 'Local edit')
+    cloud.task.artifacts.get('art_1')!.push(Buffer.from('hero-2'))
+    const refs = JSON.parse(cloud.file('assets/task_1.json')!)
+    refs['hero.png'].version = 2
+    cloud.put({ [note]: remote, [CARD]: BODY + 'New board copy\n', 'assets/task_1.json': JSON.stringify(refs) })
+    // Exercise the inbound rules even when the task has already sent its edits.
+    cloud.beforeNextBoardRead = () => local(note, draft)
+    const calls = cloud.log.length
+    assert.deepEqual(await sync(), { ok: true, value: undefined })
+    assert.equal(read(note), draft)
+    assert.equal(base().files[`projects/prj_1/${note}`].content, noteBase)
+    assert.equal(read(CARD), BODY + 'New board copy\n')
+    assert.equal(readHead(ws), restoredAt)
+    assert.equal(read('todo/hero.png'), entry === 'background' ? 'hero-1' : 'hero-2')
+    assert.equal(cloud.log.slice(calls).includes('GET /v1/tasks/task_1/studio'), entry === 'task')
+
+    // An identical local copy is acknowledged, and a draft outside the delta cannot hold the cursor.
+    local(note, noteBase)
+    cloud.beforeNextBoardRead = () => {
+      local(note, remote)
+      local('memory/scratch.md', 'Unsent draft\n')
+    }
+    assert.deepEqual(await sync(), { ok: true, value: undefined })
+    assert.equal(readHead(ws), cloud.head)
+    assert.equal(read(note), remote)
+    assert.equal(read('memory/scratch.md'), 'Unsent draft\n')
+    assert.equal(cloud.file('memory/scratch.md'), null)
+
+    const beforeConflict = readHead(ws)
+    const cloudEdit = remote.replace('First', 'Cloud conflict')
+    const localEdit = remote.replace('First', 'Local conflict')
+    fs.rmSync(path.join(board(), 'memory/scratch.md'))
+    cloud.put({ [note]: cloudEdit, [CARD]: BODY + 'Held until resolution\n' })
+    cloud.beforeNextBoardRead = () => local(note, localEdit)
+    const conflict = await sync()
+    assert.equal(!conflict.ok && conflict.code, 'board_content_conflict')
+    assert.equal(readHead(ws), beforeConflict)
+    assert.equal(read(note), localEdit)
+    assert.equal(read(CARD), BODY + 'New board copy\n')
+    const [saved] = pendingConflicts(board())
+    assert.ok(saved)
+    assert.deepEqual(saved.files.map(file => [file.path, file.base.content, file.local.content, file.remote.content, file.reason]),
+      [[note, remote, localEdit, cloudEdit, 'both-modified']])
+  })
 
   it('pairs Office previews with the uploaded source version and preserves failed originals (#907)', { skip: process.platform === 'win32' }, async (t) => {
     await mockOffice(t)
@@ -2165,7 +2764,7 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(cloud.akbContract, AKB_CONTRACT)
   })
 
-  it('reads the task’s studio version once into this machine’s copy, and places none of its agents (#409)', async () => {
+  it('reads the latest Studio for each task run and leaves its agents off the board (#1039)', async () => {
     // Agents a Runner before #409 placed: an untouched one goes, a hand-edited one stays.
     fs.mkdirSync(path.join(board(), 'agents', 'old'), { recursive: true })
     fs.mkdirSync(path.join(board(), '.sync'), { recursive: true })
@@ -2182,10 +2781,20 @@ describe('a task’s folder (#2037)', () => {
     assert.ok(!fs.existsSync(path.join(board(), 'agents', 'software-planner')), 'a studio agent was placed on the board')
     assert.ok(!fs.existsSync(path.join(board(), 'agents', 'old', 'AGENT.md')), 'an agent an earlier Runner placed stayed')
     assert.equal(read('agents/old/notes.md'), 'Edited.')
-    assert.doesNotMatch(planned[0]!.prompt, /^Studio:/m)
+    assert.match(planned[0]!.prompt, /^Studio: .+\. Read `akb raw file wf-own STUDIO.md`/m)
 
-    await runTask('j2')
-    assert.equal(cloud.log.filter((l) => l === 'GET /v1/tasks/task_1/studio').length, 1, 'the pinned version was read again')
+    const studio = cloud.task.studio!
+    cloud.task.studio = { ...studio, version: 3, files: { ...studio.files, 'references/planning.md': 'Plan the update.' } }
+    const next = await runTask('j2')
+    assert.equal(next.outcome, 'done', next.reason)
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(held, 'tasks', 'task_1.json'), 'utf8')), { studio: 'wf_own', version: 3 })
+    fs.mkdirSync(path.join(board(), 'todo'), { recursive: true })
+    fs.writeFileSync(path.join(board(), 'config.md'), '# Configuration\n')
+    const studioFile = await runAkb(bundledAkb(process.env.RUNNER_DIST!), ['studio', 'file', 'wf-own', 'references/planning.md'], {
+      cwd: cached(), board: board(), task: 'task_1', env: { AI4KANBAN_STUDIOS: '' },
+    })
+    assert.equal(studioFile.code, 0, studioFile.last)
+    assert.equal(studioFile.out.trim(), 'Plan the update.')
 
     delete cloud.task.studio
     assert.equal((await runTask('j3', '', { studio: null })).outcome, 'done', 'a task with no studio failed')
@@ -2267,40 +2876,35 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(commits().length, 0, 'the index went up')
   })
 
-  it('writes a studio’s skills into the project, only when they changed, and leaves the project’s own (#2030)', async () => {
-    const skill = (root: string, file: string) => path.join(cached(), root, 'skills', file)
-    fs.mkdirSync(path.dirname(skill('.claude', 'mine/SKILL.md')), { recursive: true })
-    fs.writeFileSync(skill('.claude', 'mine/SKILL.md'), 'my own')
-    const version = (n: number, skills: Record<string, string>) => {
-      cloud.task.studio = { studio: 'wf_builtin_coding', version: n, builtin: true, files: {
-        'STUDIO.md': 'x',
-        'skills/mine/SKILL.md': 'not yours',
-        'skills/kanban/SKILL.md': 'not the board’s',
-        ...skills,
-      } }
+  it('clears only unchanged files recorded by legacy Studio skill placement', async () => {
+    const skills = (root: string, file: string) => path.join(cached(), root, 'skills', file)
+    const placed = [
+      ['.claude', 'deck/SKILL.md', 'Legacy skill'],
+      ['.agents', 'deck/SKILL.md', 'User-edited skill'],
+      ['.agents', 'deck/notes.md', 'User-added notes'],
+      ['.claude', 'mine/SKILL.md', 'Project skill'],
+    ]
+    for (const [root, file, text] of placed) {
+      const target = skills(root!, file!)
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.writeFileSync(target, text!)
     }
-    version(2, { 'skills/deck/SKILL.md': 'Make decks.', 'skills/deck/scripts/run.mjs': 'export {}' })
-    await runTask('j1')
-    for (const r of ['.claude', '.agents']) {
-      assert.equal(fs.readFileSync(skill(r, 'deck/SKILL.md'), 'utf8'), 'Make decks.')
-      assert.equal(fs.readFileSync(skill(r, 'deck/scripts/run.mjs'), 'utf8'), 'export {}')
+    const sync = path.join(board(), '.sync')
+    fs.mkdirSync(sync, { recursive: true })
+    fs.writeFileSync(path.join(sync, 'task_1.json'), JSON.stringify({
+      assets: {},
+      tools: { skills: { 'skills/deck/SKILL.md': crypto.createHash('sha256').update('Legacy skill').digest('hex') } },
+    }))
+    cloud.task.studio = { studio: 'wf_builtin_coding', version: 2, builtin: true, files: {
+      'STUDIO.md': '---\nname: Coding\n---\n\nWork on the task.',
+      'skills/deck/SKILL.md': '---\nname: deck\ndescription: Make decks.\n---\n\nPrepare a deck.',
+    } }
+    const job = await runTask('j1')
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(fs.existsSync(skills('.claude', 'deck')), false)
+    for (const [root, file, text] of placed.slice(1)) {
+      assert.equal(fs.readFileSync(skills(root!, file!), 'utf8'), text)
     }
-    assert.equal(fs.readFileSync(skill('.claude', 'mine/SKILL.md'), 'utf8'), 'my own')
-    assert.ok(!fs.existsSync(skill('.agents', 'mine')), 'a skill the project holds was written beside it')
-    assert.ok(!fs.existsSync(skill('.claude', 'kanban')), 'the kanban skill was replaced')
-    assert.equal(spawnSync('git', ['-C', cached(), 'status', '--porcelain', '--', '.agents'], { encoding: 'utf8' }).stdout, '', 'a skill reached git')
-
-    const stamp = fs.statSync(skill('.claude', 'deck/SKILL.md')).mtimeMs
-    await runTask('j2')
-    assert.equal(fs.statSync(skill('.claude', 'deck/SKILL.md')).mtimeMs, stamp, 'an unchanged skill was rewritten')
-
-    // The task moved onto a newer version.
-    version(3, { 'skills/slides/SKILL.md': 'Slides.' })
-    fs.rmSync(path.join(runnerHome(), 'studios', 'tasks', 'task_1.json'))
-    await runTask('j3')
-    assert.equal(fs.readFileSync(skill('.agents', 'slides/SKILL.md'), 'utf8'), 'Slides.')
-    assert.ok(!fs.existsSync(skill('.claude', 'deck')), 'a skill the version dropped stayed')
-    assert.equal(fs.readFileSync(skill('.claude', 'mine/SKILL.md'), 'utf8'), 'my own')
   })
 
   it('writes back every file the job changed in one call, on the seq each was read at', async () => {
@@ -2867,6 +3471,33 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(unsent(cached()), false)
   })
 
+  it('holds a malformed card draft while the rest of the board syncs', async () => {
+    const other = 'todo/2-task-2.md'
+    const header = '---\ntitle: Example\nstudio: coding\nstatus: ready\n---\n'
+    const valid = header + '\n## Todo\n- [ ] Build\n'
+    cloud.put({ [CARD]: valid, [other]: valid })
+    await prepareBoard()
+    cloud.previewProblems = (file, content) => {
+      const relative = file.replace(/^projects\/[^/]+\//, '')
+      return numberOfCard(relative) === null ? [] : newCardWriteProblems(relative, content, cloud.file(relative), { studio: 'coding' })
+    }
+    const draft = valid.replace('studio: coding\n', '')
+    fs.writeFileSync(path.join(board(), CARD), draft)
+    fs.writeFileSync(path.join(board(), other), valid + '\nAnother change.\n')
+    const refused = await pushBoard(keptBoard(cached())!, MACHINE)
+    assert.equal(refused.ok, false)
+    if (!refused.ok) assert.match(refused.error, /Expected studio: coding/)
+    assert.equal(cloud.file(CARD), valid)
+    assert.equal(read(CARD), draft)
+    assert.match(cloud.file(other)!, /Another change/)
+    assert.ok(unsent(cached()))
+
+    fs.writeFileSync(path.join(board(), CARD), valid + '\nRepaired.\n')
+    assert.equal((await pushBoard(keptBoard(cached())!, MACHINE)).ok, true)
+    assert.match(cloud.file(CARD)!, /Repaired/)
+    assert.equal(unsent(cached()), false)
+  })
+
   it('keeps invalid active and archived Preview drafts while a different task creates, resumes and uploads results (#880)', async () => {
     const archived = '.archive/3-old.md'
     const moved = '.archive/1-task-1.md'
@@ -3050,36 +3681,110 @@ describe('a task’s folder (#2037)', () => {
     assert.deepEqual(refs['data.bin'], refs['./data.bin'])
   })
 
-  it('automatically resumes task preparation after repeated attachment 503s and a board timeout (#892)', async () => {
+  it('stops after four attachment retries and offers safe manual recovery (#1057)', async () => {
     await prepareBoard()
+    planned.length = 0
     fs.writeFileSync(path.join(board(), 'todo/hero.png'), 'local edit')
     cloud.serviceUnavailableUploads = true
     const delays: number[] = []
-    start('', { syncBackoff: attempt => { delays.push(syncBackoff(attempt)); return 25 } })
-    const job = cloud.dispatch({ id: 'sync-before-reply', task: 'task_1', project: 'prj_1', number: 1,
-      chat: { message: 'm1', body: 'Explain this' } })
-    await until(() => delays.length >= 11 && job.events.some(e => e.data?.source === 'sync' && e.data.state === 'retrying'))
-    assert.equal(job.state, 'claimed')
+    start('', { syncBackoff: attempt => { delays.push(syncBackoff(attempt)); return 5 } })
+    const input = { task: 'task_1', project: 'prj_1', number: 1, chat: { message: 'm1', body: 'Explain this' } }
+    const job = cloud.dispatch({ id: 'sync-before-reply', ...input })
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'failed')
     assert.equal(planned.length, 0)
-    assert.equal(cloud.task.artifacts.get('art_1')!.length, 1)
-    assert.deepEqual(delays.slice(0, 11), [1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000, 300000, 300000])
-    cloud.boardTimeouts = 1
+    assert.deepEqual(delays, [1000, 2000, 4000, 8000])
+    assert.equal(job.report?.failure?.pauseReason, 'limit')
+    assert.equal(job.report?.failure?.attempt, 4)
+    assert.equal(job.report?.failure?.history.length, 5)
+    assert.match(job.reason!, /Cloud is not answering/)
+    assert.equal(job.report?.recovery?.safe, true)
+    assert.deepEqual(cloud.task.artifacts.get('art_1')!.map(b => b.toString()), ['hero-1'])
+
     cloud.serviceUnavailableUploads = false
+    const manual = cloud.dispatch({ id: 'manual-sync-before-reply', ...input, recoveryOf: job.id, manualRecovery: true, retryReplay: true })
+    await until(() => manual.state === 'finished')
+    assert.equal(manual.outcome, 'done', manual.reason)
+    assert.equal(planned.length, 1)
+    assert.deepEqual(cloud.task.artifacts.get('art_1')!.map(b => b.toString()), ['hero-1', 'local edit'])
+  })
+
+  it('shares retry slots across preparation, Runner restart and session continuation (#1057)', async () => {
+    let preflight = 0
+    let launches = 0
+    const plan: Deps['plan'] = (...args) => {
+      launches++
+      const p = fakeRuntime('process.exit(1)')(...args)
+      p.renderer!.events = () => []
+      p.renderer!.executionFailure = () => disconnect
+      return p
+    }
+    const first = start('', { authorize: async () => ++preflight <= 2
+      ? { ok: false, code: 'service_unavailable', error: 'Cloud returned 503.', status: 503 } : true,
+      plan, syncBackoff: attempt => attempt === 1 ? 0 : 250 })
+    const job = cloud.dispatch({ id: 'mixed-preparation-and-ai', chat: { message: 'm1', body: 'Continue' } })
+    await until(() => readCheckpoint(job.id)?.syncRetries?.authorize?.attempt === 2)
+    await first.close()
+    assert.equal(launches, 0)
+    start('', { authorize: async () => true, plan, syncBackoff: () => 0 })
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'failed')
+    assert.deepEqual(planned.map(p => p.resume), [null, 'fresh-session', 'fresh-session'])
+    assert.equal(job.report?.failure?.attempt, 4)
+    assert.equal(job.report?.failure?.pauseReason, 'limit')
+    assert.deepEqual(job.report?.failure?.history.map(f => f.source), ['sync', 'sync', 'runtime', 'runtime', 'runtime'])
+  })
+
+  it('shares image upload retries with preparation and preserves the completed reply (#1057)', async () => {
+    let preflight = 0
+    let uploads = 0
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2Kp0AAAAASUVORK5CYII='
+    start('', {
+      authorize: async () => ++preflight === 1 ? { ok: false, status: 503, error: 'Cloud preparation failed.' } : true,
+      syncBackoff: () => 0,
+      api: { ...api, uploadReplyImage: async () => ++uploads <= 3
+        ? { ok: false, status: 503, error: 'Image upload failed.' }
+        : { ok: true, value: { status: 'saved', id: 'rim_saved' } } },
+      plan: (...args) => {
+        const planned = fakeRuntime('')(...args)
+        planned.converse = async () => ({ ok: true, result: 'Saved reply.', replyParts: [
+          { type: 'text', text: 'Saved reply.' }, { type: 'image', data: png },
+        ] })
+        return planned
+      },
+    })
+    const job = cloud.dispatch({ id: 'reply-image-shared-budget', chat: { message: 'm1', body: 'Render an image' } })
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'done', job.reason)
     assert.equal(planned.length, 1)
-    assert.equal(job.claims, 1)
-    assert.ok(job.events.some(e => e.data?.source === 'sync' && e.data.state === 'running'))
-    assert.deepEqual(cloud.task.artifacts.get('art_1')!.map(b => b.toString()), ['hero-1', 'local edit'])
+    assert.equal(uploads, 4)
+    assert.equal(job.report?.reply, 'Saved reply.')
+    assert.deepEqual(job.report?.parts?.find(part => part.type === 'image'), { type: 'image', status: 'saved', id: 'rim_saved', mime: 'image/png' })
+  })
+
+  it('only confirms a completed result after losing the finish response (#1057)', async () => {
+    let writes = 0
+    const job = cloud.dispatch({ id: 'finish-applied-once', chat: { message: 'm1', body: 'Continue' } })
+    start('', { api: { ...api, finishJob: async (...args) => {
+      if (args[1] !== job.id || args[2] !== 'done') return api.finishJob(...args)
+      writes++
+      const applied = await api.finishJob(...args)
+      assert.ok(applied.ok && applied.value.finished)
+      return { ok: false, error: 'Lost the server response.' }
+    } } })
+    await until(() => job.state === 'finished' && readCheckpoint(job.id) === null)
+    assert.equal(job.outcome, 'done')
+    assert.equal(writes, 1)
+    assert.equal(planned.length, 1)
   })
 
   it('runs unrelated tasks and cancels a task waiting for attachments on the same board (#892)', async () => {
     await prepareBoard()
     fs.writeFileSync(path.join(board(), 'todo/hero.png'), 'unsent edit')
     cloud.serviceUnavailableUploads = true
-    start('', { syncBackoff: () => 300_000 })
+    start('', { syncBackoff: () => 90_000 })
     const blocked = cloud.dispatch({ id: 'blocked-sync', task: 'task_1', project: 'prj_1', number: 1 })
-    await until(() => !!readCheckpoint(blocked.id)?.syncRetry)
+    await until(() => !!readCheckpoint(blocked.id)?.syncRetries?.prepare)
     cloud.put({ 'todo/2-other.md': '# Other' })
     const other = cloud.dispatch({ id: 'independent', task: 'task_2', project: 'prj_1', number: 2 })
     await until(() => other.state === 'finished')
@@ -3098,7 +3803,7 @@ describe('a task’s folder (#2037)', () => {
     const current = start("require('fs').writeFileSync('.akb/kanban/todo/hero.png', 'new image')",
       { syncBackoff: () => 1_000 })
     const job = cloud.dispatch({ id: 'publish-after-restart', task: 'task_1', project: 'prj_1', number: 1 })
-    await until(() => !!readCheckpoint(job.id)?.syncRetry)
+    await until(() => !!readCheckpoint(job.id)?.syncRetries?.publish)
     assert.equal(readCheckpoint(job.id)?.completed?.outcome, 'done')
     assert.equal(cloud.task.artifacts.get('art_1')!.length, 2)
     await current.close()
@@ -3666,7 +4371,7 @@ describe('a task’s folder (#2037)', () => {
     })
     cloud.failArtifactRead = 'art_json'
     const waiting = runTask('j1')
-    await until(() => !!readCheckpoint('j1')?.syncRetry)
+    await until(() => !!readCheckpoint('j1')?.syncRetries?.prepare)
     assert.equal(fs.existsSync(path.join(board(), 'todo/data.json')), false)
     assert.equal(fs.existsSync(path.join(board(), '.sync/task_1.json')), false)
     cloud.failArtifactRead = null
@@ -3798,6 +4503,98 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(linked.outcome, 'done', linked.reason)
     assert.equal(JSON.parse(cloud.file('assets/task_1.json')!)['bad.json'].error, 'link outside the board: bad.json')
     assert.equal(cloud.log.filter(l => l.startsWith('PUT /v1/uploads/')).length, 0)
+  })
+
+  for (const interruption of ['upload', 'references']) it(`retries reply Preview writeback after a failed ${interruption}`, async () => {
+    const screen = '.assets/1/screen.png'
+    const page = '.assets/1/page.html'
+    const detail = '.assets/1/detail.svg'
+    const retained = '.assets/1/approved.png'
+    const body = `# Design
+
+<Preview id="ui-design">
+
+Old design
+
+<Asset src="${screen}" />
+
+<Asset src="${page}" />
+
+</Preview>
+
+<Preview id="api-docs">
+
+<Asset src="${retained}" />
+
+</Preview>
+`
+    const refs = 'assets/task_1.json'
+    cloud.types.set('art_page', 'html')
+    cloud.types.set('art_detail', 'image')
+    cloud.task.artifacts.set('art_2', [Buffer.from('approved image')])
+    cloud.task.artifacts.set('art_page', [Buffer.from('<img src="art_detail">')])
+    cloud.task.artifacts.set('art_detail', [Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><title>Old</title></svg>')])
+    const before = { [screen]: { artifact: 'art_1', version: 1 },
+      [page]: { artifact: 'art_page', version: 1, dependencies: [detail] }, [detail]: { artifact: 'art_detail', version: 1 },
+      [retained]: { artifact: 'art_2', version: 1 } }
+    cloud.put({ [CARD]: body, [refs]: JSON.stringify(before) })
+    await prepareBoard()
+    const assets = path.join(projectStateDir(board()), 'assets/1')
+    const next = body.replace('Old design', 'Updated design')
+    const pageSource = '<img src="detail.svg"><button>Interactive Preview</button>'
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><title>Current</title></svg>'
+    const gate = path.join(runnerHome(), 'edit-preview')
+    const edit = `
+      const fs = require('fs')
+      const timer = setInterval(() => {
+        if (!fs.existsSync(${JSON.stringify(gate)})) return
+        clearInterval(timer)
+        fs.writeFileSync(${JSON.stringify(path.join(board(), CARD))}, ${JSON.stringify(next)})
+        fs.writeFileSync(${JSON.stringify(path.join(assets, 'screen.png'))}, 'new screenshot')
+        fs.writeFileSync(${JSON.stringify(path.join(assets, 'page.html'))}, ${JSON.stringify(pageSource)})
+        fs.writeFileSync(${JSON.stringify(path.join(assets, 'detail.svg'))}, ${JSON.stringify(svg)})
+        fs.rmSync(${JSON.stringify(path.join(assets, 'approved.png'))})
+      }, 15)
+    `
+    const release = () => { cloud.serviceUnavailableUploads = false; cloud.boardWritesUnavailable = false }
+    const target = { task: 'task_1', project: 'prj_1', number: 1, chat: { message: 'msg_1117', body: 'Update the Preview' } }
+    start(edit, { syncBackoff: () => 0, api: { ...api, finishJob: async (...args) => {
+      if (args[2] === 'done' && args[1] === 'preview-retry') {
+        const pins = JSON.parse(cloud.file(refs)!)
+        assert.equal(cloud.file(CARD), next)
+        assert.deepEqual(pins[page].dependencies, [detail])
+        assert.deepEqual(pins[retained], before[retained])
+        for (const [src, value] of [[screen, 'new screenshot'], [detail, svg]]) {
+          const pin = pins[src!]!
+          assert.equal(pin.version, 2)
+          assert.equal(cloud.task.artifacts.get(pin.artifact)![pin.version - 1]!.toString(), value)
+        }
+        assert.equal(args[4]?.replyWriteSynced, true)
+      }
+      return api.finishJob(...args)
+    } } })
+    try {
+      // Fail after preparation so this exercises the reply's result writeback.
+      const job = cloud.dispatch({ id: 'preview-init', ...target })
+      await until(() => planned.length === 1)
+      if (interruption === 'upload') cloud.serviceUnavailableUploads = true
+      else cloud.boardWritesUnavailable = true
+      fs.writeFileSync(gate, '')
+      await until(() => job.state === 'finished')
+      assert.equal(job.outcome, 'failed', job.reason)
+      assert.deepEqual(job.report?.recovery, { safe: false, stopped: true, resumable: true, writeback: true })
+      assert.equal(job.report?.replyWriteSynced, undefined)
+      assert.equal(cloud.file(CARD), body)
+      assert.deepEqual(JSON.parse(cloud.file(refs)!), before)
+      assert.equal(read(CARD), next)
+      assert.equal(readCheckpoint(job.id)?.completed?.outcome, 'done')
+      release()
+      const retry = cloud.dispatch({ id: 'preview-retry', ...target, manualRecovery: true, recoveryOf: job.id })
+      await until(() => retry.state === 'finished')
+      assert.equal(retry.outcome, 'done', retry.reason)
+      assert.equal(planned.length, 1)
+      assert.equal(cloud.task.artifacts.get('art_1')!.length, 2)
+    } finally { release() }
   })
 
   it('sends back assets first, then the card and its assets list', async () => {
@@ -4072,21 +4869,27 @@ describe('a task’s folder (#2037)', () => {
     assert.equal(job.state, 'claimed')
   })
 
-  it('uses current Studio Notes in task replies and recovery, scoped to its board and pinned Studio (#859)', async () => {
-    const note = 'Only during Coding task discussion: titles in English, rest in Chinese.'
-    cloud.put({ 'rules/studios/wf-own.md': note, 'rules/studios/coding.md': 'Other Studio note' })
+  it('loads Studio configuration in replies and recovery, with project defaults and legacy notes (#1043)', async () => {
+    const note = 'Use the existing layout.'
+    const config = 'rules/studios/wf-own/config.md'
+    const defaults = 'rules/config.md'
+    cloud.put({ [defaults]: 'Project default.', 'rules/studios/wf-own.md': note, 'rules/studios/coding/config.md': 'Other Studio note' })
     assert.equal((await runTask('notes-1')).outcome, 'done')
-    assert.ok(planned.at(-1)!.prompt.includes(`<rules>\n${note}\n</rules>`))
+    assert.ok(planned.at(-1)!.prompt.includes(note))
+    assert.ok(planned.at(-1)!.prompt.includes('Project default.'))
     assert.ok(!planned.at(-1)!.prompt.includes('Other Studio note'))
-    cloud.put({ 'rules/studios/wf-own.md': 'Revised note' })
+    cloud.put({ [config]: 'Revised note', 'rules/studios/wf-own.md': null })
     assert.equal((await runTask('notes-2', '', { resume: 'saved-session' })).outcome, 'done')
     assert.ok(planned.at(-1)!.prompt.includes('Revised note'))
     assert.ok(!planned.at(-1)!.prompt.includes(note))
     const ws = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, cloud.folder!('prj_1'))
     assert.ok(!taskStudioContext({ ...ws, board: path.join(cached(), 'other-board') }).includes('Revised note'))
-    cloud.put({ 'rules/studios/wf-own.md': null })
+    assert.match(taskStudioContext(ws), /akb studio file wf-own <path>/)
+    assert.match(taskStudioContext(ws, { docs: false, canonicalCommands: false }), /akb raw file wf-own <path>/)
+    cloud.put({ [config]: '', 'rules/studios/wf-own.md': note })
     assert.equal((await runTask('notes-3')).outcome, 'done')
     assert.ok(!planned.at(-1)!.prompt.includes('Revised note'))
+    assert.ok(!planned.at(-1)!.prompt.includes(note))
   })
 
   it('round-trips Preview scopes and reads them again in a recovered task (#842)', async () => {
@@ -4456,7 +5259,8 @@ describe('flow jobs (#2020)', () => {
     process.env.FAKE_AKB = JSON.stringify({ implement: { delivery: null, writes: { 'memory/progress.md': 'Saved progress.' } } })
     const job = await flowJob('j918', { verb: 'create', review_stages: [] }, { taskReview })
     assert.equal(job.outcome, 'done', job.reason)
-    assert.equal(job.report?.deliveryCompleted, false)
+    assert.equal(job.report?.deliveryCompleted, true)
+    assert.equal(job.report?.deliveryDirect, true)
     assert.match(cloud.file('todo/2-pricing-page.md')!, /implement$/m)
     assert.equal(cloud.file('memory/progress.md'), 'Saved progress.')
     assert.equal(cardCalls().length, 1)
@@ -4504,6 +5308,24 @@ describe('flow jobs (#2020)', () => {
     })
   })
 
+  it('runs the dispatched stage when a newer draft changes its review prerequisites', async () => {
+    cloud.put({ 'todo/2-pricing.md': readyCard })
+    const approved = { id: 'a', status: 'approved' as const, revision: 3, snapshot: {} }
+    const taskReview = makeReview(stagePlan, [approved, available])
+    cloud.task.review = { ...taskReview, revision: 4, stages: [
+      { ...approved, status: 'available', revision: 4, snapshot: null },
+      { ...available, status: 'blocked', revision: 4 },
+    ] }
+    const job = await flowJob('draft-updated', { verb: 'refine', review_stages: ['b'], review_revision: 3 }, {
+      taskReview, reviewAtDispatch: true,
+    })
+    assert.equal(job.outcome, 'done', job.reason)
+    assert.deepEqual(cardCalls(), [`card refine 2 --follow --events --json --board ${board()}`])
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(board(), '.fake/review-context.json'), 'utf8')), {
+      review: taskReview, assigned: ['b'],
+    })
+  })
+
   for (const status of ['blocked', 'available'] as const) {
     it(`refuses execution when an assigned stage was revised to ${status} before launch`, async () => {
       cloud.put({ 'todo/2-pricing.md': readyCard })
@@ -4529,59 +5351,79 @@ describe('flow jobs (#2020)', () => {
     assert.deepEqual(cardCalls(), [])
   })
 
-  it('stages the frozen UI files for delivery and uses the latest approval on resume', async () => {
-    const card = 'todo/2-pricing.md'
+  function useCustomStudio() {
+    const files = { 'STUDIO.md': '---\nname: Custom\n---\n\nDeliver the requested work.' }
+    cloud.studios.wf_custom = files
+    cloud.task.studio = { studio: 'wf_custom', version: 1, builtin: false, files }
+  }
+
+  it('stages separate frozen versions for a custom Studio through delivery and resume', async () => {
+    useCustomStudio()
+    const flow = { studio: 'wf_custom', verb: 'implement', review_stages: [] }
     const src = '.assets/2/pages/screen.html'
+    const alternate = '.assets/2/pages/mobile.html'
     const css = '.assets/2/styles/main.css'
     const theme = '.assets/2/styles/theme/colors.css'
     const image = '.assets/2/images/cover photo.svg'
-    const contract = '.assets/2/contract.md'
-    const body = `<Asset src="${src}" label="Pricing" device="desktop" />`
+    const body = `<Asset src="${src}" device="desktop" variants='{"Mobile":"${alternate}"}' />`
     const pins = (version: number | undefined) => ({
       [src]: { artifact: 'art_page', version: 1 },
+      [alternate]: { artifact: 'art_mobile', version: 1 },
       [css]: { artifact: 'art_css', version: 1 },
       [theme]: { artifact: 'art_theme', version: 1 },
       [image]: { artifact: 'art_image', version },
     })
     const taskReviewAt = (revision: number, version: number | undefined) => ({
-      ...makeReview([{ id: 'b', after: [], previews: ['ui-design', 'api-docs'] }], [{
-        id: 'b', status: 'approved', revision, snapshot: {
-          evidence: { content: { 'ui-design': { body } }, assets: { [src]: pins(version)[src] }, dependencies: pins(version) },
-        },
-      }]), revision,
+      ...makeReview([{ id: 'first', after: [], previews: ['legacy-output'] }, { id: 'second', after: ['first'], previews: ['custom-output'] }], [
+        { id: 'first', status: 'approved', revision: 2, snapshot: {
+          body: `<Preview id="legacy-output">\n<Asset src="${image}" />\n</Preview>`,
+          previews: [{ id: 'legacy-output', assets: { [image]: pins(2)[image] } }],
+        } },
+        { id: 'second', status: 'approved', revision, snapshot: {
+          evidence: { content: { 'custom-output': { body } }, dependencies: pins(version) },
+        } },
+      ]), revision,
     })
     const taskReview = taskReviewAt(3, 1)
     for (const [id, versions] of Object.entries({
       art_page: ['<link rel="stylesheet" href="art_css"><img src="../images/cover photo.svg#detail">', 'Draft HTML'],
+      art_mobile: ['<img src="art_image">'],
       art_css: ['@import "art_theme";', 'Draft CSS'],
       art_theme: ['body { background-image: url(art_image); }', 'Draft theme'],
-      art_image: ['Approved image', 'Draft image', 'Approved again'],
-      art_contract: ['Saved contract'],
+      art_image: ['Approved image', 'Earlier approval', 'Approved again'],
     })) cloud.task.artifacts.set(id, versions.map(text => Buffer.from(text)))
     cloud.task.previewInputs = {
-      sections: {
-        'ui-design': { body: 'Unapproved draft', sources: [src, css, theme, image] },
-        'api-docs': { body: `<Asset src="${contract}" />`, sources: [contract] },
-      },
-      assets: { ...pins(2), [css]: { artifact: 'art_css', version: 2 }, [contract]: { artifact: 'art_contract', version: 1 } },
+      sections: { 'custom-output': { body: 'Unapproved draft', sources: [src] } },
+      assets: { ...pins(2), [src]: { artifact: 'art_page', version: 2 }, [css]: { artifact: 'art_css', version: 2 } },
     }
     cloud.task.review = taskReview
-    cloud.put({ [card]: readyCard + '\nCurrent draft.' })
+    cloud.put({ 'todo/2-pricing.md': readyCard })
     process.env.FAKE_AKB = JSON.stringify({ implement: { failed: 'Interrupted', delivery: { id: 'd1' } } })
-    const failed = await flowJob('approved-start', { verb: 'implement', review_stages: [] }, { taskReview })
+    const failed = await flowJob('approved-start', flow, { taskReview })
     assert.equal(failed.outcome, 'failed')
-    const staged = () => JSON.parse(fs.readFileSync(path.join(board(), '.fake/approved-ui.json'), 'utf8'))
-    const files = (revision: number, approvedImage: string) => Object.fromEntries(Object.entries({
-      [src]: '<link rel="stylesheet" href="../styles/main.css"><img src="../images/cover%20photo.svg#detail">',
-      [css]: '@import "theme/colors.css";',
-      [theme]: 'body { background-image: url(../../images/cover%20photo.svg); }',
-      [image]: approvedImage,
-    }).map(([name, text]) => [`review-${revision}-0/ui-design/files-0/${name}`, text]))
-    assert.deepEqual(staged().files, files(3, 'Approved image'))
-    const saved = JSON.parse(fs.readFileSync(path.join(board(), '.fake/saved-previews.json'), 'utf8'))
-    assert.match(saved.files['previews.md'], /api-docs/)
-    assert.doesNotMatch(saved.files['previews.md'], /Unapproved draft|ui-design/)
-    assert.equal(fs.existsSync(staged().directory), false)
+    const staged = () => JSON.parse(fs.readFileSync(path.join(board(), '.fake/saved-previews.json'), 'utf8'))
+    const check = (revision: number, approvedImage: string) => {
+      const { files, directory } = staged()
+      const manifest = files['previews.md']
+      assert.match(manifest, /first · approved · legacy-output/)
+      assert.match(manifest, /second · approved · custom-output/)
+      assert.doesNotMatch(manifest, /Unapproved draft/)
+      delete files['previews.md']
+      const stable = path.join(projectStateDir(board()), 'assets/2/images/cover photo.svg')
+      assert.equal(fs.readFileSync(stable, 'utf8'), 'Earlier approval')
+      const first = manifest.split('## second')[0]!
+      assert.match(first, /art_image, version 2/)
+      assert.ok(first.includes(stable) || files['1/1-cover photo.svg'] === 'Earlier approval')
+      if (revision === 3) assert.match(first, /local file:/)
+      const contents = (name: string) => Object.entries(files).find(([file]) => file.startsWith('2/') && file.endsWith(name))?.[1]
+      assert.equal(contents('cover photo.svg'), approvedImage)
+      assert.match(String(contents('screen.html')), /rel="stylesheet" href="\d+-main.css".*src="\d+-cover%20photo.svg#detail"/)
+      assert.match(String(contents('main.css')), /@import "\d+-colors.css"/)
+      assert.match(String(contents('colors.css')), /url\(\d+-cover%20photo.svg\)/)
+      assert.match(String(contents('mobile.html')), /src="\d+-cover%20photo.svg"/)
+      assert.equal(fs.existsSync(directory), false)
+    }
+    check(3, 'Approved image')
 
     fs.writeFileSync(path.join(board(), '.fake/runs.json'), JSON.stringify([{
       sessionId: 'old-build', cardId: 2, action: 'implement', status: 'stopped',
@@ -4590,13 +5432,15 @@ describe('flow jobs (#2020)', () => {
     const before = calls().filter(c => c[0] === 'delivery' && c[1] === 'resume').length
     for (const version of [undefined, 4]) {
       cloud.task.review = taskReviewAt(6, version)
-      const missing = await flowJob(`missing-approved-file-${version}`, { verb: 'implement', resume: true, review_stages: [] }, { taskReview })
+      const missing = await flowJob(`missing-approved-file-${version}`, { ...flow, resume: true }, { taskReview })
       assert.equal(missing.outcome, 'failed')
       assert.ok(missing.reason?.includes(image), missing.reason)
-      assert.match(missing.reason ?? '', version ? /version 4/ : /Missing approved asset version/)
+      assert.match(missing.reason ?? '', version ? /version 4/ : /invalid saved review evidence/)
     }
-    cloud.task.review = makeReview(taskReview.plan, [{ id: 'b', status: 'available', revision: 7, snapshot: null }])
-    const revoked = await flowJob('revoked-ui', { verb: 'implement', resume: true, review_stages: [] }, { taskReview })
+    cloud.task.review = { ...taskReview, revision: 7, stages: [
+      taskReview.stages[0]!, { id: 'second', status: 'available', revision: 7, snapshot: null },
+    ] }
+    const revoked = await flowJob('revoked', { ...flow, resume: true }, { taskReview })
     assert.equal(revoked.outcome, 'failed')
     assert.match(revoked.reason ?? '', /Finish the agreed review stages/)
     assert.equal(calls().filter(c => c[0] === 'delivery' && c[1] === 'resume').length, before)
@@ -4604,46 +5448,80 @@ describe('flow jobs (#2020)', () => {
     cloud.task.previewInputs = undefined
     process.env.FAKE_AKB = '{}'
     cloud.task.review = taskReviewAt(8, 1)
-    const resumed = await flowJob('approved-resume', { verb: 'implement', resume: true, review_stages: [] }, { taskReview })
+    const resumed = await flowJob('approved-resume', { ...flow, resume: true }, { taskReview })
     assert.equal(resumed.outcome, 'done', resumed.reason)
-    assert.deepEqual(staged().files, files(8, 'Approved image'))
-    assert.equal(fs.existsSync(staged().directory), false)
+    check(8, 'Approved image')
     assert.ok(calls().some(c => c[0] === 'run' && c[1] === 'resume'), 'the original run was resumed')
 
     cloud.task.review = taskReviewAt(9, 3)
-    const replacement = await flowJob('reapproved', { verb: 'implement', review_stages: [] }, { taskReview })
+    const replacement = await flowJob('reapproved', flow, { taskReview })
     assert.equal(replacement.outcome, 'done', replacement.reason)
-    assert.deepEqual(staged().files, files(9, 'Approved again'))
-    assert.ok(!cloud.log.some(request => /\/art_(page|css|theme|image)\/versions\/2/.test(request)))
+    check(9, 'Approved again')
+    assert.ok(!cloud.log.some(request => /\/art_(page|css|theme)\/versions\/2/.test(request)))
   })
 
-  it('implements the last synced Preview body and exact asset pins after chat updates', async () => {
+  it('uses the last synced body and exact asset pins for an unreviewed direct build', async () => {
+    useCustomStudio()
     const src = '.assets/2/contract.md'
-    const plan = [{ id: 'api', after: [], previews: ['api-docs'] }]
-    const taskReview = makeReview(plan, [{
-      id: 'api', status: 'approved', revision: 3, snapshot: {
-        evidence: { content: { 'api-docs': { body: 'Previous design' } }, assets: { [src]: { artifact: 'art_1', version: 1 } } },
-      },
-    }])
+    const taskReview = makeReview([])
     const body = `<Asset src="${src}" label="New contract" />`
     cloud.task.artifacts.set('art_1', ['previous', 'saved after chat', 'unselected draft'].map(text => Buffer.from(text)))
     cloud.task.review = taskReview
     cloud.task.previewInputs = {
-      sections: { 'api-docs': { body, sources: [src] }, 'ui-design': { body: 'Unrelated Preview', sources: [] } },
+      body: 'Saved requirements',
+      sections: { 'custom-output': { body, sources: [src] } },
       assets: { [src]: { artifact: 'art_1', version: 2 } },
     }
-    cloud.put({
-      'todo/2-pricing.md': readyCard + `\n<Preview id="api-docs">\n\n${body}\n\n</Preview>\n`,
-      'assets/task_1.json': JSON.stringify(cloud.task.previewInputs.assets),
-    })
-    const job = await flowJob('saved-preview', { verb: 'implement', review_stages: [] }, { taskReview })
+    cloud.put({ 'todo/2-pricing.md': readyCard, 'assets/task_1.json': JSON.stringify(cloud.task.previewInputs.assets) })
+    process.env.FAKE_AKB = JSON.stringify({ implement: { delivery: null } })
+    const job = await flowJob('saved-preview', { studio: 'wf_custom', verb: 'implement', review_stages: [] }, { taskReview })
     assert.equal(job.outcome, 'done', job.reason)
+    assert.equal(job.report?.deliveryDirect, true)
     const staged = JSON.parse(fs.readFileSync(path.join(board(), '.fake/saved-previews.json'), 'utf8'))
-    assert.equal(staged.files['1-art_1-2.md'], 'saved after chat')
+    assert.equal(fs.readFileSync(path.join(projectStateDir(board()), 'assets/2/contract.md'), 'utf8'), 'saved after chat')
+    assert.deepEqual(Object.keys(staged.files), ['previews.md'])
+    assert.match(staged.files['previews.md'], /art_1, version 2 · local file:/)
+    assert.match(staged.files['previews.md'], /Saved requirements/)
     assert.match(staged.files['previews.md'], /New contract/)
-    assert.doesNotMatch(staged.files['previews.md'], /Previous design|Unrelated Preview/)
     assert.ok(!cloud.log.some(request => /\/art_1\/versions\/[13](?:\/|$)/.test(request)))
     assert.equal(fs.existsSync(staged.directory), false)
+  })
+
+  it('downloads missing materials on another computer and launches with partial download diagnostics (#1030)', async () => {
+    const page = '.assets/2/page.html'
+    const image = '.assets/2/image.svg'
+    const broken = '.assets/2/broken.md'
+    const noVersion = '.assets/2/latest.md'
+    const unrecorded = '.assets/2/unrecorded.png'
+    const body = `<Asset src="${page}" />\n<Asset src="${broken}" />\n<Asset src="${noVersion}" />`
+    const assets = {
+      [page]: { artifact: 'art_page', version: 1, dependencies: [image, unrecorded] },
+      [image]: { artifact: 'art_image', version: 1 },
+      [broken]: { artifact: 'art_broken', version: 1 },
+      [noVersion]: { artifact: 'art_latest' },
+    }
+    const taskReview = makeReview([{ id: 'content', after: [], previews: ['api-docs'] }], [{
+      id: 'content', status: 'approved', revision: 3, snapshot: { evidence: { content: { 'api-docs': { body } }, assets } },
+    }])
+    cloud.task.artifacts.set('art_page', [Buffer.from('<img src="art_image"><img src="unrecorded.png">')])
+    cloud.task.artifacts.set('art_image', [Buffer.from('<svg/>')])
+    cloud.task.artifacts.set('art_latest', [Buffer.from('Available latest material')])
+    cloud.types.set('art_page', 'html')
+    cloud.failArtifactRead = 'art_broken'
+    cloud.task.previewInputs = { sections: { 'api-docs': { body, sources: Object.keys(assets) } }, assets }
+    cloud.task.review = taskReview
+    cloud.put({ 'todo/2-pricing.md': readyCard, 'assets/task_1.json': JSON.stringify(assets) })
+    const job = await flowJob('partial-materials', { verb: 'implement', review_stages: [] }, { taskReview })
+    assert.equal(job.outcome, 'done', job.reason)
+    const saved = JSON.parse(fs.readFileSync(path.join(board(), '.fake/saved-previews.json'), 'utf8')).files['previews.md']
+    assert.match(saved, /broken.md.*unavailable.*类型读取失败/)
+    assert.match(saved, /latest.md.*local file:.*Missing approved asset version/)
+    assert.match(saved, /unrecorded.png.*unavailable.*Missing asset record/)
+    const local = path.join(projectStateDir(board()), 'assets/2')
+    assert.equal(fs.readFileSync(path.join(local, 'page.html'), 'utf8'), '<img src="image.svg"><img src="unrecorded.png">')
+    assert.equal(fs.readFileSync(path.join(local, 'image.svg'), 'utf8'), '<svg/>')
+    assert.equal(fs.readFileSync(path.join(local, 'latest.md'), 'utf8'), 'Available latest material')
+    assert.equal(cloud.log.filter(request => request === 'GET /v1/artifacts/art_broken').length, 1)
   })
 
   it('publishes a completed flow after the lease lapses without starting the Agent again (#892)', async () => {
@@ -4663,6 +5541,113 @@ describe('flow jobs (#2020)', () => {
     assert.equal(successor.report?.reply, 'Original reply')
     assert.match(cloud.file(card)!, /Saved by the original flow/)
     assert.equal(fs.existsSync(process.env.FAKE_AKB_LOG!), false)
+  })
+
+  for (const outcome of ['done', 'failed', 'stopped'] as const) it(`continues a completed delivery at conflicted writeback (${outcome}) (#1048)`, async () => {
+    const card = 'todo/2-pricing.md'
+    const archive = '.archive/2-pricing.md'
+    const legacy = '.archive/818-goal-task.md'
+    const original = readyCard.replace('questions:', 'priority: med\nblocked_by: []\nrelated: []\nmodules: []\nquestions:') + '\nOriginal scope.\n'
+    const landed = original.replace('questions:', 'archived: 2026-11-22\nquestions:') + '\nSaved delivery.\n\n<Asset src=".assets/2/delivery.txt" />\n'
+    const legacyCard = original.replace('questions:', 'archived: 2026-11-17\npreview_approved: true\nquestions:') +
+      '\n## By `prompt-writer` agent\n\nApproved historical result.\n\n<!-- agent -->\n\n## Scope\n\nLocal history.\n'
+    cloud.put({ 'config.md': '# Board\n', [card]: original })
+    const flow = { studio: 'wf_builtin_coding', verb: 'implement', resume: true } as const
+    const scope = { task: 'task_1', project: 'prj_1', number: 2, runtime: 'claude-code' as const, flow }
+    const prior = cloud.dispatch({ ...scope, id: 'original-delivery', state: 'finished' })
+    const ws = openTaskFolder(scope, prior.projectDir)
+    assert.ok((await pull(ws, MACHINE)).ok)
+    fs.mkdirSync(path.join(ws.board, '.fake'), { recursive: true })
+    fs.mkdirSync(path.join(ws.board, '.archive'), { recursive: true })
+    fs.writeFileSync(path.join(ws.board, '.fake/runs.json'), JSON.stringify([{
+      cardId: 2, sessionId: 'original-thread', action: 'implement', status: 'done', deliveryId: 'd1', harness: 'claude-code',
+      startedAt: Date.now() - 1000, costUsd: 0.5, sessionCostUsd: 0.5,
+    }, { cardId: 2, sessionId: 'different-thread', action: 'implement', status: 'done', deliveryId: 'd2', harness: 'claude-code',
+      startedAt: Date.now() - 500 }]))
+    const commit = 'c'.repeat(40)
+    const report = { card: 2, deliveryCompleted: true, deliveryId: 'd1', landing: { commit, branch: 'main' }, costUsd: 0.5,
+      runtimeCosts: [{ runtimeId: null, runtime: 'claude-code', costUsd: 0.5 }] }
+    if (outcome === 'done') {
+      saveCheckpoint(prior.id, { pending: [], started: true, completed: { outcome: 'done', report } })
+    } else {
+      process.env.FAKE_AKB = JSON.stringify({ reconcile: { kind: 'completed', deliveryId: 'd1', commit, branch: 'main' } })
+    }
+    fs.rmSync(path.join(ws.board, card))
+    fs.writeFileSync(path.join(ws.board, archive), landed)
+    fs.writeFileSync(path.join(ws.board, legacy), legacyCard)
+    const assetFolder = path.join(projectStateDir(ws.board), 'assets/2')
+    fs.mkdirSync(assetFolder, { recursive: true })
+    fs.writeFileSync(path.join(assetFolder, 'delivery.txt'), 'Delivered bytes')
+    cloud.put({ [card]: original.replace('Original scope.', 'Cloud edit to scope.') })
+    assert.equal((await pullChanges(ws)).ok, false)
+    assert.equal(pendingConflicts(ws.board)[0]!.files.find(f => f.path === legacy)?.local.content, legacyCard)
+    cloud.previewProblems = (file, content) => taskPreviewProblems(content, ['prompts'], [], file)
+    const script = `
+      const fs = require('fs'), cp = require('child_process'), path = require('path'), assert = require('assert/strict')
+      const board = process.env.AI4KANBAN_BOARD
+      const cli = ${JSON.stringify(path.join(process.env.RUNNER_DIST!, 'akb/bin/ai4kanban.mjs'))}
+      const run = (...args) => cp.spawnSync(process.execPath, [cli, '--board', board, 'raw', 'conflict', ...args, '--json'], {encoding:'utf8'})
+      const id = JSON.parse(run('list').stdout).conflicts[0].id
+      const show = () => JSON.parse(run('show', id).stdout).conflict
+      const file = path.join(board, '.sync/writeback-draft.json')
+      const resolve = (shown, files) => {
+        fs.writeFileSync(file, JSON.stringify({ files }))
+        return run('resolve', id, '--expect', shown.revision, '--file', file)
+      }
+      const first = show()
+      const current = first.files.find(f => f.path === ${JSON.stringify(card)})
+      const archived = first.files.find(f => f.path === ${JSON.stringify(archive)})
+      const proposed = archived.local.content.replace('Original scope.', current.remote.content.split('\\n').find(l => l.includes('Cloud edit')))
+      const deletion = { path: current.path, content: null }
+      fs.writeFileSync(path.join(board, archived.path), proposed)
+      assert.notEqual(resolve(show(), [deletion]).status, 0)
+      const content = proposed + (${JSON.stringify(outcome)} === 'done' ? '' : '\\n<Preview id="bad">\\n')
+      const sent = resolve(show(), [deletion, { path: archived.path, content }])
+      assert.equal(sent.status, ${outcome === 'done' ? 0 : 1}, sent.stdout + sent.stderr)
+      fs.writeFileSync(path.join(board, '.sync/writeback-attempted'), '')
+      ${outcome === 'stopped' ? "setInterval(() => {}, 50)" : ''}
+    `
+    start('', {
+      authorize: async job => canKeepFlow(job),
+      plan: (runtime, prompt, cwd, resume) => {
+        const plan = fakeRuntime(script)(runtime, prompt, cwd, resume)
+        return { ...plan, renderer: { ...plan.renderer!, costUsd: () => 0.75 } }
+      },
+    })
+    const historical = { ...flow, sync_recovery_of: prior.id, historical_recovery: true }
+    const job = cloud.dispatch({ ...scope, id: crypto.randomUUID(), flow: outcome === 'done' ? historical : flow })
+    if (outcome === 'stopped') {
+      await until(() => fs.existsSync(path.join(ws.board, '.sync/writeback-attempted')))
+      job.stop = true
+    }
+    await until(() => job.state === 'finished', 10_000)
+    assert.equal(job.outcome, outcome, [job.reason, ...job.events.map(e => e.text)].join('\n'))
+    assert.deepEqual(planned.map(plan => plan.resume), outcome === 'failed' ? ['original-thread', 'original-thread'] : ['original-thread'])
+    assert.match(planned[0]!.prompt, /Board content conflicts require explicit resolution/)
+    assert.match(planned[0]!.prompt, /delivery is complete/)
+    assert.deepEqual(cardCalls(), [])
+    assert.equal(job.report?.deliveryId, 'd1')
+    assert.deepEqual(job.report?.landing, { commit, branch: 'main' })
+    if (outcome === 'done') {
+      assert.equal(job.report?.costUsd, 0.25)
+      assert.equal(job.report?.runtimeCosts?.[0]?.costUsd, 0.25)
+      assert.equal(cloud.file(card), null)
+      assert.match(cloud.file(archive)!, /Cloud edit to scope.[\s\S]*Saved delivery./)
+      assert.match(cloud.file(legacy)!, /preview_approved: true[\s\S]*<Preview id="prompts">[\s\S]*Approved historical result.[\s\S]*Local history./)
+      const { artifact, version } = JSON.parse(cloud.file('assets/task_1.json')!)['.assets/2/delivery.txt']
+      assert.equal(cloud.task.artifacts.get(artifact)?.[version - 1]?.toString(), 'Delivered bytes')
+      assert.deepEqual(conflictList(ws.board), [])
+    } else {
+      const [conflict] = pendingConflicts(ws.board)
+      assert.ok(conflict?.draft)
+      assert.match(conflict.error!, /Cloud rejected Preview blocks/)
+      assert.equal(cloud.file(card), original.replace('Original scope.', 'Cloud edit to scope.'))
+      assert.equal(cloud.file(archive), null)
+      if (outcome === 'failed') {
+        assert.match(planned[1]!.prompt, /Cloud rejected Preview blocks/)
+        assert.ok(job.events.some(e => e.kind === 'error' && String(e.data?.text).includes('Cloud rejected Preview blocks')))
+      }
+    }
   })
 
   it('recovers the original build phase and cost after losing the job lease', async () => {
@@ -4691,6 +5676,21 @@ describe('flow jobs (#2020)', () => {
     assert.deepEqual(cardCalls(), [])
     assert.ok(!calls().some(c => c[0] === 'delivery' && c[1] === 'resume'))
     assert.ok(calls().some(c => c[0] === 'run' && c[1] === 'resume' && c[2] === 'original-conflict'))
+  })
+
+  it('bounds delivery reconciliation and preserves the underlying reason (#1057)', async () => {
+    cloud.put({ 'todo/2-pricing.md': readyCard })
+    process.env.FAKE_AKB = JSON.stringify({ reconcile: { kind: 'unverified', deliveryId: 'd1', diagnostic: 'Could not read delivery receipts.' } })
+    start('', { syncBackoff: () => 0 })
+    const job = cloud.dispatch({ id: 'delivery-reconcile-limit', task: 'task_1', project: 'prj_1', number: 2,
+      flow: { verb: 'implement', studio: 'wf_builtin_coding' } })
+    await until(() => job.state === 'finished')
+    assert.equal(job.outcome, 'failed')
+    assert.match(job.reason!, /Could not read delivery receipts/)
+    assert.equal(job.report?.failure?.pauseReason, 'limit')
+    assert.equal(job.report?.failure?.safeToRetry, true)
+    assert.equal(calls().filter(c => c[0] === 'delivery' && c[1] === 'reconcile').length, 5)
+    assert.deepEqual(cardCalls(), [])
   })
 
   it('reports the original failure and spend after a restart with exhausted retries (#947)', async () => {
@@ -4831,7 +5831,7 @@ describe('flow jobs (#2020)', () => {
     cloud.unavailableUploadTypes.add(PDF)
     const id = 'finish-office'
     const finished = flowJob(id, { verb: 'implement', card: 2 })
-    await until(() => cloud.jobs.get(id)?.state === 'finished' || readCheckpoint(id)?.syncRetry?.step === 'publish')
+    await until(() => cloud.jobs.get(id)?.state === 'finished' || !!readCheckpoint(id)?.syncRetries?.publish)
     const index = () => JSON.parse(cloud.file('assets/task_1.json')!) as api.Assets
     const pin = index()[asset]!
     const key = documentPreviewKey(pin.artifact, pin.version!)
@@ -5093,13 +6093,14 @@ describe('flow jobs (#2020)', () => {
     assert.ok(!fs.existsSync(path.join(board(), 'deliveries', 'd1.json')))
   })
 
-  it('continues the original Coding session once when a clean exit has no delivery receipt (#947)', async () => {
-    await flowJob('j1', { verb: 'create' })
+  it('continues the original custom Studio session once when a clean exit has no delivery receipt (#947)', async () => {
+    useCustomStudio()
+    await flowJob('j1', { verb: 'create', studio: 'wf_custom' })
     process.env.FAKE_AKB = JSON.stringify({
       implement: { trackExecution: true, agentSession: 'original', spent: { costUsd: 0.25 }, delivery: { id: 'd1', status: 'active' } },
       resume: { spent: { costUsd: 0.5 } },
     })
-    const job = await flowJob('j2', { verb: 'implement', card: 2 })
+    const job = await flowJob('j2', { verb: 'implement', card: 2, studio: 'wf_custom' })
     assert.equal(job.outcome, 'done', job.reason)
     assert.equal(job.report?.deliveryId, 'd1')
     assert.equal(job.report?.costUsd, 0.75)
@@ -5163,23 +6164,15 @@ describe('flow jobs (#2020)', () => {
       assert.equal(job.state, 'claimed')
     })
 
-    it('交接时等本地运行停止后才释放锁（#316）', async () => {
+    it('等本地运行停止后才接受新实例（#316）', async () => {
       await building()
-      let waiting = false
-      let taken = false
-      const next = holdMachine('codex', () => {
-        stopsBuild()
-        taken = true
-      }, () => { waiting = true })
-      try {
-        await until(() => waiting)
-        await runner!.close()
-        runner = null
-        await until(() => taken)
-        assert.equal(cloud.runner!.live, true)
-      } finally {
-        next.release()
-      }
+      const closing = runner!.close()
+      await assert.rejects(acquireMachine('codex'), RunnerAlreadyRunning)
+      await closing
+      runner = null
+      await (await acquireMachine('codex'))()
+      stopsBuild()
+      assert.equal(cloud.runner!.live, false)
     })
 
     it('when the job’s lease is lost', async () => {
@@ -5409,12 +6402,10 @@ describe('flow jobs (#2020)', () => {
     start('', { syncBackoff: () => 100 })
     const signedOut = cloud.dispatch({ id: 'j3', task: 'task_1', project: 'prj_1', number: 2,
       runtime: 'claude-code', flow: { verb: 'approve', studio: 'wf_builtin_coding', card: 2 } })
-    await until(() => signedOut.state === 'claimed')
-    assert.equal(runtimeFor().harness, 'codex')
-    installed = [{ name: 'claude-code', installed: true, loggedIn: true }]
     await until(() => signedOut.state === 'finished')
-    assert.equal(signedOut.outcome, 'done', signedOut.reason)
-    assert.equal(runtimeFor().harness, 'claude-code')
+    assert.equal(signedOut.outcome, 'failed')
+    assert.equal(signedOut.reason, 'Claude Code is not signed in on this computer.')
+    assert.equal(runtimeFor().harness, 'codex')
   })
 
   it('names the task’s studio to akb, a built-in and an account’s own, and keeps the version on this machine (#409)', async () => {
@@ -5664,7 +6655,7 @@ describe('periodic agents on the Runner (#2068)', () => {
     const local = path.join(boardPath, 'todo', '4-pricing.md')
     fs.mkdirSync(path.dirname(local), { recursive: true })
     fs.writeFileSync(local, 'Local draft that has not been uploaded.')
-    const job = cloud.dispatch({ id: 'd1', project: 'prj_1', projectDir: project, discussion: { id: 'dsc_1', workspace: 'ws_1', ideas: [] } })
+    const job = cloud.dispatch({ id: 'd1', project: 'prj_1', projectDir: project, discussion: { id: 'dsc_1', workspace: 'ws_1', goals: [] } })
     start(`if (process.env.AI4KANBAN_BOARD !== ${JSON.stringify(boardPath)}) process.exit(4);`)
     await until(() => job.state === 'finished')
     assert.equal(job.outcome, 'done', job.reason)
@@ -5716,6 +6707,7 @@ describe('chat memory reviewed on the Runner (#2065)', () => {
     said('task_1', ['msg_1', 'Old', old], ['j1', 'Older reply', old], ['msg_2', 'New'])
     said('task_2', ['msg_3', 'Gone', old])
     start()
+    await until(() => cloud.runner?.live === true)
     assert.deepEqual(lines().map((l) => l.text), ['New'])
     assert.ok(!fs.existsSync(record('task_2')))
   })
@@ -6162,7 +7154,7 @@ describe('the presence connection (#2163)', () => {
     const timings: number[] = []
     for (let i = 0; i < 20; i++) {
       const job = cloud.dispatch({ id: crypto.randomUUID(), ...(i % 2
-        ? { discussion: { id: `d760_${i}`, workspace: 'ws_1', ideas: [] } }
+        ? { discussion: { id: `d760_${i}`, workspace: 'ws_1', goals: [] } }
         : { chat: { message: `m760_${i}`, body: 'Reply' } }) })
       const began = performance.now()
       cloud.notifyJob(job.id)
@@ -6235,7 +7227,7 @@ it('启动前目录变化重新读取后再提交，关键事件不等普通 flu
   const { clearStudioSnapshots } = await import('../src/goals')
   clearStudioSnapshots()
   const account = readSession()!.subject
-  const job = cloud.dispatch({ id: 'catalog722', discussion: { id: 'd722', workspace: 'ws_1', ideas: [] } })
+  const job = cloud.dispatch({ id: 'catalog722', discussion: { id: 'd722', workspace: 'ws_1', goals: [] } })
   let version = 'v1'
   let reads = 0
   const proof = path.join(runnerHome(), 'catalog-proof')
@@ -6257,7 +7249,7 @@ it('启动前目录变化重新读取后再提交，关键事件不等普通 flu
       const client = createAcpClient()
       return { ...fakeRuntime(ACP_AGENT)(runtime, prompt, cwd, resume, model),
         converse: async (child, event) => {
-          fs.writeFileSync(proof, fs.readFileSync(path.join(runnerHome(), 'ideas', 'catalog722.json')))
+          fs.writeFileSync(proof, fs.readFileSync(path.join(runnerHome(), 'goals', 'catalog722.json')))
           return client.turn({ stdout: child.stdout!, stdin: child.stdin!, prompt, cwd, log: () => {}, gotResumeId: () => {}, gotModel: () => {}, event })
         },
       }

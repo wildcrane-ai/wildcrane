@@ -10,6 +10,7 @@ import { projectStateDir, stateRootOf } from '../machine/project'
 import { BOARD_FILE_LIMIT, isBoardPath, numberOfCard } from './board-files'
 import { linkedProject } from '../cloud/tasks'
 import { parseFrontmatter } from '../frontmatter'
+import { migrateHistoricalArchive } from './studio-migration'
 
 export interface Version { content: string | null; seq: number }
 export interface BoardWrite { path: string; content: string | null; base_seq: number }
@@ -117,7 +118,7 @@ export function conflictShow(board: string, id: string) {
 export function conflictPrompt(board: string, work = 'Continue the original work from its saved position; preserve completed work.'): string {
   const records = conflictList(board)
   return records.length ? ['Resolve these saved board content conflicts using `akb guide resolve-conflict` before continuing.',
-    ...records.map(r => `${r.id}: ${r.paths.join(', ')}; read with akb raw conflict show ${r.id}.`), work].join('\n') : ''
+    ...records.map(r => `${r.id}: ${r.paths.join(', ')}; read with akb board conflict show ${r.id}.`), work].join('\n') : ''
 }
 export function captureConflict(board: string, project: string, files: ConflictFile[]): ConflictRecord {
   const pending = pendingConflicts(board)[0]
@@ -139,7 +140,7 @@ export async function withSyncLock<T>(board: string, work: () => Promise<T>): Pr
   try { return await work() } finally { release() }
 }
 function refuse(record: ConflictRecord, message: string, kind = 'conflict'): never {
-  throw new BoardError(message, { kind, id: record.id, read: `akb raw conflict show ${record.id}` })
+  throw new BoardError(message, { kind, id: record.id, read: `akb board conflict show ${record.id}` })
 }
 function resolutionOf(record: ConflictRecord, value: unknown): { path: string; content: string | null }[] {
   if (!value || typeof value !== 'object' || Object.keys(value).join() !== 'files' || !Array.isArray((value as { files?: unknown }).files)) refuse(record, 'Expected {"files":[{"path":"...","content":"..."}]} .', 'invalid-usage')
@@ -251,9 +252,16 @@ export async function resolveConflict(board: string, project: string, id: string
       r.draft = { revision: expect, files, working, writes: [] }; save(board, r)
       refuse(r, 'Another batch member changed locally. Read the conflict again.')
     }
-    const writes = r.files.map(f => ({ path: f.remotePath, content: files.some(v => v.path === f.path) ? files.find(v => v.path === f.path)!.content : f.automatic ? f.automatic.content : f.local.content, base_seq: f.remote.seq }))
+    const writes = r.files.map(f => {
+      const result = files.find(v => v.path === f.path)
+      const content = result ? result.content : f.automatic ? f.automatic.content : f.local.content
+      return { path: f.remotePath, base_seq: f.remote.seq, content: content !== null && f.path.startsWith('.archive/') && numberOfCard(f.path) !== null
+        ? migrateHistoricalArchive(content, f.remote.content ?? f.base.content ?? undefined) : content }
+    })
     r.draft = { revision: expect, files, working, writes }
     save(board, r)
+    const oversized = writes.find(w => w.content !== null && Buffer.byteLength(w.content) > BOARD_FILE_LIMIT)
+    if (oversized) refuse(r, `${oversized.path} exceeds the board file limit.`, 'cloud-refused')
     // Validate every member, including unchanged members, before the atomic commit.
     const remote = await transport.read(project)
     if (!remote.ok) refuse(r, remote.error, 'cloud-refused')

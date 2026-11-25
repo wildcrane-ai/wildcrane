@@ -24,7 +24,7 @@ import { answerOf, runAkb } from './akb'
 import { flowRunEvidence, stopLeftBehind } from './flow'
 import { clearCheckpoint, readCheckpoint, recoverInterruptedJob, saveCheckpoint, stopReply, usesBoardRun } from './recovery'
 import { status, t } from './i18n'
-import { holdMachine, type Holder } from './lock'
+import { acquireMachine, RunnerAlreadyRunning, type Holder, type MachineLock } from './lock'
 import { STOP_MS, defaultDeps, folderFor, runJob, type Deps } from './jobs'
 import { keepPresence, type Presence } from './presence'
 import { modelLists, refreshModels } from './runtimes'
@@ -44,7 +44,7 @@ const BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000]
 const LOOK_LATE_MS = 60_000
 
 /** Why the Runner stopped for good. */
-export type Stop = { reason: 'elsewhere'; machine: string } | { reason: 'outdated' } | { reason: 'refused'; message: string }
+export type Stop = { reason: 'elsewhere'; machine: string } | { reason: 'outdated' } | { reason: 'already-running' } | { reason: 'refused'; message: string }
 
 export interface Options {
   registration: () => Promise<api.Registration>
@@ -58,14 +58,11 @@ export interface Options {
   onReconnecting?: () => void
   /** When the periodic agents are next looked at. */
   nextLook?: (now: number) => number
-  /** What runs this Runner, told to any other one on this computer that waits behind it. */
   kind: Holder
-  /** Another process on this computer runs its jobs; this one starts when that one stops. */
-  onWaiting?: (holder?: Holder) => void
 }
 
 export interface Runner {
-  /** Resolves when Cloud refuses this Runner for good. */
+  /** Resolves if startup or registration is refused. */
   stopped: Promise<Stop>
   /** Keep detached planning/build jobs, stop other jobs, and close. */
   close(): Promise<void>
@@ -75,17 +72,16 @@ export interface Runner {
   renew(): void
 }
 
-export function startRunner(options: Options): Runner {
-  adoptLegacy()
+export function startRunner(options: Options, lock?: MachineLock): Runner {
   const account = readSession()?.subject
   const generation = accountGeneration()
-  const releaseRecord = executorRecord()
+  let releaseRecord: (() => void) | undefined
+  let releaseMachine: MachineLock | undefined
   let registration: api.Registration | null = null
   let connected = false
   let closed = false
   let ownsExecution = false
   let codex: Awaited<ReturnType<typeof codexServer>> | undefined
-  let startingCodex = Promise.resolve()
   let redetect = false
   let preparing = false
   let attempts = 0
@@ -95,6 +91,8 @@ export function startRunner(options: Options): Runner {
   let timer: ReturnType<typeof setTimeout> | null = null
   let claimRetry: ReturnType<typeof setTimeout> | undefined
   let claimAttempts = 0
+  let flowClaimRetry: ReturnType<typeof setTimeout> | undefined
+  let flowClaimRetryAt = Infinity
   let reading = false
   let readAgain = false
   let readDone = Promise.resolve()
@@ -303,6 +301,16 @@ export function startRunner(options: Options): Runner {
     start(job, true)
   }
 
+  const retryFlowClaimAt = (at: number) => {
+    if (at >= flowClaimRetryAt) return
+    clearTimeout(flowClaimRetry)
+    flowClaimRetryAt = at
+    flowClaimRetry = setTimeout(() => {
+      flowClaimRetryAt = Infinity
+      void readJobs()
+    }, Math.max(0, at - Date.now()))
+  }
+
   /** The catch-up read. One at a time; a hint during a read reads once more after it. */
   const readJobs = async (source = 'catchup'): Promise<void> => {
     if (closed || preparing || !registration) return
@@ -336,8 +344,14 @@ export function startRunner(options: Options): Runner {
         }
         if (job.flow && hasFlowWorker(job.id)) {
           if (!running.has(job.id)) {
-            await reclaimFlowWorkers(registration.machineId, options.deps, job.id)
-            if (!hasFlowWorker(job.id)) { attempted.delete(job.id); readAgain = true }
+            const retry = await reclaimFlowWorkers(registration.machineId, options.deps, job.id, !!workerEntry && job.state === 'waiting')
+            if (closed || preparing || !validAccount()) break
+            if (hasFlowWorker(job.id)) {
+              if (retry) retryFlowClaimAt(retry.at)
+            } else if (retry) {
+              console.info('runner: retrying job claim', { job: job.id, attempt: retry.attempt + 1, previousFailure: retry.failure })
+              startWorker(job, retry.attempt + 1)
+            } else { attempted.delete(job.id); readAgain = true }
           }
           continue
         }
@@ -399,7 +413,7 @@ export function startRunner(options: Options): Runner {
       if (card) {
         if (job.flow && job.flow.verb !== 'discard') {
           const reconciled = answerOf<{ kind?: string; deliveryId?: string }>(
-            await runAkb(deps().akb(), ['raw', 'delivery', 'reconcile', String(card), '--json', '--board', ws.board], { cwd: ws.cwd, board: ws.board }),
+            await runAkb(deps().akb(), ['delivery', 'reconcile', String(card), '--json', '--board', ws.board], { cwd: ws.cwd, board: ws.board }),
           )
           if (reconciled?.kind === 'running' && reconciled.deliveryId) return
         }
@@ -446,7 +460,7 @@ export function startRunner(options: Options): Runner {
     jobs.add(job)
   }
 
-  const startWorker = (job: api.Job) => {
+  const startWorker = (job: api.Job, claimAttempt = 1) => {
     const id = job.id
     attempted.add(id)
     workers.add(id)
@@ -454,7 +468,7 @@ export function startRunner(options: Options): Runner {
     status(idle())
     const watched = (async () => {
       try {
-        if (!hasFlowWorker(id)) launchFlowWorker(id, registration!.machineId, workerEntry)
+        if (!hasFlowWorker(id)) launchFlowWorker(id, registration!.machineId, workerEntry, claimAttempt)
         await watchFlowWorker(id, registration!.machineId, () => closed)
       } catch {
         // The exit sweep checks the same job in Cloud after proving the worker stopped.
@@ -499,6 +513,7 @@ export function startRunner(options: Options): Runner {
     }
     if (timer) clearTimeout(timer)
     clearTimeout(claimRetry)
+    clearTimeout(flowClaimRetry)
     if (agentsTimer) clearTimeout(agentsTimer)
     clearInterval(modelsTimer)
     stopModels()
@@ -522,10 +537,13 @@ export function startRunner(options: Options): Runner {
     await startingCodex
     await codex?.close()
     for (const [key, value] of Object.entries(codex?.env ?? {})) if (process.env[key] === value) delete process.env[key]
-    if (release && !keptWorkers && !lock.waited() && registration) await api.release(registration.machineId)
-    clearInterval(accountWatch)
-    lock.release()
-    releaseRecord()
+    try {
+      if (release && !keptWorkers && registration) await api.release(registration.machineId)
+    } finally {
+      clearInterval(accountWatch)
+      await releaseMachine?.()
+      releaseRecord?.()
+    }
   }
 
   let refresh = ''
@@ -539,19 +557,23 @@ export function startRunner(options: Options): Runner {
   }, 200)
   accountWatch.unref()
 
-  removeLegacy()
-  pruneChats()
-  const lock = holdMachine(options.kind, () => {
+  const startingCodex = (lock ? Promise.resolve(lock) : acquireMachine(options.kind)).then(async release => {
+    releaseMachine = release
+    if (closed) return
+    adoptLegacy()
+    releaseRecord = executorRecord()
+    removeLegacy()
+    pruneChats()
+    codex = await codexServer()
+    if (closed) return
     ownsExecution = true
-    startingCodex = codexServer().then(async service => {
-      codex = service
-      if (closed) return
-      Object.assign(process.env, service.env)
-      void tick()
-    }).catch(e => { console.error(`runner: Codex service failed: ${e instanceof Error ? e.message : String(e)}`); void finish({ reason: 'refused', message: 'Codex service failed to start.' }) })
-  }, (holder) => {
-    status(t.waitingHere(holder))
-    options.onWaiting?.(holder)
+    Object.assign(process.env, codex.env)
+    void tick()
+  }).catch(error => {
+    if (closed) return
+    void finish(error instanceof RunnerAlreadyRunning
+      ? { reason: 'already-running' }
+      : { reason: 'refused', message: error instanceof Error ? error.message : String(error) })
   })
   return { stopped, close: () => close(true), update: () => close(false, true), renew: () => { redetect = true; schedule(0) } }
 }

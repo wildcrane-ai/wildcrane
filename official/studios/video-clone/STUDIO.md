@@ -3,6 +3,9 @@ name: Video clone
 names:
   zh: 视频克隆
 description: Breaks down reference videos and makes reusable clones with your content.
+summaries:
+  zh: 先拆解参考视频，再仿制并存成模板。
+  en: Break down a reference video, then clone it.
 needsArtifact: true
 icon: video-clone
 previews:
@@ -11,11 +14,17 @@ previews:
     title:
       en: Clone storyboard
       zh: 复刻分镜
+    description:
+      en: Compare the source breakdown against your new storyboard.
+      zh: 将原片拆解与你的新分镜逐镜对照审阅。
   video-template:
     icon: template
     title:
       en: Video template
       zh: 视频模板
+    description:
+      en: Review the rendered clone and reusable template.
+      zh: 审阅仿制视频成片与可复用模板。
 ---
 
 <Preview id="clone-storyboard">
@@ -24,8 +33,8 @@ Break down the source and draft a clone that tells the user's story with its cra
 
 ## Steps
 
-- **Drafts**: write two storyboards in the files folder, following `akb raw file video-clone references/storyboard-contract.md` and passing `scripts/validate-storyboard.mjs`: `breakdown.json` takes the source apart, one shot per beat with its source frame, and in details its motion, props, content slot, transition and sound, marking the skeleton beats the video cannot lose; `clone.json` tells the user's content beat by beat, so its story holds on its own. Show both on the card as one `<Compare>`: the source video as `a`, `clone.json` as `b` and `breakdown.json` as `shots`.
-- **Music**: in the drafts, also follow `akb raw file video-clone shared/music.md`.
+- **Drafts**: write two storyboards in the files folder, following `akb studio file video-clone references/storyboard-contract.md` and passing `scripts/validate-storyboard.mjs`: `breakdown.json` takes the source apart, one shot per beat with its source frame, and in details its motion, props, content slot, transition and sound, marking the skeleton beats the video cannot lose; `clone.json` tells the user's content beat by beat, so its story holds on its own. Show both on the card as one `<Compare>`: the source video as `a`, `clone.json` as `b` and `breakdown.json` as `shots`.
+- **Music**: in the drafts, also follow `akb studio file video-clone shared/music.md`.
 - **Changes**: a changed beat changes in both drafts.
 
 </Preview>
@@ -40,7 +49,7 @@ Build or revise the requested template from the current `clone-storyboard` draft
 - **Template**: build a project that renders `clone.json` beat by beat, picking for each motion an animation library that fits its style; one project may combine several. The beat table and all content live in one file, holding the user's content from the start, so a beat can be removed or reordered and the content swapped without code changes; the code holds only craft and props. Its `template.md` states that the content in that file is to be replaced with the user's own and that the template reproduces only the source's craft.
 - **Cached clips**: render each beat to its own cached clip and splice the clips into the full video; a change re-renders only the clips it touches.
 - **Check**: render it once and compare it with the source beat by beat side by side on rhythm, motion and layout, and check every on-screen step makes sense to a viewer. A beat that misses the source's structure means the template is wrong: fix it and render again, never hand over the breakdown instead.
-- **Music**: in the template and check, also follow `akb raw file video-clone shared/music.md`.
+- **Music**: in the template and check, also follow `akb studio file video-clone shared/music.md`.
 - **Card**: inside this Preview block, show only the clone against the source as a `<Compare>` with `breakdown.json` as `shots`, and each difference left in one line, naming its beat id; append a ticked todo with the template folder's absolute path and, in backticks, its render command.
 
 </Preview>

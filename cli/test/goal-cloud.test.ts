@@ -16,7 +16,6 @@ let goals: Record<string, unknown>[]
 let version: number
 let started: unknown
 let conflict: boolean
-let legacy: boolean
 let calls: { url: URL; method: string; body: Record<string, unknown> }[]
 const catalog = [{ id: 'ui-design', title: { en: 'UI design' }, instructions: 'A full condition.\nWith exceptions.' }, { id: 'api-docs', title: { en: 'API docs' }, instructions: '' }]
 beforeEach(() => {
@@ -28,8 +27,7 @@ beforeEach(() => {
   process.env.CODEX_THREAD_ID = 'test-thread'
   process.env.CLAUDE_CODE_SESSION_ID = ''
   writeSession({ version: 1, supabaseUrl: 'https://project.test', subject: 'test-account', accessToken: 'test-token', refreshToken: 'test-refresh', expiresAt: Date.now() + 3600_000 })
-  started = { id: 'task_1' }; goals = []; version = 1; conflict = false; legacy = false; calls = []
-  const draft = () => legacy ? { ideas: goals } : { goals, ideas: goals }
+  started = { id: 'task_1' }; goals = []; version = 1; conflict = false; calls = []
   globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input)); const body = JSON.parse(String(init?.body || '{}'))
     calls.push({ url, method: init?.method || 'GET', body })
@@ -38,12 +36,14 @@ beforeEach(() => {
     else if (url.pathname.endsWith('/studios')) {
       if (url.searchParams.get('workspace') === 'missing') return new Response(JSON.stringify({ error: { message: 'No workspace has this id.' } }), { status: 404 })
       result = { data: [{ id: 'wf_builtin_coding', name: 'Coding', previews: catalog }], next: null }
-    } else if (url.pathname.endsWith('/external')) result = { id: 'dsc_test', workspace: 'ws_test', version, ...draft() }
-    else if (url.pathname === '/v1/discussions/dsc_dsh') result = { id: 'dsc_dsh', workspace: 'ws_test', version, ...draft() }
+    } else if (url.pathname.endsWith('/external')) result = { id: 'dsc_test', workspace: 'ws_test', version, goals }
+    else if (url.pathname === '/v1/discussions/dsc_dsh') result = { id: 'dsc_dsh', workspace: 'ws_test', version, goals }
     else if (url.pathname.endsWith('/draft')) {
       if (conflict) return new Response(JSON.stringify({ error: { message: 'The goals have changed.' } }), { status: 409 })
-      goals = ((legacy ? body.ideas : body.goals) as Record<string, unknown>[]).map((g, i) => ({ ...g, id: String(g.id).startsWith('new_') ? `idea_${i + 1}` : g.id }))
-      result = { id: 'dsc_test', workspace: 'ws_test', version: ++version, ...draft() }
+      goals = [...goals.filter(g => g.task), ...(body.goals as Record<string, unknown>[]).map((g, i) => ({
+        ...g, id: String(g.id).startsWith('new_') ? `idea_${i + 1}` : g.id, task: null,
+      }))]
+      result = { id: 'dsc_test', workspace: 'ws_test', version: ++version, goals }
     } else if (url.pathname.endsWith('/start')) result = started
     else if (url.pathname === '/v1/tasks/W-1/studio') result = { previews: catalog }
     else if (url.pathname === '/v1/tasks/W-1/review') {
@@ -83,8 +83,7 @@ it('外部会话按会话与项目保存，返回 Cloud 目标 id；后续编辑
   assert.equal(calls.at(-1)?.body.expectedVersion, version)
   assert.equal(process.env.KANBAN_GOALS, originalEnv.KANBAN_GOALS)
 })
-it('旧云端以 ideas 保存和开始，已开始的目标仍不可编辑', async () => {
-  legacy = true
+it('保存只提交开放目标，已开始的目标保持关联', async () => {
   goals = [
     { id: 'idea_1', title: 'Started', studio: 'wf_builtin_coding', task: { id: 'task_1', key: 'W-1' } },
     { id: 'idea_2', title: 'Open', studio: 'wf_builtin_coding', task: null },
@@ -92,8 +91,9 @@ it('旧云端以 ideas 保存和开始，已开始的目标仍不可编辑', asy
   await assert.rejects(cloudGoal(['save'], { id: 'idea_1', title: 'Changed' }), /already a task/)
   assert.ok(!calls.some(call => call.url.pathname.endsWith('/draft')))
   await cloudGoal(['start'], { id: 'idea_2' })
-  assert.equal(calls.at(-1)?.url.pathname, '/v1/discussions/dsc_test/ideas/idea_2/start')
+  assert.equal(calls.at(-1)?.url.pathname, '/v1/discussions/dsc_test/goals/idea_2/start')
   assert.deepEqual(calls.at(-1)?.body, { expectedVersion: version })
+  assert.deepEqual((calls.find(call => call.url.pathname.endsWith('/draft'))?.body.goals as { id: string }[]).map(g => g.id), ['idea_2'])
   assert.deepEqual(goals[0].task, { id: 'task_1', key: 'W-1' })
 })
 it('目标与任务使用同一套 Preview 名称，输入无效时不提交计划', async () => {

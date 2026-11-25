@@ -37,11 +37,9 @@ Use this order and keep the English section titles and empty scaffold sections:
   blocks an ongoing delivery; the build must fix deviations or refer them to the user.
 - **Preview sections**: use matching Preview tags and a stable Studio ID; keep the ID when revising.
   The app supplies localized titles and icons. Group files of one deliverable with Set.
-- **Previews**: read the relevant Studio `<Preview>` block and needed references before revising
-  its section and assets in place.
-- **Preview presentation**: at every review point, show the deliverable directly; omit surrounding
-  introductions, summaries and notes unless requested or needed for review, keeping necessary
-  context brief and stating it once.
+- **Previews**: follow "Task context" in `akb guide board` before preparing or revising a Preview.
+- **Preview presentation**: before submitting a Preview, check that it shows the deliverable directly
+  and includes only brief surrounding text needed for review or requested by the user, stated once.
 - **Preserve work**: leave checked todos and supplied Done when checklists unchanged; append a
   todo to reverse completed work, and move user-overruled decisions to Overruled by the user
   until the card leaves no room to repeat them.
@@ -49,5 +47,5 @@ Use this order and keep the English section titles and empty scaffold sections:
   half self-contained, and state each fact once.
 - **Agent half**: keep only implementation-critical information not stated elsewhere; omit
   process logs and routine implementation planning, and leave unneeded sections empty.
-- **Frontmatter**: never edit frontmatter by hand; use `akb raw update` or `akb task update-questions`.
-- **Validate**: run `akb raw validate <id>` after edits and fix every reported file and line.
+- **Frontmatter**: never edit frontmatter by hand; use `akb task update` or `akb task update-questions`.
+- **Validate**: run `akb task validate <id>` after edits and fix every reported file and line.

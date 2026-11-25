@@ -1,39 +1,33 @@
-/* The design tokens, shared with the Runner's local settings page (runner/scripts/settings-client.mjs). */
+/* Crisp White + Pure Ember Orange Neo-Brutalism tokens, shared with the Runner's local settings page (runner/scripts/settings-client.mjs). */
 @theme {
-  --color-nb-ink: #24231f; /* charcoal — borders + body text */
-  --color-nb-ink-soft: #565550; /* muted ink for captions/meta */
-  --color-nb-cream: #f7f7f4; /* page canvas */
-  --color-nb-canvas: #efeeeb; /* the ground under a board of cards */
-  --color-nb-paper: #ffffff; /* card surface */
-  --color-nb-sheet: #fbfaf7; /* a card page's sections — the cream family, a rung lighter */
-  --color-nb-wash: #f4f3ef; /* faint neutral fill (headers, media, insets) */
+  --color-nb-ink: #18181b; /* crisp neutral zinc-black */
+  --color-nb-ink-soft: #63636b; /* clean neutral gray */
+  --color-nb-cream: #fafafa; /* bright neutral light ground — no yellow/earth cast */
+  --color-nb-canvas: #f4f4f5; /* clean neutral board ground */
+  --color-nb-paper: #ffffff; /* pure white surface */
+  --color-nb-sheet: #fafafa; /* clean reading page sections */
+  --color-nb-wash: #f2f2f3; /* crisp neutral hover/inset fill */
 
-  --color-nb-accent: #dd4f1e; /* ember — primary accent */
-  --color-nb-accent-deep: #b83a12; /* deeper ember — hover / press */
-  --color-nb-accent-soft: #f7ddce; /* ember wash — underline band, tints */
-  --color-nb-crimson: #c41e3a; /* triage waiting — cool enough to tell from ember */
+  --color-nb-accent: #f25019; /* vibrant pure ember orange — primary CTAs & crisp dots only */
+  --color-nb-accent-deep: #d43d0a; /* deeper ember — hover & text */
+  --color-nb-accent-soft: #fff1ec; /* minimal tint for tiny status pills only */
+  --color-nb-crimson: #d92d4b; /* triage waiting */
 
-  --color-nb-mint: #7fca9c; /* positive / done */
-  --color-nb-mint-soft: #e4f3ea;
-  --color-nb-sky: #7fb4e0; /* neutral signal */
-  --color-nb-sky-soft: #e6f1fb;
-  --color-nb-lilac: #b199e0;
-  --color-nb-lilac-soft: #efe9fb;
-  --color-nb-peach: #ec9a72; /* attention / blocker */
-  --color-nb-peach-soft: #fbe9dd;
+  --color-nb-mint: #34b87a; /* positive / done */
+  --color-nb-mint-soft: #eaf8f0;
+  --color-nb-sky: #4d9be6; /* in progress */
+  --color-nb-sky-soft: #edf5fd;
+  --color-nb-lilac: #8e75d6; /* modules / people */
+  --color-nb-lilac-soft: #f3effd;
+  --color-nb-peach: #e88d5a; /* attention / paused / blocker */
+  --color-nb-peach-soft: #fdf2eb;
 
-  /* Section grounds — a signal thinned until a whole block of one can carry body
-     text, a rung below `-soft` so a tall band never shouts over the control that
-     answers it. A card page spends colour on two sections and no more: mint where
-     the work is already done, ember where an answer is wanted. Everything else on
-     it, the body included, is `--color-nb-sheet` — prose is read THROUGH its
-     ground, and a tint under it colours every line. */
-  --color-nb-accent-wash: #fbf0e9;
+  --color-nb-accent-wash: #fafafa; /* clean neutral surface — never pale orange */
 
-  --color-nb-mint-ink: #2f6b46;
-  --color-nb-sky-ink: #2c5c86;
-  --color-nb-lilac-ink: #5a3f92;
-  --color-nb-peach-ink: #8a4a28;
+  --color-nb-mint-ink: #1b6d47;
+  --color-nb-sky-ink: #245b8f;
+  --color-nb-lilac-ink: #523b96;
+  --color-nb-peach-ink: #924921;
 
   --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
     Roboto, Helvetica, Arial, sans-serif;

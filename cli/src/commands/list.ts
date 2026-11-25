@@ -158,16 +158,14 @@ function cmdArchived(opts: ListOptions): MoveResult {
 
   const open = boardCardIds()
   const files = archivedFiles()
-  const cards = landedDeliveries({ since: since?.getTime(), studio: studio ?? undefined })
+  const cards = landedDeliveries({ since: since?.getTime() })
     .filter((d) => !open.has(d.cardId))
-    .map((d) => ({
-      id: d.cardId,
-      title: d.title,
-      studio: d.studio,
-      landedAt: formatStamp(new Date(d.at)),
-      commit: d.commit,
-      file: files.has(d.cardId) ? rel(files.get(d.cardId)!) : '',
-    }))
+    .flatMap((d) => {
+      const file = files.get(d.cardId)
+      const recorded = d.studio ?? (file ? parseFrontmatter(fs.readFileSync(file, 'utf8')).meta?.studio || null : null)
+      if (studio && studio !== recorded) return []
+      return [{ id: d.cardId, title: d.title, studio: recorded, landedAt: formatStamp(new Date(d.at)), commit: d.commit, file: file ? rel(file) : '' }]
+    })
   const result = { cards, since: since ? formatStamp(since) : null, studio }
 
   const scope = [studio ? `on studio \`${studio}\`` : '', since ? `since ${formatStamp(since)}` : ''].filter(Boolean).join(' ')
@@ -180,7 +178,7 @@ function cmdArchived(opts: ListOptions): MoveResult {
   for (const c of cards) {
     say('')
     say(`#${c.id} ${c.title}${c.file ? `  (${c.file})` : ''}`)
-    say(`    ${c.studio} · landed ${c.landedAt} · commit ${c.commit}`)
+    say(`    ${c.studio ? `${c.studio} · ` : ''}landed ${c.landedAt} · commit ${c.commit}`)
   }
   return result
 }

@@ -14,7 +14,7 @@ const API = 'https://api.example.test'
 const realFetch = globalThis.fetch
 
 let root = ''
-let puts: { route: string; rule: unknown }[] = []
+let puts: { route: string; rule: unknown; revision?: number }[] = []
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-notes-'))
@@ -33,14 +33,14 @@ beforeEach(() => {
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     const route = String(url).slice(API.length)
     if (init?.method === 'PUT') {
-      puts.push({ route, rule: JSON.parse(String(init.body)).rule })
+      puts.push({ route, ...JSON.parse(String(init.body)) })
       const rule = puts.at(-1)!.rule
       return Response.json(route.endsWith('/rule') ? { id: route.split('/').at(-2), rule } : { agent: route.split('/').at(-1), rule })
     }
     if (route === '/v1/projects/prj_1') return Response.json({ id: 'prj_1', workspace: 'ws_1' })
     if (route === '/v1/projects/prj_1/agents') return Response.json({ board: ['proposer', 'memory-pruner'], data: [{ agent: 'proposer', rule: 'Propose less.' }, { agent: 'memory-pruner', rule: '' }] })
     if (route === '/v1/workspaces/ws_1/studio-rules') {
-      return Response.json({ studios: [{ id: 'wf_builtin_coding', rule: '- Titles in English.\n- Tests first.' }, { id: 'wf_01own' }] })
+      return Response.json({ studios: [{ id: 'wf_builtin_coding', rule: '- Titles in English.\n- Tests first.', revision: 17 }, { id: 'wf_01own' }] })
     }
     return Response.json({ error: { code: 'not_found', message: 'Not found.' } }, { status: 404 })
   }) as typeof fetch
@@ -57,11 +57,11 @@ afterEach(() => {
 it('saves a studio rule from a file and clears it with empty text', async () => {
   const file = path.join(root, 'rule.md')
   fs.writeFileSync(file, 'Titles in English.\nThe rest in Chinese.\n')
-  await run(root, ['studio', 'rule', 'coding', '--file', file])
+  await run(root, ['studio', 'rule', 'coding', '--file', file, '--revision', '14'])
   await run(root, ['studio', 'rule', 'coding', '--text', ''])
   assert.deepEqual(puts, [
-    { route: '/v1/workspaces/ws_1/studios/wf_builtin_coding/rule', rule: 'Titles in English.\nThe rest in Chinese.' },
-    { route: '/v1/workspaces/ws_1/studios/wf_builtin_coding/rule', rule: '' },
+    { route: '/v1/workspaces/ws_1/studios/wf_builtin_coding/rule', rule: 'Titles in English.\nThe rest in Chinese.', revision: 14 },
+    { route: '/v1/workspaces/ws_1/studios/wf_builtin_coding/rule', rule: '', revision: 17 },
   ])
 })
 

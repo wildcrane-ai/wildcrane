@@ -9,7 +9,10 @@ import { spawnable } from '../spawnable'
 import { home } from './models'
 import { namesFlag, type Harness } from './types'
 import { translating } from '../language'
+import { createAcpClient } from '../wire/acp'
 import { createAntigravityRenderer } from '../wire/antigravity'
+import { ExecutionError } from '../wire/failures'
+import { makeFailure } from '../retry'
 import { antigravityConversationFile } from '../wire/antigravity-session'
 
 const EFFORT_ID = /-(?:low|medium|high|xhigh|max)$/i
@@ -35,7 +38,9 @@ function args(argv: string[], resume?: string): string[] {
   if (namesFlag(argv, ['--continue', '-c', '--conversation', '--remote-agent'])) throw new Error(translating() ? '请通过 WildCrane 选择 Antigravity 会话，不要在额外参数中指定会话或远程执行。' : 'Antigravity: select a session through WildCrane, not extra arguments.')
   if (resume) {
     const file = antigravityConversationFile(resume)
-    if (!file || !fs.existsSync(file)) throw new Error(translating() ? 'Antigravity 会话不存在。请在本机恢复原会话后续接。' : 'Antigravity session not found. Restore the original conversation on this computer before resuming.')
+    if (!file || !fs.existsSync(file)) throw new ExecutionError(makeFailure('runtime', translating()
+      ? 'Antigravity 会话不存在。请在本机恢复原会话后续接。'
+      : 'Antigravity session not found. Restore the original conversation on this computer before resuming.', { code: 'session_not_found' }))
   }
   const extra = resume ? ['--conversation', resume] : []
   if (!namesFlag(argv, ['--output-format'])) extra.push('--output-format', 'stream-json')
@@ -44,12 +49,30 @@ function args(argv: string[], resume?: string): string[] {
   return extra
 }
 
+function systemPrompt(text: string, _argv: string[], env: NodeJS.ProcessEnv) {
+  const rule = `${text}\n\nThe task working directory is ${env.PWD ?? process.cwd()}. Use it as the base for project files and commands. This additional workspace contains only language rules; do not write task output here.`
+  const hash = createHash('sha256').update(rule).digest('hex').slice(0, 16)
+  const root = path.join(machineHome(), 'prompts', `antigravity-${hash}`)
+  const file = path.join(root, '.agents', 'rules', 'language.md')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, `---\ntrigger: always_on\n---\n\n${rule}\n`)
+  return { args: ['--add-dir', root] }
+}
+
 /** agy 1.5.6: local credentials, explicit conversation ids and its own NDJSON protocol. */
 export const ANTIGRAVITY: Harness = {
   name: 'antigravity',
   label: 'Antigravity CLI',
   icon: '/agents/antigravity.svg',
   command: 'agy --output-format stream-json --dangerously-skip-permissions',
+  discussionImages: {
+    args: ['acp', '--dangerously-skip-permissions'],
+    client: ({ model, reasoning }) => createAcpClient({
+      tool: 'antigravity', model, config: { thought_level: reasoning }, fallbackOnSetupFailure: true,
+    }),
+    systemPrompt,
+    fallbackToPath: true,
+  },
   extraArgs: (argv) => args(argv),
   resumes: true,
   resumeArgs: (argv, id) => args(argv, id),
@@ -87,15 +110,7 @@ export const ANTIGRAVITY: Harness = {
     const at = argv.indexOf('--conversation')
     return createAntigravityRenderer(at >= 0 ? argv[at + 1] : argv.find(a => a.startsWith('--conversation='))?.slice(15), cwd)
   },
-  systemPrompt(text, _argv, env) {
-    const rule = `${text}\n\nThe task working directory is ${env.PWD ?? process.cwd()}. Use it as the base for project files and commands. This additional workspace contains only language rules; do not write task output here.`
-    const hash = createHash('sha256').update(rule).digest('hex').slice(0, 16)
-    const root = path.join(machineHome(), 'prompts', `antigravity-${hash}`)
-    const file = path.join(root, '.agents', 'rules', 'language.md')
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, `---\ntrigger: always_on\n---\n\n${rule}\n`)
-    return { args: ['--add-dir', root] }
-  },
+  systemPrompt,
   reports: ['cost', 'tokens', 'model', 'context'],
   adoptsSessionId: false,
   savesSessionAtOpen: true,

@@ -1,5 +1,5 @@
 /** Shared conversation deadlines; refresh and retries keep the original start time. */
-export const CONVERSATION_MS = { send: 15_000, claim: 30_000, prepare: 60_000, start: 15_000, startup: 120_000, quiet: 60_000, stop: 10_000 } as const
+export const CONVERSATION_MS = { send: 15_000, prepare: 60_000, start: 15_000, stop: 10_000 } as const
 export const CONVERSATION_PHASES = ['preparing', 'initialized', 'ready', 'submitted', 'started'] as const
 export type ConversationPhase = typeof CONVERSATION_PHASES[number]
 

@@ -211,6 +211,7 @@ export const CODEX: Harness = {
   ],
 
   connection: createCodexConnection,
+  connectionFallbackNote: 'Custom Codex command preserved; managed background cleanup is unavailable for this command shape.',
   installs: codexInstalls,
   pinned: () => process.env.CODEX_CLI_PATH?.trim() || undefined,
 

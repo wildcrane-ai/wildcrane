@@ -7,10 +7,10 @@ import { parseFrontmatter } from '../frontmatter'
 import { say } from '../io'
 import { findGuide } from '../guide'
 import { PLANNER, agentMemoryDir, memoryFile } from '../memory'
-import { die, rel, ARCHIVE, BOARD_FLAG, MEMORY, PROJECT_MD, REPO_ROOT } from '../paths'
+import { die, rel, ARCHIVE, MEMORY, PROJECT_MD, REPO_ROOT } from '../paths'
 import { studioRefusal } from './start'
 import type { Meta, MoveResult } from '../types'
-import { boardCommandFor } from './command'
+import { boardCommand } from './command'
 import { activeDelivery, deliveryFor, withStudio } from './deliveries'
 import { field, metaLine, numbered } from './facts'
 import { taskChatsToReview, type ChatToReview } from './memory-review'
@@ -60,7 +60,7 @@ function readCard(id: number, home: CardHome = 'board'): CardFacts {
     die(
       home === 'archive'
         ? `no card #${id} in ${rel(ARCHIVE)}. A reflection reads the card the archive holds.`
-        : `no card #${id} on this board. \`akb raw list\` says what is open.`,
+        : `no card #${id} on this board. \`akb board list\` says what is open.`,
       { kind: 'card-not-found', id },
     )
   }
@@ -73,7 +73,7 @@ function readCard(id: number, home: CardHome = 'board'): CardFacts {
   }
   const { meta, body } = parseFrontmatter(text)
   if (!meta) {
-    die(`${rel(file)} has no frontmatter — recreate it with \`akb raw create\` before working on it.`, {
+    die(`${rel(file)} has no frontmatter — restore this card from its last valid version before retrying.`, {
       kind: 'card-unreadable',
       id,
     })
@@ -195,7 +195,7 @@ function approvedField(delivery: DeliveryRecord | undefined): string[] {
 // every changed file and its line counts so the run can open only what it needs.
 function workspaceField(delivery: DeliveryRecord | undefined): string[] {
   return field('workspace', [
-    `authorized project: ${REPO_ROOT}; board: ${boardCommandFor()}.`,
+    `authorized project: ${REPO_ROOT}; board: ${boardCommand()}.`,
     ...(delivery ? [
       `delivery ${delivery.deliveryId}; target branch: ${delivery.targetBranch ?? 'inspect the project'}.`,
       `existing context: ${JSON.stringify({ worktree: delivery.worktree, branch: delivery.branch, base: delivery.base, landing: delivery.landing, completions: delivery.completions })}`,
@@ -204,16 +204,13 @@ function workspaceField(delivery: DeliveryRecord | undefined): string[] {
   ])
 }
 
-// The `update` flags a card takes.
-const EDITABLE_FIELDS = '--title|--priority|--modules|--blocked-by|--related'
-
 // What to do with the body a card was created with.
 const bodyScaffoldClose = (lead = 'fill the existing'): string[] =>
   [`${lead} body scaffold; do not rename or translate its section titles, and leave empty scaffold sections in place`]
 
 function answeringField(delivery: DeliveryRecord, self: string): string[] {
   const approved = delivery.approved.trim()
-  const say = (flag: string) => `  ${self} raw delivery answered ${delivery.deliveryId} ${flag}`
+  const say = (flag: string) => `  ${self} delivery answered ${delivery.deliveryId} ${flag}`
   return [
     ...field('delivery', [
       `${delivery.deliveryId} is already building this card, from the copy below — frozen when it started.`,
@@ -224,7 +221,6 @@ function answeringField(delivery: DeliveryRecord, self: string): string[] {
       `the card already carries and tidying prose are all --unchanged. Adding, dropping or changing a`,
       `requirement is --changed — and so is confirming an implementation that contradicts the copy below,`,
       `however finished it is.`,
-      `say nothing and the board carries on as --unchanged.`,
     ]),
     ...field(
       'approved',
@@ -234,13 +230,6 @@ function answeringField(delivery: DeliveryRecord, self: string): string[] {
     ),
   ]
 }
-
-// The closing step a pass that applies answers owes the build under it (#637): the
-// conclusion, written down before the questions go, because dropping the last one is what
-// puts the board back in motion.
-const answeredClose = (delivery: DeliveryRecord, self: string): string =>
-  `${self} raw delivery answered ${delivery.deliveryId} --changed|--unchanged "<why>" — before you drop the questions; ` +
-  `dropping the last one with nothing said carries the build on as --unchanged`
 
 // The card's post-implementation notes as they read right now — NOT part of the approved
 // copy, and the one place the user records an exception they have approved for this exact
@@ -354,8 +343,7 @@ function buildFlow(req: AgentRequest, program: string): Flow {
   // the project's copy outright (#303) — a relative path there would run the worktree's own
   // half-rewritten copy, and no `--dir` would leave the board to be guessed at.
   const delivery = deliveryFor(req)
-  const self = delivery?.worktree ? boardCommandFor(req.id) : `${program}${BOARD_FLAG}`
-  const raw = `${self} raw`
+  const self = boardCommand()
   const facts: string[] = []
   const close: string[] = []
   const next: string[] = []
@@ -396,12 +384,12 @@ function buildFlow(req: AgentRequest, program: string): Flow {
         'tick each box in ## Todo as you finish it — they are the record of what was built',
         `record the delivered outcome and verification on the task — \`akb guide archive\``,
         delivery
-          ? `${self} raw delivery complete ${delivery.deliveryId} — finish your step and follow its handoff; software steps in a git project supply --commit <full-sha> --branch <target>`
+          ? `${self} delivery complete ${delivery.deliveryId} — finish your step and follow its handoff; software steps in a git project supply --commit <full-sha> --branch <target>`
           : `${self} task archive ${req.id} — once every box is ticked and the card's goal is met`,
       )
       if (card.meta.questions.length) {
         next.push(
-          `${self} raw card resolve ${req.id} --print — first: the card has open questions, and building on a guess is what they are there to stop`,
+          `${self} task resolve ${req.id} --print — first: the card has open questions, and building on a guess is what they are there to stop`,
         )
       }
       break
@@ -410,7 +398,7 @@ function buildFlow(req: AgentRequest, program: string): Flow {
       facts.push(...stepsField(card!), ...questionsField(card!.meta))
       close.push(
         'settle and write the card as `akb guide refine` says',
-        `${raw} update ${req.id} --status ready — once the card validates`,
+        `${self} task update ${req.id} --status ready — once the card validates`,
       )
       break
     }
@@ -422,7 +410,7 @@ function buildFlow(req: AgentRequest, program: string): Flow {
         facts.push(...answeringField(building, self))
         facts.push(...notesField(card!))
         close.push(
-          answeredClose(building, self),
+          'record the effect with one of the delivery answer commands above before closing the questions',
           'do not run `refine` while a delivery is in flight — even if requirements changed, the build carries on in execution once all questions are dropped',
         )
       } else {
@@ -432,7 +420,7 @@ function buildFlow(req: AgentRequest, program: string): Flow {
       break
     }
     case 'approve': {
-      close.push(`${raw} update ${req.id} --status ready — once the card validates`)
+      close.push(`${self} task update ${req.id} --status ready — once the card validates`)
       break
     }
     case 'edit': {
@@ -443,7 +431,7 @@ function buildFlow(req: AgentRequest, program: string): Flow {
         ]),
       )
       close.push(
-        `${raw} update ${req.id} [${EDITABLE_FIELDS}] — the fields are the command's, never hand-written`,
+        `${self} task update --help — see the available card fields and edit the body separately`,
         ...bodyScaffoldClose(),
       )
       break
@@ -534,7 +522,7 @@ function buildFlow(req: AgentRequest, program: string): Flow {
     case 'reflect': {
       for (const id of reflectedCards(req)) readCard(id, 'archive')
       close.push(
-        `${self} raw triage add --title ".." --slug <short-english-slug> --source "#<id>" --studio <that card's studio> --text ".." — one call per proposal, each naming the archived file of the card it traces to`,
+        `${self} triage add --title ".." --slug <short-english-slug> --source "#<id>" --studio <studio-id> --text ".." — one call per proposal, each naming the archived file of the card it traces to`,
         'propose nothing at all when nothing follows: that is a complete result, and most batches are it',
         'change nothing else — no card is created, edited or archived, and no memory file is written',
       )
@@ -586,13 +574,6 @@ export function printFlow(rawReq: AgentRequest, program = 'akb'): MoveResult {
   if (flow.next.length) sections.push({ head: 'handing over — the action to reach for, and when:', lines: flow.next })
 
   say(flow.lead)
-  // The flows below are the shipped text and spell the command `akb` throughout. On a
-  // machine without one, that is a page of lines the reader can't run — so the translation
-  // is given once, before any of them, rather than rewriting text this command didn't write.
-  if (program !== 'akb') {
-    say('')
-    say(`there is no \`akb\` on this machine — every \`akb\` below, in the flows too, is \`${program}\` here.`)
-  }
   for (const section of sections) {
     say('')
     say(section.head)

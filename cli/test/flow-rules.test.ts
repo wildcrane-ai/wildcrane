@@ -12,6 +12,7 @@ import { cmdStartRun } from '../src/commands/run.ts'
 import { activeDelivery } from '../src/lib/agent/deliveries.ts'
 import { RUN_ENV } from '../src/lib/agent/env.ts'
 import { printFlow } from '../src/lib/agent/flow.ts'
+import { studioConfigContext } from '../src/lib/agent/studio-config.ts'
 import { studioRulesBlock, buildPrompt } from '../src/lib/agent/prompts.ts'
 import { openPlan, planRun } from '../src/lib/agent/resolve.ts'
 import { addRuntime, setAgentRuntime } from '../src/lib/agent/runtimes.ts'
@@ -207,15 +208,56 @@ describe("the board's language", () => {
   })
 })
 
-// Studio Notes are read from the current board, never from another Studio or workspace.
-it('applies Studio Notes only to the current board and matching Studio (#859)', () => {
+it('reads Studio configuration at each task entry point and scopes it to the current board (#1043)', () => {
   const note = 'Only when preparing prompts: guide,prompt,agent都需要用英文来写'
+  const configDir = path.join(RULES, 'studios', 'coding')
   fs.mkdirSync(path.join(RULES, 'studios'), { recursive: true })
   fs.writeFileSync(path.join(RULES, 'studios', 'coding.md'), note)
-  assert.ok(studioRulesBlock({ action: 'implement', id: 1 }).includes(note))
-  assert.ok(!studioRulesBlock({ action: 'resolve', studio: 'blog-post' }).includes(note))
+  assert.ok(studioRulesBlock({ action: 'implement', id: 1 }).includes(note), 'legacy fallback')
+  fs.mkdirSync(configDir, { recursive: true })
+  fs.writeFileSync(path.join(configDir, 'config.md'), note)
+  fs.writeFileSync(path.join(RULES, 'config.md'), 'Project default.')
+  for (const action of ['clarify', 'implement', 'resolve'] as const) {
+    const prompt = buildPrompt({ action, id: 1, studio: 'coding' })
+    assert.equal(prompt.split(note).length, 2, action)
+    assert.match(prompt, /Project default\./, action)
+    assert.doesNotMatch(prompt, /Reread the current configuration before Land|without printing secrets|--revision <revision>/, action)
+  }
+  assert.ok(!studioRulesBlock({ action: 'resolve', studio: 'blog-post' }).includes(note), 'different Studio')
+  fs.writeFileSync(path.join(configDir, 'config.md'), '')
+  assert.ok(!studioRulesBlock({ action: 'implement', id: 1 }).includes(note), 'explicit clear')
   const other = path.join(root, 'other')
   fs.mkdirSync(path.join(other, 'docs', 'kanban'), { recursive: true })
   setBoardRoot(other)
-  assert.ok(!studioRulesBlock({ action: 'resolve', studio: 'coding' }).includes(note))
+  assert.doesNotMatch(studioRulesBlock({ action: 'resolve', studio: 'coding' }), /Project default|Only when preparing prompts/)
+})
+
+it('filters shared preferences by project and action, then applies Studio overrides', () => {
+  const config = `---
+preferences:
+  - key: wording
+    projects: [prj_one, prj_two]
+    actions: [chat, refine]
+    text: Shared wording.
+  - actions: [implement]
+    text: Build preference.
+---`
+  const defaults = `---
+preferences:
+  - key: wording
+    text: Project wording.
+---
+Plain project default.`
+  const effective = (project: string, action: string) => studioConfigContext('coding', project, action, file =>
+    file === 'rules/config.md' ? defaults : file.endsWith('/config.md') ? config : undefined)
+  assert.equal(effective('prj_one', 'chat'), 'Plain project default.\n\nShared wording.')
+  assert.equal(effective('prj_two', 'refine'), effective('prj_one', 'chat'))
+  assert.equal(effective('prj_other', 'refine'), 'Plain project default.\n\nProject wording.')
+  assert.equal(effective('prj_one', 'implement'), 'Plain project default.\n\nProject wording.\n\nBuild preference.')
+
+  const legacy = 'Common rule.\n\nThe following existing preferences apply only to tasks in these projects in this workspace: One (`prj_one`). They do not apply to other projects.\n\n- Scoped legacy rule.'
+  const scopedLegacy = (project: string) => studioConfigContext('coding', project, 'chat', file =>
+    file === 'rules/studios/coding.md' ? legacy : undefined)
+  assert.equal(scopedLegacy('prj_one'), 'Common rule.\n\n- Scoped legacy rule.')
+  assert.equal(scopedLegacy('prj_other'), 'Common rule.')
 })

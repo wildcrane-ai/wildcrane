@@ -16,7 +16,6 @@ import { pidAlive } from '../src/lib/lock.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
 import { openRun, patch } from '../src/lib/agent/sessions.ts'
 import { readStore } from '../src/lib/agent/store.ts'
-import { setBoardProvider } from '../src/lib/board/index.ts'
 import {
   endAgent,
   killMarked,
@@ -257,7 +256,6 @@ describe("the run's record", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-stop-'))
     forgetMachineState(root)
     setBoardRoot(root)
-    setBoardProvider(null)
     fs.mkdirSync(path.join(root, 'docs/kanban/todo'), { recursive: true })
     fs.writeFileSync(path.join(root, 'docs/kanban/next-id'), '1\n')
     fs.writeFileSync(path.join(root, 'docs/kanban/todo/README.md'), '# Tasks\n')

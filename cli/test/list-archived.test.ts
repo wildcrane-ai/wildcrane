@@ -42,16 +42,16 @@ function delivery(l: Landing): void {
   fs.writeFileSync(path.join(kanban, 'deliveries', `${deliveryId}.json`), JSON.stringify(record))
 }
 
-function cardFile(folder: string, relPath: string): void {
+function cardFile(folder: string, relPath: string, studio?: string): void {
   const file = path.join(kanban, folder, relPath)
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, '---\ntitle: A card\n---\n')
+  fs.writeFileSync(file, `---\ntitle: A card\n${studio ? `studio: ${studio}\n` : ''}---\n`)
 }
 
 interface Listed {
   id: number
   title: string
-  studio: string
+  studio: string | null
   landedAt: string
   commit: string
   file: string
@@ -76,14 +76,14 @@ describe('list --archived', () => {
     delivery({ cardId: 2, at: T0 + 5 * MINUTE, commit: 'bbb' })
     delivery({ cardId: 1, at: T0, commit: 'aaa', studio: 'coding' })
     cardFile('.archive', '1-first.md')
-    cardFile('.archive', '2-group/root.md')
+    cardFile('.archive', '2-group/root.md', 'blog-post')
 
     assert.deepEqual(await listed(), [
       { id: 1, title: 'Card 1', studio: 'coding', landedAt: formatStamp(new Date(T0)), commit: 'aaa', file: 'docs/kanban/.archive/1-first.md' },
       {
         id: 2,
         title: 'Card 2',
-        studio: 'coding',
+        studio: 'blog-post',
         landedAt: formatStamp(new Date(T0 + 5 * MINUTE)),
         commit: 'bbb',
         file: 'docs/kanban/.archive/2-group/root.md',
@@ -101,12 +101,13 @@ describe('list --archived', () => {
     assert.equal(answer.since, formatStamp(new Date(T0)))
   })
 
-  it('keeps only one studio, counting a record that names none as the default', async () => {
+  it('filters by recorded Studio and leaves unknown historical records unassigned', async () => {
     delivery({ cardId: 1, at: T0, commit: 'aaa' })
     delivery({ cardId: 2, at: T0 + 1, commit: 'bbb', studio: 'blog-post' })
     delivery({ cardId: 3, at: T0 + 2, commit: 'ccc', studio: 'coding' })
 
-    assert.deepEqual((await listed(['--studio', 'coding'])).map((c) => c.id), [1, 3])
+    assert.equal((await listed())[0]?.studio, null)
+    assert.deepEqual((await listed(['--studio', 'coding'])).map((c) => c.id), [3])
     assert.deepEqual((await listed(['--studio', 'blog-post'])).map((c) => c.id), [2])
     await refuses(root, ['list', '--archived', '--studio', 'nope'], /no studio called "nope"/)
   })

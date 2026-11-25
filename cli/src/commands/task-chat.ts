@@ -2,7 +2,6 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { cloud, taskRef, taskUrl, type TaskLocation } from './task'
 import { answer } from '../lib/board-cli'
 import { BoardError, CommandExit, say } from '../lib/io'
-import { readLanguage } from '../lib/machine/settings'
 
 interface Message {
   id: string
@@ -26,13 +25,11 @@ interface Reply { id: string | null; state: string; failure: string | null; exec
 interface Snapshot { task: Task; reply: Reply; messages: Message[]; total: number; truncated: boolean }
 export interface ChatOptions extends TaskLocation { limit?: number; all?: boolean; follow?: boolean; stop?: boolean; json?: boolean }
 
-const text = (en: string, zh: string) => readLanguage() === 'zh' ? zh : en
-const states: Record<string, [string, string]> = {
-  idle: ['Idle', '空闲'], queued: ['Queued', '排队中'], starting: ['Starting', '启动中'], replying: ['Replying', '回复中'],
-  stopping: ['Stopping', '正在停止'], done: ['Done', '已完成'], stopped: ['Stopped', '已停止'], failed: ['Failed', '失败'],
-  offline: ['Offline', '离线'], conflict: ['Conflict', '冲突'],
+const states: Record<string, string> = {
+  idle: 'Idle', queued: 'Queued', starting: 'Starting', replying: 'Replying',
+  stopping: 'Stopping', done: 'Done', stopped: 'Stopped', failed: 'Failed',
+  offline: 'Offline', conflict: 'Conflict',
 }
-const label = (state: string) => states[state] ? text(...states[state]!) : state
 const active = (reply: Reply) => !!reply.id && ['queued', 'starting', 'replying', 'stopping'].includes(reply.state)
 const failed = (reply: Reply) => ['failed', 'conflict', 'offline'].includes(reply.state)
 
@@ -62,21 +59,21 @@ function snapshot(task: Task, chat: Chat, opts: ChatOptions): Snapshot {
 }
 
 function showReply(reply: Reply): void {
-  say(`${text('Chat reply', '聊天回复')}: ${label(reply.state)}`)
-  if (reply.execution) say(`${text('Progress', '进展')}: ${JSON.stringify(reply.execution)}`)
+  say(`Chat reply: ${states[reply.state] ?? reply.state}`)
+  if (reply.execution) say(`Progress: ${JSON.stringify(reply.execution)}`)
   if (reply.failure) say(reply.failure)
 }
 
 function showSnapshot(value: Snapshot): void {
   say(`${value.task.key}  ${taskUrl(value.task.key)}`)
-  say(`${text('Task execution', '任务执行')}: ${value.task.status}`)
+  say(`Task execution: ${value.task.status}`)
   showReply(value.reply)
-  if (!value.total) say(text('No chat history.', '暂无聊天记录。'))
+  if (!value.total) say('No chat history.')
   for (const m of value.messages) {
-    say(`\n${m.created_at}  ${m.role === 'agent' ? text('AI', 'AI') : text('User', '用户')}${m.stopped ? text(' [stopped]', ' [已停止]') : ''}\n${m.body}`)
+    say(`\n${m.created_at}  ${m.role === 'agent' ? 'AI' : 'User'}${m.stopped ? ' [stopped]' : ''}\n${m.body}`)
     if (m.image_names?.length) say(m.image_names.join(', '))
   }
-  if (value.truncated) say(text(`Showing ${value.messages.length} of ${value.total} messages.`, `显示 ${value.total} 条中的 ${value.messages.length} 条。`))
+  if (value.truncated) say(`Showing ${value.messages.length} of ${value.total} messages.`)
 }
 
 async function read(id: string, opts: ChatOptions, signal?: AbortSignal): Promise<{ route: string; chat: Chat; value: Snapshot }> {
@@ -110,10 +107,10 @@ export async function taskChatRead(id: string, opts: ChatOptions): Promise<Recor
     }
   }
   say(`${value.task.key}  ${taskUrl(value.task.key)}`)
-  say(`${text('Task execution', '任务执行')}: ${value.task.status}`)
+  say(`Task execution: ${value.task.status}`)
   showReply(value.reply)
-  say(({ requested: text('Stop requested.', '已请求停止。'), stopped: text('Reply stopped.', '回复已停止。'),
-    not_running: text('No active chat reply.', '暂无活动聊天回复。'), superseded: text('The target reply ended or was replaced.', '目标回复已结束或被替换。') })[stop.state])
+  say(({ requested: 'Stop requested.', stopped: 'Reply stopped.',
+    not_running: 'No active chat reply.', superseded: 'The target reply ended or was replaced.' })[stop.state])
   return { task: value.task, reply: value.reply, stop }
 }
 
@@ -141,9 +138,9 @@ export async function taskChatFollow(id: string, opts: ChatOptions): Promise<voi
           const data = event.data ?? {}
           const content = event.text || (typeof data.text === 'string' ? data.text : '')
           if (content) say(content)
-          else if (event.kind === 'phase' && data.phase) say(`${text('Progress', '进展')}: ${data.phase}`)
+          else if (event.kind === 'phase' && data.phase) say(`Progress: ${data.phase}`)
           else if (event.kind === 'tool_call' || event.kind === 'tool_call_update') {
-            say(`${text('Activity', '当前活动')}: ${[data.title || data.target || data.kind, data.status].filter(Boolean).join(' — ')}`)
+            say(`Activity: ${[data.title || data.target || data.kind, data.status].filter(Boolean).join(' — ')}`)
           }
         }
       }, (error) => { streamError = error })

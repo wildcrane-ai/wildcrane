@@ -5,21 +5,33 @@ import './startup'
 import { readSession } from '../../cli/src/lib/cloud/session'
 import { machineId, machineName, useRunnerHome } from './home'
 import { status, t } from './i18n'
-import { EXIT_OUTDATED, EXIT_REFUSED, EXIT_UPDATE, VERSION } from './protocol'
+import { EXIT_ALREADY_RUNNING, EXIT_OUTDATED, EXIT_REFUSED, EXIT_UPDATE, VERSION } from './protocol'
 import { detectRuntimes } from './runtimes'
 import { startRunner } from './connect'
 import { signIn } from './signin'
 import { settingsAction } from './settings'
 import { openSettings } from './settings-server'
 import { serveSettingsLink } from './settings-link'
+import { acquireMachine, RunnerAlreadyRunning } from './lock'
 
 const tell = (message: unknown) => process.send?.(message)
+const rejectDuplicate = () => {
+  process.stderr.write(`${t.alreadyRunning()}\n`, () => process.exit(EXIT_ALREADY_RUNNING))
+}
 
 async function main(): Promise<void> {
   useRunnerHome()
+  const kind = (['claude-code', 'codex', 'cursor', 'dsh', 'zcode', 'kimi'] as const).find((k) => k === process.env.WILDCRANE_RUNNER_KIND) ?? 'terminal'
+  let lock: Awaited<ReturnType<typeof acquireMachine>>
+  try { lock = await acquireMachine(kind) }
+  catch (error) {
+    if (error instanceof RunnerAlreadyRunning) return rejectDuplicate()
+    throw error
+  }
   if (!readSession()) {
     const failure = await signIn()
     if (failure) {
+      await lock()
       status(t.signInFailed(failure.detail))
       process.exit(EXIT_REFUSED)
     }
@@ -31,13 +43,12 @@ async function main(): Promise<void> {
   const id = machineId()
   const runner = startRunner({
     registration: async () => ({ machineId: id, machineName: machineName(), version: VERSION, runtimes: await detectRuntimes(true) }),
-    kind: (['claude-code', 'codex', 'cursor', 'dsh', 'zcode', 'kimi'] as const).find((k) => k === process.env.WILDCRANE_RUNNER_KIND) ?? 'terminal',
+    kind,
     onConnected: () => tell({ type: 'connected' }),
     onReconnecting: () => tell({ type: 'reconnecting' }),
-    onWaiting: () => tell({ type: 'waiting' }),
     // Tests shorten the job poll, which stands in when Realtime is out of reach.
     pollMs: Number(process.env.WILDCRANE_POLL_MS) || undefined,
-  })
+  }, lock)
 
   process.on('message', (message: { type?: string }) => {
     if (message.type === 'renew') return runner.renew()
@@ -55,6 +66,7 @@ async function main(): Promise<void> {
   }
 
   const stop = await runner.stopped
+  if (stop.reason === 'already-running') return rejectDuplicate()
   if (stop.reason === 'outdated') {
     status(t.outdated())
     process.exit(EXIT_OUTDATED)
