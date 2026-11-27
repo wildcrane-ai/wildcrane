@@ -115,6 +115,7 @@ export interface Flow {
   phase?: 'implement' | 'land'
   land_from?: string
   delivery_id?: string
+  reviewed_implementation?: true
   review_stages?: string[]
   review_revision?: number
   sync_recovery_of?: string

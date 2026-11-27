@@ -28,6 +28,14 @@ async function* terminals(rpc: Rpc, threadId: string, alive: () => boolean, veri
   } while (cursor !== undefined)
 }
 
+export async function activeTerminalHandles(rpc: Rpc, threadId: string, alive: () => boolean): Promise<Map<string, string>> {
+  const handles = new Map<string, string>()
+  for await (const { itemId, processId } of terminals(rpc, threadId, alive, true)) {
+    handles.set(terminalKey(threadId, itemId), processId)
+  }
+  return handles
+}
+
 /** Only native lineage and the current connection can establish ownership. */
 export function codexWork() {
   const children = new Set<string>()

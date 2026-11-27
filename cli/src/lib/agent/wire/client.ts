@@ -96,4 +96,6 @@ export interface RunClient {
   structured?: boolean
   /** Current background work, independently of the main reply. */
   background?(): number | undefined
+  /** Recently confirmed live commands owned by this turn. */
+  activeCommand?(): boolean
 }

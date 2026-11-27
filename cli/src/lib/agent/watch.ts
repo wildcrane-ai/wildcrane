@@ -2,6 +2,7 @@ import { reviewBoundary, taskReviewBoundary } from '../shared/review-plan'
 import { recordDeliveryArchive } from './delivery-archive'
 import { deliveryPhase, SAVED_PREVIEW_FILE_ENV, taskReviewContext } from './env'
 import { connectionIdentity, connectionStopped, endConnection } from './connection-process'
+import { verifyCodexStopState } from './wire/codex-verify'
 import { deliveryFor, findDelivery } from './deliveries'
 import { studioForRun } from './runner'
 import { runnerProject, workspaceTask } from '../cloud/tasks'
@@ -55,6 +56,7 @@ import { executionHeld, executionOf } from '../cloud/execution'
 import {
   claimChanges,
   markBoard,
+  refinementScope,
   refinementRunsAfter,
   type BoardMarks,
   type RefinementFollowUp,
@@ -636,11 +638,29 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
         const stopped = () => client?.managedProcess ? connectionStopped(root) : processesStopped(mark, root)
         const until = Date.now() + STOP_GRACE_MS + STOP_CLOSE_MS
         while (!stopped() && Date.now() < until) await sleep(100)
-        const isStopped = stopped()
+        let isStopped = stopped()
         const session = structured && !spawnFailure && !missingSession ? resumeSessionId(held) : undefined
-        const unconfirmedCleanup = pendingOperations.size > 0 || !subRunsStopped || !!blocker
+        let unconfirmedCleanup = pendingOperations.size > 0 || !subRunsStopped || !!blocker
           || !!renderer?.background?.() || spoken?.cleanup?.status === 'unconfirmed'
           || (silent && (uncertainAtIdle || client?.managedProcess && !idleStopConfirmed(spoken?.cleanup, session)))
+        if (!silent && unconfirmedCleanup && isStopped && subRunsStopped && !blocker && session && record.harness === 'codex') {
+          const verified = await verifyCodexStopState({
+            session,
+            cwd: held.cwd,
+            deliveryId: held.deliveryId,
+            cleanup: spoken?.cleanup ?? held.cleanup,
+            pendingIds: pendingOperations,
+            eventsPath: eventsPathOf(sessionId),
+            cardId: held.cardId,
+            taskId: workspaceTask(),
+            runs: readRuns(),
+            selfSessionId: sessionId,
+            needsBackendProbe: true,
+          })
+          if (!verified.stopped) isStopped = false
+          else if (!verified.ownershipOk) unconfirmedCleanup = true
+          else if (verified.found && verified.settled) unconfirmedCleanup = false
+        }
         const canResetReplay = !silent && isStopped && !unconfirmedCleanup && !pendingOperations.size && !submitted
           && (held.unspawned === true || (structured && !hadEffects && !record.resumedFrom))
         const recovery = missingSession
@@ -843,6 +863,11 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
           r.errorWhy = [...r.errorWhy ?? [], { kind: 'retryUnstarted', refusals: [next] }]
         })
       }
+      if (status === 'error' && failure?.code === 'session_not_found' && spec.missingSessionRecovery &&
+          record.deliveryId && !submitted && !hadEffects && subRunsStopped && !stoppedByUser()) {
+        const next = await resume(sessionId, { deliveryId: record.deliveryId, exact: true, notes: spec.missingSessionRecovery.notes })
+        if ('error' in next) patch(sessionId, r => { r.error = joinNotes(r.error, next.error) })
+      }
       // And the proposer's queue (#534, #1467): every card that reached the archive while this
       // run was up — the one it archived itself, the one its landing completed, a group closed
       // by either. `before` is the board as it stood at the spawn, which is the only record of
@@ -937,6 +962,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       } : undefined,
       childProgress: () => readRuns().reduce((latest, run) =>
         run.parentId === sessionId ? Math.max(latest, run.lastProgressAt ?? 0) : latest, 0),
+      activeCommand: record.action === 'implement' && !land ? client?.activeCommand : undefined,
     })
     touch = watchdog.touch
     observeActivity = watchdog.event
@@ -1035,12 +1061,13 @@ async function followUp(
   const join = (req: AgentRequest): AgentRequest =>
     req.flowId || !flowId ? req : { ...req, flowId }
   try {
+    const allowed = refinementScope(run)
     const asked = refineRunsAfter(readRefineAsks(sessionId))
     for (const req of asked) {
-      if (!run.cloudExecution || req.id === run.cardId) await startRun(join(req))
+      if (allowed(req.id)) await startRun(join(req))
     }
     clearAsks(sessionId)
-    for (const req of runs) await startRun(join(req))
+    for (const req of runs) if (allowed(req.id)) await startRun(join(req))
   } catch {
     // a spawn that wouldn't — the run it followed is done either way
   }

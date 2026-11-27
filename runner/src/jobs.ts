@@ -1300,7 +1300,16 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
       }
       cwd = ws.cwd
       keep(cwd)
-      if (flow?.phase === 'land') await protectLandArchive(ws, id, () => watching().asked() || watching().lost())
+      if (flow?.phase === 'land') {
+        const claimed = await sync('prepare', () => protectLandArchive(ws!, id, () => watching().asked() || watching().lost()))
+        if (!claimed.ok) {
+          if (claimed.code === 'stopped') {
+            await waitingStream?.end()
+            return waitingStream?.asked() ? finishClaimed('stopped') : undefined
+          }
+          throw new Error(syncRefusal(job, claimed))
+        }
+      }
       if (replayingArchive && checkpoint.ending) {
         const { outcome, reason, report } = checkpoint.ending
         await settle(outcome, reason, report)
@@ -2184,10 +2193,11 @@ async function sendBack(job: Job, deps: StepDeps, ws: TaskFolder, report: JobRep
   const lands = job.flow?.phase === 'land' && !report.review
   const closesTask = job.flow && !report.review && !report.landReady && (report.deliveryCompleted ??
     (job.flow.verb === 'implement' || job.flow.verb === 'create' && job.flow.skip_plan))
+  const savesImplementation = job.flow?.phase === 'implement' && (report.landReady || report.deliveryId)
   const taskReply = job.chat && !job.flow
   const result = await sync('publish', async () => {
     const pushed = await push(ws, { id: job.id, machineId: deps.machineId }, () => stream.asked() || stream.lost())
-    if (pushed.ok && (taskReply || closesTask || report.landReady) && !taskAssetsSynced(ws)) {
+    if (pushed.ok && (taskReply || closesTask || savesImplementation) && !taskAssetsSynced(ws)) {
       return { ok: false, code: 'service_unavailable', error: 'Preview uploads are pending.' }
     }
     if (!pushed.ok && writeBlock(pushed)) return pushed

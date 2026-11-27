@@ -204,6 +204,10 @@ if (a === 'raw' && b === 'init') {
     const attempt = (read('reconcile-attempts.json', 0) || 0) + 1
     write('reconcile-attempts.json', attempt)
     const step = Array.isArray(how) ? how[Math.min(attempt - 1, how.length - 1)] : how
+    if (step?.error) {
+      console.log(JSON.stringify({ ok: false, error: step.error }))
+      process.exit(1)
+    }
     if (step?.refuse) fail(step.refuse)
     console.log(JSON.stringify({ ok: true, ...step }))
   } else {
@@ -227,6 +231,21 @@ if (a === 'raw' && b === 'init') {
     console.log(JSON.stringify({ ok: false, error: { kind: 'run-refused', message: how.refuse, reason: how.reason, args: how.args } }))
     process.exit(1)
   }
+  if (how.follow && words.includes('--follow')) {
+    const runs = read('runs.json', [])
+    const prior = runs.find(run => run.action === 'implement' && run.deliveryId === c)
+    if (!prior) fail('Could not find the saved delivery to follow.')
+    const sessionId = `resumed-${prior.sessionId}`
+    const agentSession = 'fresh-delivery-session'
+    runs.push({ ...prior, sessionId, resumeId: agentSession, status: 'done', startedAt: Date.now(),
+      cloudExecution: JSON.parse(process.env.AI4KANBAN_EXECUTION) })
+    write('runs.json', runs)
+    archive(cardOf(prior.cardId))
+    console.log(JSON.stringify({ kind: 'message', data: { text: 'Continued the saved delivery.' } }))
+    console.log(JSON.stringify({ ok: true, sessionId, agentSession, deliveryId: c, status: 'done',
+      delivery: { id: c, status: 'finished', commit: 'abc123', branch: 'main' } }))
+    process.exit(0)
+  }
   const file = cardOf(Number(c))
   const archived = file?.includes(`${path.sep}.archive${path.sep}`)
   if (how.landed && file && !archived) fs.renameSync(file, path.join(board, '.archive', path.basename(file)))
@@ -241,6 +260,23 @@ if (a === 'raw' && b === 'init') {
   if (!previous) fail('no such run')
   const how = plan.resume ?? {}
   if (how.refuse) fail(how.refuse)
+  if (b === 'resume' && words.includes('--require-session') && how.missing) {
+    const summary = 'Antigravity session not found.'
+    if (how.missing === 'preflight') {
+      console.log(JSON.stringify({ ok: false, error: { kind: 'run-refused', reason: 'runSessionMissing', message: summary } }))
+    } else {
+      const sessionId = `missing-${c}`
+      runs.splice(runs.indexOf(previous), 1, {
+        ...previous, sessionId, startedAt: Date.now(), endedAt: Date.now(), status: 'error', pendingWrites: false,
+        cleanup: undefined,
+        resumedFrom: c, cloudExecution: JSON.parse(process.env.AI4KANBAN_EXECUTION),
+        failure: { source: 'runtime', code: 'session_not_found', summary },
+      })
+      write('runs.json', runs)
+      console.log(JSON.stringify({ ok: false, error: { kind: 'run-failed', sessionId, message: summary } }))
+    }
+    process.exit(1)
+  }
   if (b === 'resume' && words.includes('--require-session') && !previous.resumeId) {
     console.log(JSON.stringify({ ok: false, error: { kind: 'run-refused', message: 'the original conversation cannot be resumed', reason: 'runNoSession' } }))
     process.exit(1)
@@ -260,18 +296,20 @@ if (a === 'raw' && b === 'init') {
     if (fs.readFileSync(path.join(board, file), 'utf8') !== content) fail('saved work changed')
   }
   const sessionId = b === 'resume' ? `resumed-${c}` : c
+  const agentSession = words.includes('--new-session') ? 'new-agent-session' : previous.resumeId
   if (b === 'resume') {
     runs.splice(runs.indexOf(previous), 1)
-    runs.push({ ...previous, ...how.spent, sessionId, resumedFrom: c, status: 'done', startedAt: Date.now(),
+    runs.push({ ...previous, ...how.spent, sessionId, resumeId: agentSession, resumedFrom: c, status: 'done', startedAt: Date.now(),
       cloudExecution: JSON.parse(process.env.AI4KANBAN_EXECUTION), ...(how.keep ? { retryHistory: undefined } : {}), result: 'Continued it.' })
     write('runs.json', runs)
   }
   if (words.includes('--events')) console.log(JSON.stringify({ kind: 'message', data: { text: 'Continued the original conversation.' } }))
   const file = cardOf(previous.cardId)
-  if (file && file.includes(`${path.sep}todo${path.sep}`)) archive(file)
+  const resumedDelivery = how.deliveryId ?? previous.deliveryId
+  if (resumedDelivery && file && file.includes(`${path.sep}todo${path.sep}`)) archive(file)
   if (phase === 'land') write('land-resume.json', { session: previous.resumeId, diagnostic: process.env.AI4KANBAN_SYNC_DIAGNOSTIC })
-  console.log(JSON.stringify({ ok: true, sessionId, status: 'done', result: 'Continued it.', agentSession: previous.resumeId,
-    delivery: { id: how.deliveryId ?? previous.deliveryId, status: 'finished', commit: 'abc123', branch: 'main' } }))
+  console.log(JSON.stringify({ ok: true, sessionId, status: 'done', result: 'Continued it.', agentSession,
+    ...(resumedDelivery ? { delivery: { id: resumedDelivery, status: 'finished', commit: 'abc123', branch: 'main' } } : {}) }))
 } else if (a === 'delivery' && b === 'cancel') {
   // A discarded build (#61): its record keeps no checkout.
   const file = path.join(board, 'deliveries', `${c}.json`)

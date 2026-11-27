@@ -162,8 +162,10 @@ export interface SignInOptions {
 }
 
 function sameToken(a: string | null, b: string): boolean {
-  if (!a || a.length !== b.length) return false
-  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b))
+  if (!a) return false
+  const received = Buffer.from(a)
+  const expected = Buffer.from(b)
+  return received.length === expected.length && crypto.timingSafeEqual(received, expected)
 }
 
 /** Sign in through the browser and write the session. Resolves to why it failed, or null. */
@@ -225,13 +227,18 @@ export async function signIn(options: SignInOptions = {}): Promise<SignInFailure
     const params = asked.searchParams
     const code = params.get('code')
     const error = params.get('error')
-    const stateOk = sameToken(params.get('state'), oauthState)
-    const failure: SignInFailure | null = !stateOk
-      ? { why: 'other', detail: 'invalid oauth state' }
-      : code
-      ? await exchange(code, verifier, generation, options.signal)
-      : { why: error === 'access_denied' ? 'denied' : 'other',
-          detail: params.get('error_description') || error || 'no code came back' }
+    const errorCode = params.get('error_code')
+    let failure: SignInFailure | null
+    if (!sameToken(params.get('state'), oauthState)) {
+      failure = { why: 'other', detail: 'invalid oauth state' }
+    } else if (code && !error && errorCode === null) {
+      failure = await exchange(code, verifier, generation, options.signal)
+    } else {
+      failure = {
+        why: error === 'access_denied' && errorCode === null ? 'denied' : 'other',
+        detail: params.get('error_description') || errorCode || error || 'no code came back',
+      }
+    }
     const outcome = !failure ? 'ok' : failure.why === 'denied' ? 'denied' : 'failed'
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     res.end(PAGE(outcome, lang))
@@ -242,14 +249,15 @@ export async function signIn(options: SignInOptions = {}): Promise<SignInFailure
   expectedOrigin = `http://127.0.0.1:${port}`
 
   const { supabaseUrl } = cloudEndpoints()
+  const callback = new URL('/signed-in', expectedOrigin)
+  callback.searchParams.set('state', oauthState)
   const authorize = (provider: Provider) => {
     const url = new URL(`${supabaseUrl}/auth/v1/authorize`)
     url.searchParams.set('provider', provider)
-    url.searchParams.set('redirect_to', `http://127.0.0.1:${port}/signed-in`)
+    url.searchParams.set('redirect_to', callback.toString())
     if (provider === 'github') url.searchParams.set('scopes', 'user:email')
     url.searchParams.set('code_challenge', challenge)
     url.searchParams.set('code_challenge_method', 's256')
-    url.searchParams.set('state', oauthState)
     return url.toString().replace(/&/g, '&amp;')
   }
   const choose = `http://127.0.0.1:${port}/`

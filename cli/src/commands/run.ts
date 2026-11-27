@@ -370,7 +370,7 @@ export async function cmdReleaseDelivery(cardId: number): Promise<MoveResult> {
 }
 
 /** Resume the saved conversation or inspect existing results in a fresh run. */
-export async function cmdResumeDelivery(named: string): Promise<MoveResult> {
+export async function cmdResumeDelivery(named: string, opts: { follow?: boolean; events?: boolean } = {}): Promise<MoveResult> {
   const res = await resumeDelivery(named)
   if (!res.ok) die(res.error ?? 'that delivery could not be carried on', {
     kind: 'run-refused', reason: res.reason, args: res.args,
@@ -383,6 +383,7 @@ export async function cmdResumeDelivery(named: string): Promise<MoveResult> {
     : await startRun({ action: 'implement', id: delivery?.cardId ?? undefined, deliveryId, title: delivery?.title })
   if ('error' in started) die(started.error, { kind: 'run-refused', reason: started.reason, args: started.args })
   if (!started.spawned) die('Could not start the resumed delivery.', { kind: 'spawn-failed' })
+  if (opts.follow) return { deliveryId, ...await followStarted(started.run.sessionId, 'akb', opts.events === true) }
   return { deliveryId, sessionId: started.run.sessionId }
 }
 

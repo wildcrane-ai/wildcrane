@@ -378,8 +378,15 @@ Service: local Runner on `127.0.0.1`. The settings-link server uses fixed port 4
 | `GET /` | Ephemeral sign-in HTML | — | Local sign-in window | Local authentication page; handler does not constrain method | [signin.ts](../../runner/src/signin.ts) |
 | `POST /send` | Send email code | — | Local sign-in window | Authentication transport; G17 | [signin.ts](../../runner/src/signin.ts) |
 | `POST /verify` | Verify email code | — | Local sign-in window | Authentication transport | [signin.ts](../../runner/src/signin.ts) |
-| `GET /signed-in` | OAuth code/PKCE callback | — | Provider redirect | Callback; handler does not constrain method | [signin.ts](../../runner/src/signin.ts) |
+| `GET /signed-in?state={state}` | OAuth PKCE code or error callback | — | Supabase redirect | Validates the sign-in state | [signin.ts](../../runner/src/signin.ts) |
 | `POST /` | Ephemeral reply approval bridge, bearer, rejects Origin | `task approve <task> --revision <n> [--stage <id>]` | Task reply: request approval | Covered indirectly; not a settings-server route | [reply-approval.ts](../../runner/src/reply-approval.ts) |
+
+Runner sends Supabase `GET /auth/v1/authorize` with `provider=github` or `provider=google`,
+`code_challenge`, `code_challenge_method=s256`, and a URL-encoded
+`redirect_to=http://127.0.0.1:{port}/signed-in?state={state}`. GitHub adds `scopes=user:email`.
+The callback exchanges `code` through Cloud's PKCE relay after validating `state`.
+Error callbacks carry `error` and optionally `error_code` and `error_description`.
+`error=access_denied` without `error_code` shows cancellation. Other errors show sign-in failure.
 
 ## Routing boundaries
 

@@ -26,7 +26,7 @@ import {
 } from '../src/lib/agent/sessions.ts'
 import type { AgentAction, RunRecord } from '../src/lib/agent/types.ts'
 import { withStore } from '../src/lib/agent/store.ts'
-import { setBoardRoot } from '../src/lib/paths.ts'
+import { setBoardDir, setBoardRoot } from '../src/lib/paths.ts'
 import { forgetMachineState } from './helpers/board.ts'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-refine-'))
@@ -344,6 +344,22 @@ describe('a revise', () => {
 })
 
 describe('an explicit refine handoff', () => {
+  it('dispatches maintenance follow-ups only on a local board or within the leased card', () => {
+    const maintenance = run('prune-memory', 1, { cardId: null, refineRound: undefined })
+    const before = markBoard()
+    writeCard()
+    assert.deepEqual(closing(maintenance, before).runs.map(req => req.id), [7])
+    const cloudBoard = path.join(root, '.akb', 'kanban')
+    fs.mkdirSync(cloudBoard, { recursive: true })
+    fs.cpSync(path.join(root, 'docs', 'kanban', 'todo'), path.join(cloudBoard, 'todo'), { recursive: true })
+    fs.writeFileSync(path.join(cloudBoard, '..', 'base.json'), JSON.stringify({ project: 'project' }))
+    setBoardDir(cloudBoard)
+    assert.deepEqual(refinementRunsAfter(maintenance, [7], before).runs, [])
+    assert.deepEqual(refinementRunsAfter({
+      ...maintenance, cloudExecution: { job: 'maintenance', machine: 'runner' },
+    }, [7], before).runs, [])
+  })
+
   it('writes one ask down however many times the run asks', () => {
     writeCard()
     const opened = openRun({ action: 'edit', id: 7, title: 'A card to refine' }, 'prompt', [])

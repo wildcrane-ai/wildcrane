@@ -107,45 +107,73 @@ function dayDir(root: string, at: number): string {
   return join(root, String(day.getFullYear()), pad(day.getMonth() + 1), pad(day.getDate()))
 }
 
+function matchesRollout(name: string, threadId: string): boolean {
+  return name.startsWith('rollout-') && name.endsWith('.jsonl')
+    && (name.endsWith(`-${threadId}.jsonl`) || name.includes(`-${threadId}_`))
+}
+
 // The newest rollout whose name ends in this thread id. Newest matters because a resumed
 // run reports the thread it continued: if Codex ever files that continuation separately, the
 // answer wanted is the one the run just wrote.
-function findRollout(threadId: string): string | undefined {
-  const home = process.env.CODEX_HOME?.trim() || join(homedir(), '.codex')
+export function findCodexRollout(threadId: string, codexHome?: string): string | undefined {
+  if (!threadId) return undefined
+  const customHome = codexHome?.trim() || process.env.CODEX_HOME?.trim()
+  const home = customHome || join(homedir(), '.codex')
   const root = join(home, 'sessions')
-  const tail = `-${threadId}.jsonl`
-  const minted = parseInt(threadId.replace(/-/g, '').slice(0, 12), 16)
+  const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(threadId)
+  const minted = uuidLike ? parseInt(threadId.replace(/-/g, '').slice(0, 12), 16) : Number.NaN
   const days = new Set<string>()
   for (const at of [Date.now(), ...(Number.isFinite(minted) && minted > 0 ? [minted] : [])]) {
     for (const shift of [0, -1, 1]) days.add(dayDir(root, at + shift * 86_400_000))
   }
-  let newest: { path: string; at: number } | undefined
-  for (const dir of days) {
+  let newestPath: string | undefined
+  let newestAt = -1
+  const considerDir = (dir: string) => {
     let names: string[]
     try {
       names = readdirSync(dir)
     } catch {
-      continue
+      return
     }
     for (const name of names) {
-      if (!name.startsWith('rollout-') || !name.endsWith(tail)) continue
+      if (!matchesRollout(name, threadId)) continue
       const path = join(dir, name)
       try {
         const at = statSync(path).mtimeMs
-        if (!newest || at > newest.at) newest = { path, at }
+        if (at > newestAt) {
+          newestPath = path
+          newestAt = at
+        }
       } catch {
         // Gone between the listing and the stat. Nothing to read.
       }
     }
   }
-  return newest?.path
+  for (const dir of days) considerDir(dir)
+  if (newestPath || (!customHome && !uuidLike)) return newestPath
+  const subdirs = (dir: string): string[] => {
+    try {
+      return readdirSync(dir).map((n) => join(dir, n))
+    } catch {
+      return []
+    }
+  }
+  for (const year of subdirs(root)) {
+    for (const month of subdirs(year)) {
+      for (const day of subdirs(month)) {
+        if (!days.has(day)) considerDir(day)
+      }
+    }
+  }
+  considerDir(join(home, 'archived_sessions'))
+  return newestPath
 }
 
 /** The model and provider behind a Codex thread, or nothing when its rollout can't be read.
  *  Safe to call while the run is still going: the model lands seconds into a turn, and a
  *  read that comes too early simply finds nothing yet. */
 export function readCodexRunFacts(threadId: string): CodexRunFacts | undefined {
-  const path = findRollout(threadId)
+  const path = findCodexRollout(threadId)
   if (!path) return undefined
   let raw: string
   try {

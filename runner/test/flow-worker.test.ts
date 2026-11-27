@@ -286,6 +286,91 @@ for (const pendingWrites of [false, true]) it(`preserves W-1198 background verif
   assert.equal(fs.readFileSync(path.join(folder(), '.akb/kanban', file), 'utf8'), saved)
 })
 
+for (const mode of ['available', 'preflight', 'runtime', 'no-id']) it(`resumes the W-1226 idle timeout from saved progress (${mode})`, async () => {
+  const failure = { code: 'idle_timeout', source: 'runtime', summary: 'No verifiable progress for 5 minutes (idle timeout).' }
+  const file = 'saved-result.txt'
+  const saved = 'Completed work before the timeout'
+  const session = 'original-antigravity-session'
+  const deliveryId = 'original-delivery'
+  const attempt = 'run-implement-1'
+  process.env.FAKE_AKB = JSON.stringify({
+    implement: {
+      agentSession: mode === 'no-id' ? undefined : session, writes: { [file]: saved },
+      end: { status: 'error', deliveryId, failure, retryPause: 'unsafe', pendingWrites: true,
+        cleanup: { status: 'unconfirmed', execution: attempt, kept: [] },
+        retryHistory: [{ ...failure, attempt: 1, at: new Date().toISOString(), sessionAction: 'pause_unsafe' }],
+      },
+    },
+    resume: { missing: ['preflight', 'runtime'].includes(mode) ? mode : undefined, keep: { [file]: saved } },
+  })
+  const dispatch = { task: 'task_1', project: 'prj_1', projectDir: folder(), number: 2,
+    runtime: 'antigravity', flow: { studio: 'wf_builtin_coding', verb: 'implement' } } as const
+  const original = cloud.dispatch({ ...dispatch, id: 'job' })
+  launch()
+  await until(() => original.state === 'finished', 15_000)
+  assert.equal(original.outcome, 'failed', log)
+  assert.equal(original.report?.failure?.safeToRetry, false)
+  assert.equal(original.report?.failure?.code, 'idle_timeout')
+
+  const resumed = cloud.dispatch({ ...dispatch, id: `resumed-${mode}`,
+    flow: { ...dispatch.flow, resume: true, resume_execution: original.id } })
+  await until(() => resumed.state === 'finished', 20_000)
+  await reclaimed(recordOf(resumed.id))
+  assert.equal(resumed.outcome, 'done', `${log}\n${resumed.reason}`)
+  assert.equal(resumed.claims, 1)
+  assert.equal(resumed.report?.session, mode === 'available' ? session : 'new-agent-session')
+  assert.equal(resumed.report?.deliveryId, deliveryId)
+  const resumes = calls().filter(args => args[1] === 'run' && args[2] === 'resume')
+  assert.deepEqual(resumes.map(args => args.slice(3, 5)), [
+    ...(mode === 'no-id' ? [] : [[attempt, '--require-session']]),
+    ...(mode === 'available' ? [] : [[mode === 'runtime' ? `missing-${attempt}` : attempt, '--new-session']]),
+  ])
+  assert.equal(commands('implement').length, 1)
+  assert.equal(fs.readFileSync(path.join(folder(), '.akb/kanban', file), 'utf8'), saved)
+})
+
+for (const scenario of ['confirmed', 'legacy_terminal', 'running_item', 'foreign_session'] as const) {
+  it(`handles manual resume after a stopped Codex run (${scenario})`, async () => {
+    const file = 'todo/0002-saved.md'
+    const saved = '# Saved work\n\nKeep me.\n'
+    const session = 'codex-thread-stopped'
+    const detail = 'Execution stopped; no further cleanup turn was submitted.'
+    const cleanup = scenario === 'confirmed' || scenario === 'foreign_session'
+      ? { status: 'confirmed', kept: [], items: [] }
+      : { status: 'unconfirmed', detail, kept: [], items: [{ id: 'terminal:t:1', threadId: session, status: scenario === 'running_item' ? 'running' : 'completed' }] }
+    process.env.FAKE_AKB = JSON.stringify({
+      implement: { agentSession: session, writes: { [file]: saved }, end: { status: 'stopped', deliveryId: 'original-delivery', cleanup } },
+      resume: { keep: { [file]: saved } },
+    })
+    const dispatch = { task: 'task_1', project: 'prj_1', projectDir: folder(), number: 2,
+      runtime: 'codex', flow: { studio: 'wf_builtin_coding', verb: 'implement' } } as const
+    const original = cloud.dispatch({ ...dispatch, id: 'job-stopped' })
+    launch()
+    await until(() => original.state === 'finished', 15_000)
+    if (scenario === 'foreign_session') {
+      const runsFile = path.join(folder(), '.akb/kanban/.fake/runs.json')
+      const runs = JSON.parse(fs.readFileSync(runsFile, 'utf8'))
+      runs.push({ sessionId: 'foreign-session', cardId: 999, action: 'implement', status: 'done', resumeId: session })
+      fs.writeFileSync(runsFile, JSON.stringify(runs))
+    }
+
+    const resumed = cloud.dispatch({ ...dispatch, id: 'job-resumed',
+      flow: { ...dispatch.flow, resume: true, resume_execution: original.id } })
+    await until(() => resumed.state === 'finished', 15_000)
+    if (scenario === 'running_item' || scenario === 'foreign_session') {
+      assert.equal(resumed.outcome, 'failed', log)
+      assert.equal(resumed.reason, 'task_recovery_unverified')
+      assert.ok(!calls().some(args => args[1] === 'run' && args[2] === 'resume'))
+    } else {
+      assert.equal(resumed.outcome, 'done', `${log}\n${resumed.reason}`)
+      assert.equal(resumed.report?.session, session)
+      assert.equal(resumed.report?.deliveryId, 'original-delivery')
+      assert.ok(calls().some(args => args.slice(0, 4).join(' ') === 'raw run resume run-implement-1' && args.includes('--require-session')))
+    }
+    assert.equal(fs.readFileSync(path.join(folder(), '.akb/kanban', file), 'utf8'), saved)
+  })
+}
+
 for (const workerExited of [false, true]) it(`retains a completed result while its upload is offline (${workerExited ? 'worker exit, #903' : 'Runner restart, #693'})`, async () => {
   process.env.FAKE_AKB = JSON.stringify({ refine: { gates: [gate(1)], result: 'Pending upload', spent: { costUsd: 0.25 } } })
   const job = cloud.dispatch({ id: 'job', task: 'task_1', project: 'prj_1', projectDir: folder(), number: 2,

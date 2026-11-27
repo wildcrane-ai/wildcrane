@@ -7,14 +7,15 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
-import { openResume, openRun, patch, readSpec } from '../src/lib/agent/sessions.ts'
+import { openResume, openRun, patch, readSpec, listRuns } from '../src/lib/agent/sessions.ts'
 import { endDelivery, syncAudit } from '../src/lib/agent/deliveries.ts'
 import { startRun } from '../src/lib/agent/start.ts'
 import { approvalRequest } from '../src/lib/agent/approve.ts'
 import { cmdResumeDelivery, cmdStartRun } from '../src/commands/run.ts'
 import { BoardError, startCollecting, stopCollecting } from '../src/lib/io.ts'
-import { readStore, withStore } from '../src/lib/agent/store.ts'
+import { eventsPathOf, readStore, withStore } from '../src/lib/agent/store.ts'
 import { watchRun } from '../src/lib/agent/watch.ts'
+import { DELIVERY_PHASE_ENV } from '../src/lib/agent/env.ts'
 import type { RunRecord, RunStatus } from '../src/lib/agent/types.ts'
 import { cardFile } from '../src/lib/cards.ts'
 import { DELIVERIES, setBoardRoot } from '../src/lib/paths.ts'
@@ -111,7 +112,7 @@ describe('交付的构建会话续接（#368）', () => {
     ['pending operation results', { pendingWrites: true }, /The operation results could not be confirmed complete/],
     ['unconfirmed cleanup', { cleanup: { status: 'unconfirmed', execution: 'original', kept: ['background'] } }, /The operation results could not be confirmed complete/],
     ['a live original process', { managedProcess: true, agentPid: process.pid }, /The previous execution could not be confirmed stopped/],
-    ['a missing original session', { failure: { source: 'runtime', code: 'session_not_found', summary: 'Session not found' } }, /The original session is unavailable/],
+    ['a session mismatch', { failure: { source: 'runtime', code: 'session_mismatch', summary: 'Session mismatch' } }, /The original session is unavailable/],
   ] satisfies [string, Partial<RunRecord>, RegExp][]) {
     for (const command of ['task implement', 'delivery resume'] as const) {
       it(`${command} preserves the delivery and all saved work with ${name}`, async () => {
@@ -136,6 +137,62 @@ describe('交付的构建会话续接（#368）', () => {
       })
     }
   }
+
+  for (const state of ['active', 'released', 'missing_workspace'] as const) {
+    it(`takes over a delivery with a confirmed missing session (${state})`, async () => {
+      process.env[DELIVERY_PHASE_ENV] = 'implement'
+      try {
+        const old = build('error', 'gone')
+        const work = path.join(old.cwd!, 'saved.txt')
+        fs.writeFileSync(work, 'saved work')
+        patch(old.sessionId, run => { run.failure = { source: 'runtime', code: 'session_not_found', summary: 'Session not found' } })
+        if (state === 'released') endDelivery(old.deliveryId!, 'failed')
+        if (state === 'missing_workspace') {
+          fs.renameSync(old.cwd!, path.join(root, 'saved-work'))
+          const before = readStore()
+          await assert.rejects(cmdResumeDelivery(old.deliveryId!), /saved delivery workspace is unavailable/)
+          assert.deepEqual(readStore(), before)
+          assert.equal(fs.readFileSync(path.join(root, 'saved-work', 'saved.txt'), 'utf8'), 'saved work')
+          return
+        }
+        const next = await openResume(old.sessionId, state === 'released'
+          ? { fresh: true, exact: true }
+          : { deliveryId: old.deliveryId!, exact: true })
+        if ('error' in next) throw Error(next.error)
+        assert.equal(next.run.deliveryId, old.deliveryId)
+        assert.equal(next.run.cwd, old.cwd)
+        assert.equal(next.run.flowId, old.flowId)
+        assert.equal(next.run.resumeId, undefined)
+        assert.ok(!next.run.argv?.includes('--resume'))
+        assert.equal(readStore().deliveries[0]?.status, 'active')
+        assert.match(next.spec.prompt, new RegExp(old.deliveryId!))
+        assert.equal(fs.readFileSync(work, 'utf8'), 'saved work')
+      } finally {
+        delete process.env[DELIVERY_PHASE_ENV]
+      }
+    })
+  }
+
+  it('resumes a stopped Codex run with legacy stopped cleanup when terminal, and blocks running work or foreign sessions', async () => {
+    runtime('codex')
+    const old = build('stopped', 'codex-thread-1261')
+    const detail = 'Execution stopped; no further cleanup turn was submitted.'
+    patch(old.sessionId, run => {
+      run.cleanup = { status: 'unconfirmed', execution: 'orig', kept: [], detail, items: [{ id: 'terminal:main:c1', threadId: 'main', status: 'running' }] }
+    })
+    await assert.rejects(cmdStartRun('implement', [1, ['Keep the work']], {}), /The operation results could not be confirmed complete/)
+    patch(old.sessionId, run => {
+      run.cleanup = { status: 'unconfirmed', execution: 'orig', kept: [], detail, items: [{ id: 'terminal:main:c1', threadId: 'main', status: 'completed' }] }
+    })
+    withStore(store => store.runs.push({ ...old, sessionId: 'foreign-run', cardId: 99, deliveryId: undefined, resumeId: 'codex-thread-1261' }))
+    await assert.rejects(cmdStartRun('implement', [1, ['Keep the work']], {}), /The session belongs to another task/)
+    withStore(store => { const i = store.runs.findIndex(r => r.sessionId === 'foreign-run'); if (i >= 0) store.runs.splice(i, 1) })
+    await assert.rejects(cmdStartRun('implement', [1, ['Keep the work']], {}), { kind: 'spawn-failed' })
+    const { runs } = readStore()
+    assert.equal(runs.at(-1)?.resumedFrom, old.sessionId)
+    assert.equal(runs.at(-1)?.resumeId, 'codex-thread-1261')
+    assert.equal(runs.at(-1)?.cwd, old.cwd)
+  })
 
   it('rechecks recovery evidence under the delivery write lock', async () => {
     const old = build()
@@ -323,7 +380,7 @@ describe('交付的构建会话续接（#368）', () => {
     })
   }
 
-  it('ACP 原会话丢失时保留任务并等待明确接手', async () => {
+  for (const requireSession of [true, false]) it(`honors the ACP session requirement when the saved session is missing (${requireSession})`, async () => {
     const agent = path.join(root, 'acp.mjs')
     const trace = path.join(root, 'methods.jsonl')
     fs.writeFileSync(agent, `import fs from 'node:fs';import readline from 'node:readline';
@@ -337,17 +394,28 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
       runtimes: [{ id: 'global', name: 'Global', harness: 'opencode', settings: { command: `node ${agent}` } }],
     }))
     const old = build('stopped', 'original')
-    const opened = await openResume(old.sessionId, { deliveryId: old.deliveryId! })
+    const opened = await openResume(old.sessionId, { deliveryId: old.deliveryId!, requireSession, notes: 'Keep the draft' })
     if ('error' in opened) throw new Error(opened.error)
     patch(opened.run.sessionId, (r) => { r.pid = process.pid })
-    await watchRun(opened.run.sessionId, async () => ({ error: '不应启动新会话' }))
+    let resumed: Awaited<ReturnType<typeof openResume>> | undefined
+    await watchRun(opened.run.sessionId, async (id, opts) => {
+      assert.equal(requireSession, false)
+      const next = resumed = await openResume(id, opts)
+      if ('error' in next) return next
+      return { run: next.run, spawned: true }
+    })
     const calls = fs.readFileSync(trace, 'utf8').trim().split('\n').map((s) => JSON.parse(s))
     assert.deepEqual(calls.map((m) => m.method), ['initialize', 'session/load'])
     assert.equal(calls[1].params.sessionId, 'original')
     const rows = readStore().runs
     assert.equal(rows.length, 1)
-    assert.equal(rows[0]!.status, 'error')
-    assert.equal(rows[0]!.resumeId, 'original')
+    assert.equal(rows[0]!.status, requireSession ? 'error' : 'running')
+    assert.equal(rows[0]!.resumeId, requireSession ? 'original' : undefined)
+    if (!requireSession) {
+      assert.ok(resumed && 'spec' in resumed)
+      assert.match(resumed.spec.prompt, /Keep the draft/)
+      assert.equal(resumed.run.deliveryId, old.deliveryId)
+    }
   })
 
   it('同卡片的旧交付不会被新交付当作续跑来源', async () => {
@@ -357,5 +425,151 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     if ('error' in started) throw new Error(started.error)
     assert.equal(started.run.resumedFrom, undefined)
     assert.notEqual(started.run.deliveryId, old.deliveryId)
+  })
+
+  it('re-verifies real Codex stop state, command results, and ownership instead of deadlocking on static markers (#1258, #1263, #1270)', async (t) => {
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-codex-home-'))
+    const prevCodexHome = process.env.CODEX_HOME
+    process.env.CODEX_HOME = codexHome
+    t.after(() => {
+      if (prevCodexHome === undefined) delete process.env.CODEX_HOME
+      else process.env.CODEX_HOME = prevCodexHome
+      fs.rmSync(codexHome, { recursive: true, force: true })
+    })
+    const writeRollout = (threadId: string, lines: Record<string, unknown>[]) => {
+      const now = new Date()
+      const pad = (n: number) => String(n).padStart(2, '0')
+      const dir = path.join(codexHome, 'sessions', String(now.getFullYear()), pad(now.getMonth() + 1), pad(now.getDate()))
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, `rollout-2026-11-27T12-00-00-${threadId}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
+    }
+
+    runtime('codex')
+    const threadId = '019d7482-0000-7000-8000-000000001258'
+    const old = build('stopped', threadId)
+    const savedWork = path.join(old.cwd!, 'feature-1258.ts')
+    fs.writeFileSync(savedWork, 'export const preserved = true\n')
+    fs.mkdirSync(path.dirname(eventsPathOf(old.sessionId)), { recursive: true })
+    fs.writeFileSync(
+      eventsPathOf(old.sessionId),
+      `${JSON.stringify({ kind: 'tool_call', data: { toolCallId: 'exec-1', title: 'Command', kind: 'execute', status: 'in_progress' } })}\n`,
+    )
+    patch(old.sessionId, (r) => {
+      r.managedProcess = true
+      r.pendingWrites = true
+      r.retryPause = 'unsafe'
+      r.retryHistory = [{ attempt: 1, source: 'runtime', summary: 'Stopped mid-turn', sessionAction: 'pause_unsafe', at: new Date().toISOString() }]
+      r.cleanup = {
+        status: 'unconfirmed',
+        execution: 'exec_1258',
+        detail: 'Execution stopped; no further cleanup turn was submitted.',
+        kept: [],
+        items: [{ id: `terminal:${threadId}:exec-1`, threadId, processId: '70879', status: 'running' }],
+      }
+    })
+
+    // Before exec-1 has a final result in rollout, keep paused and preserve saved work.
+    writeRollout(threadId, [
+      { type: 'session_meta', payload: { id: threadId, cwd: old.cwd } },
+      { type: 'event_msg', payload: { type: 'task_started' } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'call_1', arguments: '{"cmd":"rg pattern"}' } },
+      { type: 'event_msg', payload: { type: 'item_started', item: { type: 'CommandExecution', id: 'exec-1', status: 'inProgress' } } },
+    ])
+    assert.equal((await listRuns()).find((r) => r.sessionId === old.sessionId)?.canResume, false)
+    const refusedUnsettled = await openResume(old.sessionId, { deliveryId: old.deliveryId! })
+    assert.ok('error' in refusedUnsettled)
+    assert.match(refusedUnsettled.error, /The operation results could not be confirmed complete/)
+    assert.equal(fs.readFileSync(savedWork, 'utf8'), 'export const preserved = true\n')
+
+    // Unified-exec background session still running without exit also stays paused.
+    writeRollout(threadId, [
+      { type: 'session_meta', payload: { id: threadId, cwd: old.cwd } },
+      { type: 'event_msg', payload: { type: 'task_started' } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'call_1', arguments: '{"cmd":"sleep 30"}' } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_1', output: 'Process running with session ID 70879' } },
+      { type: 'event_msg', payload: { type: 'item_started', item: { type: 'CommandExecution', id: 'exec-1', process_id: '70879', status: 'inProgress' } } },
+      { type: 'event_msg', payload: { type: 'turn_aborted', reason: 'interrupted' } },
+    ])
+    const refusedBg = await openResume(old.sessionId, { deliveryId: old.deliveryId! })
+    assert.ok('error' in refusedBg)
+    assert.match(refusedBg.error, /The operation results could not be confirmed complete/)
+
+    // Once rollout records final command completion + output, Stop -> Resume succeeds in original session & worktree (#1258).
+    writeRollout(threadId, [
+      { type: 'session_meta', payload: { id: threadId, cwd: old.cwd } },
+      { type: 'event_msg', payload: { type: 'task_started' } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'call_1', arguments: '{"cmd":"rg pattern"}' } },
+      { type: 'event_msg', payload: { type: 'item_started', item: { type: 'CommandExecution', id: 'exec-1', process_id: '70879', status: 'inProgress' } } },
+      { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'CommandExecution', id: 'exec-1', process_id: '70879', status: 'completed', exit_code: 0 } } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_1', output: 'Process exited with code 0' } },
+      { type: 'event_msg', payload: { type: 'turn_aborted', reason: 'interrupted' } },
+    ])
+
+    // Live native lease still blocks until the native proxy exits.
+    const nativeLeaseDir = path.join(process.env.AI4KANBAN_HOME!, 'codex-native', 'threads', 'inst-1')
+    fs.mkdirSync(nativeLeaseDir, { recursive: true })
+    const crypto = await import('node:crypto')
+    const leasePath = path.join(nativeLeaseDir, `${crypto.createHash('sha256').update(threadId).digest('hex')}.json`)
+    fs.writeFileSync(leasePath, JSON.stringify({ pid: process.pid, lease: 'l1', instance: 'inst-1', threads: [threadId] }))
+    const refusedLive = await openResume(old.sessionId, { deliveryId: old.deliveryId! })
+    assert.ok('error' in refusedLive)
+    assert.match(refusedLive.error, /The previous execution could not be confirmed stopped/)
+    fs.rmSync(leasePath, { force: true })
+
+    // Foreign worktree cwd blocks ownership check.
+    writeRollout(threadId, [
+      { type: 'session_meta', payload: { id: threadId, cwd: path.join(root, '.akb', 'worktrees', 'other-delivery', 'work') } },
+      { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'CommandExecution', id: 'exec-1', process_id: '70879', status: 'completed', exit_code: 0 } } },
+    ])
+    const refusedForeign = await openResume(old.sessionId, { deliveryId: old.deliveryId! })
+    assert.ok('error' in refusedForeign)
+    assert.match(refusedForeign.error, /The session belongs to another task/)
+
+    // Restore matching cwd: listRuns, manual resume, and planning carry all verify cleanly and preserve work.
+    writeRollout(threadId, [
+      { type: 'session_meta', payload: { id: threadId, cwd: old.cwd } },
+      { type: 'event_msg', payload: { type: 'task_started' } },
+      { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'call_1', arguments: '{"cmd":"rg pattern"}' } },
+      { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'CommandExecution', id: 'exec-1', process_id: '70879', status: 'completed', exit_code: 0 } } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_1', output: 'Process exited with code 0' } },
+      { type: 'event_msg', payload: { type: 'turn_aborted', reason: 'interrupted' } },
+    ])
+    assert.equal((await listRuns()).find((r) => r.sessionId === old.sessionId)?.canResume, true)
+    const resumed = await openResume(old.sessionId, { deliveryId: old.deliveryId! })
+    if ('error' in resumed) assert.fail(resumed.error)
+    assert.equal(resumed.run.resumeId, threadId)
+    assert.equal(resumed.run.cwd, old.cwd)
+    assert.equal(resumed.run.deliveryId, old.deliveryId)
+    assert.equal(fs.readFileSync(savedWork, 'utf8'), 'export const preserved = true\n')
+
+    // #1263 planning session stopped mid-rg with static pendingWrites/unconfirmed cleanup carries original session once rollout settles.
+    await move(root, ['create', '--title', '规划恢复'])
+    const planThread = '019d7482-0000-7000-8000-000000001263'
+    const clarify = openRun({ action: 'clarify', id: 2 }, 'clarify', [])
+    if ('error' in clarify) assert.fail(clarify.error)
+    fs.writeFileSync(clarify.run.logPath, 'clarify log\n')
+    patch(clarify.run.sessionId, (r) => {
+      r.status = 'stopped'
+      r.endedAt = Date.now()
+      r.resumeId = planThread
+      r.managedProcess = true
+      r.pendingWrites = true
+      r.cleanup = {
+        status: 'unconfirmed',
+        execution: 'exec_1263',
+        detail: 'Execution stopped; no further cleanup turn was submitted.',
+        kept: [],
+        items: [{ id: `terminal:${planThread}:exec-rg`, threadId: planThread, processId: '8812', status: 'running' }],
+      }
+    })
+    writeRollout(planThread, [
+      { type: 'session_meta', payload: { id: planThread, cwd: clarify.run.cwd } },
+      { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'CommandExecution', id: 'exec-rg', process_id: '8812', status: 'failed', exit_code: 1 } } },
+      { type: 'event_msg', payload: { type: 'turn_aborted', reason: 'interrupted' } },
+    ])
+    const carried = await startRun({ action: 'resolve', id: 2 })
+    if ('error' in carried) assert.fail(carried.error)
+    assert.deepEqual(carried.run.continues, { resumeId: planThread })
+    assert.equal(carried.run.resumeId, planThread)
   })
 })

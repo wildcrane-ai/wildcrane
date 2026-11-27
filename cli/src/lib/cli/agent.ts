@@ -950,9 +950,11 @@ function declareDelivery(delivery: Command, cli: AgentCliOptions, canonical: boo
         'never redone. The executing agent inspects existing results and completes the ' +
         'remaining steps.',
     )
+    .option('--follow', 'follow the delivery run to its result')
+    .option('--events', 'print structured run events while following')
     .action(async function (this: Command, ...vals: unknown[]) {
       const [named] = positional(vals) as [string]
-      await onBoard(this, cli, () => cmdResumeDelivery(named))
+      await onBoard(this, cli, () => cmdResumeDelivery(named, this.opts()))
     })
 
   verb('reconcile', true)

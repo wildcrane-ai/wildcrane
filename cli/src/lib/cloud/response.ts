@@ -13,7 +13,7 @@ export const hasText = (value: unknown): value is string => typeof value === 'st
 
 export function temporaryCloudFailure({ code, status }: { code?: string; status?: number }): boolean {
   if (code && ['unauthenticated', 'machine_offline', 'quota_exceeded', 'daily_write_budget_reached', 'storage_limit_reached'].includes(code)) return false
-  return ['unreachable', 'invalid_response', 'idempotency_in_progress', 'service_unavailable', 'artifacts_unavailable'].includes(code ?? '')
+  return ['unreachable', 'invalid_response', 'idempotency_in_progress', 'service_unavailable', 'artifacts_unavailable', 'board-busy'].includes(code ?? '')
     || status === 408 || (status !== undefined ? status >= 500 : !code)
 }
 

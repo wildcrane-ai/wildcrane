@@ -1,4 +1,4 @@
-// wildcrane-runner 0.6.125 — built by runner/scripts/build.mjs. Do not edit.
+// wildcrane-runner 0.6.127 — built by runner/scripts/build.mjs. Do not edit.
 import { createRequire as __ai4kanbanRequire } from 'node:module'
 const require = __ai4kanbanRequire(import.meta.url)
 var __create = Object.create;
@@ -26926,8 +26926,8 @@ var VERSION, AKB_VERSION, AKB_CONTRACT, EXIT_REFUSED, EXIT_OUTDATED, EXIT_UPDATE
 var init_protocol = __esm({
   "src/protocol.ts"() {
     "use strict";
-    VERSION = true ? "0.6.125" : "0.0.0";
-    AKB_VERSION = true ? "0.11.107" : "0.0.0";
+    VERSION = true ? "0.6.127" : "0.0.0";
+    AKB_VERSION = true ? "0.11.109" : "0.0.0";
     AKB_CONTRACT = true ? 41 : 0;
     EXIT_REFUSED = 10;
     EXIT_OUTDATED = 11;
@@ -43712,7 +43712,7 @@ var init_package = __esm({
   "../cli/package.json"() {
     package_default = {
       name: "wildcrane",
-      version: "0.11.107",
+      version: "0.11.109",
       akbContract: 41,
       canonicalCommands: true,
       description: "WildCrane's `akb` command \u2014 scaffold the Markdown board under docs/kanban/, put an agent on a card, and carry the flows the agent works by.",
@@ -45189,37 +45189,63 @@ function dayDir(root2, at) {
   const pad = (n) => String(n).padStart(2, "0");
   return join2(root2, String(day.getFullYear()), pad(day.getMonth() + 1), pad(day.getDate()));
 }
-function findRollout(threadId) {
-  const home3 = process.env.CODEX_HOME?.trim() || join2(homedir2(), ".codex");
+function matchesRollout(name, threadId) {
+  return name.startsWith("rollout-") && name.endsWith(".jsonl") && (name.endsWith(`-${threadId}.jsonl`) || name.includes(`-${threadId}_`));
+}
+function findCodexRollout(threadId, codexHome) {
+  if (!threadId) return void 0;
+  const customHome = codexHome?.trim() || process.env.CODEX_HOME?.trim();
+  const home3 = customHome || join2(homedir2(), ".codex");
   const root2 = join2(home3, "sessions");
-  const tail = `-${threadId}.jsonl`;
-  const minted = parseInt(threadId.replace(/-/g, "").slice(0, 12), 16);
+  const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(threadId);
+  const minted = uuidLike ? parseInt(threadId.replace(/-/g, "").slice(0, 12), 16) : Number.NaN;
   const days = /* @__PURE__ */ new Set();
   for (const at of [Date.now(), ...Number.isFinite(minted) && minted > 0 ? [minted] : []]) {
     for (const shift of [0, -1, 1]) days.add(dayDir(root2, at + shift * 864e5));
   }
-  let newest2;
-  for (const dir of days) {
+  let newestPath;
+  let newestAt = -1;
+  const considerDir = (dir) => {
     let names;
     try {
       names = readdirSync(dir);
     } catch {
-      continue;
+      return;
     }
     for (const name of names) {
-      if (!name.startsWith("rollout-") || !name.endsWith(tail)) continue;
+      if (!matchesRollout(name, threadId)) continue;
       const path28 = join2(dir, name);
       try {
         const at = statSync2(path28).mtimeMs;
-        if (!newest2 || at > newest2.at) newest2 = { path: path28, at };
+        if (at > newestAt) {
+          newestPath = path28;
+          newestAt = at;
+        }
       } catch {
       }
     }
+  };
+  for (const dir of days) considerDir(dir);
+  if (newestPath || !customHome && !uuidLike) return newestPath;
+  const subdirs = (dir) => {
+    try {
+      return readdirSync(dir).map((n) => join2(dir, n));
+    } catch {
+      return [];
+    }
+  };
+  for (const year of subdirs(root2)) {
+    for (const month of subdirs(year)) {
+      for (const day of subdirs(month)) {
+        if (!days.has(day)) considerDir(day);
+      }
+    }
   }
-  return newest2?.path;
+  considerDir(join2(home3, "archived_sessions"));
+  return newestPath;
 }
 function readCodexRunFacts(threadId) {
-  const path28 = findRollout(threadId);
+  const path28 = findCodexRollout(threadId);
   if (!path28) return void 0;
   let raw;
   try {
@@ -46267,6 +46293,18 @@ var init_codex_background = __esm({
   }
 });
 
+// ../cli/src/lib/agent/wire/codex-background-types.ts
+function itemTerminal(item) {
+  return item.disposition !== "unconfirmed" && item.status !== "running" && item.status !== "unknown" && (item.status !== "interrupted" || item.disposition === "stopped");
+}
+var STOPPED_CLEANUP_DETAIL;
+var init_codex_background_types = __esm({
+  "../cli/src/lib/agent/wire/codex-background-types.ts"() {
+    "use strict";
+    STOPPED_CLEANUP_DETAIL = "Execution stopped; no further cleanup turn was submitted.";
+  }
+});
+
 // ../cli/src/lib/agent/wire/codex-work.ts
 async function* terminals(rpc, threadId, alive, verify2 = false) {
   let cursor;
@@ -46289,6 +46327,13 @@ async function* terminals(rpc, threadId, alive, verify2 = false) {
     }
     cursor = typeof page.nextCursor === "string" ? page.nextCursor : void 0;
   } while (cursor !== void 0);
+}
+async function activeTerminalHandles(rpc, threadId, alive) {
+  const handles = /* @__PURE__ */ new Map();
+  for await (const { itemId, processId } of terminals(rpc, threadId, alive, true)) {
+    handles.set(terminalKey(threadId, itemId), processId);
+  }
+  return handles;
 }
 function codexWork() {
   const children = /* @__PURE__ */ new Set();
@@ -46515,17 +46560,21 @@ function createCodexConnection(argv) {
 }
 function createCodexClient(options = { images: [] }) {
   let background = 0;
+  let commandCheck = () => false;
   return {
     structured: true,
     managedProcess: true,
     idleRecovery: true,
     background: () => background,
+    activeCommand: () => commandCheck(),
     turn: (io) => run(io, options, (count2) => {
       background = count2;
+    }, (check) => {
+      commandCheck = check;
     })
   };
 }
-async function run(io, options, count2) {
+async function run(io, options, count2, commandCheck) {
   const since = Date.now();
   const renderer = createCodexStreamRenderer();
   let idling = false;
@@ -46574,12 +46623,17 @@ async function run(io, options, count2) {
   const seenItems = /* @__PURE__ */ new Set();
   const completedTurns = /* @__PURE__ */ new Set();
   const historicalTurns = /* @__PURE__ */ new Set();
+  const ownCommands = /* @__PURE__ */ new Set();
   let currentTurn2 = "";
   let threadId = "";
   let active = true;
   let timer;
   let ended = false;
   let checking = false;
+  let checkingCommands = false;
+  let commandProbeFailed = false;
+  let commandCheckedAt = -Infinity;
+  let commandHandles = /* @__PURE__ */ new Map();
   let context;
   let total;
   let baseline;
@@ -46640,7 +46694,9 @@ async function run(io, options, count2) {
   };
   const cancelled = () => {
     work.freeze();
-    if (submitted || threadId) note("Execution stopped; no further cleanup turn was submitted.");
+    for (const [id, entry] of work.entries) if (!itemTerminal(entry)) work.background.add(id);
+    if (submitted && !started) note("Execution stopped before turn startup was confirmed.");
+    else if (work.work().some((w) => !itemTerminal(w))) note(STOPPED_CLEANUP_DETAIL);
     end("Codex execution stopped.");
   };
   io.signal?.addEventListener("abort", cancelled, { once: true });
@@ -46901,6 +46957,11 @@ async function run(io, options, count2) {
     if (msg.method === "item/started" || msg.method === "item/completed") {
       const raw = obj2(p.item);
       work.observe(source2, raw);
+      const itemTurn = str2(p.turnId);
+      if (source2 === threadId && submitted && active && itemTurn === currentTurn2 && itemTurn && raw.type === "commandExecution" && str2(raw.id)) {
+        const id = terminalKey(source2, str2(raw.id));
+        if (!retained.has(id)) ownCommands.add(id);
+      }
       if (source2 === threadId && active) {
         if (raw.type === "commandExecution") visible.add(terminalKey(source2, str2(raw.id)));
         if (raw.type === "collabAgentToolCall") for (const id of Object.keys(obj2(raw.agentsStates))) visible.add(`agent:${id}`);
@@ -47003,6 +47064,33 @@ async function run(io, options, count2) {
       void check();
     }
   });
+  commandCheck(() => {
+    if (ended || idling || !threadId || commandProbeFailed) return false;
+    const running = (id) => ownCommands.has(id) && work.entries.get(id)?.status === "running";
+    const now = Date.now();
+    if (!checkingCommands && now - commandCheckedAt >= 1e3 && [...ownCommands].some(running)) {
+      checkingCommands = true;
+      let settled = false;
+      void bounded(
+        activeTerminalHandles(rpc, threadId, () => !ended && !idling && !settled),
+        2e3,
+        "Codex background verification timed out."
+      ).then((handles) => {
+        commandHandles = handles;
+        commandCheckedAt = Date.now();
+      }, () => {
+        commandProbeFailed = true;
+      }).finally(() => {
+        settled = true;
+        checkingCommands = false;
+      });
+    }
+    return now - commandCheckedAt <= 3e3 && [...commandHandles].some(([id, handle]) => {
+      if (!running(id)) return false;
+      const observed = work.entries.get(id)?.processId;
+      return !observed || observed === handle;
+    });
+  });
   try {
     if (io.signal?.aborted) {
       cancelled();
@@ -47074,6 +47162,7 @@ var init_codex = __esm({
     init_failures();
     init_conversation();
     init_codex_background();
+    init_codex_background_types();
     init_codex_work();
     init_codex_stream();
     init_codex_session();

@@ -3536,6 +3536,7 @@ describe('a task’s folder (#2037)', () => {
       const card = archived ? '.archive/1-task-1.md' : CARD
       if (archived) cloud.put({ [CARD]: null, [card]: BODY })
       await prepareBoard()
+      cloud.taskStatus.task_1 = archived ? 'done' : 'cancelled'
       cloud.closedArtifacts.add('art_1')
       fs.writeFileSync(path.join(board(), path.dirname(card), 'hero.png'), 'local draft')
       if (!archived) fs.appendFileSync(path.join(board(), card), '\nLocal card draft.\n')
@@ -3548,13 +3549,20 @@ describe('a task’s folder (#2037)', () => {
       assert.equal(read(path.join(path.dirname(card), 'hero.png')), 'local draft')
       assert.equal(cloud.file(card), BODY)
       if (!archived) assert.match(read(card), /Local card draft/)
-      assert.equal(cloud.log.filter(line => line === 'POST /v1/artifacts/art_1/uploads').length, 1)
-      if (!archived) {
-        cloud.closedArtifacts.clear()
-        assert.equal((await runTask('j3', '', { task: 'task_2', number: 2 })).outcome, 'done')
-        assert.match(cloud.file(card)!, /Local card draft/)
-        assert.equal(cloud.task.artifacts.get('art_1')!.length, 2)
-      }
+      const uploads = () => cloud.log.filter(line => line === 'POST /v1/artifacts/art_1/uploads').length
+      const ws = keptBoard(cached())!
+      assert.ok((await pushBoard(ws, MACHINE)).ok)
+      assert.ok((await pushBoard(ws, MACHINE)).ok)
+      assert.equal(uploads(), 1)
+
+      cloud.closedArtifacts.clear()
+      cloud.taskStatus.task_1 = 'stopped'
+      cloud.put({ ...(archived ? { [card]: null } : {}), [CARD]: `---\ntitle: Pricing\nrestored: 2026-11-27T06:45:00Z\n---\n\n${BODY}` })
+      assert.ok((await pullChanges(ws)).ok)
+      fs.writeFileSync(path.join(board(), 'todo', 'hero.png'), 'restored preview')
+      assert.ok((await pushBoard(ws, MACHINE)).ok)
+      assert.equal(uploads(), 2)
+      assert.equal(cloud.task.artifacts.get('art_1')!.length, 2)
     })
   }
 
@@ -5931,7 +5939,7 @@ describe('flow jobs (#2020)', () => {
 
     fs.writeFileSync(path.join(board(), '.fake/runs.json'), JSON.stringify([{
       sessionId: 'old-build', cardId: 2, action: 'implement', status: 'stopped',
-      deliveryId: 'd1', resumeId: 'original-thread', startedAt: Date.now() - 1000,
+      deliveryId: 'd1', resumeId: 'original-thread', startedAt: Date.now() - 1000, endedAt: Date.now(),
     }]))
     const before = calls().filter(c => c[0] === 'delivery' && c[1] === 'resume').length
     for (const version of [undefined, 4]) {
@@ -6423,11 +6431,26 @@ describe('flow jobs (#2020)', () => {
     const archiveA = '.archive/1-unowned.md'
     const manifestA = 'assets/task_a.json'
     const cardB = 'todo/2-release.md'
+    const brokenOther = 'todo/8-broken.md'
     const otherDirty = 'todo/9-dirty.md'
+    const confirmedArchive = '.archive/10-confirmed.md'
+    const confirmedManifest = 'assets/task_confirmed.json'
+    const finishedArchive = '.archive/11-finished.md'
+    const finishedManifest = 'assets/task_finished.json'
     const bodyA = '---\ntitle: Unowned Archive\nquestions: []\n---\n'
     const bodyB = '---\ntitle: Release\nquestions: []\n---\n\nInitial.\n'
     const bodyDirty = '---\ntitle: Dirty\nquestions: []\n---\n'
-    const remote = { [todoA]: bodyA, [cardB]: bodyB, [otherDirty]: bodyDirty, 'config.md': '# Board\n' }
+    const bodyConfirmed = '---\ntitle: Confirmed\narchived: 2026-11-25\nquestions: []\n---\n\n<Preview id="prompts">\n\nSee [SKILL.md](file:///outside/SKILL.md).\n\n</Preview>\n'
+    const bodyFinished = '---\ntitle: Finished\narchived: 2026-11-20\nquestions: []\n---\n\n<Asset src=".assets/11/doc.md" />\n'
+    cloud.task.artifacts.set('art_closed', [Buffer.from('old')])
+    cloud.closedArtifacts.add('art_closed')
+    cloud.previewProblems = (p) => p.endsWith(brokenOther)
+      ? [{ file: brokenOther, line: 1, column: 1, code: 'bad_preview', path: '', message: 'Broken preview', hint: '' }] : []
+    const remote = {
+      [todoA]: bodyA, [cardB]: bodyB, [otherDirty]: bodyDirty, 'config.md': '# Board\n',
+      [confirmedArchive]: bodyConfirmed, [confirmedManifest]: '{}',
+      [finishedArchive]: bodyFinished, [finishedManifest]: JSON.stringify({ '.assets/11/doc.md': { artifact: 'art_closed', version: 1 } }),
+    }
     cloud.put(remote)
     const save = (file: string, contents: string) => {
       const target = path.join(board(), file)
@@ -6438,11 +6461,28 @@ describe('flow jobs (#2020)', () => {
     save('config.md', remote['config.md'])
     save(archiveA, bodyA.replace('questions:', 'archived: 2026-11-26\nquestions:') + '\nMerged in 4bb2afaaf.\n')
     save(cardB, bodyB)
+    save(brokenOther, '---\ntitle: Broken\nquestions: []\n---\n\n<Preview id="bad" />\n')
     save(otherDirty, bodyDirty + '\nUnrelated local edit.\n')
-    save('.sync/task_a.json', JSON.stringify({ task: 'task_a', number: 1, assets: {} }))
+    save(confirmedArchive, bodyConfirmed)
+    save(confirmedManifest, '{}')
+    save(finishedArchive, bodyFinished)
+    save(finishedManifest, remote[finishedManifest])
+    const closedAsset = path.join(projectStateDir(board()), 'assets/11/doc.md')
+    fs.mkdirSync(path.dirname(closedAsset), { recursive: true })
+    fs.writeFileSync(closedAsset, 'locally modified after close')
+    // Intentionally omit `.sync/task_a.json` and `.sync/land-archives/task_a` to test unowned-<number> isolation and Land takeover.
     save('.sync/task_b.json', JSON.stringify({ task: 'task_b', number: 2, assets: {} }))
+    save('.sync/task_confirmed.json', JSON.stringify({ task: 'task_confirmed', number: 10, assets: {} }))
+    save('.sync/task_finished.json', JSON.stringify({
+      task: 'task_finished', number: 11,
+      assets: { '.assets/11/doc.md': { artifact: 'art_closed', version: 1, hash: 'stale', kind: 'markdown' } },
+    }))
     fs.writeFileSync(path.join(cached(), '.akb/base.json'), JSON.stringify({
       layout: 'workspace', project: 'prj_1', workspace: 'ws_1', head_seq: cloud.head,
+      pendingAssets: ['task_confirmed'],
+      archiveReceipts: {
+        task_confirmed: { path: confirmedArchive, seq: cloud.head, assets_seq: cloud.head, task: 'task_confirmed', status: 'confirmed' },
+      },
       files: Object.fromEntries(Object.entries(remote).map(([p, content]) => [`projects/prj_1/${p}`, { content, seq: cloud.head }])),
     }))
     const protectedPaths = new Set([todoA, archiveA, manifestA].map(p => `projects/prj_1/${p}`))
@@ -6456,32 +6496,44 @@ describe('flow jobs (#2020)', () => {
       }
     }
 
-    // 1. Card Chat on task_b with a cold sync index commits only task_b's own changes and never hits Cloud refusal.
+    // 1. Retrying a failed Card Chat on task_b with a cold sync index commits only task_b's own changes and never hits Cloud refusal.
     const chatScript = `require("fs").appendFileSync(${JSON.stringify(path.join(board(), cardB))}, "\\nChat update.\\n"); console.log("Answered.");`
     start(chatScript)
     const chatReply = cloud.dispatch({
-      id: 'chat-b', task: 'task_b', project: 'prj_1', number: 2, chat: { message: 'm1', body: 'Reply on 1257' },
+      id: 'chat-b-retry', task: 'task_b', project: 'prj_1', number: 2,
+      manualRecovery: true, recoveryOf: 'chat-b-failed', retryReplay: true,
+      chat: { message: 'm1', body: 'Reply on 1257' },
     })
     await until(() => chatReply.state === 'finished')
     assert.equal(chatReply.outcome, 'done', chatReply.reason)
     assert.deepEqual(refusedJobs, [])
     assert.match(cloud.file(cardB)!, /Chat update\./)
     assert.equal(cloud.file(otherDirty), bodyDirty)
+    assert.equal(cloud.file(brokenOther), null)
     assert.equal(cloud.file(archiveA), null)
 
-    // 2. A pre-run setUp failure stays safeToRetry=true, and board-wide pull isolates the unowned archive so new tasks proceed.
+    // 2. Pre-run setUp failure stays safeToRetry=true; board-wide pull isolates unowned-1, holds brokenOther, clears confirmed pendingAssets, and records assetsClosed.
     const missingRuntime = await flowJob('missing-rt', { verb: 'create', title: 'Missing runtime' },
       { task: 'task_m', number: 9, runtime: 'nonexistent' as never })
     assert.equal(missingRuntime.outcome, 'failed')
     assert.equal(missingRuntime.report?.failure?.safeToRetry, true)
 
+    const closedUploads = () => cloud.log.filter(line => line === 'POST /v1/artifacts/art_closed/uploads').length
     const created = await flowJob('create-c', { verb: 'create', title: 'Bugfix task' }, { task: 'task_c', number: 3 })
     assert.equal(created.outcome, 'done', created.reason)
     assert.equal(cloud.file(otherDirty), bodyDirty + '\nUnrelated local edit.\n')
-    assert.ok(fs.existsSync(path.join(board(), '.sync/land-archives/task_a')))
+    assert.equal(cloud.file(brokenOther), null)
+    assert.ok(fs.existsSync(path.join(board(), '.sync/land-archives/unowned-1')))
     assert.equal(cloud.file(archiveA), null)
+    const baseAfterBoardSync = JSON.parse(fs.readFileSync(path.join(cached(), '.akb/base.json'), 'utf8'))
+    assert.deepEqual(baseAfterBoardSync.pendingAssets ?? [], [])
+    assert.equal(baseAfterBoardSync.pendingArchives?.task_a, undefined)
+    assert.equal(closedUploads(), 1)
+    fs.rmSync(path.join(board(), brokenOther), { force: true })
+    assert.ok((await pushBoard(keptBoard(cached())!, MACHINE)).ok)
+    assert.equal(closedUploads(), 1)
 
-    // 3. Implement + Land for task_a reuses the existing local archive without re-running delivery, and Cloud confirms done.
+    // 3. Implement + Land for task_a takes over from unowned-1, reuses the existing local archive without re-running delivery, and Cloud confirms done.
     const review = { revision: 1, plan: [], stages: [] }
     cloud.task.review = review
     process.env.FAKE_AKB = JSON.stringify({ reconcile: { kind: 'none' } })
@@ -6500,6 +6552,92 @@ describe('flow jobs (#2020)', () => {
     assert.equal(cloud.file(todoA), null)
     assert.match(cloud.file(archiveA)!, /Merged in 4bb2afaaf/)
     assert.ok(!fs.existsSync(path.join(board(), '.sync/land-archives/task_a')))
+    assert.ok(!fs.existsSync(path.join(board(), '.sync/land-archives/unowned-1')))
+
+    // 4. A resumed release delivery on task_b recovers cleanly if board-sync.lock was transiently busy.
+    const worktree = '.akb/worktrees/rel1/work'
+    fs.mkdirSync(path.join(cached(), worktree), { recursive: true })
+    fs.mkdirSync(path.join(cached(), worktree, '../base'))
+    process.env.FAKE_AKB = JSON.stringify({
+      reconcile: [{ error: { kind: 'board-busy', message: 'Another process is synchronizing this board. Try again.' } },
+        { kind: 'resumable', deliveryId: 'rel1', status: 'active', worktree }],
+      delivery: { deliveryId: 'rel1' },
+      implement: { trackExecution: true, agentSession: 'release-session', result: 'Resumed release.', delivery: { id: 'rel1', status: 'active' } },
+    })
+    const resumedRelease = await flowJob('resume-b', { verb: 'implement', phase: 'implement', resume: true, card: 2, review_revision: 1, review_stages: [] },
+      { task: 'task_b', number: 2, taskReview: review })
+    assert.equal(resumedRelease.outcome, 'done', resumedRelease.reason)
+    assert.deepEqual(resumedRelease.report?.landReady, { deliveryId: 'rel1' })
+  })
+
+  it('holds a verified implementation for review and lands the same dirty worktree after approval (#1247)', async () => {
+    const todo = 'todo/2-pricing.md'
+    cloud.put({ 'config.md': '# Board\n', [todo]: '---\ntitle: Pricing\nstudio: coding\nquestions: []\n---\n' })
+    const worktree = '.akb/worktrees/d1/work'
+    const work = path.join(cached(), worktree)
+    fs.mkdirSync(work, { recursive: true })
+    const git = (...args: string[]) => {
+      const result = spawnSync('git', ['-C', work, ...args], { encoding: 'utf8' })
+      assert.equal(result.status, 0, result.stderr)
+      return result.stdout.trimEnd()
+    }
+    const branch = 'akb/d1'
+    git('init', '-qb', branch)
+    fs.writeFileSync(path.join(work, 'tracked.txt'), 'Base')
+    git('add', 'tracked.txt')
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'Base')
+    const base = git('rev-parse', 'HEAD')
+    fs.writeFileSync(path.join(work, 'tracked.txt'), 'Modified')
+    fs.writeFileSync(path.join(work, 'new.txt'), 'New')
+    const dirty = git('status', '--porcelain')
+    assert.equal(dirty, ' M tracked.txt\n?? new.txt')
+
+    const flow = { verb: 'implement', review_revision: 1, review_stages: [] }
+    const review = { revision: 1, plan: { previews: ['draft'], rule: 'Approve before publishing.' }, stages: [] }
+    const gate = path.join(runnerHome(), 'review-1247-gate')
+    const active = { kind: 'resumable', deliveryId: 'd1', status: 'active', worktree, branch, base }
+    cloud.task.review = review
+    process.env.FAKE_AKB = JSON.stringify({ implement: { gates: [gate], trackExecution: true,
+      result: 'Preview submitted.', delivery: { id: 'd1', status: 'active' } }, reconcile: [{ kind: 'none' }, active] })
+    const built = flowJob('implement-review-1247', { ...flow, phase: 'implement' }, { taskReview: review })
+    await until(() => fs.existsSync(path.join(board(), '.fake/agent-board')))
+    const stage = { id: 'approval-2', job: 'implement-review-1247', status: 'waiting_review' as const, preview: 'draft', revision: 2,
+      snapshot: { evidence: { content: { draft: { body: 'Saved preview.', sources: [] } } } } }
+    cloud.task.review = { ...review, revision: 2, stages: [stage] }
+    fs.writeFileSync(gate, '')
+    const ended = await built
+    assert.equal(ended.outcome, 'done', ended.reason)
+    assert.equal(ended.report?.deliveryId, 'd1')
+    assert.equal(ended.report?.deliveryCompleted, false)
+    assert.equal(ended.report?.landReady, undefined)
+    assert.equal(cardCalls().length, 1)
+    assert.ok(cloud.file(todo))
+
+    const approved = { ...review, revision: 3, stages: [{ ...stage, status: 'approved' as const }] }
+    cloud.task.review = approved
+    // Older Cloud records can have an original run but no saved delivery ID.
+    const land = { ...flow, phase: 'land' as const, reviewed_implementation: true as const, land_from: ended.id, review_revision: 3 }
+    process.env.FAKE_AKB = JSON.stringify({ reconcile: active })
+    const wrongRun = await flowJob('land-unverified-run', { ...land, land_from: 'another-run' }, { taskReview: approved })
+    assert.equal(wrongRun.outcome, 'failed')
+    assert.match(wrongRun.reason ?? '', /could not be verified/)
+    fs.renameSync(work, `${work}-away`)
+    const missing = await flowJob('land-missing-worktree', land, { taskReview: approved })
+    assert.equal(missing.outcome, 'failed')
+    assert.match(missing.reason ?? '', /could not be verified/)
+    fs.renameSync(`${work}-away`, work)
+    assert.equal(cardCalls().length, 1, 'unverified work reached Land')
+
+    process.env.FAKE_AKB = JSON.stringify({ reconcile: [active, { kind: 'completed', deliveryId: 'd1' }],
+      implement: { trackExecution: true, delivery: { id: 'd1', status: 'finished' } } })
+    fs.rmSync(path.join(board(), '.fake/reconcile-attempts.json'))
+    const landed = await flowJob('land-review-1247', land, { taskReview: approved })
+    assert.equal(landed.outcome, 'done', landed.reason)
+    assert.equal(landed.report?.archive?.path, '.archive/2-pricing.md')
+    assert.equal(cardCalls().length, 2)
+    assert.equal(git('status', '--porcelain'), dirty)
+    assert.equal(fs.readFileSync(path.join(work, 'tracked.txt'), 'utf8'), 'Modified')
+    assert.equal(fs.readFileSync(path.join(work, 'new.txt'), 'utf8'), 'New')
   })
 
   it('hands off a non-Git Studio, resumes Land for a missing archive, and refreshes a refused archive receipt', async () => {
@@ -6969,8 +7107,8 @@ describe('flow jobs (#2020)', () => {
       const earlier = Date.now() - 1_000
       fs.writeFileSync(path.join(board(), '.fake', 'runs.json'), JSON.stringify([
         { sessionId: 'old-plan', cardId: 2, action: 'refine', status: 'done', startedAt: earlier + 1 },
-        { sessionId: 'old-build', cardId: 2, action: 'implement', status: 'stopped', deliveryId: 'd1', resumeId: 'original-thread', startedAt: earlier + 2, ...over },
-        { sessionId: 'other-delivery', cardId: 2, action: 'implement', status: 'stopped', deliveryId: 'd2', resumeId: 'other-thread', startedAt: earlier + 3 },
+        { sessionId: 'old-build', cardId: 2, action: 'implement', status: 'stopped', deliveryId: 'd1', resumeId: 'original-thread', startedAt: earlier + 2, endedAt: Date.now(), ...over },
+        { sessionId: 'other-delivery', cardId: 2, action: 'implement', status: 'stopped', deliveryId: 'd2', resumeId: 'other-thread', startedAt: earlier + 3, endedAt: Date.now() },
         { sessionId: 'helper', cardId: 2, action: 'sub', status: 'stopped', deliveryId: 'd1', startedAt: earlier + 4 },
       ]))
     }
@@ -6981,7 +7119,7 @@ describe('flow jobs (#2020)', () => {
       const job = await flowJob('j2', { verb: 'implement', card: 2, text: 'Monthly', resume: true })
       assert.equal(job.outcome, 'done', job.reason)
       const log = calls().map((c) => c.join(' '))
-      const at = log.indexOf(`delivery resume 2 --json --board ${board()}`)
+      const at = log.indexOf(`delivery resume 2 --follow --events --json --board ${board()}`)
       assert.ok(at >= 0 && log.slice(at).includes(`run resume old-build --require-session --follow --events --json --board ${board()}`))
       assert.equal(typed().filter(c => c.slice(0, 3).join(' ') === 'raw delivery resume').length, 1)
       assert.equal(calls().filter(c => c[0] === 'run' && c[1] === 'resume').length, 1)
@@ -7016,6 +7154,21 @@ describe('flow jobs (#2020)', () => {
       assert.ok(!cardCalls().some((c) => c.startsWith('card implement')))
     })
 
+    it('follows the exact reconciled delivery through fresh-session recovery', async () => {
+      await flowJob('j1', { verb: 'create' })
+      priorBuild()
+      process.env.FAKE_AKB = JSON.stringify({
+        reconcile: { kind: 'resumable', deliveryId: 'd2', status: 'active' },
+        delivery: { follow: true },
+      })
+      const job = await flowJob('j2', { verb: 'implement', card: 2, resume: true })
+      assert.equal(job.outcome, 'done', job.reason)
+      assert.equal(job.report?.deliveryId, 'd2')
+      assert.equal(job.report?.session, 'fresh-delivery-session')
+      assert.ok(calls().some(args => args.slice(0, 5).join(' ') === 'delivery resume d2 --follow --events'))
+      assert.ok(!calls().some(args => args[0] === 'run' && ['resume', 'log'].includes(args[1]!)))
+    })
+
     it('stops a delivery resume on a structured recovery refusal', async () => {
       await flowJob('j1', { verb: 'create' })
       priorBuild()
@@ -7030,7 +7183,7 @@ describe('flow jobs (#2020)', () => {
       assert.ok(attempted.every(action => !['task implement', 'card implement', 'run resume'].includes(action)))
     })
 
-    it('builds afresh when there is nothing to carry on (#419)', async () => {
+    it('reuses the saved delivery and pauses when no session ID was recorded (#1234, #419)', async () => {
       await flowJob('j1', { verb: 'create' })
       // An approved build a Runner update cut off before it opened a delivery (#407).
       process.env.FAKE_AKB = JSON.stringify({ delivery: { refuse: 'no delivery here answers to "2"', reason: 'deliveryNotFound', args: { id: '2' } } })
@@ -7046,8 +7199,13 @@ describe('flow jobs (#2020)', () => {
       process.env.FAKE_AKB = '{}'
       await builds('j3')
       priorBuild({ resumeId: undefined })
+      const before = calls().length
       const missing = await flowJob('j4', { verb: 'implement', card: 2, resume: true })
       assert.equal(missing.outcome, 'failed')
+      assert.match(missing.reason ?? '', /original conversation cannot be resumed/)
+      assert.ok(calls().slice(before).some(c => c.slice(0, 4).join(' ') === 'run resume old-build --require-session'))
+      assert.ok(!calls().slice(before).some(c => c.includes('--new-session')))
+      assert.ok(!calls().slice(before).some(c => c.slice(0, 2).join(' ') === 'card implement'))
     })
 
     it('explains a held resume and checks the delivery even for an archived card (#419, #918)', async () => {

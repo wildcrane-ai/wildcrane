@@ -548,3 +548,60 @@ it('recognizes output from owned Codex commands and subagents while ignoring ter
   s.stdout.destroy()
   await s.end
 })
+
+for (const state of ['owned', 'stale', 'unsupported']) {
+  it(`uses current Codex terminal handles as idle evidence (${state})`, async () => {
+    const s = server(method => {
+      if (method === 'thread/start') return { thread: { id: 'main' } }
+      if (method === 'thread/backgroundTerminals/list') {
+        if (state === 'unsupported') throw { code: -32601, message: 'unknown method' }
+        return { data: [{ itemId: 'cmd', processId: state === 'stale' ? 'old' : 'current' }] }
+      }
+      return {}
+    })
+    await tick()
+    s.notify('turn/started', { threadId: 'main', turn: { id: 't1' } })
+    const command = { type: 'commandExecution', id: 'cmd', status: 'inProgress', processId: 'current' }
+    s.notify('item/started', { threadId: 'main', turnId: 't1', item: command })
+    assert.equal(s.client.activeCommand?.(), false)
+    await tick()
+    assert.equal(s.client.activeCommand?.(), state === 'owned')
+    s.notify('item/completed', { threadId: 'main', turnId: 't1', item: { ...command, status: 'completed', exitCode: 0 } })
+    assert.equal(s.client.activeCommand?.(), false)
+    s.stdout.destroy()
+    await s.end
+  })
+}
+
+it('confirms cleanup on stop when all commands finished, and keeps unconfirmed while running or before startup', async () => {
+  for (const mode of ['completed', 'running', 'unstarted'] as const) {
+    const abort = new AbortController()
+    const client = createCodexClient()
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    stdin.on('data', chunk => {
+      for (const line of String(chunk).split('\n').filter(Boolean)) {
+        const req = JSON.parse(line)
+        if (req.id === undefined) continue
+        if (mode === 'unstarted' && req.method === 'turn/start') continue
+        stdout.write(JSON.stringify({ id: req.id, result: req.method === 'thread/start' ? { thread: { id: 'main' } } : {} }) + '\n')
+      }
+    })
+    const end = client.turn({ stdout, stdin, prompt: 'task', cwd: '/tmp', signal: abort.signal, log: () => {}, gotResumeId: () => {}, gotModel: () => {} })
+    await tick()
+    if (mode !== 'unstarted') {
+      stdout.write(JSON.stringify({ method: 'turn/started', params: { threadId: 'main', turn: { id: 't1' } } }) + '\n')
+      stdout.write(JSON.stringify({ method: 'item/started', params: { threadId: 'main', turnId: 't1', item: { type: 'commandExecution', id: 'c1', status: 'inProgress' } } }) + '\n')
+      if (mode === 'completed') {
+        stdout.write(JSON.stringify({ method: 'item/completed', params: { threadId: 'main', turnId: 't1', item: { type: 'commandExecution', id: 'c1', status: 'completed', exitCode: 0 } } }) + '\n')
+      }
+      await tick()
+    }
+    abort.abort()
+    const result = await end
+    stdout.destroy()
+    assert.equal(result.cleanup?.status, mode === 'completed' ? 'confirmed' : 'unconfirmed')
+    assert.equal(result.cleanup?.items?.length, mode === 'running' ? 1 : 0)
+    if (mode === 'unstarted') assert.match(result.cleanup?.detail ?? '', /startup/)
+  }
+})

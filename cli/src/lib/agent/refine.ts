@@ -10,6 +10,8 @@
 
 import { createHash } from 'node:crypto'
 
+import { runnerProject } from '../cloud/tasks'
+import { KANBAN } from '../paths'
 import { allCards, findCard } from '../view/read'
 import { byDispatchOrder, canRefine, planDeliveryGap } from '../view/rules'
 import type { Card } from '../view/types'
@@ -249,16 +251,23 @@ export interface RefinementFollowUp {
   stalledWhy?: RunReason[]
 }
 
+export function refinementScope(run: RunRecord): (card: number | undefined) => boolean {
+  if (run.cloudExecution) return card => card === run.cardId
+  const local = !runnerProject(KANBAN)
+  return () => local
+}
+
 export function refinementRunsAfter(
   run: RunRecord,
   changed: readonly number[],
   before: BoardMarks,
 ): RefinementFollowUp {
-  const next = run.cardId !== null && ['clarify', 'resolve', 'edit', 'approve'].includes(run.action)
+  const allowed = refinementScope(run)
+  const next = run.cardId !== null && allowed(run.cardId) && ['clarify', 'resolve', 'edit', 'approve'].includes(run.action)
     ? refinementAfter(run.action, run.cardId, run.flowId)
     : null
-  const starts = run.cloudExecution && run.cardId !== null ? [] : refinesAfter(run.action, changed, before).filter(
-    (req) => req.id !== run.cardId || run.refineRound === undefined,
+  const starts = !allowed(undefined) ? [] : refinesAfter(run.action, changed, before).filter(
+    req => req.id !== run.cardId || run.refineRound === undefined,
   )
   const stalled = (run.refineRound !== undefined && stalledLine(run.cardId, next)) || undefined
   return {

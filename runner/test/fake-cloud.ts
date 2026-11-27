@@ -37,7 +37,7 @@ export interface FakeJob {
   resumeCostUsd?: number | null
   fork?: boolean
   transcript?: string | null
-  flow?: { phase?: 'implement' | 'land'; land_from?: string; delivery_id?: string; review_stages?: string[]; review_revision?: number; sync_recovery_of?: string; resume_execution?: string; verb: string; studio: string; card?: number; text?: string; title?: string; resume?: boolean; replan?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null
+  flow?: { phase?: 'implement' | 'land'; land_from?: string; delivery_id?: string; reviewed_implementation?: true; review_stages?: string[]; review_revision?: number; sync_recovery_of?: string; resume_execution?: string; verb: string; studio: string; card?: number; text?: string; title?: string; resume?: boolean; replan?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null
   discussion?: { id: string; workspace: string; version?: number; goals: Record<string, unknown>[] } | null
   chat?: { message: string; body: string } | null
   replyInput?: import('../src/api').Job['replyInput']

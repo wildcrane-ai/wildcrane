@@ -10,10 +10,11 @@ interface IdleOptions {
   now?: () => number
   onProgress?: (at: number) => void
   childProgress?: () => number
+  activeCommand?: () => boolean
 }
 
 export function createIdleWatchdog(expired: () => void, options: IdleOptions = {}) {
-  const { milliseconds = IDLE_TIMEOUT.milliseconds, now = Date.now, onProgress, childProgress } = options
+  const { milliseconds = IDLE_TIMEOUT.milliseconds, now = Date.now, onProgress, childProgress, activeCommand } = options
   const calls = new Map<string, 'working' | 'finished' | 'polling'>()
   const fresh = progressSnapshots()
   let last = now()
@@ -29,7 +30,10 @@ export function createIdleWatchdog(expired: () => void, options: IdleOptions = {
     if (closed) return
     const at = now()
     advance(Math.min(childProgress?.() ?? last, at))
-    if (at - last >= milliseconds) { close(); expired() }
+    const silence = at - last
+    if (silence < milliseconds - 5_000) return
+    const waiting = silence < milliseconds * 2 && activeCommand?.()
+    if (silence >= milliseconds && !waiting) { close(); expired() }
   }
   const timer = setInterval(check, Math.min(1000, milliseconds))
   timer.unref?.()

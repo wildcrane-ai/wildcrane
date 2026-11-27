@@ -9,10 +9,10 @@ import { createKimiStreamRenderer } from '../src/lib/agent/wire/kimi-stream'
 import type { RunEvent } from '../src/lib/agent/wire/events'
 import type { StreamRenderer } from '../src/lib/agent/wire/stream'
 
-function clock(childProgress?: () => number) {
+function clock(childProgress?: () => number, activeCommand?: () => boolean) {
   let now = 0
   let expired = 0
-  const watch = createIdleWatchdog(() => expired++, { now: () => now, childProgress })
+  const watch = createIdleWatchdog(() => expired++, { now: () => now, childProgress, activeCommand })
   return {
     watch,
     expired: () => expired,
@@ -25,6 +25,34 @@ function clock(childProgress?: () => number) {
     },
   }
 }
+
+test('a verified live command has a bounded idle grace period without recording progress', () => {
+  let running = true
+  const capped = clock(undefined, () => running)
+  capped.hence(IDLE_MS)
+  assert.equal(capped.expired(), 0)
+  capped.hence(IDLE_MS - 1)
+  assert.equal(capped.expired(), 0)
+  capped.hence(1)
+  assert.equal(capped.expired(), 1)
+
+  const exited = clock(undefined, () => running)
+  exited.hence(IDLE_MS)
+  assert.equal(exited.expired(), 0)
+  running = false
+  exited.hence(1)
+  assert.equal(exited.expired(), 1)
+
+  running = true
+  const reported = clock(undefined, () => running)
+  reported.hence(IDLE_MS)
+  reported.watch.event({ kind: 'message', data: { text: 'The tests passed.' } })
+  running = false
+  reported.hence(IDLE_MS - 1)
+  assert.equal(reported.expired(), 0)
+  reported.hence(1)
+  assert.equal(reported.expired(), 1)
+})
 
 test('W-1195 idle replay: an active command and the root waiting for two background tasks cannot reset the idle timer', () => {
   const { watch, hence, expired } = clock()

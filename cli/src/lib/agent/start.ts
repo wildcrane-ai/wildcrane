@@ -20,7 +20,8 @@ import { readRuns } from './store'
 import { buildRun } from './prompts'
 import { NEEDS_CLOUD, NOT_DOWNLOADED, pinMissing, studiosReachable } from './cloud-studios'
 import { archivesOnApproval, cardStudioId, noStudioMessage, studioFor } from './studios'
-import { carriedSession, closeRun, markSpawned, openResume, openRun, peekRun, type ResumeOptions } from './sessions'
+import { carriedSession, closeRun, markSpawned, openResume, openRun, peekRun, preparePlanningCarry, type ResumeOptions } from './sessions'
+import type { CodexStopVerification } from './wire/codex-verify'
 import { runRuntimeById } from './runtimes'
 import { refusal, retiredStudioRun, type AgentRequest, type RunRecord, type RunRefusal } from './types'
 
@@ -34,8 +35,9 @@ export async function startRun(req: AgentRequest): Promise<{ run: RunRecord; spa
     const previous = pendingDeliveryRun(delivery, readRuns())
     if (previous) return startResume(previous.sessionId, { deliveryId: delivery.deliveryId, notes: req.notes, exact: true })
   }
+  const verifiedPlanning = await preparePlanningCarry(req)
   // Approve moves the card on only once its run is cleared to start (#1790).
-  return open(req, randomUUID())
+  return open(req, randomUUID(), verifiedPlanning)
 }
 
 export function studioRefusal(req: AgentRequest): RunRefusal | null {
@@ -89,12 +91,16 @@ export function runAsk(req: AgentRequest, sessionId: string): AgentRequest {
   }
 }
 
-function open(req: AgentRequest, sessionId: string): { run: RunRecord; spawned: boolean } | RunRefusal {
+function open(
+  req: AgentRequest,
+  sessionId: string,
+  verifiedPlanning?: ReadonlyMap<string, CodexStopVerification>,
+): { run: RunRecord; spawned: boolean } | RunRefusal {
   // A run refused below gives its pictures back — the sheet is still up with its words.
   const ask = runAsk(req, sessionId)
   // A card's planning carries its own session on (#1304), where there is one to carry, and
   // its log opens by saying which it was (#1309).
-  const planning = carriedSession(ask)
+  const planning = carriedSession(ask, verifiedPlanning)
   const carried = planning?.carried
   const { prompt, notes } = buildRun(carried ? { ...ask, session: carried.fork ? 'fork' : 'resume' } : ask, false)
   if (planning) notes.unshift(planning.note)

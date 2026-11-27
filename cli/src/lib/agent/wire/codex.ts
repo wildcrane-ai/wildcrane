@@ -7,7 +7,8 @@ import type { RunClient, ClientTurn, TurnEnd } from './client'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { batch, CODEX_SETTLE_MS, settlementPrompt, type Cleanup, type ManagedWork } from './codex-background'
-import { codexWork, terminalKey } from './codex-work'
+import { itemTerminal, STOPPED_CLEANUP_DETAIL } from './codex-background-types'
+import { activeTerminalHandles, codexWork, terminalKey } from './codex-work'
 import { createCodexStreamRenderer } from './codex-stream'
 import { childSpend, readCodexRunFacts } from './codex-session'
 import { addUsage, ownUsage, ZERO_USAGE } from './usage'
@@ -78,16 +79,18 @@ interface Options {
 /** Codex app-server v2, checked against the CLI's generated protocol. */
 export function createCodexClient(options: Options = { images: [] }): RunClient {
   let background = 0
+  let commandCheck = () => false
   return {
     structured: true,
     managedProcess: true,
     idleRecovery: true,
     background: () => background,
-    turn: (io) => run(io, options, count => { background = count }),
+    activeCommand: () => commandCheck(),
+    turn: (io) => run(io, options, count => { background = count }, check => { commandCheck = check }),
   }
 }
 
-async function run(io: ClientTurn, options: Options, count: (value: number) => void): Promise<TurnEnd> {
+async function run(io: ClientTurn, options: Options, count: (value: number) => void, commandCheck: (check: () => boolean) => void): Promise<TurnEnd> {
   const since = Date.now()
   const renderer = createCodexStreamRenderer()
   let idling = false
@@ -131,12 +134,17 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
   const seenItems = new Set<string>()
   const completedTurns = new Set<string>()
   const historicalTurns = new Set<string>()
+  const ownCommands = new Set<string>()
   let currentTurn = ''
   let threadId = ''
   let active = true
   let timer: ReturnType<typeof setTimeout> | undefined
   let ended = false
   let checking = false
+  let checkingCommands = false
+  let commandProbeFailed = false
+  let commandCheckedAt = -Infinity
+  let commandHandles = new Map<string, string>()
   let context: ContextWindow | undefined
   let total: TokenUsage | undefined
   let baseline: TokenUsage | undefined
@@ -195,7 +203,9 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
   }
   const cancelled = () => {
     work.freeze()
-    if (submitted || threadId) note('Execution stopped; no further cleanup turn was submitted.')
+    for (const [id, entry] of work.entries) if (!itemTerminal(entry)) work.background.add(id)
+    if (submitted && !started) note('Execution stopped before turn startup was confirmed.')
+    else if (work.work().some(w => !itemTerminal(w))) note(STOPPED_CLEANUP_DETAIL)
     end('Codex execution stopped.')
   }
   io.signal?.addEventListener('abort', cancelled, { once: true })
@@ -416,6 +426,12 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     if (msg.method === 'item/started' || msg.method === 'item/completed') {
       const raw = obj(p.item)
       work.observe(source, raw)
+      const itemTurn = str(p.turnId)
+      if (source === threadId && submitted && active && itemTurn === currentTurn && itemTurn &&
+          raw.type === 'commandExecution' && str(raw.id)) {
+        const id = terminalKey(source, str(raw.id))
+        if (!retained.has(id)) ownCommands.add(id)
+      }
       if (source === threadId && active) {
         if (raw.type === 'commandExecution') visible.add(terminalKey(source, str(raw.id)))
         if (raw.type === 'collabAgentToolCall') for (const id of Object.keys(obj(raw.agentsStates))) visible.add(`agent:${id}`)
@@ -501,6 +517,28 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       count(work.work().filter(w => w.status === 'running' && w.disposition !== 'keep').length)
       void check()
     }
+  })
+  commandCheck(() => {
+    if (ended || idling || !threadId || commandProbeFailed) return false
+    const running = (id: string) => ownCommands.has(id) && work.entries.get(id)?.status === 'running'
+    const now = Date.now()
+    if (!checkingCommands && now - commandCheckedAt >= 1_000 && [...ownCommands].some(running)) {
+      checkingCommands = true
+      let settled = false
+      void bounded(activeTerminalHandles(rpc, threadId, () => !ended && !idling && !settled),
+        2_000, 'Codex background verification timed out.').then(handles => {
+        commandHandles = handles
+        commandCheckedAt = Date.now()
+      }, () => { commandProbeFailed = true }).finally(() => {
+        settled = true
+        checkingCommands = false
+      })
+    }
+    return now - commandCheckedAt <= 3_000 && [...commandHandles].some(([id, handle]) => {
+      if (!running(id)) return false
+      const observed = work.entries.get(id)?.processId
+      return !observed || observed === handle
+    })
   })
   try {
     if (io.signal?.aborted) { cancelled(); return done }

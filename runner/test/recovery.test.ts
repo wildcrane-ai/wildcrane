@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
+import { connectionIdentity } from '../../cli/src/lib/agent/connection-process'
+import { projectStateDir } from '../../cli/src/lib/machine/project'
 import { markEnv, runMark } from '../../cli/src/lib/agent/stop'
 import type { Flow, Job } from '../src/api'
 import { confirmFlowStopped, flowRunEvidence, runFlow, stopFlowRuns, taskSessionMatches, type FlowIo } from '../src/flow'
@@ -168,8 +172,10 @@ test('W-947: resumable delivery on stale revise continues same delivery instead 
 
 test('an approval request pauses the active delivery and retains its session', async () => {
   const plan = { rule: 'Approve the direction before drafting.', previews: ['copy'] }
+  const checkout = '.akb/worktrees/d947'
   const ctx = setupFakeFlow({
-    implement: { delivery: { id: 'd947', status: 'active' }, agentSession: 'copy-session' },
+    reconcile: [{ kind: 'none' }, { kind: 'resumable', deliveryId: 'd947', status: 'active', worktree: `${checkout}/work` }],
+    implement: { trackExecution: true, delivery: { id: 'd947', status: 'active' }, agentSession: 'copy-session' },
   }, {
     flow: { verb: 'implement', phase: 'implement', studio: 'coding', review_stages: [], review_revision: 1 },
     taskReview: { plan, revision: 1, stages: [], approvals: [] },
@@ -186,6 +192,7 @@ test('an approval request pauses the active delivery and retains its session', a
     } } }
   }
   try {
+    for (const dir of ['work', 'base']) fs.mkdirSync(path.join(ctx.ws.cwd, checkout, dir), { recursive: true })
     const end = await runFlow(ctx.job, ctx.ws, ctx.deps, ctx.io)
     assert.ok(end.ok, !end.ok ? end.reason : '')
     assert.equal(end.report.deliveryCompleted, false)
@@ -366,4 +373,314 @@ test('toWire preserves structured retry ACP events (#996)', () => {
   assert.equal(wire[0]!.seq, 10)
   assert.equal(wire[0]!.data?.state, 'waiting')
   assert.equal(wire[0]!.data?.attempt, 2)
+})
+
+test('re-verifies real Codex stop state on #1258/#1263 manual resume, chained resume_execution, auto recovery, and live native backend (#1270)', async (t) => {
+  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-codex-1270-'))
+  const prevCodexHome = process.env.CODEX_HOME
+  process.env.CODEX_HOME = codexHome
+  t.after(() => {
+    if (prevCodexHome === undefined) delete process.env.CODEX_HOME
+    else process.env.CODEX_HOME = prevCodexHome
+    fs.rmSync(codexHome, { recursive: true, force: true })
+  })
+
+  const writeRollout = (threadId: string, lines: Record<string, unknown>[]) => {
+    const now = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const dir = path.join(codexHome, 'sessions', String(now.getFullYear()), pad(now.getMonth() + 1), pad(now.getDate()))
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, `rollout-2026-11-27T12-00-00-${threadId}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
+  }
+
+  // 1. #1258 isolated replay: delivery stopped/paused with static unconfirmed cleanup + pause_unsafe,
+  //    plus chained resume_execution after an earlier empty failed resume attempt (job_prev_failed).
+  const thread1258 = '019d7482-0000-7000-8000-000000001258'
+  const ctx1258 = setupFakeFlow({
+    reconcile: { kind: 'resumable', deliveryId: 'd1258', sessionId: 's1258', hasSession: true },
+    resume: { sessionId: 's1258-resumed', agentSession: thread1258, delivery: { id: 'd1258', status: 'finished' } },
+  }, {
+    id: 'job_resume_2',
+    number: 1258,
+    task: 'task_1258',
+    flow: { verb: 'implement', phase: 'implement', studio: 'coding', resume: true, resume_execution: 'job_prev_failed', review_stages: [], review_revision: 1 },
+  })
+  ctx1258.ws.number = 1258
+  ctx1258.ws.task = ctx1258.ws.cloudTask = 'task_1258'
+  const worktree1258 = path.join(ctx1258.ws.cwd, '.akb', 'worktrees', 'd1258', 'work')
+  fs.mkdirSync(worktree1258, { recursive: true })
+  const savedFile = path.join(worktree1258, 'work.txt')
+  fs.writeFileSync(savedFile, 'preserved-1258')
+  fs.writeFileSync(path.join(ctx1258.board, 'todo', '1258-build.md'), '---\ntitle: Build 1258\nstatus: implementing\nquestions: []\n---\n\nBody\n')
+  const stateSessions = path.join(projectStateDir(ctx1258.board), 'sessions')
+  fs.mkdirSync(stateSessions, { recursive: true })
+  fs.writeFileSync(
+    path.join(stateSessions, 's1258.events.jsonl'),
+    `${JSON.stringify({ kind: 'tool_call', data: { toolCallId: 'exec-1258', title: 'Command', kind: 'execute', status: 'in_progress' } })}\n`,
+  )
+  fs.writeFileSync(path.join(ctx1258.board, '.fake', 'runs.json'), JSON.stringify([{
+    sessionId: 's1258',
+    cardId: 1258,
+    harness: 'codex',
+    cwd: worktree1258,
+    action: 'implement',
+    status: 'stopped',
+    endedAt: Date.now() - 5000,
+    startedAt: Date.now() - 10_000,
+    deliveryId: 'd1258',
+    resumeId: thread1258,
+    managedProcess: true,
+    pendingWrites: true,
+    retryPause: 'unsafe',
+    retryHistory: [{ attempt: 1, source: 'runtime', summary: 'Stopped', sessionAction: 'pause_unsafe', at: new Date().toISOString() }],
+    cleanup: {
+      status: 'unconfirmed',
+      execution: 'exec_1258',
+      detail: 'Execution stopped; no further cleanup turn was submitted.',
+      kept: [],
+      items: [{ id: `terminal:${thread1258}:exec-1258`, threadId: thread1258, processId: '501', status: 'running' }],
+    },
+    cloudExecution: { job: 'job_orig_1258', machine: 'm_1', card: 1258 },
+  }]))
+
+  try {
+    // When command result is still missing from rollout, chained manual resume stays paused and preserves saved work.
+    writeRollout(thread1258, [
+      { type: 'session_meta', payload: { id: thread1258, cwd: worktree1258 } },
+      { type: 'event_msg', payload: { type: 'item_started', item: { type: 'CommandExecution', id: 'exec-1258', status: 'inProgress' } } },
+    ])
+    const blocked = await runFlow(ctx1258.job, ctx1258.ws, ctx1258.deps, ctx1258.io)
+    assert.equal(blocked.ok, false)
+    assert.equal(!blocked.ok && blocked.reason, 'task_recovery_unverified')
+    assert.match(ctx1258.logs.join(''), /操作结果|operation results/i)
+    assert.ok(!ctx1258.calls().some((c) => c[1] === 'run' && c[2] === 'resume'))
+    assert.equal(fs.readFileSync(savedFile, 'utf8'), 'preserved-1258')
+
+    // Once rollout confirms exec-1258 completed, Resume unlocks even with old unconfirmed/pause_unsafe markers and chained resume_execution.
+    writeRollout(thread1258, [
+      { type: 'session_meta', payload: { id: thread1258, cwd: worktree1258 } },
+      { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'CommandExecution', id: 'exec-1258', process_id: '501', status: 'completed', exit_code: 0 } } },
+      { type: 'event_msg', payload: { type: 'turn_aborted', reason: 'interrupted' } },
+    ])
+    const resumed = await runFlow(ctx1258.job, ctx1258.ws, ctx1258.deps, ctx1258.io)
+    assert.equal(resumed.ok, true, !resumed.ok ? resumed.reason : '')
+    assert.equal(resumed.ok && resumed.report.landReady?.deliveryId, 'd1258')
+    assert.equal(resumed.ok && resumed.report.session, thread1258)
+    assert.ok(ctx1258.calls().some((c) => c.slice(0, 4).join(' ') === 'raw run resume s1258' && c.includes('--require-session')))
+    assert.equal(fs.readFileSync(savedFile, 'utf8'), 'preserved-1258')
+
+    // Automatic recovery on transient failure with stale retryPause: 'unsafe' also re-verifies and resumes instead of deadlocking.
+    fs.writeFileSync(path.join(ctx1258.board, '.fake', 'runs.json'), JSON.stringify([{
+      sessionId: 's1258-auto',
+      cardId: 1258,
+      harness: 'codex',
+      cwd: worktree1258,
+      action: 'implement',
+      status: 'error',
+      endedAt: Date.now() - 2000,
+      startedAt: Date.now() - 5000,
+      deliveryId: 'd1258',
+      resumeId: thread1258,
+      managedProcess: true,
+      pendingWrites: true,
+      retryPause: 'unsafe',
+      failure: { source: 'runtime', code: 'connection_lost', summary: 'Codex stream disconnected.' },
+      cleanup: { status: 'unconfirmed', execution: 'exec_auto', kept: [], items: [{ id: `terminal:${thread1258}:exec-1258`, threadId: thread1258, processId: '501', status: 'running' }] },
+      cloudExecution: { job: 'job_auto_1258', machine: 'm_1', card: 1258 },
+    }]))
+    const autoEvidence = await flowRunEvidence(ctx1258.ws, { ...ctx1258.job, id: 'job_auto_1258', flow: { verb: 'implement', studio: 'coding', resume: true } }, ctx1258.deps, 'job_auto_1258')
+    assert.equal(autoEvidence.stopped, true)
+    assert.equal(autoEvidence.run?.id, 's1258-auto')
+    assert.equal(autoEvidence.run?.finished, false)
+    assert.equal(autoEvidence.run?.failure, undefined)
+  } finally {
+    ctx1258.cleanup()
+  }
+
+  // 2. #1263 isolated replay: stopped clarify/refine planning task resumed without resume_execution.
+  const thread1263 = '019d7482-0000-7000-8000-000000001263'
+  const ctx1263 = setupFakeFlow({
+    resume: { sessionId: 's1263-resumed', agentSession: thread1263, result: 'Refined cleanly' },
+  }, {
+    id: 'job_1263_resume',
+    number: 1263,
+    task: 'task_1263',
+    taskReview: undefined,
+    flow: { verb: 'refine', studio: 'coding', resume: true },
+  })
+  ctx1263.ws.number = 1263
+  ctx1263.ws.task = ctx1263.ws.cloudTask = 'task_1263'
+  fs.writeFileSync(path.join(ctx1263.board, 'todo', '1263-plan.md'), '---\ntitle: Plan 1263\nstatus: todo\nquestions: []\n---\n\nBody\n')
+  fs.writeFileSync(path.join(ctx1263.board, '.fake', 'runs.json'), JSON.stringify([{
+    sessionId: 's1263',
+    cardId: 1263,
+    harness: 'codex',
+    cwd: ctx1263.ws.cwd,
+    action: 'clarify',
+    status: 'stopped',
+    endedAt: Date.now() - 3000,
+    startedAt: Date.now() - 6000,
+    resumeId: thread1263,
+    managedProcess: true,
+    pendingWrites: true,
+    cleanup: {
+      status: 'unconfirmed',
+      execution: 'exec_1263',
+      detail: 'Execution stopped; no further cleanup turn was submitted.',
+      kept: [],
+      items: [{ id: `terminal:${thread1263}:exec-rg`, threadId: thread1263, processId: '777', status: 'running' }],
+    },
+    cloudExecution: { job: 'job_1263_orig', machine: 'm_1', card: 1263 },
+  }]))
+
+  try {
+    // Unconfirmed operation keeps #1263 paused instead of launching a fresh `task refine` and repeating work.
+    writeRollout(thread1263, [
+      { type: 'session_meta', payload: { id: thread1263, cwd: ctx1263.ws.cwd } },
+      { type: 'event_msg', payload: { type: 'item_started', item: { type: 'CommandExecution', id: 'exec-rg', status: 'inProgress' } } },
+    ])
+    const paused1263 = await runFlow(ctx1263.job, ctx1263.ws, ctx1263.deps, ctx1263.io)
+    assert.equal(paused1263.ok, false)
+    assert.equal(!paused1263.ok && paused1263.reason, 'task_recovery_unverified')
+    assert.ok(!ctx1263.calls().some((c) => c.includes('refine') || (c[1] === 'run' && c[2] === 'resume')))
+
+    // Foreign session ownership also blocks cleanly.
+    fs.writeFileSync(path.join(ctx1263.board, '.fake', 'runs.json'), JSON.stringify([
+      ...JSON.parse(fs.readFileSync(path.join(ctx1263.board, '.fake', 'runs.json'), 'utf8')),
+      { sessionId: 'foreign-run', cardId: 9999, harness: 'codex', action: 'clarify', status: 'done', resumeId: thread1263 },
+    ]))
+    writeRollout(thread1263, [
+      { type: 'session_meta', payload: { id: thread1263, cwd: ctx1263.ws.cwd } },
+      { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'CommandExecution', id: 'exec-rg', process_id: '777', status: 'failed', exit_code: 1 } } },
+    ])
+    const foreign1263 = await runFlow(ctx1263.job, ctx1263.ws, ctx1263.deps, ctx1263.io)
+    assert.equal(foreign1263.ok, false)
+    assert.match(ctx1263.logs.join(''), /归属|belongs to this task/i)
+
+    // Remove foreign run: #1263 resumes original Codex planning session cleanly!
+    fs.writeFileSync(
+      path.join(ctx1263.board, '.fake', 'runs.json'),
+      JSON.stringify(JSON.parse(fs.readFileSync(path.join(ctx1263.board, '.fake', 'runs.json'), 'utf8')).slice(0, 1)),
+    )
+    const ok1263 = await runFlow(ctx1263.job, ctx1263.ws, ctx1263.deps, ctx1263.io)
+    assert.equal(ok1263.ok, true, !ok1263.ok ? ok1263.reason : '')
+    assert.equal(ok1263.ok && ok1263.report.session, thread1263)
+    assert.ok(ctx1263.calls().some((c) => c.slice(0, 4).join(' ') === 'raw run resume s1263' && c.includes('--require-session')))
+  } finally {
+    ctx1263.cleanup()
+  }
+
+  // 3. Live codex-native backend WebSocket probe: blocks while turn is active or background terminal is running, then unlocks once settled.
+  if (process.platform !== 'win32') {
+    let mode: 'active' | 'bg' | 'settled' = 'active'
+    const nativeThread = '019d7482-0000-7000-8000-000000009999'
+    const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wc-native-1270-'))
+    const sockPath = path.join(sockDir, 'native.sock')
+    const sendWs = (socket: import('node:stream').Duplex, msg: unknown) => {
+      const body = Buffer.from(JSON.stringify(msg))
+      const head = body.length < 126
+        ? Buffer.from([0x81, body.length])
+        : (() => { const b = Buffer.alloc(4); b[0] = 0x81; b[1] = 126; b.writeUInt16BE(body.length, 2); return b })()
+      socket.write(Buffer.concat([head, body]))
+    }
+    const sockets = new Set<import('node:stream').Duplex>()
+    const server = http.createServer()
+    server.on('upgrade', (req, socket) => {
+      sockets.add(socket)
+      socket.once('close', () => sockets.delete(socket))
+      const accept = crypto.createHash('sha1').update(`${req.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64')
+      socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`)
+      let buf = Buffer.alloc(0)
+      socket.on('data', (chunk: Buffer) => {
+        buf = Buffer.concat([buf, chunk])
+        for (;;) {
+          if (buf.length < 2) return
+          const opcode = buf[0]! & 0x0f
+          let len = buf[1]! & 0x7f
+          let off = 2
+          if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4 }
+          const masked = (buf[1]! & 0x80) !== 0
+          if (buf.length < off + (masked ? 4 : 0) + len) return
+          const mask = masked ? buf.subarray(off, off + 4) : null
+          off += masked ? 4 : 0
+          const payload = Buffer.from(buf.subarray(off, off + len))
+          buf = buf.subarray(off + len)
+          if (mask) for (let i = 0; i < payload.length; i++) payload[i]! ^= mask[i % 4]!
+          if (opcode === 0x01 && payload.length) {
+            const m = JSON.parse(payload.toString('utf8')) as { id?: number; method?: string; params?: Record<string, unknown> }
+            if (m.id === undefined) continue
+            if (m.method === 'initialize') sendWs(socket, { id: m.id, result: { userAgent: 'probe-test' } })
+            else if (m.method === 'thread/read') {
+              sendWs(socket, {
+                id: m.id,
+                result: {
+                  thread: {
+                    id: nativeThread,
+                    status: { type: mode === 'active' ? 'active' : 'idle' },
+                    ...(m.params?.includeTurns ? { turns: [{ id: 't1', status: 'completed', items: [{ type: 'commandExecution', id: 'cmd-1', status: 'completed', exitCode: 0, processId: '88' }] }] } : {}),
+                  },
+                },
+              })
+            } else if (m.method === 'thread/backgroundTerminals/list') {
+              sendWs(socket, { id: m.id, result: { data: mode === 'bg' ? [{ itemId: 'cmd-bg', processId: '99' }] : [], nextCursor: null } })
+            }
+          }
+        }
+      })
+    })
+    await new Promise<void>((resolve) => server.listen(sockPath, resolve))
+    const nativeDir = path.join(process.env.WILDCRANE_HOME || process.env.AI4KANBAN_HOME!, 'codex-native')
+    fs.mkdirSync(nativeDir, { recursive: true })
+    const backendKey = 'a'.repeat(64)
+    const backendRecord = path.join(nativeDir, `${backendKey}.json`)
+    fs.writeFileSync(backendRecord, JSON.stringify({
+      pid: process.pid,
+      identity: connectionIdentity(process.pid),
+      instance: 'inst-probe',
+      generation: 'gen-1',
+      endpoint: `unix://${sockPath}`,
+      key: backendKey,
+    }))
+    const ctxNative = setupFakeFlow({}, {
+      id: 'job_native',
+      number: 947,
+      flow: { verb: 'refine', studio: 'coding', resume: true, resume_execution: 'job_native_orig' },
+    })
+    fs.writeFileSync(path.join(ctxNative.board, '.fake', 'runs.json'), JSON.stringify([{
+      sessionId: 's-native',
+      cardId: 947,
+      harness: 'codex',
+      action: 'clarify',
+      status: 'stopped',
+      endedAt: Date.now() - 1000,
+      startedAt: Date.now() - 2000,
+      resumeId: nativeThread,
+      managedProcess: true,
+      pendingWrites: true,
+      cleanup: { status: 'unconfirmed', execution: 'e1', kept: [], items: [{ id: `terminal:${nativeThread}:cmd-1`, threadId: nativeThread, processId: '88', status: 'running' }] },
+      cloudExecution: { job: 'job_native_orig', machine: 'm_1', card: 947 },
+    }]))
+    try {
+      const whileActive = await flowRunEvidence(ctxNative.ws, ctxNative.job, ctxNative.deps, 'job_native_orig')
+      assert.equal(whileActive.stopped, false)
+
+      mode = 'bg'
+      const whileBg = await flowRunEvidence(ctxNative.ws, ctxNative.job, ctxNative.deps, 'job_native_orig')
+      assert.equal(whileBg.stopped, true)
+      assert.equal(whileBg.run, undefined)
+      assert.match(whileBg.diagnostic ?? '', /操作结果|operation results/i)
+
+      mode = 'settled'
+      const onceSettled = await flowRunEvidence(ctxNative.ws, ctxNative.job, ctxNative.deps, 'job_native_orig')
+      assert.equal(onceSettled.stopped, true)
+      assert.equal(onceSettled.diagnostic, undefined)
+      assert.equal(onceSettled.run?.id, 's-native')
+    } finally {
+      ctxNative.cleanup()
+      fs.rmSync(backendRecord, { force: true })
+      for (const s of sockets) s.destroy()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      fs.rmSync(sockDir, { recursive: true, force: true })
+    }
+  }
 })

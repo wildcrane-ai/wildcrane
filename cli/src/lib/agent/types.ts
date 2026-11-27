@@ -207,6 +207,7 @@ export type RunRefusalKind =
   | 'runGoing'
   | 'runNotResumable'
   | 'runNoSession'
+  | 'runSessionMissing'
   | 'runContinued'
   | 'runForeign'
   /** A sub-run is started again by its parent, never on its own (#1421). */

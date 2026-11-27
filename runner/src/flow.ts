@@ -3,7 +3,9 @@ import { REVIEW_SYNC_ENV } from '../../cli/src/lib/cloud/review-sync'
 import { previewSyncBridge } from './reply-approval'
 import { STUDIO_SNAPSHOT_ENV } from '../../cli/src/lib/agent/cloud-studios'
 import type { BoardRunSpend } from './recovery'
-import { agentRecovery, clipDetail, clipSummary, isSessionMissingFailure, makeFailure, MAX_RETRY_ATTEMPTS, mergeRetryHistory, RETRY_FILE_ENV, readRetryPause, resumeBlocked, type ExecutionFailure, type FailureDetail, type RetryPause, type RetryRecord } from '../../cli/src/lib/agent/retry'
+import { agentRecovery, clipDetail, clipSummary, isSessionMissingFailure, makeFailure, MAX_RETRY_ATTEMPTS, mergeRetryHistory, planRetry, RETRY_FILE_ENV, readRetryPause, resumeBlocked, type ExecutionFailure, type FailureDetail, type RetryPause, type RetryRecord } from '../../cli/src/lib/agent/retry'
+import { idleStopConfirmed, stoppedCleanupConfirmed } from '../../cli/src/lib/agent/wire/codex-background-types'
+import { hasLiveCodexExecution, verifyCodexStopState, type CodexStopVerification } from '../../cli/src/lib/agent/wire/codex-verify'
 import { connectionStopped } from '../../cli/src/lib/agent/connection-process'
 // A flow job (#2020): one board verb, run with the akb the Runner carries on the task's board
 // and followed to its end — for `implement`, until the delivery has landed. A periodic agent's
@@ -103,14 +105,19 @@ interface Run extends BoardRunSpend {
   cardId?: number | null
   parentId?: string
   cloudExecution?: { job: string; machine: string; card?: number }
+  harness?: string
+  cwd?: string
+  unspawned?: boolean
   resumeId?: string
+  continues?: { resumeId: string; fork?: boolean }
   canResume?: boolean
   pendingWrites?: boolean
+  blocker?: RunRecord['blocker']
   failure?: ExecutionFailure
   retryPause?: RetryPause
   retry?: { attempt: number; of: number; reason: string }
   retryHistory?: RetryRecord[]
-  cleanup?: { status: string }
+  cleanup?: import('../../cli/src/lib/agent/wire/codex-background-types').Cleanup
   agentPid?: number
   agentStartedAt?: number
   managedProcess?: boolean
@@ -431,24 +438,86 @@ export function pickRow(job: Job, r: AgentRuntime, machine: string, reports: Run
   return { id: r.id, name: r.name, harness: runtime, ...runtimeSettings(runtime, r.model, r.settings, r.id, servers, mcpFile) }
 }
 
+function sessionOfRun(run: Run | undefined): string | undefined {
+  return run && !isSessionMissingFailure(run.failure)
+    ? run.resumeId ?? (run.continues && !run.continues.fork ? run.continues.resumeId : undefined) ?? (run.canResume ? run.sessionId : undefined)
+    : undefined
+}
+
+function isCodexRun(run: Run | undefined, job: Pick<Job, 'runtime'>): boolean {
+  return (run?.harness ?? job.runtime) === 'codex'
+}
+
 function runStopped(run: Run): boolean {
   if (!run.status || run.status === 'running') return false
   const root = run.agentPid ? { pid: run.agentPid, since: run.agentStartedAt ?? run.startedAt ?? 0, identity: run.agentIdentity } : undefined
-  return run.managedProcess ? connectionStopped(root) : processesStopped(runMark(run.sessionId, run.agentStartedAt ?? run.startedAt), root)
+  const stopped = run.managedProcess ? connectionStopped(root) : processesStopped(runMark(run.sessionId, run.agentStartedAt ?? run.startedAt), root)
+  if (!stopped) return false
+  const session = run.harness === 'codex' || run.managedProcess ? sessionOfRun(run) : undefined
+  return !(session && hasLiveCodexExecution(session))
 }
 
-function failedRunResumeDiagnostic(run: Run | undefined, stopped: boolean, zh: boolean): string | undefined {
-  const session = run && !isSessionMissingFailure(run.failure) ? run.resumeId ?? (run.canResume ? run.sessionId : undefined) : undefined
-  return resumeBlocked({
-    stopped: stopped && !!run?.endedAt && run.status === 'error',
+async function verifyFlowCodexRun(
+  ws: TaskFolder,
+  job: Pick<Job, 'runtime'>,
+  run: Run | undefined,
+  runs?: readonly Run[],
+): Promise<CodexStopVerification | undefined> {
+  if (!run || !isCodexRun(run, job)) return undefined
+  const session = sessionOfRun(run)
+  if (!session) return undefined
+  const cleanupUnconfirmed = run.cleanup ? !stoppedCleanupConfirmed(run.cleanup) : false
+  const needsBackendProbe = !!run.pendingWrites || cleanupUnconfirmed || !!run.retryPause
+    || (!!run.managedProcess && run.failure?.code === 'idle_timeout' && !idleStopConfirmed(run.cleanup, session))
+  return verifyCodexStopState({
     session,
-    unconfirmedCleanup: run?.pendingWrites || run?.cleanup?.status === 'unconfirmed'
-      || !!session && run?.retryHistory?.at(-1)?.sessionAction !== 'resume',
+    cwd: run.cwd,
+    deliveryId: run.deliveryId,
+    cleanup: run.cleanup,
+    eventsPath: path.join(projectStateDir(ws.board), 'sessions', `${run.sessionId}.events.jsonl`),
+    cardId: ws.number ?? run.cardId,
+    taskId: ws.task,
+    runs: runs?.map((r) => ({
+      sessionId: r.sessionId,
+      cardId: r.cardId,
+      resumeId: r.resumeId,
+      harness: r.harness,
+      continues: r.continues,
+      cloudExecution: r.cloudExecution,
+    })),
+    selfSessionId: run.sessionId,
+    needsBackendProbe,
+  })
+}
+
+function failedRunResumeDiagnostic(
+  run: Run | undefined,
+  stopped: boolean,
+  zh: boolean,
+  manual = false,
+  codex?: CodexStopVerification,
+): string | undefined {
+  const session = sessionOfRun(run)
+  const exited = stopped && (!codex || codex.stopped) && !!run?.endedAt
+    && (run.status === 'error' || run.status === 'stopped' || run.status === 'interrupted')
+  if (exited && codex && !codex.ownershipOk) {
+    return zh ? '原会话归属无法核实。' : 'Could not verify that the session belongs to this task.'
+  }
+  const cleanupUnconfirmed = run?.cleanup ? !stoppedCleanupConfirmed(run.cleanup) : false
+  const legacyIdle = manual && !run?.managedProcess && run?.failure?.code === 'idle_timeout' && !run.cleanup?.kept?.length
+  const staticUnconfirmed = !legacyIdle && (!!run?.pendingWrites || cleanupUnconfirmed
+    || !!run?.managedProcess && run.failure?.code === 'idle_timeout' && !idleStopConfirmed(run.cleanup, session))
+  const unconfirmedCleanup = !!run?.blocker || (codex?.found ? !codex.settled : staticUnconfirmed)
+  if (manual && exited && !unconfirmedCleanup && run?.failure?.code !== 'session_mismatch') return
+  return resumeBlocked({
+    stopped: exited,
+    session,
+    unconfirmedCleanup,
   }, zh)
 }
 
 function recoveryArgs(run: NonNullable<FlowIo['flowRun']>): string[] {
-  return run.finished ? ['run', 'log', run.id] : ['run', 'resume', run.id, '--require-session']
+  return run.finished ? ['run', 'log', run.id] : ['run', 'resume', run.id, run.freshSession ? '--new-session' : '--require-session']
 }
 
 function runsSpent(runs: Run[], since: number, job: Job, io: FlowIo, machine: string, card?: number): Run[] {
@@ -798,8 +867,9 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
 
     const observed = await reconcileDelivery(card)
     const deliveryId = 'deliveryId' in observed ? observed.deliveryId : undefined
+    const sourceJob = flow.land_from
     if (stopping(io)) return fail('')
-    if (!flow.land_from || flow.delivery_id && flow.delivery_id !== deliveryId) {
+    if (!sourceJob || flow.delivery_id && flow.delivery_id !== deliveryId) {
       return fail('The saved implementation does not match this Land job.')
     }
 
@@ -818,7 +888,17 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     const localArchive = () => isArchived(ws, card) && !asks(cardFile(ws))
       && isSuccessfulArchive(cardFile(ws))
 
+    const unverified = observed.kind === 'unverified' ? observed.diagnostic : 'The saved implementation workspace or its run could not be verified.'
+    const matchesSource = async () => {
+      if (!deliveryId) return false
+      const { stopped, mismatched, run } = await flowRunEvidence(ws, job, deps, sourceJob)
+      return stopped && !mismatched && run?.finished && !run.failure && run.deliveryId === deliveryId
+    }
+
     if (localArchive() && (deliveryId ? (observed.kind === 'completed' || observed.kind === 'resumable') : !flow.delivery_id && observed.kind === 'none')) {
+      if (flow.reviewed_implementation && (observed.kind === 'resumable' && !savedWorkspace(observed) || !await matchesSource())) {
+        return fail(unverified)
+      }
       if (observed.kind === 'resumable') {
         const saved = await akb(['task', 'archive', String(card), '--json'])
         if (saved.code !== 0) return fail(refusal(saved))
@@ -826,18 +906,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       return wroteArchive(await readRuns())
     }
 
-    const work = observed.kind === 'resumable' && observed.worktree ? path.resolve(ws.cwd, observed.worktree) : null
-    const present = (file: string) => fs.statSync(file, { throwIfNoEntry: false })?.isDirectory() === true
-    const within = work && path.relative(ws.cwd, work).startsWith(`.akb${path.sep}worktrees${path.sep}`)
-    const verified = within && work && present(work) && (observed.kind === 'resumable' && observed.base
-      ? !!observed.branch && git(['symbolic-ref', '--short', 'HEAD'], work)?.trim() === observed.branch
-        && git(['merge-base', '--is-ancestor', observed.base, 'HEAD'], work) !== null
-      : present(path.join(path.dirname(work), 'base')))
-    const source = await flowRunEvidence(ws, job, deps, flow.land_from)
-    if (observed.kind !== 'resumable' || observed.status !== 'active' || !verified ||
-        !source.stopped || !source.run?.finished || source.run.deliveryId !== deliveryId) {
-      return fail(observed.kind === 'unverified' ? observed.diagnostic : 'The saved implementation workspace or its run could not be verified.')
-    }
+    if (!savedWorkspace(observed) || !await matchesSource()) return fail(unverified)
 
     let resume = io.flowRun
     if (!resume && flow.sync_recovery_of) {
@@ -878,13 +947,25 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     return fail('')
   }
 
+  function savedWorkspace(observed: Awaited<ReturnType<typeof reconcileDelivery>>): observed is Extract<
+    Awaited<ReturnType<typeof reconcileDelivery>>, { kind: 'resumable' }
+  > {
+    if (observed.kind !== 'resumable' || observed.status !== 'active' || !observed.worktree) return false
+    const work = path.resolve(ws.cwd, observed.worktree)
+    const present = (file: string) => fs.statSync(file, { throwIfNoEntry: false })?.isDirectory() === true
+    return path.relative(ws.cwd, work).startsWith(`.akb${path.sep}worktrees${path.sep}`) && present(work) && (observed.base
+      ? !!observed.branch && git(['symbolic-ref', '--short', 'HEAD'], work)?.trim() === observed.branch
+        && git(['merge-base', '--is-ancestor', observed.base, 'HEAD'], work) !== null
+      : present(path.join(path.dirname(work), 'base')))
+  }
+
   async function onCard(card: number): Promise<FlowEnd> {
     try {
       if (flow.resume_execution && !io.flowRun) {
         const saved = await flowRunEvidence(ws, job, deps, flow.resume_execution)
         if (stopping(io)) return fail('')
-        if (!saved.run) return unverifiedResume(saved.diagnostic)
-        return await workOn(card, undefined, saved.run)
+        if (!saved.stopped || saved.mismatched || saved.diagnostic) return unverifiedResume(saved.diagnostic)
+        if (saved.run) return await workOn(card, undefined, saved.run)
       }
       const verification = flow.verify_delivery
       if (verification) {
@@ -966,6 +1047,30 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
         return unverifiedResume(resumeBlocked({ stopped: false }, cloudLanguage(job) === 'zh'))
       }
       if (io.lost()) return fail('')
+      if (flow.resume && !flow.replan && !flow.resume_execution && !io.flowRun && (!reconciled || reconciled.kind === 'none')) {
+        const zh = cloudLanguage(job) === 'zh'
+        const latest = runs
+          .filter(r => !r.parentId && onTask(r, card) && (!r.cloudExecution || r.cloudExecution.machine === deps.machineId))
+          .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0]
+        if (latest && latest.status !== 'done') {
+          const session = sessionOfRun(latest)
+          if (session && !await taskSessionMatches(ws, deps, session)) {
+            return unverifiedResume(zh ? '原会话归属无法核实。' : 'Could not verify that the session belongs to this task.')
+          }
+          const codex = await verifyFlowCodexRun(ws, job, latest, runs)
+          if (codex && !codex.stopped) return unverifiedResume(resumeBlocked({ stopped: false }, zh))
+          if (codex && !codex.ownershipOk) {
+            return unverifiedResume(zh ? '原会话归属无法核实。' : 'Could not verify that the session belongs to this task.')
+          }
+          const diagnostic = failedRunResumeDiagnostic(latest, true, zh, true, codex)
+          if (diagnostic && (session || latest.pendingWrites || latest.cleanup?.status === 'unconfirmed')) {
+            return unverifiedResume(diagnostic)
+          }
+          if (!diagnostic && session && verb === 'refine' && !flow.text?.trim() && !(!hasReview && reviewOf(cardFile(ws)))) {
+            return await workOn(card, reconciled, { id: latest.sessionId, finished: false, card, deliveryId: latest.deliveryId })
+          }
+        }
+      }
       return await workOn(card, reconciled)
     } finally {
       if (previewDirectory) fs.rmSync(previewDirectory, { recursive: true, force: true })
@@ -1017,9 +1122,10 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     const mismatchedReceipt = cloudLanguage(job) === 'en'
       ? 'The receipt belongs to a different delivery.' : '续跑返回了其他交付的结果，原交付保持未完成。'
     const resumeExistingDelivery = async () => {
-      const restored = await launch(['delivery', 'resume', String(id), '--json'], false, undefined, 'implement')
+      const target = reconciled?.kind === 'resumable' ? reconciled.deliveryId : String(id)
+      const restored = await launch(['delivery', 'resume', target, '--follow', '--events', '--json'], true, undefined, 'implement')
       if (restored.reviewRefused) return fail(restored.reviewRefused)
-      const resumed = answerOf<{ landed?: boolean; deliveryId?: string; sessionId?: string; delivery?: Delivery; error?: { message?: string; reason?: string; args?: { id?: string } } }>(restored)
+      const resumed = answerOf<{ landed?: boolean; deliveryId?: string; sessionId?: string; delivery?: Delivery; error?: { message?: string; reason?: string; sessionId?: string; args?: { id?: string } } }>(restored)
       if (io.lost()) return fail('')
       if (restored.code === 0 && resumed?.deliveryId && reconciled?.kind === 'resumable' && resumed.deliveryId !== reconciled.deliveryId) {
         return fail(mismatchedReceipt)
@@ -1027,6 +1133,11 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       if (restored.code === 0 && resumed?.landed && resumed.deliveryId) {
         if (flow.phase === 'implement') return { ok: true as const, report: { card: id, landReady: { deliveryId: resumed.deliveryId } } }
         return { ok: true as const, report: { card: id, deliveryCompleted: true, deliveryId: resumed.deliveryId, ...landingOf(resumed.delivery) } }
+      }
+      if (resumed?.sessionId || resumed?.error?.sessionId) {
+        expectedDelivery = reconciled?.kind === 'resumable' ? reconciled.deliveryId : resumed.deliveryId
+        ran = restored
+        return undefined
       }
       const reason = restored.code === 0 ? undefined : resumed?.error?.reason
       // No delivery left to carry on: build afresh, and the builder picks up what is on disk.
@@ -1038,20 +1149,15 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       }
       const deliveryId = reason && reason !== 'deliveryActive' ? undefined : resumed?.deliveryId ?? resumed?.error?.args?.id
       expectedDelivery = deliveryId ?? (reconciled?.kind === 'resumable' ? reconciled.deliveryId : undefined)
-      if (resumed?.sessionId) {
-        const original = (await boardRuns(deps.akb, ws, ['--card', String(id)]))?.find(r => r.sessionId === resumed.sessionId)
-        if (!original || !onTask(original, id) || original.deliveryId !== expectedDelivery ||
-            original.cloudExecution && !jobOwns(original, job.id, deps.machineId) || !runStopped(original)) {
-          return unverifiedResume()
-        }
-        continuation = ['run', 'log', resumed.sessionId]
-      } else if (deliveryId) {
+      if (deliveryId) {
         const previous = answerOf<{ runs?: Run[] }>(await akb(['run', 'list', '--card', String(id), '--all', '--json']))?.runs
           ?.filter((r) => ['implement', 'conflict', 'hook'].includes(r.action ?? '') && r.deliveryId === deliveryId)
           .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0]
         // With no run to rejoin, a fresh build run works inside the same delivery.
         if (previous) {
-          continuation = ['run', 'resume', previous.sessionId, '--require-session']
+          const allowFreshMissing = !!flow.resume_execution && isSessionMissingFailure(previous.failure)
+            && !previous.pendingWrites && (!previous.cleanup || stoppedCleanupConfirmed(previous.cleanup))
+          continuation = ['run', 'resume', previous.sessionId, allowFreshMissing ? '--fresh' : '--require-session']
         }
       }
       return undefined
@@ -1124,13 +1230,27 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       lastSessionId?: string
       agentSession?: string
       delivery?: Delivery
-      error?: { message?: string; result?: string; sessionId?: string; lastSessionId?: string; agentSession?: string; delivery?: Delivery }
+      error?: { message?: string; reason?: string; result?: string; sessionId?: string; lastSessionId?: string; agentSession?: string; delivery?: Delivery }
     }
     const readRuns = async () => (await boardRuns(deps.akb, ws, ['--card', String(id)]) ?? []).filter(r => onTask(r, id))
     const lastRun = (answer: Ended | null) => answer?.lastSessionId ?? answer?.error?.lastSessionId ?? answer?.sessionId ?? answer?.error?.sessionId
     const logged = continuation?.[1] === 'log' ? continuation[2] : undefined
     let answer = answerOf<Ended>(ran)
     let runs = await readRuns()
+    if (flow.resume && !io.repairDelivery && ran.code !== 0 && continuation?.[1] === 'resume' && continuation.includes('--require-session') && !stopping(io)) {
+      const missing = runs.find(run => run.sessionId === lastRun(answer) && jobOwns(run, job.id, deps.machineId) &&
+        run.deliveryId === expectedDelivery && isSessionMissingFailure(run.failure)
+        && !run.pendingWrites && (!run.cleanup || stoppedCleanupConfirmed(run.cleanup)))
+      // Once a resume starts, its record replaces the previous attempt's.
+      const retryFrom = missing?.sessionId ?? (answer?.error?.reason === 'runSessionMissing' ? continuation[2] : undefined)
+      if (retryFrom) {
+        ran = await launch(['run', 'resume', retryFrom, '--new-session', '--follow', '--events', '--json'], true, undefined, effectiveVerb)
+        if (ran.reviewRefused) return fail(ran.reviewRefused)
+        if (io.lost()) return fail('')
+        answer = answerOf<Ended>(ran)
+        runs = await readRuns()
+      }
+    }
     if (ran.code !== 0 && !continuation && job.fork && job.transcript && !stopping(io) &&
         runs.some(run => run.sessionId === lastRun(answer) && run.failure?.code === 'codex_fork_source_missing')) {
       const failure = runs.find(run => run.sessionId === lastRun(answer))!.failure!
@@ -1161,10 +1281,24 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     const executed = runsSpent(runs, since, job, io, deps.machineId, id)
     const spent = spentBy([...learned, ...executed], job)
     const history = mergeRetryHistory(...executed.map(run => run.retryHistory), recent?.retryHistory)
-    if (!rejected && (isFlatReviewPlan(job.taskReview?.plan) || job.taskReview?.plan === null && effectiveVerb === 'refine')) {
+    const managedBuild = flow.phase === 'implement' && effectiveVerb === 'implement'
+    if (!rejected && (managedBuild && hasReview || isFlatReviewPlan(job.taskReview?.plan) || job.taskReview?.plan === null && effectiveVerb === 'refine')) {
       const saved = await attemptSync(io, 'review', () => deps.api.readTask(ws.task))
       if (!saved.ok) return fail(refusedSync(job, saved))
-      if (saved.value.review?.stages.some(stage => stage.job === job.id)) {
+      const review = saved.value.review
+      if (review?.stages.some(stage => stage.job === job.id && (!managedBuild ||
+        isFlatReviewPlan(review.plan) && (isWaitingReview(stage.status) || stage.status === 'approved'))) && (!managedBuild || ran.code === 0)) {
+        if (managedBuild) {
+          if (!deliveryId || recent?.status !== 'done' || recent.deliveryId !== deliveryId ||
+              !jobOwns(recent, job.id, deps.machineId) || !runStopped(recent) || recent.pendingWrites ||
+              recent.retryPause || recent.cleanup?.status === 'unconfirmed') {
+            return fail('The implementation result or delivery workspace was not saved.')
+          }
+          const workspace = await reconcileDelivery(id)
+          if (!savedWorkspace(workspace) || workspace.deliveryId !== deliveryId) {
+            return fail(workspace.kind === 'unverified' ? workspace.diagnostic : 'The saved implementation workspace could not be verified.')
+          }
+        }
         const session = recent?.resumeId ?? (recent ? answer?.agentSession ?? answer?.error?.agentSession : undefined)
         return { ok: true, report: {
           ...spent, card: id, deliveryCompleted: false, ...(deliveryId ? { deliveryId } : {}),
@@ -1197,7 +1331,8 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       const pause = readRetryPause(recent?.retryPause) ?? 'unsafe'
       const stopped = recent?.cloudExecution?.job === job.id && recent.cloudExecution.machine === deps.machineId && runs
         .filter(run => run.cloudExecution?.job === job.id).every(runStopped)
-      const diagnostic = failedRunResumeDiagnostic(recent, stopped, cloudLanguage(job) === 'zh')
+      const codex = stopped ? await verifyFlowCodexRun(ws, job, recent, runs) : undefined
+      const diagnostic = failedRunResumeDiagnostic(recent, stopped, cloudLanguage(job) === 'zh', false, codex)
       const detail = [diagnostic, failure?.detail ?? (rawReason.length > 300 ? rawReason : undefined)].filter(Boolean).join('\n')
       if (diagnostic) io.show(`[recovery] ${diagnostic}\n`)
       const failureDetail: FailureDetail = {
@@ -1221,7 +1356,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
         report: { ...spent, ...tracked, failure: failureDetail },
       }
     }
-    if (flow.phase === 'implement' && effectiveVerb === 'implement' && !rejected && !asked && !waiting) {
+    if (managedBuild && !rejected && !asked && !waiting) {
       if (completed) return { ok: true, report: { ...spent, card: id, landReady: { deliveryId: completed },
         session: recent?.resumeId ?? answer?.agentSession, reply: recent?.result, ...(history.length ? { retries: history } : {}) } }
       if (!deliveryId || !recent || !runStopped(recent)) return fail('The implementation result or delivery workspace was not saved.')
@@ -1298,12 +1433,19 @@ export async function taskSessionMatches(ws: TaskFolder, deps: FlowDeps, session
   // while leaving an unrecorded discussion or reply session eligible for normal resume.
   const ran = await runCommand(deps.akb, ws, ['list', '--conversation', session, '--all'])
   const runs = answerOf<{ runs?: Run[] }>(ran)?.runs
-  return !!runs && (!runs.some(r => r.cardId != null) || runs.some(r => onTask(r, card)))
+  return !!runs && !runs.some(r => (r.cardId != null || r.cloudExecution?.card !== undefined) && !onTask(r, card))
 }
 
 export async function confirmFlowStopped(ws: TaskFolder, job: Job, deps: FlowDeps): Promise<boolean> {
   const runs = await boardRuns(deps.akb, ws, ['--execution', job.id])
-  return !!runs && runs.filter(r => jobOwns(r, job.id, deps.machineId)).every(runStopped)
+  if (!runs) return false
+  const owned = runs.filter(r => jobOwns(r, job.id, deps.machineId))
+  if (!owned.every(runStopped)) return false
+  for (const r of owned) {
+    const codex = await verifyFlowCodexRun(ws, job, r, runs)
+    if (codex && !codex.stopped) return false
+  }
+  return true
 }
 
 export async function flowRunEvidence(ws: TaskFolder, job: Job, deps: FlowDeps, execution = job.id,
@@ -1322,27 +1464,67 @@ export async function flowRunEvidence(ws: TaskFolder, job: Job, deps: FlowDeps, 
     run.sessionId === prior?.id && !!prior?.from && jobOwns(run, prior.from, deps.machineId))
   const owned = bound.filter(run => !id || onTask(run, id))
   const mismatched = !!id && bound.some(run => run.cardId != null && !onTask(run, id))
-  const probes = new Map([...onCard, ...bound].map(run => [run.sessionId, run]))
-  if (![...probes.values()].every(runStopped)) {
+  const allProbes = [...new Map([...onCard, ...bound].map(run => [run.sessionId, run])).values()]
+  if (!allProbes.every(runStopped)) {
     return { stopped: false, mismatched, diagnostic: resumeBlocked({ stopped: false }, zh) }
   }
   const candidates = owned
     .filter(run => !run.parentId)
     .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
+  const fallbackOnCard = manual && id && candidates.length === 0
+    ? onCard
+        .filter(run => !run.parentId && onTask(run, id) && (!run.cloudExecution || run.cloudExecution.machine === deps.machineId))
+        .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0]
+    : undefined
   const previous = candidates.find(run => run.cloudExecution?.job === execution)
     ?? candidates.find(run => run.sessionId === prior?.id)
     ?? candidates[0]
-  if (!previous || manual && previous.cloudExecution?.job !== execution) return { stopped: true, mismatched }
-  const resumeDiagnostic = failedRunResumeDiagnostic(previous, true, zh)
-  if (manual) {
-    if (resumeDiagnostic) return { stopped: true, diagnostic: resumeDiagnostic }
-    return { stopped: true, mismatched, run: { id: previous.sessionId, finished: false, card: id || undefined, deliveryId: previous.deliveryId } }
+    ?? (fallbackOnCard && fallbackOnCard.status !== 'done' ? fallbackOnCard : undefined)
+  if (!previous || (manual && previous !== fallbackOnCard && previous.cloudExecution?.job !== execution)) {
+    return { stopped: true, mismatched }
   }
-  const terminal = job.flow && previous.status === 'error' && previous.retryPause ? previous.failure : undefined
+  if (manual && id && isArchived(ws, id) && !asks(cardFile(ws)) && isSuccessfulArchive(cardFile(ws))) {
+    return { stopped: true, mismatched }
+  }
+  const session = sessionOfRun(previous)
+  if (session && id && !await taskSessionMatches(ws, deps, session)) {
+    return { stopped: true, mismatched: true, diagnostic: zh ? '原会话归属无法核实。' : 'Could not verify that the session belongs to this task.' }
+  }
+  const codex = await verifyFlowCodexRun(ws, job, previous, allProbes)
+  if (codex && !codex.stopped) {
+    return { stopped: false, mismatched, diagnostic: resumeBlocked({ stopped: false }, zh) }
+  }
+  if (codex && !codex.ownershipOk) {
+    return { stopped: true, mismatched: true, diagnostic: zh ? '原会话归属无法核实。' : 'Could not verify that the session belongs to this task.' }
+  }
+  const resumeDiagnostic = failedRunResumeDiagnostic(previous, true, zh, manual, codex)
+  if (manual) {
+    if (!session && previous.unspawned === true
+        && !previous.pendingWrites && (!previous.managedProcess || stoppedCleanupConfirmed(previous.cleanup) || !previous.cleanup)) {
+      return { stopped: true, mismatched }
+    }
+    if (resumeDiagnostic) return { stopped: true, diagnostic: resumeDiagnostic }
+    return { stopped: true, mismatched, run: {
+      id: previous.sessionId, finished: false, freshSession: !session, card: id || undefined, deliveryId: previous.deliveryId,
+    } }
+  }
+  const retryableUnsafe = previous.retryPause === 'unsafe' && !resumeDiagnostic && !!session && !!previous.failure
+    && 'plan' in planRetry(previous.failure, previous.retry?.attempt ?? 1, Date.now(), undefined, true)
+  const terminal = job.flow && previous.status === 'error' && previous.retryPause && !retryableUnsafe
+    ? previous.failure
+    : undefined
   const failure = terminal && previous.retryPause === 'limit' ? { ...terminal, code: terminal.code ?? 'retry_exhausted' } : terminal
-  const recovery = agentRecovery({ stopped: true, completed: previous.status === 'done' || !!failure,
-    session: previous.resumeId ?? (previous.canResume ? previous.sessionId : undefined),
-    unconfirmedCleanup: !!previous.retryPause || previous.pendingWrites || previous.cleanup?.status === 'unconfirmed' })
+  const cleanupUnconfirmed = previous.cleanup ? !stoppedCleanupConfirmed(previous.cleanup) : false
+  const staticUnconfirmed = (!!previous.retryPause && !retryableUnsafe) || !!previous.pendingWrites || cleanupUnconfirmed
+  const unconfirmedCleanup = codex?.found
+    ? (!codex.settled || (!!previous.retryPause && !retryableUnsafe))
+    : staticUnconfirmed
+  const recovery = agentRecovery({
+    stopped: true,
+    completed: previous.status === 'done' || !!failure,
+    session,
+    unconfirmedCleanup,
+  })
   if (recovery === 'unsafe') return { stopped: true, mismatched }
   const { sessionId, runtime, startedAt, usage, costUsd, costIncomplete, context } = previous
   const priorSpend = new Map((!id || prior?.card === id ? prior?.priorSpend : undefined)?.map(spend => [spend.sessionId, spend]))
@@ -1350,5 +1532,5 @@ export async function flowRunEvidence(ws: TaskFolder, job: Job, deps: FlowDeps, 
   return { stopped: true, mismatched, run: { id: sessionId, finished: recovery === 'report', from: previous.cloudExecution?.job, card: id || undefined,
     ...(previous.resumeId ? { agentSession: previous.resumeId } : {}),
     ...(previous.deliveryId ? { deliveryId: previous.deliveryId } : {}),
-    ...(failure ? { failure, resumeDiagnostic: resumeDiagnostic ?? null } : {}), ...(previous.retryPause ? { retryPause: previous.retryPause } : {}), priorSpend: [...priorSpend.values()] } }
+    ...(failure ? { failure, resumeDiagnostic: resumeDiagnostic ?? null } : {}), ...(previous.retryPause && !retryableUnsafe ? { retryPause: previous.retryPause } : {}), priorSpend: [...priorSpend.values()] } }
 }

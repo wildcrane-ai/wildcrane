@@ -51,6 +51,7 @@ interface Watched {
   spaced: boolean
   /** When the last write that changed Cloud's board started. */
   sentAt: number
+  retryAt: number
   paths: Set<string>
   full: boolean
   sending: boolean
@@ -99,13 +100,16 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
     try {
       const sent = await send(ws, held.full ? undefined : paths)
       if (!sent.ok || !sent.changed) held.sentAt = last
-      if (sent.ok) held.full = false
+      if (sent.ok || (!sent.offline && !sent.conflict && !!(sent.tasks || sent.previews))) held.full = false
+      if (sent.ok) held.retryAt = 0
       else {
         retry = true
+        held.retryAt = Date.now() + lookMs
         for (const p of paths) held.paths.add(p)
       }
     } catch (error) {
       retry = true
+      held.retryAt = Date.now() + lookMs
       for (const p of paths) held.paths.add(p)
       markUnsent(ws.cwd, true)
       console.error(`runner: the board in ${ws.cwd} was not sent: ${error}`)
@@ -113,7 +117,7 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
       held.sending = false
       if (!closed && held.paths.size && !held.timer) {
         held.spaced = busy(ws.cwd)
-        held.timer = setTimeout(() => void flush(ws), Math.max(retry ? lookMs : ms, held.spaced ? held.sentAt + busyMs - Date.now() : 0))
+        held.timer = setTimeout(() => void flush(ws), Math.max(retry ? lookMs : ms, held.retryAt - Date.now(), held.spaced ? held.sentAt + busyMs - Date.now() : 0))
       }
     }
   }
@@ -128,16 +132,19 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
         const p = name && path.relative(ws.board, path.join(root, String(name))).split(path.sep).join('/')
         const held = watched.get(ws.cwd)
         if (closed || !p || !held) return
+        const syncRecord = /^\.sync\/[\w-]+\.json$/.test(p)
         if (!isBoardPath(p) && !/^(?:todo|\.archive|memory|assets|studios|triage|rules)(?:\/|$)/.test(p)
           && p !== assets && !p.startsWith(`${assets}/`)
-          && !taskOfRemoval(p) && !/^\.sync\/[\w-]+\.json$/.test(p)) return
+          && !taskOfRemoval(p) && !syncRecord) return
         if (p === 'todo/README.md') return
+        if (syncRecord && (held.sending || Date.now() < held.retryAt) && fs.existsSync(path.join(ws.board, p))) return
+        if (!p.startsWith('.sync/')) held.retryAt = 0
         held.paths.add(p)
         const job = busy(ws.cwd)
         if (job && held.spaced) return
         clearTimeout(held.timer)
         held.spaced = job
-        held.timer = setTimeout(() => void flush(ws), job ? Math.max(ms, held.sentAt + busyMs - Date.now()) : ms)
+        held.timer = setTimeout(() => void flush(ws), Math.max(ms, held.retryAt - Date.now(), job ? held.sentAt + busyMs - Date.now() : 0))
       })
       watchers.push(watchRoot(parent))
       if (!state.startsWith(parent + path.sep)) watchers.push(watchRoot(state))
@@ -152,7 +159,7 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
       watched.delete(ws.cwd)
     }
     for (const watcher of watchers) watcher.on('error', close)
-    watched.set(ws.cwd, { watchers, spaced: false, sentAt: 0, paths: new Set(), full: true, sending: false })
+    watched.set(ws.cwd, { watchers, spaced: false, sentAt: 0, retryAt: 0, paths: new Set(), full: true, sending: false })
     return true
   }
 

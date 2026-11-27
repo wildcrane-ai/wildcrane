@@ -12,11 +12,13 @@ import { watchRun } from '../src/lib/agent/watch'
 import { setBoardRoot } from '../src/lib/paths'
 import { forgetMachineState, move, uiConfigOf } from './helpers/board'
 
-for (const mode of ['init', 'submitted', 'work', 'no-session']) it(`AGy early-crash recovery after ${mode} (#830)`, { timeout: 20_000 }, async () => {
+for (const mode of ['init', 'submitted', 'work', 'no-session', 'work-missing']) it(`AGy early-crash recovery after ${mode} (#830)`, { timeout: 20_000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-early-'))
-  const submitted = mode === 'submitted' || mode === 'work'
+  const wrote = mode === 'work' || mode === 'work-missing'
+  const submitted = mode === 'submitted' || wrote
   const oldHome = process.env.HOME
   const session = '00000000-0000-4000-8000-000000000830'
+  const fresh = '00000000-0000-4000-8000-000000001234'
   let agentPid: number | undefined
   try {
     process.env.HOME = root
@@ -35,16 +37,22 @@ for (const mode of ['init', 'submitted', 'work', 'no-session']) it(`AGy early-cr
         if (args[args.indexOf('--conversation') + 1] !== ${JSON.stringify(session)}) process.exit(2);
         const prompt = args.at(-1);
         if (prompt.includes('Plan task 1') === ${submitted} || !/verify.*do not repeat/i.test(prompt)) process.exit(3);
-        ${mode === 'work' ? `if (fs.readFileSync(${JSON.stringify(output)}, 'utf8') !== 'once') process.exit(4);` : ''}
+        ${wrote ? `if (fs.readFileSync(${JSON.stringify(output)}, 'utf8') !== 'once') process.exit(4);` : ''}
         out({event:'init', conversation_id:${JSON.stringify(session)}});
         out({event:'result', result:{conversation_id:${JSON.stringify(session)}, status:'SUCCESS', response:'Cedar830 preserved.'}});
       } else {
         if (${JSON.stringify(mode)} === 'no-session') process.exit(1);
+        ${mode === 'work-missing' ? `if (fs.existsSync(${JSON.stringify(output)})) {
+          if (!args.at(-1).includes('Continue work.') || fs.readFileSync(${JSON.stringify(output)}, 'utf8') !== 'once') process.exit(4);
+          out({event:'init', conversation_id:${JSON.stringify(fresh)}});
+          out({event:'result', result:{conversation_id:${JSON.stringify(fresh)}, status:'SUCCESS', response:'Cedar830 preserved.'}});
+          process.exit(0);
+        }` : ''}
         fs.mkdirSync(${JSON.stringify(path.dirname(db))}, {recursive:true});
         fs.writeFileSync(${JSON.stringify(db)}, 'native session');
         out({event:'init', conversation_id:${JSON.stringify(session)}});
         ${mode === 'submitted' ? `out({event:'step_update', step_update:{conversation_id:${JSON.stringify(session)}, step_type:'user_input', step_index:0, state:'DONE'}});` : ''}
-        ${mode === 'work' ? `fs.appendFileSync(${JSON.stringify(output)}, 'once');
+        ${wrote ? `fs.appendFileSync(${JSON.stringify(output)}, 'once');
         out({event:'step_update', step_update:{conversation_id:${JSON.stringify(session)}, step_type:'tool', step_index:1, state:'DONE', tool_info:{name:'write_file', parameters:{Path:${JSON.stringify(output)}}}}});` : ''}
         setInterval(() => {}, 1000);
       }
@@ -87,13 +95,26 @@ for (const mode of ['init', 'submitted', 'work', 'no-session']) it(`AGy early-cr
     if (mode === 'init') patch(ended.sessionId, r => { r.status = 'running'; r.pid = 2147483647 })
     fs.renameSync(db, `${db}.saved`)
     await assert.rejects(openResume(ended.sessionId), /session not found/)
+    if (mode === 'work-missing') {
+      // W-1226's legacy idle record carried unconfirmed writes after its process exited.
+      patch(ended.sessionId, r => {
+        r.failure = { code: 'idle_timeout', source: 'runtime', summary: 'No verifiable progress for 5 minutes (idle timeout).' }
+        r.pendingWrites = true
+        r.retryPause = 'unsafe'
+        r.cleanup = { status: 'unconfirmed', execution: r.sessionId, kept: [] }
+      })
+      const missing = await openResume(ended.sessionId, { requireSession: true })
+      assert.ok('error' in missing)
+      assert.equal(missing.reason, 'runSessionMissing')
+    }
     assert.equal(readRuns()[0]!.sessionId, ended.sessionId)
-    fs.renameSync(`${db}.saved`, db)
+    if (mode !== 'work-missing') fs.renameSync(`${db}.saved`, db)
     const requireSession = mode === 'work'
-    const next = await openResume(ended.sessionId, requireSession)
+    const next = await openResume(ended.sessionId, mode === 'work-missing' ? { fresh: true } : requireSession)
     if ('error' in next) throw Error(next.error)
-    assert.equal(next.spec.plan.resumeId, session)
+    assert.equal(next.spec.plan.resumeId, mode === 'work-missing' ? null : session)
     if (requireSession) assert.match(next.spec.prompt, /Check the current state.*Do not repeat/s)
+    else if (mode === 'work-missing') assert.match(next.spec.prompt, /Continue work/)
     else assert.equal(next.spec.prompt, submitted ? '' : original)
     patch(next.run.sessionId, r => { r.pid = process.pid })
     fs.writeFileSync(next.run.logPath, '')
@@ -101,7 +122,8 @@ for (const mode of ['init', 'submitted', 'work', 'no-session']) it(`AGy early-cr
     const resumed = readRuns().find(r => r.sessionId === next.run.sessionId)!
     assert.equal(resumed.ok, true)
     assert.equal(resumed.result, 'Cedar830 preserved.')
-    if (mode === 'work') assert.equal(fs.readFileSync(output, 'utf8'), 'once')
+    if (wrote) assert.equal(fs.readFileSync(output, 'utf8'), 'once')
+    if (mode === 'work-missing') assert.equal(resumed.resumeId, fresh)
     assert.equal(ANTIGRAVITY.savesSessionAtOpen, true)
     assert.ok(!harnessGaps(ANTIGRAVITY).some(g => g.id === 'early-resume'))
   } finally {
