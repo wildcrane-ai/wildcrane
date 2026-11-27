@@ -3947,11 +3947,16 @@ Show both images.
       fs.writeFileSync(file, content)
     }
     const imageSet = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7 1x, '
+    const hero = 'media/Hero (1).svg'
+    const heroKey = 'asset:media/Hero%20(1).svg'
+    const heroUrl = 'media/Hero%20%281%29.svg?variant=preview#cover'
+    const picture = '<svg xmlns="http://www.w3.org/2000/svg" width="37" height="23"><view id="cover" viewBox="0 0 37 23"/><rect width="37" height="23" fill="teal"/></svg>'
     write('page.tsx', 'import Preview from "./parts/Preview"; import "./styles/main.css"; import "./extra/extra.css"; export default Preview')
     write('parts/Preview.tsx', `export default function Preview() {
       const src = (name: string, ext: string) => ['media', name + '.' + ext].join('/');
       const sources = ${JSON.stringify(imageSet)} + src('responsive', 'webp') + ' 2x';
       return <main style={{ backgroundImage: 'url("' + src('inline & image', 'webp') + '")' }}>
+        <div className="cover">Cover</div>
         <link rel="preload" as="image" imageSrcSet={sources} />
         <img src={src('screenshot', 'webp')} />
         <picture><source srcSet={sources} /><img src={src('fallback', 'webp')} /></picture>
@@ -3961,13 +3966,13 @@ Show both images.
         <script>{'let ignored = "url(ignored.png)";'}</script>
       </main>
     }`)
-    write('page.html', '<link rel=stylesheet href=styles/main.css><main class="cover"></main>')
+    write('page.html', '<link rel=stylesheet href=styles/main.css><main class="cover">Cover</main>')
     const sheets = {
       'styles/main.css': '@import url("theme/skin.css") screen; .cover { color: teal }',
       'styles/theme/skin.css': `
       /* url(ignored.png) */
       @font-face { font-family: Local; src: url(font.woff2) }
-      .cover { font-family: Local; background: url("../../media/background.webp");
+      .cover { font-family: Local; background-image: url(../../${heroUrl});
         border-image-source: image-set("../../media/retina.webp" 1x, url("../../media/retina-2.webp") 2x) }
       `,
     }
@@ -3977,7 +3982,7 @@ Show both images.
     const files = [
       'media/screenshot.webp', 'media/responsive.webp', 'media/fallback.webp', 'media/inline & image.webp',
       'media/icons.svg', 'media/poster.webp', 'media/clip.webm', 'media/captions.vtt', 'media/sound.wav',
-      'styles/theme/font.woff2', 'media/background.webp', 'media/retina.webp', 'media/retina-2.webp', 'extra/extra.webp',
+      'styles/theme/font.woff2', hero, 'media/retina.webp', 'media/retina-2.webp', 'extra/extra.webp',
     ]
     const body = `---
 title: Rendered previews
@@ -3989,6 +3994,8 @@ modules: []
 studio: wf-own
 questions: []
 ---
+
+Web preview resources.
 
 ## Worth noting
 
@@ -4016,12 +4023,12 @@ Verify local assets.
     const validate = () => runAkb(bundledAkb(process.env.RUNNER_DIST!), ['task', 'validate', '1', '--json'], { cwd: ws.cwd, board: ws.board })
     const missing = await validate()
     assert.notEqual(missing.code, 0)
-    for (const file of files) assert.ok(missing.out.includes(path.basename(file)), missing.out)
+    for (const file of files) assert.ok(missing.out.includes(file === hero ? heroUrl : path.basename(file)), missing.out)
     assert.doesNotMatch(missing.out, /ignored\.png|base64/)
     const rejected = await push(ws, { id: 'preview-dependencies', machineId: MACHINE })
     assert.equal(rejected.ok, false)
     assert.match(rejected.error!, /screenshot\.webp|font\.woff2/)
-    for (const file of files) write(file, file)
+    for (const file of files) write(file, file === hero ? picture : file)
     for (const [file, css] of Object.entries(sheets)) {
       fs.rmSync(path.join(folder, file))
       const missingSheet = await validate()
@@ -4055,18 +4062,36 @@ Verify local assets.
     assert.ok(tsx.includes(`poster="${artifact('media/poster.webp')}"`))
     for (const file of files) {
       assert.ok(tsx.includes(artifact(file)), file)
-      assert.equal(uploaded(file), file)
+      assert.equal(uploaded(file), file === hero ? picture : file)
     }
+    assert.ok(tsx.includes(`url(${artifact(hero)}?variant=preview#cover)`))
     assert.ok(uploaded('page.html').includes(artifact('styles/main.css')))
     assert.ok(uploaded('styles/main.css').includes(artifact('styles/theme/skin.css')))
-    for (const file of ['styles/theme/font.woff2', 'media/background.webp', 'media/retina.webp', 'media/retina-2.webp']) {
+    for (const file of ['styles/theme/font.woff2', hero, 'media/retina.webp', 'media/retina-2.webp']) {
       assert.ok(uploaded('styles/theme/skin.css').includes(artifact(file)), file)
     }
+    assert.deepEqual(pins['asset:page.html']!.dependencies, ['asset:styles/main.css'])
+    assert.deepEqual(pins['asset:styles/main.css']!.dependencies, ['asset:styles/theme/skin.css'])
+    assert.ok(pins['asset:styles/theme/skin.css']!.dependencies?.includes(heroKey))
+    assert.ok(pins['asset:page.tsx']!.dependencies?.includes(heroKey))
+    assert.equal(pins[heroKey]!.version, 1)
 
     const restored = openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, fs.mkdtempSync(path.join(runnerHome(), 'web-previews-')))
     assert.ok((await pull(restored, MACHINE)).ok)
+    const restoredFile = (name: string) => path.join(projectStateDir(restored.board), 'assets/1', name)
+    assert.ok(fs.readFileSync(restoredFile('styles/theme/skin.css'), 'utf8').includes(`url(../../${heroUrl})`))
+    assert.ok(fs.readFileSync(restoredFile('page.tsx'), 'utf8').includes(`url(${heroUrl})`))
+    assert.deepEqual(fs.readFileSync(restoredFile(hero)), Buffer.from(picture))
     const pulled = await runAkb(bundledAkb(process.env.RUNNER_DIST!), ['task', 'validate', '1', '--json'], { cwd: restored.cwd, board: restored.board })
     assert.equal(pulled.code, 0, pulled.out + pulled.last)
+
+    const card = path.join(restored.board, CARD)
+    const edited = 'Web preview resources were restored.'
+    fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replace('Web preview resources.', edited))
+    const pushed = await pushBoard(keptBoard(restored.cwd)!, MACHINE)
+    assert.ok(pushed.ok, JSON.stringify(pushed))
+    assert.ok(cloud.file(CARD)?.includes(edited))
+    assert.deepEqual(JSON.parse(cloud.file('assets/task_1.json')!), pins)
   })
 
   it('logs sync failure phases and status without private request or response data', async () => {

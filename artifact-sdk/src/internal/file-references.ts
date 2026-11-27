@@ -10,6 +10,10 @@ const CSS: Manifest = {
 export const fileManifest = (type: string, name: string): Manifest | undefined =>
   type === 'asset' && /\.css$/i.test(name) ? CSS : manifestOf(type);
 
+export function encodeFileReferencePath(parts: readonly string[]): string {
+  return parts.map(part => encodeURIComponent(part).replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16))).join('/');
+}
+
 export function splitFileReference(src: string): [string, string] {
   const end = src.search(/[?#]/);
   return end < 0 ? [src, ''] : [src.slice(0, end), src.slice(end)];

@@ -11,7 +11,7 @@ import { assetRef, isAssetRef, isLegacyAssetRef, isTaskAssetRef, taskAssetPath }
 import { collect } from '../../artifact-sdk/src/internal/collect'
 import { documentPreviewKey, isDocumentPreview, officeExtension, OFFICE_TYPES, PDF, type OfficeExtension } from '../../artifact-sdk/src/internal/document'
 import { bodyReferences, kindOf, TYPES, type Kind } from '../../artifact-sdk/src/internal/references'
-import { fileManifest, splitFileReference } from '../../artifact-sdk/src/internal/file-references'
+import { encodeFileReferencePath, fileManifest, splitFileReference } from '../../artifact-sdk/src/internal/file-references'
 import { mapReferences } from '../../artifact-sdk/src/internal/manifest'
 
 import { setTimeout as delay } from 'node:timers/promises'
@@ -968,6 +968,7 @@ async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets, prese
     if (data !== undefined) {
       let changed = false
       const ownerName = name
+      const web = manifest?.references?.some(rule => 'web' in rule)
       const restored = mapReferences(manifest, data, (src, found) => {
         const [ref, suffix] = found.text ? splitFileReference(src) : [src, '']
         const name = Object.entries(assets).find(([, r]) => r.artifact === ref)?.[0]
@@ -977,8 +978,9 @@ async function pullAssets(ws: TaskFolder, record: Record_, assets: Assets, prese
         if (!child) return src
         dependencies.push(name)
         const relative = path.relative(path.dirname(target), child).split(path.sep)
-        const back = !found.text && isLegacyAssetRef(name) && !isAssetRef(ownerName) ? name
-          : (found.text ? relative.map(encodeURIComponent) : relative).join('/') + suffix
+        const back = found.text
+          ? (web ? encodeFileReferencePath(relative) : relative.map(encodeURIComponent).join('/')) + suffix
+          : isLegacyAssetRef(name) && !isAssetRef(ownerName) ? name : relative.join('/')
         if (back !== src) changed = true
         return back
       })

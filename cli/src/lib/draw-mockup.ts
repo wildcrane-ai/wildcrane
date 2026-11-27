@@ -11,7 +11,7 @@ import { transform } from 'sucrase'
 import { compile } from 'tailwindcss'
 import TAILWIND from 'tailwindcss/index.css' with { type: 'text' }
 
-import { splitFileReference } from '../../../artifact-sdk/src/internal/file-references'
+import { encodeFileReferencePath, splitFileReference } from '../../../artifact-sdk/src/internal/file-references'
 import { decodeFilePath, isTaskAssetRef } from '../../../artifact-sdk/src/internal/task-assets'
 import { cssDestinations } from '../../../artifact-sdk/src/internal/web-references'
 import { dressPage, head, isHtmlFile } from './dress-page'
@@ -132,8 +132,6 @@ function run(script: string, context: vm.Context, name: string, deadline: number
   return vm.runInContext(script, context, { timeout: left, filename: name, lineOffset })
 }
 
-const cssPath = (file: string) => file.split(path.sep).map(part => encodeURIComponent(part).replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16))).join('/')
-
 // Tailwind inlines quoted imports. Rebase the other URLs for the resulting inline style.
 function rebaseCss(css: string, owner: string, folder: string): string {
   let result = ''
@@ -143,16 +141,19 @@ function rebaseCss(css: string, owner: string, folder: string): string {
     const [file, suffix] = splitFileReference(ref.src)
     const decoded = decodeFilePath(file)
     if (path.posix.isAbsolute(decoded) || path.win32.isAbsolute(decoded)) continue
-    const relative = cssPath(ref.importToken ? decoded : path.relative(folder, path.resolve(path.dirname(owner), decoded)))
+    const relative = ref.importToken ? decoded : path.relative(folder, path.resolve(path.dirname(owner), decoded))
+    const url = encodeFileReferencePath(relative.split(path.sep)) + suffix
     const [start, end] = ref.importToken ?? [ref.start, ref.end]
-    result += css.slice(last, start) + (ref.importToken ? JSON.stringify(relative + suffix) : relative + suffix)
+    result += css.slice(last, start) + (ref.importToken ? JSON.stringify(url) : url)
     last = end
   }
   return result + css.slice(last)
 }
 
 async function tailwindFor(markup: string, sheets: string[], folder: string): Promise<string> {
-  const source = sheets.length ? sheets.map(file => `@import "./${cssPath(path.relative(folder, file))}";`).join('\n') : '@import "tailwindcss";'
+  const source = sheets.length
+    ? sheets.map(file => `@import "./${encodeFileReferencePath(path.relative(folder, file).split(path.sep))}";`).join('\n')
+    : '@import "tailwindcss";'
   const root = fs.realpathSync(folder) + path.sep
   const compiler = await compile(source, {
     base: folder,
