@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Render one React Email file to the HTML and plain-text versions the product sends.
 //
-//   node render.mjs <board-state>/assets/<card id>/<email>.tsx
+//   node render.mjs "/path/to/email.tsx"
 //
 // Writes <email>.html and <email>.txt beside it. Runtime: Node 18 or later and npm. Save it
 // from the Studio with `akb studio file coding scripts/render.mjs > render.mjs`.
-// The first run installs React Email into `<board-state>/assets/email/`, beside the templates,
-// so the TSX resolves its imports from there. Exit 1 is a failure, 2 a usage error.
+// The first run installs React Email in the email/ directory beside the task's Asset folder.
+// Exit 1 is a failure, 2 a usage error.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -27,7 +27,7 @@ const HELP = `
 渲染一封邮件 / Render one email
 
 用法 / Usage
-  node render.mjs <board-state>/assets/<card id>/<email>.tsx
+  node render.mjs "/path/to/email.tsx"
   写出同目录的 <email>.html 与 <email>.txt / writes <email>.html and <email>.txt beside it
 `.trim()
 

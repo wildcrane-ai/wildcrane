@@ -1,4 +1,4 @@
-// Freeze the real preview renderer and isolated dependency lock into one retrievable studio file.
+// Bundle the preview renderer and dependency lock for the shared ui-mockup skill.
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,7 +21,9 @@ export async function buildMockupCheck() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const output = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../official/studios/coding/scripts/check-mockup.mjs')
+  const target = process.argv[2]
+  if (!target) throw new Error('Usage: node cli/scripts/build-mockup-check.mjs <output-file>')
+  const output = path.resolve(target)
   fs.mkdirSync(path.dirname(output), { recursive: true })
   fs.writeFileSync(output, await buildMockupCheck())
   console.log(`Wrote ${output}`)

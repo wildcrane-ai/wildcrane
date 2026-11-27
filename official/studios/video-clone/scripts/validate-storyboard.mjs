@@ -5,9 +5,8 @@
 //
 // Runtime: Node 18 or later, nothing else. Fetch with
 // `akb studio file video-clone scripts/validate-storyboard.mjs > validate-storyboard.mjs`.
-// Frames are `.assets/<card id>/<file>` paths, read from the JSON's own folder, which is named
-// after the card. Exits 0 when the file passes; otherwise prints one line per problem (or a
-// JSON array with --json) and exits 1. Exit 2 is a usage error.
+// Paths are relative to the storyboard JSON. Exit 0 for a valid file, 1 for
+// diagnostics, and 2 for a usage error.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -19,21 +18,23 @@ const FRAME_FIELDS = ['src', 'alt']
 const FRAME_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif']
 const MAX_FRAME_WIDTH = 1280
 const SHOT_ID = /^S[1-9][0-9]*$/
-const SEGMENT = /^(?!\.)[^/\\]+$/
 const EPSILON = 1e-9
 
-/** The file name a same-card `.assets/<card>/<name>` path points at, or why it may not. */
-function assetName(src, card) {
-  const expected = `.assets/${card}/<file>.{${FRAME_TYPES.join(',')}} in this card's asset folder`
-  if (/^[a-z][a-z0-9+.-]*:/i.test(src)) return { expected, actual: `an external address ${JSON.stringify(src)}` }
-  const parts = src.split('/')
-  if (parts[0] !== '.assets' || parts.length !== 3) return { expected, actual: JSON.stringify(src) }
-  if (parts[1] !== card) return { expected, actual: `another card's folder ${JSON.stringify(parts[1])}` }
-  if (!SEGMENT.test(parts[2])) return { expected, actual: JSON.stringify(src) }
-  const name = parts[2]
-  const ext = name.split('.').pop().toLowerCase()
-  if (!name.includes('.') || !FRAME_TYPES.includes(ext)) return { expected, actual: `file type ${JSON.stringify(name.includes('.') ? ext : '')}` }
-  return { name }
+function assetRoot(dir) {
+  for (let folder = dir; path.dirname(folder) !== folder; folder = path.dirname(folder)) {
+    if (/^[1-9]\d*$/.test(path.basename(folder)) && path.basename(path.dirname(folder)) === 'assets') return folder
+  }
+  return dir
+}
+
+function assetFile(src, dir, root) {
+  const legacy = /^\.assets\/([1-9]\d*)\/(.*)$/.exec(src)
+  if (legacy && legacy[1] !== path.basename(root)) return null
+  const name = legacy ? legacy[2] : src
+  if (!name || name.startsWith('/') || /[:\\\x00-\x1f]/.test(name)) return null
+  if (legacy && (name.split('/').some(part => !part || part.startsWith('.')) || name.includes('/'))) return null
+  const file = path.resolve(legacy ? root : dir, name)
+  return file.startsWith(root + path.sep) ? file : null
 }
 
 /** Width in pixels read from a PNG, GIF, JPEG or WebP header — null when it is none of them. */
@@ -120,7 +121,7 @@ const text = (v) => typeof v === 'string' && v.trim() !== ''
 function inside(dir, name) {
   try {
     const root = fs.realpathSync(dir)
-    const real = fs.realpathSync(path.join(dir, name))
+    const real = fs.realpathSync(name)
     return real.startsWith(root + path.sep) && fs.statSync(real).isFile() ? real : null
   } catch {
     return null
@@ -136,7 +137,7 @@ function validate(file) {
     return diagnostics
   }
   const dir = path.dirname(path.resolve(file))
-  const card = path.basename(dir)
+  const root = assetRoot(dir)
   const source = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')
   let data
   try {
@@ -175,9 +176,13 @@ function validate(file) {
     fields(frame, at, FRAME_FIELDS)
     required(frame, at, 'alt', `${nonblank} describing the picture`, text)
     if (!required(frame, at, 'src', `${nonblank}: the image path`, text)) return
-    const named = assetName(frame.src, card)
-    if (!('name' in named)) { add('frame-path', `${at}/src`, named.expected, named.actual); return }
-    const real = inside(dir, named.name)
+    const target = assetFile(frame.src, dir, root)
+    const ext = path.extname(frame.src).slice(1).toLowerCase()
+    if (!target || !FRAME_TYPES.includes(ext)) {
+      add('frame-path', `${at}/src`, 'a supported file relative to this storyboard within the task asset folder', JSON.stringify(frame.src))
+      return
+    }
+    const real = inside(root, target)
     const expected = `a readable image at most ${MAX_FRAME_WIDTH}px wide`
     if (!real) { add('frame-missing', `${at}/src`, expected, 'no such file'); return }
     const width = imageWidth(fs.readFileSync(real))

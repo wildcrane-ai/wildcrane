@@ -1,10 +1,11 @@
+import { isAssetRef } from '../../../artifact-sdk/src/internal/task-assets'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { locate, locateArchived } from '../lib/cards'
 import { parseFrontmatter } from '../lib/frontmatter'
 import { say } from '../lib/io'
-import { BOARD_STATE, KANBAN, REPO_ROOT, SESSIONS, die, rel } from '../lib/paths'
+import { ASSETS, BOARD_STATE, KANBAN, REPO_ROOT, SESSIONS, die, rel } from '../lib/paths'
 import { executionOf } from '../lib/cloud/execution'
 import { bodySources } from '../../../artifact-sdk/src/internal/references'
 import type { DeliveryRecord, RunRecord } from '../lib/agent/types'
@@ -56,8 +57,8 @@ export function cmdInspect(id: number) {
   const checkpoint = job ? read<{ pending?: string[]; submitted?: boolean } | null>('recovery', path.join(process.env.WILDCRANE_HOME || os.homedir() + '/.wildcrane', 'checkpoints', `${encodeURIComponent(job)}.json`), null) : null
   const delivery = fact('delivery', () => held ? { id: held.deliveryId, status: held.status, directory: held.worktree ?? REPO_ROOT, completedSteps: (held.completions ?? []).map((c) => c.step) } : null, null)
   const recovery = fact('recovery', () => checkpoint ? { pendingOperations: checkpoint.pending ?? [], submitted: checkpoint.submitted ?? null } : null, null)
-  const result = { id, card, previews: fact('previews', () => Object.entries(progress).map(([agent, p]) => ({ agent, currentStageId: p.currentStageId,
-    stages: p.stages.map(({ id, status, version }) => ({ id, status, version })), artifact: p.displayedArtifact ? { stageId: p.displayedArtifact.stageId, version: p.displayedArtifact.version, section: null, files: [...new Set([...Object.keys(p.displayedArtifact.assets).filter((key) => key !== 'folder'), ...bodySources(p.displayedArtifact.body)])].filter((file) => !path.isAbsolute(file) && !/^[a-z][\w+.-]*:/i.test(file)) } : null })), []),
+  const result = { id, card, asset_folder: path.join(ASSETS, String(id)), previews: fact('previews', () => Object.entries(progress).map(([agent, p]) => ({ agent, currentStageId: p.currentStageId,
+    stages: p.stages.map(({ id, status, version }) => ({ id, status, version })), artifact: p.displayedArtifact ? { stageId: p.displayedArtifact.stageId, version: p.displayedArtifact.version, section: null, files: [...new Set([...Object.keys(p.displayedArtifact.assets).filter((key) => key !== 'folder'), ...bodySources(p.displayedArtifact.body)])].filter((file) => isAssetRef(file) || (!path.isAbsolute(file) && !/^[a-z][\w+.-]*:/i.test(file))) } : null })), []),
     delivery, runs, recovery,
     findings, unavailable: [...new Set(unavailable)] }
   say(JSON.stringify(result, null, 2))

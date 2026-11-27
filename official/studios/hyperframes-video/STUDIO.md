@@ -92,7 +92,7 @@ A video includes a demo when any section depends on real product output, such as
 Turn the current script into ordered shots when requested or required by the saved review plan, after any required script approval. Keep exact narration and captions, stable shot IDs and continuous timing; use supplied assets or inexpensive local frames for review.
 
 - **Contract**: follow `references/scriptwriter/references/storyboard-contract.md`, its adjacent schema and example. Save `storyboard.json` in the same-card asset folder and run `references/scriptwriter/scripts/validate-storyboard.mjs`; repair all diagnostics before presenting it as ready for review.
-- **Display**: show a `<Storyboard src=".assets/<card id>/storyboard.json" label="..." />` in this output. Structural validity does not prove production quality.
+- **Display**: show a `<Storyboard src="asset:storyboard.json" label="..." />` in this output. Structural validity does not prove production quality.
 - **Revisions**: update affected shots and preserve unrelated IDs, frames and assets; required reapproval precedes their downstream production.
 
 </Preview>
@@ -112,10 +112,10 @@ Rehearse the demo the card asks for: the claims about real product behavior the 
 
 ## Paths
 
-- **Procedure**: `<board-state>/assets/<card id>/demo.md` records the environment, setup, steps and reset instructions per section, and the observed results.
+- **Procedure**: `demo.md` in the task's Asset folder records the environment, setup, steps and reset instructions per section, and the observed results.
 - **Key shots**: 3–6 screenshots in total beside it, named `demo-<section>.png` or `.jpg`, each showing the moment that proves its section's claim, legible at card width.
 - **Private data**: keep secrets, personal data and private paths out of shots.
-- **Report**: in your section, per requested section: one line on whether rehearsal proves the claim and the observed result, followed by its shots as `<Asset src=".assets/<card id>/<file>" label="..." />` lines; with three or more shots in total, put them in one `<Set>`, each labelled with its section and unique, and list the section lines below it.
+- **Report**: in your section, per requested section: one line on whether rehearsal proves the claim and the observed result, followed by its shots as `<Asset src="asset:<file>" label="..." />` lines; with three or more shots in total, put them in one `<Set>`, each labelled with its section and unique, and list the section lines below it.
 
 ## Rules
 
@@ -129,7 +129,7 @@ Produce the video the approved script in Preview `video-script` describes, follo
 
 ## Paths
 
-- **Assets**: `<board-state>/assets/<card id>/` in the project, the board's asset folder.
+- **Assets**: use the task's Asset folder.
 - **Video**: `<short-name>.mp4` in the same folder, `<short-name>` a lowercase slug of the card title.
 
 ## Media
@@ -189,9 +189,9 @@ Make a cover only when requested, using the method recorded in the Brief. If it 
 
 ## Paths
 
-- **Assets**: `<board-state>/assets/<card id>/`, the folder the editor uses.
+- **Assets**: use the same Asset folder as the video.
 - **Cover**: `cover.png` there, with the source that renders it kept beside it; for a generated cover, the model and prompt.
-- **Show it**: put one `<Asset src=".assets/<card id>/cover.png" label="..." />` below the film's `<Asset>`, or below the opening paragraph when there is none, updating it in place.
+- **Show it**: put one `<Asset src="asset:cover.png" label="..." />` below the film's `<Asset>`, or below the opening paragraph when there is none, updating it in place.
 
 ## Rules
 

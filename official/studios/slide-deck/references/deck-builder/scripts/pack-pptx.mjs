@@ -28,15 +28,35 @@ function fail(code, lines) {
   process.exit(code)
 }
 
-/** The image for one slide, as `{ file, ext }`, or null when it has none. */
-function imageFor(dir, slide) {
-  const rendered = path.join(dir, 'slides', `${slide.id}.png`)
-  if (fs.existsSync(rendered)) return { file: rendered, ext: 'png' }
-  const parts = String(slide.preview?.src ?? '').split('/')
-  const ext = parts[parts.length - 1].split('.').pop().toLowerCase()
-  if (parts[0] !== '.assets' || parts.length < 3 || !(ext in IMAGE_TYPES) || parts.slice(2).some((p) => p.startsWith('.'))) return null
-  const file = path.join(dir, ...parts.slice(2))
-  return fs.existsSync(file) ? { file, ext } : null
+function assetRoot(dir) {
+  for (let folder = dir; path.dirname(folder) !== folder; folder = path.dirname(folder)) {
+    if (/^[1-9]\d*$/.test(path.basename(folder)) && path.basename(path.dirname(folder)) === 'assets') return folder
+  }
+  return dir
+}
+
+function assetFile(src, dir, root) {
+  const legacy = /^\.assets\/([1-9]\d*)\/(.*)$/.exec(src)
+  if (legacy && legacy[1] !== path.basename(root)) return null
+  const name = legacy ? legacy[2] : src
+  if (!name || name.startsWith('/') || /[:\\\x00-\x1f]/.test(name)) return null
+  if (legacy && (name.split('/').some(part => !part || part.startsWith('.')))) return null
+  const file = path.resolve(legacy ? root : dir, name)
+  return file.startsWith(root + path.sep) ? file : null
+}
+
+function imageFor(dir, root, slide) {
+  const src = String(slide.preview?.src ?? '')
+  for (const source of [`slides/${slide.id}.png`, src]) {
+    const file = assetFile(source, dir, root)
+    const ext = path.extname(source).slice(1).toLowerCase()
+    if (!file || !Object.hasOwn(IMAGE_TYPES, ext)) continue
+    try {
+      const real = fs.realpathSync(file)
+      if (real.startsWith(fs.realpathSync(root) + path.sep) && fs.statSync(real).isFile()) return { file: real, ext }
+    } catch { /* Try the next image. */ }
+  }
+  return null
 }
 
 const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
@@ -111,7 +131,8 @@ function pack(storyboardFile) {
   const cx = Math.round(size.width * scale)
   const cy = Math.round(size.height * scale)
 
-  const images = slides.map((slide) => imageFor(dir, slide))
+  const root = assetRoot(dir)
+  const images = slides.map(slide => imageFor(dir, root, slide))
   const missing = slides.map((s, i) => (images[i] ? null : `- slide ${i + 1} "${s.id}": no slides/${s.id}.png and no image preview`)).filter(Boolean)
   if (missing.length) fail(1, [`${storyboardFile}: ${missing.length} slide(s) have no image. Render each page, then run this script again:`, ...missing])
 

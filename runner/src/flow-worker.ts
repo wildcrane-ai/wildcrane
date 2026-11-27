@@ -11,11 +11,13 @@ import { pidAlive, tryLock } from '../../cli/src/lib/lock'
 import * as api from './api'
 import { hold } from './cache'
 import { runnerCwd, runnerHome } from './home'
-import { confirmFlowStopped, flowRunEvidence } from './flow'
-import { clearCheckpoint, readCheckpoint, recoverInterruptedJob, recoveryBlocked } from './recovery'
+import { flowRunEvidence, stopFlowRuns } from './flow'
+import { clearCheckpoint, readCheckpoint, recoverInterruptedJob, recoveryBlocked, saveCheckpoint } from './recovery'
 import { openTaskFolder } from './task-folder'
 import { defaultDeps, folderFor, runJob, type Deps } from './jobs'
 import { accountGeneration, executorRecord } from './settings-control'
+import { VERSION } from './protocol'
+import { logRunner, startRunnerLogMaintenance } from './runner-log'
 
 interface Worker {
   id: string
@@ -29,6 +31,7 @@ interface Worker {
   markedAt?: number
   processAt?: number
   claimAttempt?: number
+  claimPending?: boolean
   claimFailure?: string
   claimRetryAt?: number
 }
@@ -39,6 +42,7 @@ const FLOW_MARK = 'WILDCRANE_FLOW_WORKER'
 const directory = () => path.join(runnerHome(), 'flow-workers')
 const fileOf = (id: string) => path.join(directory(), `${encodeURIComponent(id)}.json`)
 const stopFile = (id: string) => `${fileOf(id)}.stop`
+const freshFlow = (job: api.Job) => !job.flow?.sync_recovery_of && !job.syncRecoveryOf && !job.recoveryOf && !job.manualRecovery
 export const flowWorkerEntry = fileURLToPath(new URL('./flow-worker-main.mjs', import.meta.url))
 export const canKeepFlow = (job: api.Job): boolean => !!job.task && !!job.flow
   && ['create', 'refine', 'implement', 'preview'].includes(job.flow.verb)
@@ -231,9 +235,10 @@ export async function reclaimFlowWorkers(machine: string, given?: Deps, only?: s
           if (!valid()) break
           if (!remote.ok || remote.value.job.id !== worker.id || !canKeepFlow(remote.value.job)) continue
           const job = remote.value.job
-          const checkpoint = job.state === 'finished' ? null : readCheckpoint(worker.id)
+          let checkpoint = job.state === 'finished' ? null : readCheckpoint(worker.id)
           const updating = checkpoint?.updating && !checkpoint.pending.includes('unknown')
-          const failedClaim = worker.ended && (worker.claimFailure || (worker.claimAttempt === undefined && !checkpoint && 'Previous claim result was not recorded.'))
+          const failedClaim = worker.ended && worker.claimFailure || (worker.claimPending || worker.ended && worker.claimAttempt === undefined)
+            && !checkpoint && 'Previous claim result was not recorded.'
           const attempt = worker.claimAttempt ?? 1
           const retry = worker.generation === generation && job.state === 'waiting' && (!checkpoint || updating) && failedClaim ? {
             attempt,
@@ -246,16 +251,19 @@ export async function reclaimFlowWorkers(machine: string, given?: Deps, only?: s
             const deps = given ?? defaultDeps(machine)
             const folder = job.projectDir ? folderFor(job) : null
             if (folder && 'refused' in folder) continue
-            let stopped = true
-            if (checkpoint && checkpoint.started !== false && !checkpoint.completed) {
-              const ws = openTaskFolder(job, folder?.cwd ?? null)
-              const evidence = await flowRunEvidence(ws, job, { ...deps, machineId: machine, akb: deps.akb() }, job.id, checkpoint.flowRun)
-              checkpoint.flowRun = evidence.run
+            const ws = openTaskFolder(job, folder?.cwd ?? null)
+            const flowDeps = { ...deps, machineId: machine, akb: deps.akb() }
+            let stopped = await stopFlowRuns(ws, job, flowDeps)
+            if (stopped && checkpoint?.started !== false && !checkpoint?.completed) {
+              const evidence = await flowRunEvidence(ws, job, flowDeps, job.id, checkpoint?.flowRun)
+              if (checkpoint) checkpoint.flowRun = evidence.run
+              else if (evidence.run) checkpoint = { pending: [], started: true, flowRun: evidence.run }
               stopped = evidence.stopped
             }
             if (!valid() || !writerStopped(worker) || worker.claimFailure && !stopped || fs.readFileSync(file, 'utf8') !== original) continue
-            const beforeExecution = worker.claimFailure && worker.ended ? { pending: [], started: false } : null
-            if (beforeExecution) console.info('runner: recovering after a failed job claim', { job: worker.id, attempt, reason: worker.claimFailure })
+            const beforeExecution = freshFlow(job) && (worker.claimPending === true || worker.claimFailure && worker.ended)
+              ? { pending: [], started: false } : null
+            if (beforeExecution) console.info('runner: recovering before job execution', { job: worker.id, attempt, reason: worker.claimFailure })
             const recovered = await recoverInterruptedJob(machine, job, checkpoint ?? beforeExecution, stopped, valid)
             if (!recovered?.resumed && !recovered?.finished) continue
           } else if (job.state !== 'finished' && !retry && !(job.state === 'waiting' && updating)) continue
@@ -267,9 +275,9 @@ export async function reclaimFlowWorkers(machine: string, given?: Deps, only?: s
             const board = path.join(folder.cwd, '.akb', 'kanban')
             if (!fs.existsSync(board)) continue
             const deps = given ?? defaultDeps(machine)
-            if (!await confirmFlowStopped({ task: job.task, cloudTask: job.task, project: job.project,
+            if (!(await flowRunEvidence({ task: job.task, cloudTask: job.task, project: job.project,
               cwd: folder.cwd, board, number: job.number ?? null, studio: job.studio ?? job.flow?.studio ?? null },
-            job, { ...deps, machineId: machine, akb: deps.akb() })) continue
+            job, { ...deps, machineId: machine, akb: deps.akb() })).stopped) continue
             const saved = readCheckpoint(worker.id)
             if (saved && (!saved.mark || !processesStopped(saved.mark, saved.process))) continue
           }
@@ -300,6 +308,10 @@ export async function reclaimFlowWorkers(machine: string, given?: Deps, only?: s
 export async function runFlowWorker(id: string, token: string, given?: Deps, entry = flowWorkerEntry): Promise<void> {
   const worker = read(id)
   if (!worker || worker.token !== token || worker.pid || worker.ended) return
+  const fields = { version: VERSION, source: process.env.WILDCRANE_RUNNER_KIND, job: id }
+  startRunnerLogMaintenance()
+  logRunner('worker', 'starting', fields)
+  process.once('exit', exitCode => logRunner('worker', 'exited', { ...fields, exitCode }))
   const valid = () => readSession()?.subject === worker.account && accountGeneration() === worker.generation
   let stopped = false
   let halt: (() => Promise<void>) | undefined
@@ -308,6 +320,7 @@ export async function runFlowWorker(id: string, token: string, given?: Deps, ent
   const keepVersion = hold(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'))
   worker.pid = process.pid
   worker.processAt = Date.now()
+  worker.claimPending = true
   save(worker)
   const timer = setInterval(() => {
     let asked = false
@@ -328,6 +341,11 @@ export async function runFlowWorker(id: string, token: string, given?: Deps, ent
       if (failure) {
         worker.claimFailure = failure
         console.warn('runner: job claim failed', { job: id, attempt: worker.claimAttempt ?? 1, reason: failure })
+      }
+      if (claim.ok && claim.value.claimed) {
+        if (freshFlow(claim.value.job) && !readCheckpoint(id)) saveCheckpoint(id, { pending: [], started: false })
+        delete worker.claimPending
+        save(worker)
       }
       return claim
     }, renewJob: async (...args) => {

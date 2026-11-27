@@ -1,4 +1,4 @@
-// wildcrane-runner 0.6.118 — built by runner/scripts/build.mjs. Do not edit.
+// wildcrane-runner 0.6.124 — built by runner/scripts/build.mjs. Do not edit.
 import { createRequire as __ai4kanbanRequire } from 'node:module'
 const require = __ai4kanbanRequire(import.meta.url)
 var __create = Object.create;
@@ -1158,14 +1158,14 @@ var require_util = __commonJS({
         }
         const port = url.port != null ? url.port : url.protocol === "https:" ? 443 : 80;
         let origin = url.origin != null ? url.origin : `${url.protocol || ""}//${url.hostname || ""}:${port}`;
-        let path26 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
+        let path28 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
         if (origin[origin.length - 1] === "/") {
           origin = origin.slice(0, origin.length - 1);
         }
-        if (path26 && path26[0] !== "/") {
-          path26 = `/${path26}`;
+        if (path28 && path28[0] !== "/") {
+          path28 = `/${path28}`;
         }
-        return new URL(`${origin}${path26}`);
+        return new URL(`${origin}${path28}`);
       }
       if (!isHttpOrHttpsPrefixed(url.origin || url.protocol)) {
         throw new InvalidArgumentError("Invalid URL protocol: the URL must start with `http:` or `https:`.");
@@ -1310,8 +1310,8 @@ var require_util = __commonJS({
       const rawHeaders = [];
       for (const [name, value] of Object.entries(headers)) {
         if (Array.isArray(value)) {
-          for (const entry2 of value) {
-            rawHeaders.push(Buffer.from(name, "latin1"), Buffer.from(`${entry2}`, "latin1"));
+          for (const entry of value) {
+            rawHeaders.push(Buffer.from(name, "latin1"), Buffer.from(`${entry}`, "latin1"));
           }
         } else {
           rawHeaders.push(Buffer.from(name, "latin1"), Buffer.from(`${value}`, "latin1"));
@@ -2000,9 +2000,9 @@ var require_diagnostics = __commonJS({
         "undici:client:sendHeaders",
         (evt) => {
           const {
-            request: { method, path: path26, origin }
+            request: { method, path: path28, origin }
           } = evt;
-          debugLog("sending request to %s %s%s", method, origin, path26);
+          debugLog("sending request to %s %s%s", method, origin, path28);
         }
       );
     }
@@ -2020,14 +2020,14 @@ var require_diagnostics = __commonJS({
         "undici:request:headers",
         (evt) => {
           const {
-            request: { method, path: path26, origin },
+            request: { method, path: path28, origin },
             response: { statusCode }
           } = evt;
           debugLog(
             "received response to %s %s%s - HTTP %d",
             method,
             origin,
-            path26,
+            path28,
             statusCode
           );
         }
@@ -2036,23 +2036,23 @@ var require_diagnostics = __commonJS({
         "undici:request:trailers",
         (evt) => {
           const {
-            request: { method, path: path26, origin }
+            request: { method, path: path28, origin }
           } = evt;
-          debugLog("trailers received from %s %s%s", method, origin, path26);
+          debugLog("trailers received from %s %s%s", method, origin, path28);
         }
       );
       diagnosticsChannel.subscribe(
         "undici:request:error",
         (evt) => {
           const {
-            request: { method, path: path26, origin },
+            request: { method, path: path28, origin },
             error
           } = evt;
           debugLog(
             "request to %s %s%s errored - %s",
             method,
             origin,
-            path26,
+            path28,
             error.message
           );
         }
@@ -2167,7 +2167,7 @@ var require_request = __commonJS({
     var kHandler = /* @__PURE__ */ Symbol("handler");
     var Request = class {
       constructor(origin, {
-        path: path26,
+        path: path28,
         method,
         body,
         headers,
@@ -2184,11 +2184,11 @@ var require_request = __commonJS({
         maxRedirections,
         typeOfService
       }, handler) {
-        if (typeof path26 !== "string") {
+        if (typeof path28 !== "string") {
           throw new InvalidArgumentError("path must be a string");
-        } else if (path26[0] !== "/" && !(path26.startsWith("http://") || path26.startsWith("https://")) && method !== "CONNECT") {
+        } else if (path28[0] !== "/" && !(path28.startsWith("http://") || path28.startsWith("https://")) && method !== "CONNECT") {
           throw new InvalidArgumentError("path must be an absolute URL or start with a slash");
-        } else if (invalidPathRegex.test(path26)) {
+        } else if (invalidPathRegex.test(path28)) {
           throw new InvalidArgumentError("invalid request path");
         }
         if (typeof method !== "string") {
@@ -2263,7 +2263,7 @@ var require_request = __commonJS({
         this.completed = false;
         this.aborted = false;
         this.upgrade = upgrade || null;
-        this.path = query ? serializePathWithQuery(path26, query) : path26;
+        this.path = query ? serializePathWithQuery(path28, query) : path28;
         this.origin = origin;
         this.protocol = getProtocolFromUrlString(origin);
         this.idempotent = idempotent == null ? method === "HEAD" || method === "GET" : idempotent;
@@ -5877,22 +5877,22 @@ var require_formdata = __commonJS({
         } else {
           value = webidl.converters.USVString(value);
         }
-        const entry2 = makeEntry(name, value, filename);
-        this.#state.push(entry2);
+        const entry = makeEntry(name, value, filename);
+        this.#state.push(entry);
       }
       delete(name) {
         webidl.brandCheck(this, _FormData);
         const prefix = "FormData.delete";
         webidl.argumentLengthCheck(arguments, 1, prefix);
         name = webidl.converters.USVString(name);
-        this.#state = this.#state.filter((entry2) => entry2.name !== name);
+        this.#state = this.#state.filter((entry) => entry.name !== name);
       }
       get(name) {
         webidl.brandCheck(this, _FormData);
         const prefix = "FormData.get";
         webidl.argumentLengthCheck(arguments, 1, prefix);
         name = webidl.converters.USVString(name);
-        const idx = this.#state.findIndex((entry2) => entry2.name === name);
+        const idx = this.#state.findIndex((entry) => entry.name === name);
         if (idx === -1) {
           return null;
         }
@@ -5903,14 +5903,14 @@ var require_formdata = __commonJS({
         const prefix = "FormData.getAll";
         webidl.argumentLengthCheck(arguments, 1, prefix);
         name = webidl.converters.USVString(name);
-        return this.#state.filter((entry2) => entry2.name === name).map((entry2) => entry2.value);
+        return this.#state.filter((entry) => entry.name === name).map((entry) => entry.value);
       }
       has(name) {
         webidl.brandCheck(this, _FormData);
         const prefix = "FormData.has";
         webidl.argumentLengthCheck(arguments, 1, prefix);
         name = webidl.converters.USVString(name);
-        return this.#state.findIndex((entry2) => entry2.name === name) !== -1;
+        return this.#state.findIndex((entry) => entry.name === name) !== -1;
       }
       set(name, value, filename = void 0) {
         webidl.brandCheck(this, _FormData);
@@ -5925,16 +5925,16 @@ var require_formdata = __commonJS({
         } else {
           value = webidl.converters.USVString(value);
         }
-        const entry2 = makeEntry(name, value, filename);
-        const idx = this.#state.findIndex((entry3) => entry3.name === name);
+        const entry = makeEntry(name, value, filename);
+        const idx = this.#state.findIndex((entry2) => entry2.name === name);
         if (idx !== -1) {
           this.#state = [
             ...this.#state.slice(0, idx),
-            entry2,
-            ...this.#state.slice(idx + 1).filter((entry3) => entry3.name !== name)
+            entry,
+            ...this.#state.slice(idx + 1).filter((entry2) => entry2.name !== name)
           ];
         } else {
-          this.#state.push(entry2);
+          this.#state.push(entry);
         }
       }
       [nodeUtil.inspect.custom](depth, options) {
@@ -6427,17 +6427,17 @@ var require_body = __commonJS({
       }
       assert(webidl.is.ReadableStream(stream));
       let action = null;
-      let source = null;
+      let source2 = null;
       let length = null;
       let type = null;
       if (typeof object === "string") {
-        source = object;
+        source2 = object;
         type = "text/plain;charset=UTF-8";
       } else if (webidl.is.URLSearchParams(object)) {
-        source = object.toString();
+        source2 = object.toString();
         type = "application/x-www-form-urlencoded;charset=UTF-8";
       } else if (webidl.is.BufferSource(object)) {
-        source = webidl.util.getCopyOfBytesHeldByBufferSource(object);
+        source2 = webidl.util.getCopyOfBytesHeldByBufferSource(object);
       } else if (webidl.is.FormData(object)) {
         const boundary = `----formdata-undici-0${`${random(1e11)}`.padStart(11, "0")}`;
         const prefix = `--${boundary}\r
@@ -6476,7 +6476,7 @@ Content-Type: ${value.type || "application/octet-stream"}\r
         if (hasUnknownSizeValue) {
           length = null;
         }
-        source = object;
+        source2 = object;
         const parts = (async function* () {
           for (const part of blobParts) {
             if (part.stream) {
@@ -6489,7 +6489,7 @@ Content-Type: ${value.type || "application/octet-stream"}\r
         action = () => parts;
         type = `multipart/form-data; boundary=${boundary}`;
       } else if (webidl.is.Blob(object)) {
-        source = object;
+        source2 = object;
         length = object.size;
         if (object.type) {
           type = object.type;
@@ -6505,11 +6505,11 @@ Content-Type: ${value.type || "application/octet-stream"}\r
         }
         stream = webidl.is.ReadableStream(object) ? object : ReadableStreamFrom(object);
       }
-      if (typeof source === "string" || isUint8Array(source)) {
-        action = () => source;
-        length = typeof source === "string" ? Buffer.byteLength(source) : source.length;
+      if (typeof source2 === "string" || isUint8Array(source2)) {
+        action = () => source2;
+        length = typeof source2 === "string" ? Buffer.byteLength(source2) : source2.length;
       }
-      const body = { stream, source, length };
+      const body = { stream, source: source2, length };
       return [body, type];
     }
     function safelyExtractBody(object, keepalive = false) {
@@ -7507,7 +7507,7 @@ var require_client_h1 = __commonJS({
       }
     }
     function writeH1(client, request) {
-      const { method, path: path26, host, upgrade, blocking, reset } = request;
+      const { method, path: path28, host, upgrade, blocking, reset } = request;
       let { body, headers, contentLength } = request;
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH" || method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH";
       if (util.isFormDataLike(body)) {
@@ -7583,7 +7583,7 @@ var require_client_h1 = __commonJS({
         socket[kBlocking] = true;
       }
       setTypeOfService(socket, request);
-      let header = `${method} ${path26} HTTP/1.1\r
+      let header = `${method} ${path28} HTTP/1.1\r
 `;
       if (typeof host === "string") {
         header += `host: ${host}\r
@@ -8260,7 +8260,7 @@ var require_client_h2 = __commonJS({
       const headersTimeout = request.headersTimeout ?? client[kHeadersTimeout];
       const bodyTimeout = request.bodyTimeout ?? client[kBodyTimeout];
       const session = client[kHTTP2Session];
-      const { method, path: path26, host, upgrade, expectContinue, signal, protocol, headers: reqHeaders } = request;
+      const { method, path: path28, host, upgrade, expectContinue, signal, protocol, headers: reqHeaders } = request;
       let { body } = request;
       if (upgrade != null && upgrade !== "websocket") {
         util.errorRequest(client, request, new InvalidArgumentError(`Custom upgrade "${upgrade}" not supported over HTTP/2`));
@@ -8329,7 +8329,7 @@ var require_client_h2 = __commonJS({
           }
           headers[HTTP2_HEADER_METHOD] = "CONNECT";
           headers[HTTP2_HEADER_PROTOCOL] = "websocket";
-          headers[HTTP2_HEADER_PATH] = path26;
+          headers[HTTP2_HEADER_PATH] = path28;
           if (protocol === "ws:" || protocol === "wss:") {
             headers[HTTP2_HEADER_SCHEME] = protocol === "ws:" ? "http" : "https";
           } else {
@@ -8381,7 +8381,7 @@ var require_client_h2 = __commonJS({
         stream.setTimeout(headersTimeout);
         return true;
       }
-      headers[HTTP2_HEADER_PATH] = path26;
+      headers[HTTP2_HEADER_PATH] = path28;
       headers[HTTP2_HEADER_SCHEME] = protocol === "http:" ? "http" : "https";
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH";
       if (body && typeof body.read === "function") {
@@ -10737,10 +10737,10 @@ var require_proxy_agent = __commonJS({
         };
         const {
           origin,
-          path: path26 = "/",
+          path: path28 = "/",
           headers = {}
         } = opts;
-        opts.path = origin + path26;
+        opts.path = origin + path28;
         if (!("host" in headers) && !("Host" in headers)) {
           const { host } = new URL(origin);
           headers.host = host;
@@ -11010,14 +11010,14 @@ var require_env_http_proxy_agent = __commonJS({
           return false;
         }
         for (let i = 0; i < this.#noProxyEntries.length; i++) {
-          const entry2 = this.#noProxyEntries[i];
-          if (entry2.port && entry2.port !== port) {
+          const entry = this.#noProxyEntries[i];
+          if (entry.port && entry.port !== port) {
             continue;
           }
-          if (hostname === entry2.hostname) {
+          if (hostname === entry.hostname) {
             return false;
           }
-          if (hostname.slice(-(entry2.hostname.length + 1)) === `.${entry2.hostname}`) {
+          if (hostname.slice(-(entry.hostname.length + 1)) === `.${entry.hostname}`) {
             return false;
           }
         }
@@ -11028,14 +11028,14 @@ var require_env_http_proxy_agent = __commonJS({
         const noProxySplit = noProxyValue.split(/[,\s]/);
         const noProxyEntries = [];
         for (let i = 0; i < noProxySplit.length; i++) {
-          const entry2 = noProxySplit[i];
-          if (!entry2) {
+          const entry = noProxySplit[i];
+          if (!entry) {
             continue;
           }
-          const parsed = entry2.match(/^(.+):(\d+)$/);
+          const parsed = entry.match(/^(.+):(\d+)$/);
           noProxyEntries.push({
             // strip leading dot or asterisk with dot
-            hostname: (parsed ? parsed[1] : entry2).replace(/^\*?\./, "").toLowerCase(),
+            hostname: (parsed ? parsed[1] : entry).replace(/^\*?\./, "").toLowerCase(),
             port: parsed ? Number.parseInt(parsed[2], 10) : 0
           });
         }
@@ -12900,20 +12900,20 @@ var require_mock_utils = __commonJS({
       }
       return normalizedQp;
     }
-    function safeUrl(path26) {
-      if (typeof path26 !== "string") {
-        return path26;
+    function safeUrl(path28) {
+      if (typeof path28 !== "string") {
+        return path28;
       }
-      const pathSegments = path26.split("?", 3);
+      const pathSegments = path28.split("?", 3);
       if (pathSegments.length !== 2) {
-        return path26;
+        return path28;
       }
       const qp = new URLSearchParams(pathSegments.pop());
       qp.sort();
       return [...pathSegments, qp.toString()].join("?");
     }
-    function matchKey(mockDispatch2, { path: path26, method, body, headers }) {
-      const pathMatch = matchValue(mockDispatch2.path, path26);
+    function matchKey(mockDispatch2, { path: path28, method, body, headers }) {
+      const pathMatch = matchValue(mockDispatch2.path, path28);
       const methodMatch = matchValue(mockDispatch2.method, method);
       const bodyMatch = typeof mockDispatch2.body !== "undefined" ? matchValue(mockDispatch2.body, body) : true;
       const headersMatch = matchHeaders(mockDispatch2, headers);
@@ -12938,8 +12938,8 @@ var require_mock_utils = __commonJS({
       const basePath = key.query ? serializePathWithQuery(key.path, key.query) : key.path;
       const resolvedPath = typeof basePath === "string" ? safeUrl(basePath) : basePath;
       const resolvedPathWithoutTrailingSlash = removeTrailingSlash(resolvedPath);
-      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path26, ignoreTrailingSlash }) => {
-        return ignoreTrailingSlash ? matchValue(removeTrailingSlash(safeUrl(path26)), resolvedPathWithoutTrailingSlash) : matchValue(safeUrl(path26), resolvedPath);
+      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path28, ignoreTrailingSlash }) => {
+        return ignoreTrailingSlash ? matchValue(removeTrailingSlash(safeUrl(path28)), resolvedPathWithoutTrailingSlash) : matchValue(safeUrl(path28), resolvedPath);
       });
       if (matchedMockDispatches.length === 0) {
         throw new MockNotMatchedError(`Mock dispatch not matched for path '${resolvedPath}'`);
@@ -12978,19 +12978,19 @@ var require_mock_utils = __commonJS({
         mockDispatches.splice(index, 1);
       }
     }
-    function removeTrailingSlash(path26) {
-      while (path26.endsWith("/")) {
-        path26 = path26.slice(0, -1);
+    function removeTrailingSlash(path28) {
+      while (path28.endsWith("/")) {
+        path28 = path28.slice(0, -1);
       }
-      if (path26.length === 0) {
-        path26 = "/";
+      if (path28.length === 0) {
+        path28 = "/";
       }
-      return path26;
+      return path28;
     }
     function buildKey(opts) {
-      const { path: path26, method, body, headers, query } = opts;
+      const { path: path28, method, body, headers, query } = opts;
       return {
-        path: path26,
+        path: path28,
         method,
         body,
         headers,
@@ -13680,10 +13680,10 @@ var require_pending_interceptors_formatter = __commonJS({
       }
       format(pendingInterceptors) {
         const withPrettyHeaders = pendingInterceptors.map(
-          ({ method, path: path26, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
+          ({ method, path: path28, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
             Method: method,
             Origin: origin,
-            Path: path26,
+            Path: path28,
             "Status code": statusCode,
             Persistent: persist ? PERSISTENT : NOT_PERSISTENT,
             Invocations: timesInvoked,
@@ -13765,9 +13765,9 @@ var require_mock_agent = __commonJS({
         const acceptNonStandardSearchParameters = this[kMockAgentAcceptsNonStandardSearchParameters];
         const dispatchOpts = { ...opts };
         if (acceptNonStandardSearchParameters && dispatchOpts.path) {
-          const [path26, searchParams] = dispatchOpts.path.split("?");
+          const [path28, searchParams] = dispatchOpts.path.split("?");
           const normalizedSearchParams = normalizeSearchParams(searchParams, acceptNonStandardSearchParameters);
-          dispatchOpts.path = `${path26}?${normalizedSearchParams}`;
+          dispatchOpts.path = `${path28}?${normalizedSearchParams}`;
         }
         return this[kAgent].dispatch(dispatchOpts, handler);
       }
@@ -14168,12 +14168,12 @@ var require_snapshot_recorder = __commonJS({
        * @return {Promise<void>} - Resolves when snapshots are loaded
        */
       async loadSnapshots(filePath) {
-        const path26 = filePath || this.#snapshotPath;
-        if (!path26) {
+        const path28 = filePath || this.#snapshotPath;
+        if (!path28) {
           throw new InvalidArgumentError("Snapshot path is required");
         }
         try {
-          const data = await readFile(resolve2(path26), "utf8");
+          const data = await readFile(resolve2(path28), "utf8");
           const parsed = JSON.parse(data);
           if (Array.isArray(parsed)) {
             this.#snapshots.clear();
@@ -14187,7 +14187,7 @@ var require_snapshot_recorder = __commonJS({
           if (error.code === "ENOENT") {
             this.#snapshots.clear();
           } else {
-            throw new UndiciError(`Failed to load snapshots from ${path26}`, { cause: error });
+            throw new UndiciError(`Failed to load snapshots from ${path28}`, { cause: error });
           }
         }
       }
@@ -14198,11 +14198,11 @@ var require_snapshot_recorder = __commonJS({
        * @returns {Promise<void>} - Resolves when snapshots are saved
        */
       async saveSnapshots(filePath) {
-        const path26 = filePath || this.#snapshotPath;
-        if (!path26) {
+        const path28 = filePath || this.#snapshotPath;
+        if (!path28) {
           throw new InvalidArgumentError("Snapshot path is required");
         }
-        const resolvedPath = resolve2(path26);
+        const resolvedPath = resolve2(path28);
         await mkdir(dirname(resolvedPath), { recursive: true });
         const data = Array.from(this.#snapshots.entries()).map(([hash, snapshot]) => ({
           hash,
@@ -14843,15 +14843,15 @@ var require_redirect_handler = __commonJS({
           receivedAt: Date.now()
         });
         const { origin, pathname, search } = util.parseURL(new URL(this.location, this.opts.origin && new URL(this.opts.path, this.opts.origin)));
-        const path26 = search ? `${pathname}${search}` : pathname;
-        const redirectUrlString = `${origin}${path26}`;
+        const path28 = search ? `${pathname}${search}` : pathname;
+        const redirectUrlString = `${origin}${path28}`;
         for (const historyUrl of this.history) {
           if (historyUrl.toString() === redirectUrlString) {
             throw new InvalidArgumentError(`Redirect loop detected. Cannot redirect to ${origin}. This typically happens when using a Client or Pool with cross-origin redirects. Use an Agent for cross-origin redirects.`);
           }
         }
         this.opts.headers = cleanRequestHeaders(this.opts.headers, statusCode === 303, this.opts.origin !== origin);
-        this.opts.path = path26;
+        this.opts.path = path28;
         this.opts.origin = origin;
         this.opts.query = null;
       }
@@ -16668,10 +16668,10 @@ var require_cache_handler = __commonJS({
       }
       return locationUrl.pathname + locationUrl.search;
     }
-    function deleteCachedUri(store, cacheKey, path26) {
+    function deleteCachedUri(store, cacheKey, path28) {
       deleteCachedValue(store, {
         ...cacheKey,
-        path: path26
+        path: path28
       });
       for (let i = 0; i < util.safeHTTPMethods.length; i++) {
         const method = util.safeHTTPMethods[i];
@@ -16679,7 +16679,7 @@ var require_cache_handler = __commonJS({
           deleteCachedValue(store, {
             ...cacheKey,
             method,
-            path: path26
+            path: path28
           });
         }
       }
@@ -16690,9 +16690,9 @@ var require_cache_handler = __commonJS({
       }
       const values = Array.isArray(headerValue) ? headerValue : [headerValue];
       for (let i = 0; i < values.length; i++) {
-        const path26 = getSameOriginPath(cacheKey, values[i]);
-        if (path26 !== void 0) {
-          deleteCachedUri(store, cacheKey, path26);
+        const path28 = getSameOriginPath(cacheKey, values[i]);
+        if (path28 !== void 0) {
+          deleteCachedUri(store, cacheKey, path28);
         }
       }
     }
@@ -17394,18 +17394,18 @@ var require_memory_cache_store = __commonJS({
         const topLevelKey = `${key.origin}:${key.path}`;
         const now = Date.now();
         const entries = this.#entries.get(topLevelKey);
-        const entry2 = entries ? findEntry(key, entries, now) : null;
-        return entry2 == null ? void 0 : {
-          statusMessage: entry2.statusMessage,
-          statusCode: entry2.statusCode,
-          headers: entry2.headers,
-          body: entry2.body,
-          vary: entry2.vary ? entry2.vary : void 0,
-          etag: entry2.etag,
-          cacheControlDirectives: entry2.cacheControlDirectives,
-          cachedAt: entry2.cachedAt,
-          staleAt: entry2.staleAt,
-          deleteAt: entry2.deleteAt
+        const entry = entries ? findEntry(key, entries, now) : null;
+        return entry == null ? void 0 : {
+          statusMessage: entry.statusMessage,
+          statusCode: entry.statusCode,
+          headers: entry.headers,
+          body: entry.body,
+          vary: entry.vary ? entry.vary : void 0,
+          etag: entry.etag,
+          cacheControlDirectives: entry.cacheControlDirectives,
+          cachedAt: entry.cachedAt,
+          staleAt: entry.staleAt,
+          deleteAt: entry.deleteAt
         };
       }
       /**
@@ -17418,17 +17418,17 @@ var require_memory_cache_store = __commonJS({
         assertCacheValue(val);
         const topLevelKey = `${key.origin}:${key.path}`;
         const store = this;
-        const entry2 = { ...key, ...val, body: [], size: 0 };
+        const entry = { ...key, ...val, body: [], size: 0 };
         return new Writable({
           write(chunk, encoding, callback) {
             if (typeof chunk === "string") {
               chunk = Buffer.from(chunk, encoding);
             }
-            entry2.size += chunk.byteLength;
-            if (entry2.size >= store.#maxEntrySize) {
+            entry.size += chunk.byteLength;
+            if (entry.size >= store.#maxEntrySize) {
               this.destroy();
             } else {
-              entry2.body.push(chunk);
+              entry.body.push(chunk);
             }
             callback(null);
           },
@@ -17441,13 +17441,13 @@ var require_memory_cache_store = __commonJS({
             const previousEntry = findEntry(key, entries, Date.now());
             if (previousEntry) {
               const index = entries.indexOf(previousEntry);
-              entries.splice(index, 1, entry2);
+              entries.splice(index, 1, entry);
               store.#size -= previousEntry.size;
             } else {
-              entries.push(entry2);
+              entries.push(entry);
               store.#count += 1;
             }
-            store.#size += entry2.size;
+            store.#size += entry.size;
             if (store.#size > store.#maxSize || store.#count > store.#maxCount) {
               if (!store.#hasEmittedMaxSizeEvent) {
                 store.emit("maxSizeExceeded", {
@@ -17459,8 +17459,8 @@ var require_memory_cache_store = __commonJS({
                 store.#hasEmittedMaxSizeEvent = true;
               }
               for (const [key2, entries2] of store.#entries) {
-                for (const entry3 of entries2.splice(0, entries2.length / 2)) {
-                  store.#size -= entry3.size;
+                for (const entry2 of entries2.splice(0, entries2.length / 2)) {
+                  store.#size -= entry2.size;
                   store.#count -= 1;
                 }
                 if (entries2.length === 0) {
@@ -17483,8 +17483,8 @@ var require_memory_cache_store = __commonJS({
           throw new TypeError(`expected key to be object, got ${typeof key}`);
         }
         const topLevelKey = `${key.origin}:${key.path}`;
-        for (const entry2 of this.#entries.get(topLevelKey) ?? []) {
-          this.#size -= entry2.size;
+        for (const entry of this.#entries.get(topLevelKey) ?? []) {
+          this.#size -= entry.size;
           this.#count -= 1;
         }
         this.#entries.delete(topLevelKey);
@@ -17492,18 +17492,18 @@ var require_memory_cache_store = __commonJS({
     };
     function findEntry(key, entries, now) {
       for (let i = 0; i < entries.length; i++) {
-        const entry2 = entries[i];
-        if (entry2.deleteAt > now && entry2.method === key.method && varyMatches(key, entry2)) {
-          return entry2;
+        const entry = entries[i];
+        if (entry.deleteAt > now && entry.method === key.method && varyMatches(key, entry)) {
+          return entry;
         }
       }
     }
-    function varyMatches(key, entry2) {
-      if (entry2.vary == null) {
+    function varyMatches(key, entry) {
+      if (entry.vary == null) {
         return true;
       }
-      for (const headerName in entry2.vary) {
-        if (Object.hasOwn(entry2.vary, headerName) && !headerValueEquals(key.headers?.[headerName], entry2.vary[headerName])) {
+      for (const headerName in entry.vary) {
+        if (Object.hasOwn(entry.vary, headerName) && !headerValueEquals(key.headers?.[headerName], entry.vary[headerName])) {
           return false;
         }
       }
@@ -18051,13 +18051,13 @@ var require_cache2 = __commonJS({
             const requestOrigin = opts2.origin.toString().toLowerCase();
             let isAllowed = false;
             for (let i = 0; i < origins.length; i++) {
-              const allowed = origins[i];
-              if (typeof allowed === "string") {
-                if (allowed.toLowerCase() === requestOrigin) {
+              const allowed2 = origins[i];
+              if (typeof allowed2 === "string") {
+                if (allowed2.toLowerCase() === requestOrigin) {
                   isAllowed = true;
                   break;
                 }
-              } else if (allowed.test(requestOrigin)) {
+              } else if (allowed2.test(requestOrigin)) {
                 isAllowed = true;
                 break;
               }
@@ -19090,7 +19090,7 @@ var require_sqlite_cache_store = __commonJS({
     var { Writable } = __require("node:stream");
     var { assertCacheKey, assertCacheValue } = require_cache();
     var DatabaseSync;
-    var VERSION = 4;
+    var VERSION4 = 4;
     var MAX_ENTRY_SIZE = 2 * 1e3 * 1e3 * 1e3;
     module.exports = class SqliteCacheStore {
       #maxEntrySize = MAX_ENTRY_SIZE;
@@ -19161,7 +19161,7 @@ var require_sqlite_cache_store = __commonJS({
       PRAGMA temp_store = memory;
       PRAGMA optimize;
 
-      CREATE TABLE IF NOT EXISTS cacheInterceptorV${VERSION} (
+      CREATE TABLE IF NOT EXISTS cacheInterceptorV${VERSION4} (
         -- Data specific to us
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         url TEXT NOT NULL,
@@ -19180,8 +19180,8 @@ var require_sqlite_cache_store = __commonJS({
         staleAt INTEGER NOT NULL
       );
 
-      CREATE INDEX IF NOT EXISTS idx_cacheInterceptorV${VERSION}_getValuesQuery ON cacheInterceptorV${VERSION}(url, method, deleteAt);
-      CREATE INDEX IF NOT EXISTS idx_cacheInterceptorV${VERSION}_deleteByUrlQuery ON cacheInterceptorV${VERSION}(deleteAt);
+      CREATE INDEX IF NOT EXISTS idx_cacheInterceptorV${VERSION4}_getValuesQuery ON cacheInterceptorV${VERSION4}(url, method, deleteAt);
+      CREATE INDEX IF NOT EXISTS idx_cacheInterceptorV${VERSION4}_deleteByUrlQuery ON cacheInterceptorV${VERSION4}(deleteAt);
     `);
         this.#getValuesQuery = this.#db.prepare(`
       SELECT
@@ -19196,7 +19196,7 @@ var require_sqlite_cache_store = __commonJS({
         vary,
         cachedAt,
         staleAt
-      FROM cacheInterceptorV${VERSION}
+      FROM cacheInterceptorV${VERSION4}
       WHERE
         url = ?
         AND method = ?
@@ -19204,7 +19204,7 @@ var require_sqlite_cache_store = __commonJS({
         deleteAt ASC
     `);
         this.#updateValueQuery = this.#db.prepare(`
-      UPDATE cacheInterceptorV${VERSION} SET
+      UPDATE cacheInterceptorV${VERSION4} SET
         body = ?,
         deleteAt = ?,
         statusCode = ?,
@@ -19218,7 +19218,7 @@ var require_sqlite_cache_store = __commonJS({
         id = ?
     `);
         this.#insertValueQuery = this.#db.prepare(`
-      INSERT INTO cacheInterceptorV${VERSION} (
+      INSERT INTO cacheInterceptorV${VERSION4} (
         url,
         method,
         body,
@@ -19234,20 +19234,20 @@ var require_sqlite_cache_store = __commonJS({
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
         this.#deleteByUrlQuery = this.#db.prepare(
-          `DELETE FROM cacheInterceptorV${VERSION} WHERE url = ?`
+          `DELETE FROM cacheInterceptorV${VERSION4} WHERE url = ?`
         );
         this.#countEntriesQuery = this.#db.prepare(
-          `SELECT COUNT(*) AS total FROM cacheInterceptorV${VERSION}`
+          `SELECT COUNT(*) AS total FROM cacheInterceptorV${VERSION4}`
         );
         this.#deleteExpiredValuesQuery = this.#db.prepare(
-          `DELETE FROM cacheInterceptorV${VERSION} WHERE deleteAt <= ?`
+          `DELETE FROM cacheInterceptorV${VERSION4} WHERE deleteAt <= ?`
         );
         this.#deleteOldValuesQuery = this.#maxCount === Infinity ? null : this.#db.prepare(`
-        DELETE FROM cacheInterceptorV${VERSION}
+        DELETE FROM cacheInterceptorV${VERSION4}
         WHERE id IN (
           SELECT
             id
-          FROM cacheInterceptorV${VERSION}
+          FROM cacheInterceptorV${VERSION4}
           ORDER BY cachedAt ASC
           LIMIT ?
         )
@@ -19407,17 +19407,17 @@ var require_sqlite_cache_store = __commonJS({
           if (now >= value.deleteAt && !canBeExpired) {
             continue;
           }
-          let matches = true;
+          let matches2 = true;
           if (value.vary) {
             const vary = JSON.parse(value.vary);
             for (const header in vary) {
               if (!headerValueEquals(headers[header], vary[header])) {
-                matches = false;
+                matches2 = false;
                 break;
               }
             }
           }
-          if (matches) {
+          if (matches2) {
             return value;
           }
         }
@@ -22180,11 +22180,11 @@ var require_fetch = __commonJS({
       function dispatch({ body }) {
         const url = requestCurrentURL(request);
         const agent = fetchParams.controller.dispatcher;
-        const path26 = url.pathname + url.search;
+        const path28 = url.pathname + url.search;
         const hasTrailingQuestionMark = url.search.length === 0 && url.href[url.href.length - url.hash.length - 1] === "?";
         return new Promise((resolve2, reject) => agent.dispatch(
           {
-            path: hasTrailingQuestionMark ? `${path26}?` : path26,
+            path: hasTrailingQuestionMark ? `${path28}?` : path28,
             origin: url.origin,
             method: request.method,
             body: agent.isMockActive ? request.body && (request.body.source || request.body.stream) : body,
@@ -22316,8 +22316,8 @@ var require_fetch = __commonJS({
                 }
                 const headerName = name.toLowerCase();
                 if (Array.isArray(value)) {
-                  for (const entry2 of value) {
-                    headersList.append(headerName, String(entry2), true);
+                  for (const entry of value) {
+                    headersList.append(headerName, String(entry), true);
                   }
                 } else {
                   headersList.append(headerName, String(value), true);
@@ -23131,9 +23131,9 @@ var require_util4 = __commonJS({
         }
       }
     }
-    function validateCookiePath(path26) {
-      for (let i = 0; i < path26.length; ++i) {
-        const code = path26.charCodeAt(i);
+    function validateCookiePath(path28) {
+      for (let i = 0; i < path28.length; ++i) {
+        const code = path28.charCodeAt(i);
         if (code < 32 || // exclude CTLs (0-31)
         code > 126 || // exclude DEL and non-ascii
         code === 59) {
@@ -23600,7 +23600,7 @@ var require_events = __commonJS({
         }
         return this.#eventInit.ports;
       }
-      initMessageEvent(type, bubbles = false, cancelable = false, data = null, origin = "", lastEventId = "", source = null, ports = []) {
+      initMessageEvent(type, bubbles = false, cancelable = false, data = null, origin = "", lastEventId = "", source2 = null, ports = []) {
         webidl.brandCheck(this, _MessageEvent);
         webidl.argumentLengthCheck(arguments, 1, "MessageEvent.initMessageEvent");
         return new _MessageEvent(type, {
@@ -23609,7 +23609,7 @@ var require_events = __commonJS({
           data,
           origin,
           lastEventId,
-          source,
+          source: source2,
           ports
         });
       }
@@ -26569,11 +26569,11 @@ var require_undici = __commonJS({
           if (typeof opts.path !== "string") {
             throw new InvalidArgumentError("invalid opts.path");
           }
-          let path26 = opts.path;
+          let path28 = opts.path;
           if (!opts.path.startsWith("/")) {
-            path26 = `/${path26}`;
+            path28 = `/${path28}`;
           }
-          url = new URL(util.parseOrigin(url).origin + path26);
+          url = new URL(util.parseOrigin(url).origin + path28);
         } else {
           if (!opts) {
             opts = typeof url === "object" ? url : {};
@@ -26739,7 +26739,7 @@ function followProxy(read2) {
   const route = {
     httpProxy,
     httpsProxy: current.HTTPS_PROXY || current.https_proxy || httpProxy,
-    noProxy: [current.NO_PROXY ?? current.no_proxy, LOOPBACK].filter(Boolean).join(",")
+    noProxy: withLoopback(current.NO_PROXY ?? current.no_proxy)
   };
   const key = JSON.stringify(route);
   if (key !== applied) {
@@ -26749,13 +26749,14 @@ function followProxy(read2) {
   }
   return current;
 }
-var import_undici, LOOPBACK, HOST_PROXY_ENV, HOST, current, applied;
+var import_undici, LOOPBACK, withLoopback, HOST_PROXY_ENV, HOST, current, applied;
 var init_proxy2 = __esm({
   "src/proxy.ts"() {
     "use strict";
     import_undici = __toESM(require_undici(), 1);
     init_proxy();
     LOOPBACK = "localhost,127.0.0.1,[::1]";
+    withLoopback = (value) => [value, LOOPBACK].filter(Boolean).join(",");
     HOST_PROXY_ENV = "WILDCRANE_HOST_PROXY";
     HOST = null;
     current = {};
@@ -26858,6 +26859,8 @@ ${url}`,
       refused: (why) => `WildCrane \u62D2\u7EDD\u4E86\u8FDE\u63A5\uFF1A${why}`,
       updated: (version) => `\u5DF2\u66F4\u65B0\u5230 ${version}`,
       rolledBack: (version) => `\u65B0\u7248\u672C\u672A\u80FD\u542F\u52A8\uFF0C\u5DF2\u9000\u56DE ${version}`,
+      spawnFailed: (why) => `Runner \u65E0\u6CD5\u542F\u52A8\uFF1A${why}`,
+      updateDownloadFailed: () => "Runner \u66F4\u65B0\u4E0B\u8F7D\u5931\u8D25\uFF0C\u7EE7\u7EED\u8FD0\u884C\u5F53\u524D\u7248\u672C\uFF0C\u7A0D\u540E\u91CD\u8BD5\u3002",
       nodeTooOld: (range) => `\u65B0\u7248\u672C\u9700\u8981 Node ${range}\uFF0C\u8BF7\u5347\u7EA7 Node\u3002\u672C\u6B21\u7EE7\u7EED\u4F7F\u7528\u5F53\u524D\u7248\u672C\u3002`,
       alreadyRunning: () => "\u672C\u673A\u5DF2\u6709 WildCrane Runner \u6B63\u5728\u8FD0\u884C\uFF0C\u65E0\u6CD5\u542F\u52A8\u7B2C\u4E8C\u4E2A\u5B9E\u4F8B\u3002",
       stopped: () => "\u5DF2\u505C\u6B62"
@@ -26875,6 +26878,8 @@ ${url}`,
       refused: (why) => `WildCrane refused the connection: ${why}`,
       updated: (version) => `Updated to ${version}`,
       rolledBack: (version) => `The new version did not start \u2014 back on ${version}`,
+      spawnFailed: (why) => `Runner could not start: ${why}`,
+      updateDownloadFailed: () => "The Runner update could not download. The current version will keep running and retry later.",
       nodeTooOld: (range) => `The new version needs Node ${range}. Update Node; running the current version for now.`,
       alreadyRunning: () => "A WildCrane Runner is already running on this computer. A second instance cannot start.",
       stopped: () => "Stopped"
@@ -26907,10 +26912,23 @@ var init_preferences = __esm({
 });
 
 // src/protocol.ts
-var EXIT_REFUSED, EXIT_OUTDATED, EXIT_UPDATE, EXIT_ALREADY_RUNNING;
+var protocol_exports = {};
+__export(protocol_exports, {
+  AKB_CONTRACT: () => AKB_CONTRACT,
+  AKB_VERSION: () => AKB_VERSION,
+  EXIT_ALREADY_RUNNING: () => EXIT_ALREADY_RUNNING,
+  EXIT_OUTDATED: () => EXIT_OUTDATED,
+  EXIT_REFUSED: () => EXIT_REFUSED,
+  EXIT_UPDATE: () => EXIT_UPDATE,
+  VERSION: () => VERSION
+});
+var VERSION, AKB_VERSION, AKB_CONTRACT, EXIT_REFUSED, EXIT_OUTDATED, EXIT_UPDATE, EXIT_ALREADY_RUNNING;
 var init_protocol = __esm({
   "src/protocol.ts"() {
     "use strict";
+    VERSION = true ? "0.6.124" : "0.0.0";
+    AKB_VERSION = true ? "0.11.106" : "0.0.0";
+    AKB_CONTRACT = true ? 41 : 0;
     EXIT_REFUSED = 10;
     EXIT_OUTDATED = 11;
     EXIT_UPDATE = 12;
@@ -26923,18 +26941,61 @@ import crypto3 from "node:crypto";
 import fs3 from "node:fs";
 import path3 from "node:path";
 import zlib from "node:zlib";
+function resolveRegistry() {
+  if (testRegistryOverride) return { ok: true, url: testRegistryOverride };
+  const configured = process.env.npm_config_registry?.trim().replace(/\/+$/, "");
+  if (configured && configured !== OFFICIAL_REGISTRY) {
+    return { ok: false, detail: `untrusted npm_config_registry: ${configured}` };
+  }
+  return { ok: true, url: OFFICIAL_REGISTRY };
+}
+async function registryKeys(registryUrl) {
+  if (cachedKeys?.source === registryUrl) return cachedKeys.keys;
+  const answer = await fetch(`${registryUrl}/-/npm/v1/keys`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+  if (!answer.ok) throw new Error(`keys answered ${answer.status}`);
+  const body = await answer.json();
+  const keys = /* @__PURE__ */ new Map();
+  for (const entry of body.keys ?? []) {
+    if (!entry.keyid || !entry.key) continue;
+    if (entry.expires && Date.parse(entry.expires) <= Date.now()) continue;
+    keys.set(entry.keyid, crypto3.createPublicKey({ key: Buffer.from(entry.key, "base64"), format: "der", type: "spki" }));
+  }
+  cachedKeys = { source: registryUrl, keys };
+  return keys;
+}
+async function verifySignature(registryUrl, pkgName, version, integrity, signatures) {
+  if (!Array.isArray(signatures) || signatures.length === 0) return false;
+  const keys = await registryKeys(registryUrl);
+  const payload = Buffer.from(`${pkgName}@${version}:${integrity}`);
+  for (const entry of signatures) {
+    if (!entry.keyid || !entry.sig) continue;
+    const key = keys.get(entry.keyid);
+    if (!key) continue;
+    try {
+      if (crypto3.verify("sha256", payload, key, Buffer.from(entry.sig, "base64"))) return true;
+    } catch {
+    }
+  }
+  return false;
+}
 async function installPackage(pkg, version, nodeVersion = process.versions.node) {
   const dir = pkg.dirOf(version);
   if (fs3.existsSync(pkg.entryOf(dir))) return { ok: true, dir };
+  const reg = resolveRegistry();
+  if (!reg.ok) return { ok: false, why: "integrity", detail: reg.detail };
+  const registryUrl = reg.url;
   let meta;
   let tarball;
   try {
-    const answer = await fetch(`${registry()}/${pkg.name}/${encodeURIComponent(version)}`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const answer = await fetch(`${registryUrl}/${pkg.name}/${encodeURIComponent(version)}`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
     if (!answer.ok) return { ok: false, why: "unreachable", detail: `registry answered ${answer.status}` };
     meta = await answer.json();
     const range = meta.engines?.node;
     if (range && !satisfies(nodeVersion, range)) return { ok: false, why: "node", detail: range };
     if (!meta.dist?.tarball) return { ok: false, why: "unreachable", detail: "no tarball" };
+    if (!testRegistryOverride && !meta.dist.tarball.startsWith(`${OFFICIAL_REGISTRY}/`)) {
+      return { ok: false, why: "integrity", detail: "tarball outside official registry" };
+    }
     const download = await fetch(meta.dist.tarball, { signal: AbortSignal.timeout(TIMEOUT_MS) });
     if (!download.ok) return { ok: false, why: "unreachable", detail: `download answered ${download.status}` };
     tarball = Buffer.from(await download.arrayBuffer());
@@ -26944,6 +27005,12 @@ async function installPackage(pkg, version, nodeVersion = process.versions.node)
   const expected = /^sha512-(.+)$/.exec(meta.dist.integrity ?? "")?.[1];
   const actual = crypto3.createHash("sha512").update(tarball).digest("base64");
   if (!expected || expected !== actual) return { ok: false, why: "integrity", detail: "sha512 mismatch" };
+  try {
+    const signed = await verifySignature(registryUrl, pkg.name, version, meta.dist.integrity, meta.dist.signatures);
+    if (!signed) return { ok: false, why: "integrity", detail: "dist.signatures verification failed" };
+  } catch (e) {
+    return { ok: false, why: "unreachable", detail: e instanceof Error ? e.message : String(e) };
+  }
   const staging = `${dir}.${process.pid}.tmp`;
   try {
     fs3.rmSync(staging, { recursive: true, force: true });
@@ -27040,19 +27107,21 @@ function meets(version, comparator) {
     }
   }
 }
-var PACKAGE, TIMEOUT_MS, versionsDir, legacyVersionsDir, versionDir, entryOf, RUNNER, registry, install2, parse;
+var PACKAGE, OFFICIAL_REGISTRY, TIMEOUT_MS, versionsDir, legacyVersionsDir, versionDir, entryOf, RUNNER, testRegistryOverride, cachedKeys, install2, parse;
 var init_update = __esm({
   "src/update.ts"() {
     "use strict";
     init_home();
     PACKAGE = "wildcrane-runner";
+    OFFICIAL_REGISTRY = "https://registry.npmjs.org";
     TIMEOUT_MS = 6e4;
     versionsDir = () => path3.join(runnerHome(), "bin", "runner");
     legacyVersionsDir = () => path3.join(runnerHome(), "runner");
     versionDir = (version) => path3.join(versionsDir(), version);
     entryOf = (dir) => path3.join(dir, "dist", "runner.mjs");
     RUNNER = { name: PACKAGE, dirOf: versionDir, entryOf };
-    registry = () => (process.env.npm_config_registry || "https://registry.npmjs.org").replace(/\/+$/, "");
+    testRegistryOverride = null;
+    cachedKeys = null;
     install2 = (version, nodeVersion) => installPackage(RUNNER, version, nodeVersion);
     parse = (v) => {
       const m = /^v?(\d+)(?:\.(\d+|x|\*))?(?:\.(\d+|x|\*))?/.exec(v.trim());
@@ -27138,17 +27207,17 @@ var require_visit = __commonJS({
     visit.BREAK = BREAK;
     visit.SKIP = SKIP;
     visit.REMOVE = REMOVE;
-    function visit_(key, node, visitor, path26) {
-      const ctrl = callVisitor(key, node, visitor, path26);
+    function visit_(key, node, visitor, path28) {
+      const ctrl = callVisitor(key, node, visitor, path28);
       if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
-        replaceNode(key, path26, ctrl);
-        return visit_(key, ctrl, visitor, path26);
+        replaceNode(key, path28, ctrl);
+        return visit_(key, ctrl, visitor, path28);
       }
       if (typeof ctrl !== "symbol") {
         if (identity.isCollection(node)) {
-          path26 = Object.freeze(path26.concat(node));
+          path28 = Object.freeze(path28.concat(node));
           for (let i = 0; i < node.items.length; ++i) {
-            const ci = visit_(i, node.items[i], visitor, path26);
+            const ci = visit_(i, node.items[i], visitor, path28);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -27159,13 +27228,13 @@ var require_visit = __commonJS({
             }
           }
         } else if (identity.isPair(node)) {
-          path26 = Object.freeze(path26.concat(node));
-          const ck = visit_("key", node.key, visitor, path26);
+          path28 = Object.freeze(path28.concat(node));
+          const ck = visit_("key", node.key, visitor, path28);
           if (ck === BREAK)
             return BREAK;
           else if (ck === REMOVE)
             node.key = null;
-          const cv = visit_("value", node.value, visitor, path26);
+          const cv = visit_("value", node.value, visitor, path28);
           if (cv === BREAK)
             return BREAK;
           else if (cv === REMOVE)
@@ -27186,17 +27255,17 @@ var require_visit = __commonJS({
     visitAsync.BREAK = BREAK;
     visitAsync.SKIP = SKIP;
     visitAsync.REMOVE = REMOVE;
-    async function visitAsync_(key, node, visitor, path26) {
-      const ctrl = await callVisitor(key, node, visitor, path26);
+    async function visitAsync_(key, node, visitor, path28) {
+      const ctrl = await callVisitor(key, node, visitor, path28);
       if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
-        replaceNode(key, path26, ctrl);
-        return visitAsync_(key, ctrl, visitor, path26);
+        replaceNode(key, path28, ctrl);
+        return visitAsync_(key, ctrl, visitor, path28);
       }
       if (typeof ctrl !== "symbol") {
         if (identity.isCollection(node)) {
-          path26 = Object.freeze(path26.concat(node));
+          path28 = Object.freeze(path28.concat(node));
           for (let i = 0; i < node.items.length; ++i) {
-            const ci = await visitAsync_(i, node.items[i], visitor, path26);
+            const ci = await visitAsync_(i, node.items[i], visitor, path28);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -27207,13 +27276,13 @@ var require_visit = __commonJS({
             }
           }
         } else if (identity.isPair(node)) {
-          path26 = Object.freeze(path26.concat(node));
-          const ck = await visitAsync_("key", node.key, visitor, path26);
+          path28 = Object.freeze(path28.concat(node));
+          const ck = await visitAsync_("key", node.key, visitor, path28);
           if (ck === BREAK)
             return BREAK;
           else if (ck === REMOVE)
             node.key = null;
-          const cv = await visitAsync_("value", node.value, visitor, path26);
+          const cv = await visitAsync_("value", node.value, visitor, path28);
           if (cv === BREAK)
             return BREAK;
           else if (cv === REMOVE)
@@ -27240,23 +27309,23 @@ var require_visit = __commonJS({
       }
       return visitor;
     }
-    function callVisitor(key, node, visitor, path26) {
+    function callVisitor(key, node, visitor, path28) {
       if (typeof visitor === "function")
-        return visitor(key, node, path26);
+        return visitor(key, node, path28);
       if (identity.isMap(node))
-        return visitor.Map?.(key, node, path26);
+        return visitor.Map?.(key, node, path28);
       if (identity.isSeq(node))
-        return visitor.Seq?.(key, node, path26);
+        return visitor.Seq?.(key, node, path28);
       if (identity.isPair(node))
-        return visitor.Pair?.(key, node, path26);
+        return visitor.Pair?.(key, node, path28);
       if (identity.isScalar(node))
-        return visitor.Scalar?.(key, node, path26);
+        return visitor.Scalar?.(key, node, path28);
       if (identity.isAlias(node))
-        return visitor.Alias?.(key, node, path26);
+        return visitor.Alias?.(key, node, path28);
       return void 0;
     }
-    function replaceNode(key, path26, node) {
-      const parent = path26[path26.length - 1];
+    function replaceNode(key, path28, node) {
+      const parent = path28[path28.length - 1];
       if (identity.isCollection(parent)) {
         parent.items[key] = node;
       } else if (identity.isPair(parent)) {
@@ -27374,26 +27443,26 @@ var require_directives = __commonJS({
        * @returns Resolved tag, which may also be the non-specific tag `'!'` or a
        *   `'!local'` tag, or `null` if unresolvable.
        */
-      tagName(source, onError) {
-        if (source === "!")
+      tagName(source2, onError) {
+        if (source2 === "!")
           return "!";
-        if (source[0] !== "!") {
-          onError(`Not a valid tag: ${source}`);
+        if (source2[0] !== "!") {
+          onError(`Not a valid tag: ${source2}`);
           return null;
         }
-        if (source[1] === "<") {
-          const verbatim = source.slice(2, -1);
+        if (source2[1] === "<") {
+          const verbatim = source2.slice(2, -1);
           if (verbatim === "!" || verbatim === "!!") {
-            onError(`Verbatim tags aren't resolved, so ${source} is invalid.`);
+            onError(`Verbatim tags aren't resolved, so ${source2} is invalid.`);
             return null;
           }
-          if (source[source.length - 1] !== ">")
+          if (source2[source2.length - 1] !== ">")
             onError("Verbatim tags must end with a >");
           return verbatim;
         }
-        const [, handle, suffix] = source.match(/^(.*!)([^!]*)$/s);
+        const [, handle, suffix] = source2.match(/^(.*!)([^!]*)$/s);
         if (!suffix)
-          onError(`The ${source} tag has no suffix`);
+          onError(`The ${source2} tag has no suffix`);
         const prefix = this.tags[handle];
         if (prefix) {
           try {
@@ -27404,8 +27473,8 @@ var require_directives = __commonJS({
           }
         }
         if (handle === "!")
-          return source;
-        onError(`Could not resolve tag: ${source}`);
+          return source2;
+        onError(`Could not resolve tag: ${source2}`);
         return null;
       }
       /**
@@ -27483,8 +27552,8 @@ var require_anchors = __commonJS({
       const sourceObjects = /* @__PURE__ */ new Map();
       let prevAnchors = null;
       return {
-        onAnchor: (source) => {
-          aliasObjects.push(source);
+        onAnchor: (source2) => {
+          aliasObjects.push(source2);
           prevAnchors ?? (prevAnchors = anchorNames(doc));
           const anchor = findNewAnchor(prefix, prevAnchors);
           prevAnchors.add(anchor);
@@ -27496,13 +27565,13 @@ var require_anchors = __commonJS({
          * the nodes have been created.
          */
         setAnchors: () => {
-          for (const source of aliasObjects) {
-            const ref = sourceObjects.get(source);
+          for (const source2 of aliasObjects) {
+            const ref = sourceObjects.get(source2);
             if (typeof ref === "object" && ref.anchor && (identity.isScalar(ref.node) || identity.isCollection(ref.node))) {
               ref.node.anchor = ref.anchor;
             } else {
               const error = new Error("Failed to resolve repeated object (this should not happen)");
-              error.source = source;
+              error.source = source2;
               throw error;
             }
           }
@@ -27648,9 +27717,9 @@ var require_Alias = __commonJS({
     var Node = require_Node();
     var toJS = require_toJS();
     var Alias = class extends Node.NodeBase {
-      constructor(source) {
+      constructor(source2) {
         super(identity.ALIAS);
-        this.source = source;
+        this.source = source2;
         Object.defineProperty(this, "tag", {
           set() {
             throw new Error("Alias nodes cannot have tags");
@@ -27711,12 +27780,12 @@ var require_Alias = __commonJS({
       toJSON(_arg, ctx) {
         if (!ctx)
           return { source: this.source };
-        const source = this.resolve(ctx.doc, ctx);
-        if (!source) {
+        const source2 = this.resolve(ctx.doc, ctx);
+        if (!source2) {
           const msg = `Unresolved alias (the anchor must be set before the alias): ${this.source}`;
           throw new ReferenceError(msg);
         }
-        return ctx.anchors.get(source).res;
+        return ctx.anchors.get(source2).res;
       }
       toString(ctx, _onComment, _onChompKeep) {
         const src = `*${this.source}`;
@@ -27734,8 +27803,8 @@ var require_Alias = __commonJS({
     };
     function getAliasCount(doc, node, anchors2) {
       if (identity.isAlias(node)) {
-        const source = node.resolve(doc);
-        const anchor = anchors2 && source && anchors2.get(source);
+        const source2 = node.resolve(doc);
+        const anchor = anchors2 && source2 && anchors2.get(source2);
         return anchor ? anchor.count * anchor.aliasCount : 0;
       } else if (identity.isCollection(node)) {
         let count2 = 0;
@@ -27868,10 +27937,10 @@ var require_Collection = __commonJS({
     var createNode = require_createNode();
     var identity = require_identity();
     var Node = require_Node();
-    function collectionFromPath(schema, path26, value) {
+    function collectionFromPath(schema, path28, value) {
       let v = value;
-      for (let i = path26.length - 1; i >= 0; --i) {
-        const k = path26[i];
+      for (let i = path28.length - 1; i >= 0; --i) {
+        const k = path28[i];
         if (typeof k === "number" && Number.isInteger(k) && k >= 0) {
           const a = [];
           a[k] = v;
@@ -27890,7 +27959,7 @@ var require_Collection = __commonJS({
         sourceObjects: /* @__PURE__ */ new Map()
       });
     }
-    var isEmptyPath = (path26) => path26 == null || typeof path26 === "object" && !!path26[Symbol.iterator]().next().done;
+    var isEmptyPath = (path28) => path28 == null || typeof path28 === "object" && !!path28[Symbol.iterator]().next().done;
     var Collection = class extends Node.NodeBase {
       constructor(type, schema) {
         super(type);
@@ -27920,11 +27989,11 @@ var require_Collection = __commonJS({
        * be a Pair instance or a `{ key, value }` object, which may not have a key
        * that already exists in the map.
        */
-      addIn(path26, value) {
-        if (isEmptyPath(path26))
+      addIn(path28, value) {
+        if (isEmptyPath(path28))
           this.add(value);
         else {
-          const [key, ...rest] = path26;
+          const [key, ...rest] = path28;
           const node = this.get(key, true);
           if (identity.isCollection(node))
             node.addIn(rest, value);
@@ -27938,8 +28007,8 @@ var require_Collection = __commonJS({
        * Removes a value from the collection.
        * @returns `true` if the item was found and removed.
        */
-      deleteIn(path26) {
-        const [key, ...rest] = path26;
+      deleteIn(path28) {
+        const [key, ...rest] = path28;
         if (rest.length === 0)
           return this.delete(key);
         const node = this.get(key, true);
@@ -27953,8 +28022,8 @@ var require_Collection = __commonJS({
        * scalar values from their surrounding node; to disable set `keepScalar` to
        * `true` (collections are always returned intact).
        */
-      getIn(path26, keepScalar) {
-        const [key, ...rest] = path26;
+      getIn(path28, keepScalar) {
+        const [key, ...rest] = path28;
         const node = this.get(key, true);
         if (rest.length === 0)
           return !keepScalar && identity.isScalar(node) ? node.value : node;
@@ -27972,8 +28041,8 @@ var require_Collection = __commonJS({
       /**
        * Checks if the collection includes a value with the key `key`.
        */
-      hasIn(path26) {
-        const [key, ...rest] = path26;
+      hasIn(path28) {
+        const [key, ...rest] = path28;
         if (rest.length === 0)
           return this.has(key);
         const node = this.get(key, true);
@@ -27983,8 +28052,8 @@ var require_Collection = __commonJS({
        * Sets a value in this collection. For `!!set`, `value` needs to be a
        * boolean to add/remove the item from the set.
        */
-      setIn(path26, value) {
-        const [key, ...rest] = path26;
+      setIn(path28, value) {
+        const [key, ...rest] = path28;
         if (rest.length === 0) {
           this.set(key, value);
         } else {
@@ -28738,21 +28807,21 @@ var require_merge = __commonJS({
     };
     var isMergeKey = (ctx, key) => (merge.identify(key) || identity.isScalar(key) && (!key.type || key.type === Scalar2.Scalar.PLAIN) && merge.identify(key.value)) && ctx?.doc.schema.tags.some((tag) => tag.tag === merge.tag && tag.default);
     function addMergeToJSMap(ctx, map, value) {
-      const source = resolveAliasValue(ctx, value);
-      if (identity.isSeq(source))
-        for (const it of source.items)
+      const source2 = resolveAliasValue(ctx, value);
+      if (identity.isSeq(source2))
+        for (const it of source2.items)
           mergeValue(ctx, map, it);
-      else if (Array.isArray(source))
-        for (const it of source)
+      else if (Array.isArray(source2))
+        for (const it of source2)
           mergeValue(ctx, map, it);
       else
-        mergeValue(ctx, map, source);
+        mergeValue(ctx, map, source2);
     }
     function mergeValue(ctx, map, value) {
-      const source = resolveAliasValue(ctx, value);
-      if (!identity.isMap(source))
+      const source2 = resolveAliasValue(ctx, value);
+      if (!identity.isMap(source2))
         throw new Error("Merge sources must be maps or map aliases");
-      const srcMap = source.toJSON(null, ctx, Map);
+      const srcMap = source2.toJSON(null, ctx, Map);
       for (const [key, value2] of srcMap) {
         if (map instanceof Map) {
           if (!map.has(key))
@@ -29369,7 +29438,7 @@ var require_null = __commonJS({
       tag: "tag:yaml.org,2002:null",
       test: /^(?:~|[Nn]ull|NULL)?$/,
       resolve: () => new Scalar2.Scalar(null),
-      stringify: ({ source }, ctx) => typeof source === "string" && nullTag.test.test(source) ? source : ctx.options.nullStr
+      stringify: ({ source: source2 }, ctx) => typeof source2 === "string" && nullTag.test.test(source2) ? source2 : ctx.options.nullStr
     };
     exports.nullTag = nullTag;
   }
@@ -29386,11 +29455,11 @@ var require_bool = __commonJS({
       tag: "tag:yaml.org,2002:bool",
       test: /^(?:[Tt]rue|TRUE|[Ff]alse|FALSE)$/,
       resolve: (str3) => new Scalar2.Scalar(str3[0] === "t" || str3[0] === "T"),
-      stringify({ source, value }, ctx) {
-        if (source && boolTag.test.test(source)) {
-          const sv = source[0] === "t" || source[0] === "T";
+      stringify({ source: source2, value }, ctx) {
+        if (source2 && boolTag.test.test(source2)) {
+          const sv = source2[0] === "t" || source2[0] === "T";
           if (value === sv)
-            return source;
+            return source2;
         }
         return value ? ctx.options.trueStr : ctx.options.falseStr;
       }
@@ -29839,10 +29908,10 @@ var require_bool2 = __commonJS({
   "../cli/node_modules/yaml/dist/schema/yaml-1.1/bool.js"(exports) {
     "use strict";
     var Scalar2 = require_Scalar();
-    function boolStringify({ value, source }, ctx) {
+    function boolStringify({ value, source: source2 }, ctx) {
       const boolObj = value ? trueTag : falseTag;
-      if (source && boolObj.test.test(source))
-        return source;
+      if (source2 && boolObj.test.test(source2))
+        return source2;
       return value ? ctx.options.trueStr : ctx.options.falseStr;
     }
     var trueTag = {
@@ -30499,9 +30568,9 @@ var require_Document = __commonJS({
           this.contents.add(value);
       }
       /** Adds a value to the document. */
-      addIn(path26, value) {
+      addIn(path28, value) {
         if (assertCollection(this.contents))
-          this.contents.addIn(path26, value);
+          this.contents.addIn(path28, value);
       }
       /**
        * Create a new `Alias` node, ensuring that the target `node` has the required anchor.
@@ -30576,14 +30645,14 @@ var require_Document = __commonJS({
        * Removes a value from the document.
        * @returns `true` if the item was found and removed.
        */
-      deleteIn(path26) {
-        if (Collection.isEmptyPath(path26)) {
+      deleteIn(path28) {
+        if (Collection.isEmptyPath(path28)) {
           if (this.contents == null)
             return false;
           this.contents = null;
           return true;
         }
-        return assertCollection(this.contents) ? this.contents.deleteIn(path26) : false;
+        return assertCollection(this.contents) ? this.contents.deleteIn(path28) : false;
       }
       /**
        * Returns item at `key`, or `undefined` if not found. By default unwraps
@@ -30598,10 +30667,10 @@ var require_Document = __commonJS({
        * scalar values from their surrounding node; to disable set `keepScalar` to
        * `true` (collections are always returned intact).
        */
-      getIn(path26, keepScalar) {
-        if (Collection.isEmptyPath(path26))
+      getIn(path28, keepScalar) {
+        if (Collection.isEmptyPath(path28))
           return !keepScalar && identity.isScalar(this.contents) ? this.contents.value : this.contents;
-        return identity.isCollection(this.contents) ? this.contents.getIn(path26, keepScalar) : void 0;
+        return identity.isCollection(this.contents) ? this.contents.getIn(path28, keepScalar) : void 0;
       }
       /**
        * Checks if the document includes a value with the key `key`.
@@ -30612,10 +30681,10 @@ var require_Document = __commonJS({
       /**
        * Checks if the document includes a value at `path`.
        */
-      hasIn(path26) {
-        if (Collection.isEmptyPath(path26))
+      hasIn(path28) {
+        if (Collection.isEmptyPath(path28))
           return this.contents !== void 0;
-        return identity.isCollection(this.contents) ? this.contents.hasIn(path26) : false;
+        return identity.isCollection(this.contents) ? this.contents.hasIn(path28) : false;
       }
       /**
        * Sets a value in this document. For `!!set`, `value` needs to be a
@@ -30632,13 +30701,13 @@ var require_Document = __commonJS({
        * Sets a value in this document. For `!!set`, `value` needs to be a
        * boolean to add/remove the item from the set.
        */
-      setIn(path26, value) {
-        if (Collection.isEmptyPath(path26)) {
+      setIn(path28, value) {
+        if (Collection.isEmptyPath(path28)) {
           this.contents = value;
         } else if (this.contents == null) {
-          this.contents = Collection.collectionFromPath(this.schema, Array.from(path26), value);
+          this.contents = Collection.collectionFromPath(this.schema, Array.from(path28), value);
         } else if (assertCollection(this.contents)) {
-          this.contents.setIn(path26, value);
+          this.contents.setIn(path28, value);
         }
       }
       /**
@@ -31174,7 +31243,7 @@ var require_resolve_end = __commonJS({
         let hasSpace = false;
         let sep = "";
         for (const token of end) {
-          const { source, type } = token;
+          const { source: source2, type } = token;
           switch (type) {
             case "space":
               hasSpace = true;
@@ -31182,7 +31251,7 @@ var require_resolve_end = __commonJS({
             case "comment": {
               if (reqSpace && !hasSpace)
                 onError(token, "MISSING_CHAR", "Comments must be separated from other tokens by white space characters");
-              const cb = source.substring(1) || " ";
+              const cb = source2.substring(1) || " ";
               if (!comment)
                 comment = cb;
               else
@@ -31192,13 +31261,13 @@ var require_resolve_end = __commonJS({
             }
             case "newline":
               if (comment)
-                sep += source;
+                sep += source2;
               hasSpace = true;
               break;
             default:
               onError(token, "UNEXPECTED_TOKEN", `Unexpected ${type} at node end`);
           }
-          offset += source.length;
+          offset += source2.length;
         }
       }
       return { comment, offset };
@@ -31580,13 +31649,13 @@ var require_resolve_block_scalar = __commonJS({
         onError(props[0], "IMPOSSIBLE", "Block scalar header not found");
         return null;
       }
-      const { source } = props[0];
-      const mode = source[0];
+      const { source: source2 } = props[0];
+      const mode = source2[0];
       let indent = 0;
       let chomp = "";
       let error = -1;
-      for (let i = 1; i < source.length; ++i) {
-        const ch = source[i];
+      for (let i = 1; i < source2.length; ++i) {
+        const ch = source2[i];
         if (!chomp && (ch === "-" || ch === "+"))
           chomp = ch;
         else {
@@ -31598,10 +31667,10 @@ var require_resolve_block_scalar = __commonJS({
         }
       }
       if (error !== -1)
-        onError(error, "UNEXPECTED_TOKEN", `Block scalar header includes extra characters: ${source}`);
+        onError(error, "UNEXPECTED_TOKEN", `Block scalar header includes extra characters: ${source2}`);
       let hasSpace = false;
       let comment = "";
-      let length = source.length;
+      let length = source2.length;
       for (let i = 1; i < props.length; ++i) {
         const token = props[i];
         switch (token.type) {
@@ -31635,8 +31704,8 @@ var require_resolve_block_scalar = __commonJS({
       }
       return { mode, indent, chomp, comment, length };
     }
-    function splitLines(source) {
-      const split = source.split(/\n( *)/);
+    function splitLines(source2) {
+      const split = source2.split(/\n( *)/);
       const first = split[0];
       const m = first.match(/^( *)/);
       const line0 = m?.[1] ? [m[1], first.slice(m[1].length)] : ["", first];
@@ -31656,22 +31725,22 @@ var require_resolve_flow_scalar = __commonJS({
     var Scalar2 = require_Scalar();
     var resolveEnd = require_resolve_end();
     function resolveFlowScalar(scalar, strict, onError) {
-      const { offset, type, source, end } = scalar;
+      const { offset, type, source: source2, end } = scalar;
       let _type;
       let value;
       const _onError = (rel2, code, msg) => onError(offset + rel2, code, msg);
       switch (type) {
         case "scalar":
           _type = Scalar2.Scalar.PLAIN;
-          value = plainValue(source, _onError);
+          value = plainValue(source2, _onError);
           break;
         case "single-quoted-scalar":
           _type = Scalar2.Scalar.QUOTE_SINGLE;
-          value = singleQuotedValue(source, _onError);
+          value = singleQuotedValue(source2, _onError);
           break;
         case "double-quoted-scalar":
           _type = Scalar2.Scalar.QUOTE_DOUBLE;
-          value = doubleQuotedValue(source, _onError);
+          value = doubleQuotedValue(source2, _onError);
           break;
         /* istanbul ignore next should not happen */
         default:
@@ -31680,10 +31749,10 @@ var require_resolve_flow_scalar = __commonJS({
             value: "",
             type: null,
             comment: "",
-            range: [offset, offset + source.length, offset + source.length]
+            range: [offset, offset + source2.length, offset + source2.length]
           };
       }
-      const valueEnd = offset + source.length;
+      const valueEnd = offset + source2.length;
       const re = resolveEnd.resolveEnd(end, valueEnd, strict, onError);
       return {
         value,
@@ -31692,9 +31761,9 @@ var require_resolve_flow_scalar = __commonJS({
         range: [offset, valueEnd, re.offset]
       };
     }
-    function plainValue(source, onError) {
+    function plainValue(source2, onError) {
       let badChar = "";
-      switch (source[0]) {
+      switch (source2[0]) {
         /* istanbul ignore next should not happen */
         case "	":
           badChar = "a tab character";
@@ -31707,29 +31776,29 @@ var require_resolve_flow_scalar = __commonJS({
           break;
         case "|":
         case ">": {
-          badChar = `block scalar indicator ${source[0]}`;
+          badChar = `block scalar indicator ${source2[0]}`;
           break;
         }
         case "@":
         case "`": {
-          badChar = `reserved character ${source[0]}`;
+          badChar = `reserved character ${source2[0]}`;
           break;
         }
       }
       if (badChar)
         onError(0, "BAD_SCALAR_START", `Plain value cannot start with ${badChar}`);
-      return unfoldLines(source);
+      return unfoldLines(source2);
     }
-    function singleQuotedValue(source, onError) {
-      if (source[source.length - 1] !== "'" || source.length === 1)
-        onError(source.length, "MISSING_CHAR", "Missing closing 'quote");
-      return unfoldLines(source.slice(1, -1)).replace(/''/g, "'");
+    function singleQuotedValue(source2, onError) {
+      if (source2[source2.length - 1] !== "'" || source2.length === 1)
+        onError(source2.length, "MISSING_CHAR", "Missing closing 'quote");
+      return unfoldLines(source2.slice(1, -1)).replace(/''/g, "'");
     }
-    function unfoldLines(source) {
+    function unfoldLines(source2) {
       const line = /(.*?)\r?\n/sy;
-      let match = line.exec(source);
+      let match = line.exec(source2);
       if (!match)
-        return source;
+        return source2;
       let trimEnd, trimBoth;
       try {
         trimEnd = new RegExp("(?<![ 	])[ 	]+$");
@@ -31741,7 +31810,7 @@ var require_resolve_flow_scalar = __commonJS({
       let res = match[1].replace(trimEnd, "");
       let sep = " ";
       let pos = line.lastIndex;
-      while (match = line.exec(source)) {
+      while (match = line.exec(source2)) {
         const lm = match[1].replace(trimBoth, "");
         if (lm === "") {
           if (sep === "\n")
@@ -31756,66 +31825,66 @@ var require_resolve_flow_scalar = __commonJS({
       }
       const last2 = /[ \t]*(.*)/sy;
       last2.lastIndex = pos;
-      match = last2.exec(source);
+      match = last2.exec(source2);
       return res + sep + (match?.[1] ?? "");
     }
-    function doubleQuotedValue(source, onError) {
+    function doubleQuotedValue(source2, onError) {
       let res = "";
-      for (let i = 1; i < source.length - 1; ++i) {
-        const ch = source[i];
-        if (ch === "\r" && source[i + 1] === "\n")
+      for (let i = 1; i < source2.length - 1; ++i) {
+        const ch = source2[i];
+        if (ch === "\r" && source2[i + 1] === "\n")
           continue;
         if (ch === "\n") {
-          const { fold, offset } = foldNewline(source, i);
+          const { fold, offset } = foldNewline(source2, i);
           res += fold;
           i = offset;
         } else if (ch === "\\") {
-          let next = source[++i];
+          let next = source2[++i];
           const cc = escapeCodes[next];
           if (cc)
             res += cc;
           else if (next === "\n") {
-            next = source[i + 1];
+            next = source2[i + 1];
             while (next === " " || next === "	")
-              next = source[++i + 1];
-          } else if (next === "\r" && source[i + 1] === "\n") {
-            next = source[++i + 1];
+              next = source2[++i + 1];
+          } else if (next === "\r" && source2[i + 1] === "\n") {
+            next = source2[++i + 1];
             while (next === " " || next === "	")
-              next = source[++i + 1];
+              next = source2[++i + 1];
           } else if (next === "x" || next === "u" || next === "U") {
             const length = next === "x" ? 2 : next === "u" ? 4 : 8;
-            res += parseCharCode(source, i + 1, length, onError);
+            res += parseCharCode(source2, i + 1, length, onError);
             i += length;
           } else {
-            const raw = source.substr(i - 1, 2);
+            const raw = source2.substr(i - 1, 2);
             onError(i - 1, "BAD_DQ_ESCAPE", `Invalid escape sequence ${raw}`);
             res += raw;
           }
         } else if (ch === " " || ch === "	") {
           const wsStart = i;
-          let next = source[i + 1];
+          let next = source2[i + 1];
           while (next === " " || next === "	")
-            next = source[++i + 1];
-          if (next !== "\n" && !(next === "\r" && source[i + 2] === "\n"))
-            res += i > wsStart ? source.slice(wsStart, i + 1) : ch;
+            next = source2[++i + 1];
+          if (next !== "\n" && !(next === "\r" && source2[i + 2] === "\n"))
+            res += i > wsStart ? source2.slice(wsStart, i + 1) : ch;
         } else {
           res += ch;
         }
       }
-      if (source[source.length - 1] !== '"' || source.length === 1)
-        onError(source.length, "MISSING_CHAR", 'Missing closing "quote');
+      if (source2[source2.length - 1] !== '"' || source2.length === 1)
+        onError(source2.length, "MISSING_CHAR", 'Missing closing "quote');
       return res;
     }
-    function foldNewline(source, offset) {
+    function foldNewline(source2, offset) {
       let fold = "";
-      let ch = source[offset + 1];
+      let ch = source2[offset + 1];
       while (ch === " " || ch === "	" || ch === "\n" || ch === "\r") {
-        if (ch === "\r" && source[offset + 2] !== "\n")
+        if (ch === "\r" && source2[offset + 2] !== "\n")
           break;
         if (ch === "\n")
           fold += "\n";
         offset += 1;
-        ch = source[offset + 1];
+        ch = source2[offset + 1];
       }
       if (!fold)
         fold = " ";
@@ -31854,14 +31923,14 @@ var require_resolve_flow_scalar = __commonJS({
       "\\": "\\",
       "	": "	"
     };
-    function parseCharCode(source, offset, length, onError) {
-      const cc = source.substr(offset, length);
+    function parseCharCode(source2, offset, length, onError) {
+      const cc = source2.substr(offset, length);
       const ok = cc.length === length && /^[0-9a-fA-F]+$/.test(cc);
       const code = ok ? parseInt(cc, 16) : NaN;
       try {
         return String.fromCodePoint(code);
       } catch {
-        const raw = source.substr(offset - 2, length + 2);
+        const raw = source2.substr(offset - 2, length + 2);
         onError(offset - 2, "BAD_DQ_ESCAPE", `Invalid escape sequence ${raw}`);
         return raw;
       }
@@ -32069,13 +32138,13 @@ var require_compose_node = __commonJS({
       }
       return node;
     }
-    function composeAlias({ options }, { offset, source, end }, onError) {
-      const alias = new Alias.Alias(source.substring(1));
+    function composeAlias({ options }, { offset, source: source2, end }, onError) {
+      const alias = new Alias.Alias(source2.substring(1));
       if (alias.source === "")
         onError(offset, "BAD_ALIAS", "Alias cannot be an empty string");
       if (alias.source.endsWith(":"))
-        onError(offset + source.length - 1, "BAD_ALIAS", "Alias ending in : is ambiguous", true);
-      const valueEnd = offset + source.length;
+        onError(offset + source2.length - 1, "BAD_ALIAS", "Alias ending in : is ambiguous", true);
+      const valueEnd = offset + source2.length;
       const re = resolveEnd.resolveEnd(end, valueEnd, options.strict, onError);
       alias.range = [offset, valueEnd, re.offset];
       if (re.comment)
@@ -32146,18 +32215,18 @@ var require_composer = __commonJS({
         return [src, src + 1];
       if (Array.isArray(src))
         return src.length === 2 ? src : [src[0], src[1]];
-      const { offset, source } = src;
-      return [offset, offset + (typeof source === "string" ? source.length : 1)];
+      const { offset, source: source2 } = src;
+      return [offset, offset + (typeof source2 === "string" ? source2.length : 1)];
     }
     function parsePrelude(prelude) {
       let comment = "";
       let atComment = false;
       let afterEmptyLine = false;
       for (let i = 0; i < prelude.length; ++i) {
-        const source = prelude[i];
-        switch (source[0]) {
+        const source2 = prelude[i];
+        switch (source2[0]) {
           case "#":
-            comment += (comment === "" ? "" : afterEmptyLine ? "\n\n" : "\n") + (source.substring(1) || " ");
+            comment += (comment === "" ? "" : afterEmptyLine ? "\n\n" : "\n") + (source2.substring(1) || " ");
             atComment = true;
             afterEmptyLine = false;
             break;
@@ -32181,8 +32250,8 @@ var require_composer = __commonJS({
         this.prelude = [];
         this.errors = [];
         this.warnings = [];
-        this.onError = (source, code, message, warning) => {
-          const pos = getErrorPos(source);
+        this.onError = (source2, code, message, warning) => {
+          const pos = getErrorPos(source2);
           if (warning)
             this.warnings.push(new errors.YAMLWarning(pos, code, message));
           else
@@ -32368,7 +32437,7 @@ var require_cst_scalar = __commonJS({
     }
     function createScalarToken(value, context) {
       const { implicitKey = false, indent, inFlow = false, offset = -1, type = "PLAIN" } = context;
-      const source = stringifyString.stringifyString({ type, value }, {
+      const source2 = stringifyString.stringifyString({ type, value }, {
         implicitKey,
         indent: indent > 0 ? " ".repeat(indent) : "",
         inFlow,
@@ -32377,12 +32446,12 @@ var require_cst_scalar = __commonJS({
       const end = context.end ?? [
         { type: "newline", offset: -1, indent, source: "\n" }
       ];
-      switch (source[0]) {
+      switch (source2[0]) {
         case "|":
         case ">": {
-          const he = source.indexOf("\n");
-          const head = source.substring(0, he);
-          const body = source.substring(he + 1) + "\n";
+          const he = source2.indexOf("\n");
+          const head = source2.substring(0, he);
+          const body = source2.substring(he + 1) + "\n";
           const props = [
             { type: "block-scalar-header", offset, indent, source: head }
           ];
@@ -32391,11 +32460,11 @@ var require_cst_scalar = __commonJS({
           return { type: "block-scalar", offset, indent, props, source: body };
         }
         case '"':
-          return { type: "double-quoted-scalar", offset, indent, source, end };
+          return { type: "double-quoted-scalar", offset, indent, source: source2, end };
         case "'":
-          return { type: "single-quoted-scalar", offset, indent, source, end };
+          return { type: "single-quoted-scalar", offset, indent, source: source2, end };
         default:
-          return { type: "scalar", offset, indent, source, end };
+          return { type: "scalar", offset, indent, source: source2, end };
       }
     }
     function setScalarValue(token, value, context = {}) {
@@ -32421,31 +32490,31 @@ var require_cst_scalar = __commonJS({
           default:
             type = "PLAIN";
         }
-      const source = stringifyString.stringifyString({ type, value }, {
+      const source2 = stringifyString.stringifyString({ type, value }, {
         implicitKey: implicitKey || indent === null,
         indent: indent !== null && indent > 0 ? " ".repeat(indent) : "",
         inFlow,
         options: { blockQuote: true, lineWidth: -1 }
       });
-      switch (source[0]) {
+      switch (source2[0]) {
         case "|":
         case ">":
-          setBlockScalarValue(token, source);
+          setBlockScalarValue(token, source2);
           break;
         case '"':
-          setFlowScalarValue(token, source, "double-quoted-scalar");
+          setFlowScalarValue(token, source2, "double-quoted-scalar");
           break;
         case "'":
-          setFlowScalarValue(token, source, "single-quoted-scalar");
+          setFlowScalarValue(token, source2, "single-quoted-scalar");
           break;
         default:
-          setFlowScalarValue(token, source, "scalar");
+          setFlowScalarValue(token, source2, "scalar");
       }
     }
-    function setBlockScalarValue(token, source) {
-      const he = source.indexOf("\n");
-      const head = source.substring(0, he);
-      const body = source.substring(he + 1) + "\n";
+    function setBlockScalarValue(token, source2) {
+      const he = source2.indexOf("\n");
+      const head = source2.substring(0, he);
+      const body = source2.substring(he + 1) + "\n";
       if (token.type === "block-scalar") {
         const header = token.props[0];
         if (header.type !== "block-scalar-header")
@@ -32480,31 +32549,31 @@ var require_cst_scalar = __commonJS({
           }
       return false;
     }
-    function setFlowScalarValue(token, source, type) {
+    function setFlowScalarValue(token, source2, type) {
       switch (token.type) {
         case "scalar":
         case "double-quoted-scalar":
         case "single-quoted-scalar":
           token.type = type;
-          token.source = source;
+          token.source = source2;
           break;
         case "block-scalar": {
           const end = token.props.slice(1);
-          let oa = source.length;
+          let oa = source2.length;
           if (token.props[0].type === "block-scalar-header")
             oa -= token.props[0].source.length;
           for (const tok of end)
             tok.offset += oa;
           delete token.props;
-          Object.assign(token, { type, source, end });
+          Object.assign(token, { type, source: source2, end });
           break;
         }
         case "block-map":
         case "block-seq": {
-          const offset = token.offset + source.length;
+          const offset = token.offset + source2.length;
           const nl = { type: "newline", offset, indent: token.indent, source: "\n" };
           delete token.items;
-          Object.assign(token, { type, source, end: [nl] });
+          Object.assign(token, { type, source: source2, end: [nl] });
           break;
         }
         default: {
@@ -32513,7 +32582,7 @@ var require_cst_scalar = __commonJS({
           for (const key of Object.keys(token))
             if (key !== "type" && key !== "offset")
               delete token[key];
-          Object.assign(token, { type, indent, source, end });
+          Object.assign(token, { type, indent, source: source2, end });
         }
       }
     }
@@ -32599,9 +32668,9 @@ var require_cst_visit = __commonJS({
     visit.BREAK = BREAK;
     visit.SKIP = SKIP;
     visit.REMOVE = REMOVE;
-    visit.itemAtPath = (cst, path26) => {
+    visit.itemAtPath = (cst, path28) => {
       let item = cst;
-      for (const [field, index] of path26) {
+      for (const [field, index] of path28) {
         const tok = item?.[field];
         if (tok && "items" in tok) {
           item = tok.items[index];
@@ -32610,23 +32679,23 @@ var require_cst_visit = __commonJS({
       }
       return item;
     };
-    visit.parentCollection = (cst, path26) => {
-      const parent = visit.itemAtPath(cst, path26.slice(0, -1));
-      const field = path26[path26.length - 1][0];
+    visit.parentCollection = (cst, path28) => {
+      const parent = visit.itemAtPath(cst, path28.slice(0, -1));
+      const field = path28[path28.length - 1][0];
       const coll = parent?.[field];
       if (coll && "items" in coll)
         return coll;
       throw new Error("Parent collection not found");
     };
-    function _visit(path26, item, visitor) {
-      let ctrl = visitor(item, path26);
+    function _visit(path28, item, visitor) {
+      let ctrl = visitor(item, path28);
       if (typeof ctrl === "symbol")
         return ctrl;
       for (const field of ["key", "value"]) {
         const token = item[field];
         if (token && "items" in token) {
           for (let i = 0; i < token.items.length; ++i) {
-            const ci = _visit(Object.freeze(path26.concat([[field, i]])), token.items[i], visitor);
+            const ci = _visit(Object.freeze(path28.concat([[field, i]])), token.items[i], visitor);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -32637,10 +32706,10 @@ var require_cst_visit = __commonJS({
             }
           }
           if (typeof ctrl === "function" && field === "key")
-            ctrl = ctrl(item, path26);
+            ctrl = ctrl(item, path28);
         }
       }
-      return typeof ctrl === "function" ? ctrl(item, path26) : ctrl;
+      return typeof ctrl === "function" ? ctrl(item, path28) : ctrl;
     }
     exports.visit = visit;
   }
@@ -32673,8 +32742,8 @@ var require_cst = __commonJS({
           return JSON.stringify(token);
       }
     }
-    function tokenType(source) {
-      switch (source) {
+    function tokenType(source2) {
+      switch (source2) {
         case BOM:
           return "byte-order-mark";
         case DOCUMENT:
@@ -32708,7 +32777,7 @@ var require_cst = __commonJS({
         case ",":
           return "comma";
       }
-      switch (source[0]) {
+      switch (source2[0]) {
         case " ":
         case "	":
           return "space";
@@ -32790,11 +32859,11 @@ var require_lexer = __commonJS({
        *
        * @returns A generator of lexical tokens
        */
-      *lex(source, incomplete = false) {
-        if (source) {
-          if (typeof source !== "string")
+      *lex(source2, incomplete = false) {
+        if (source2) {
+          if (typeof source2 !== "string")
             throw TypeError("source is not a string");
-          this.buffer = this.buffer ? this.buffer + source : source;
+          this.buffer = this.buffer ? this.buffer + source2 : source2;
           this.lineEndPos = null;
         }
         this.atEnd = !incomplete;
@@ -33439,12 +33508,12 @@ var require_parser = __commonJS({
       }
       return prev.splice(i, prev.length);
     }
-    function arrayPushArray(target, source) {
-      if (source.length < 1e5)
-        Array.prototype.push.apply(target, source);
+    function arrayPushArray(target, source2) {
+      if (source2.length < 1e5)
+        Array.prototype.push.apply(target, source2);
       else
-        for (let i = 0; i < source.length; ++i)
-          target.push(source[i]);
+        for (let i = 0; i < source2.length; ++i)
+          target.push(source2[i]);
     }
     function fixFlowSeqItems(fc) {
       if (fc.start.type === "flow-seq-start") {
@@ -33490,10 +33559,10 @@ var require_parser = __commonJS({
        *
        * @returns A generator of tokens representing each directive, document, and other structure.
        */
-      *parse(source, incomplete = false) {
+      *parse(source2, incomplete = false) {
         if (this.onNewLine && this.offset === 0)
           this.onNewLine(0);
-        for (const lexeme of this.lexer.lex(source, incomplete))
+        for (const lexeme of this.lexer.lex(source2, incomplete))
           yield* this.next(lexeme);
         if (!incomplete)
           yield* this.end();
@@ -33501,21 +33570,21 @@ var require_parser = __commonJS({
       /**
        * Advance the parser by the `source` of one lexical token.
        */
-      *next(source) {
-        this.source = source;
+      *next(source2) {
+        this.source = source2;
         if (node_process.env.LOG_TOKENS)
-          console.log("|", cst.prettyToken(source));
+          console.log("|", cst.prettyToken(source2));
         if (this.atScalar) {
           this.atScalar = false;
           yield* this.step();
-          this.offset += source.length;
+          this.offset += source2.length;
           return;
         }
-        const type = cst.tokenType(source);
+        const type = cst.tokenType(source2);
         if (!type) {
-          const message = `Not a YAML token: ${source}`;
-          yield* this.pop({ type: "error", offset: this.offset, message, source });
-          this.offset += source.length;
+          const message = `Not a YAML token: ${source2}`;
+          yield* this.pop({ type: "error", offset: this.offset, message, source: source2 });
+          this.offset += source2.length;
         } else if (type === "scalar") {
           this.atNewLine = false;
           this.atScalar = true;
@@ -33528,17 +33597,17 @@ var require_parser = __commonJS({
               this.atNewLine = true;
               this.indent = 0;
               if (this.onNewLine)
-                this.onNewLine(this.offset + source.length);
+                this.onNewLine(this.offset + source2.length);
               break;
             case "space":
-              if (this.atNewLine && source[0] === " ")
-                this.indent += source.length;
+              if (this.atNewLine && source2[0] === " ")
+                this.indent += source2.length;
               break;
             case "explicit-key-ind":
             case "map-value-ind":
             case "seq-item-ind":
               if (this.atNewLine)
-                this.indent += source.length;
+                this.indent += source2.length;
               break;
             case "doc-mode":
             case "flow-error-end":
@@ -33546,7 +33615,7 @@ var require_parser = __commonJS({
             default:
               this.atNewLine = false;
           }
-          this.offset += source.length;
+          this.offset += source2.length;
         }
       }
       /** Call at end of input to push out any remaining constructions */
@@ -33942,14 +34011,14 @@ var require_parser = __commonJS({
             case "scalar":
             case "single-quoted-scalar":
             case "double-quoted-scalar": {
-              const fs22 = this.flowScalar(this.type);
+              const fs24 = this.flowScalar(this.type);
               if (atNextItem || it.value) {
-                map.items.push({ start, key: fs22, sep: [] });
+                map.items.push({ start, key: fs24, sep: [] });
                 this.onKeyLine = true;
               } else if (it.sep) {
-                this.stack.push(fs22);
+                this.stack.push(fs24);
               } else {
-                Object.assign(it, { key: fs22, sep: [] });
+                Object.assign(it, { key: fs24, sep: [] });
                 this.onKeyLine = true;
               }
               return;
@@ -34077,13 +34146,13 @@ var require_parser = __commonJS({
             case "scalar":
             case "single-quoted-scalar":
             case "double-quoted-scalar": {
-              const fs22 = this.flowScalar(this.type);
+              const fs24 = this.flowScalar(this.type);
               if (!it || it.value)
-                fc.items.push({ start: [], key: fs22, sep: [] });
+                fc.items.push({ start: [], key: fs24, sep: [] });
               else if (it.sep)
-                this.stack.push(fs22);
+                this.stack.push(fs24);
               else
-                Object.assign(it, { key: fs22, sep: [] });
+                Object.assign(it, { key: fs24, sep: [] });
               return;
             }
             case "flow-map-end":
@@ -34258,26 +34327,26 @@ var require_public_api = __commonJS({
       const lineCounter$1 = options.lineCounter || prettyErrors && new lineCounter.LineCounter() || null;
       return { lineCounter: lineCounter$1, prettyErrors };
     }
-    function parseAllDocuments(source, options = {}) {
+    function parseAllDocuments(source2, options = {}) {
       const { lineCounter: lineCounter2, prettyErrors } = parseOptions(options);
       const parser$1 = new parser.Parser(lineCounter2?.addNewLine);
       const composer$1 = new composer.Composer(options);
-      const docs = Array.from(composer$1.compose(parser$1.parse(source)));
+      const docs = Array.from(composer$1.compose(parser$1.parse(source2)));
       if (prettyErrors && lineCounter2)
         for (const doc of docs) {
-          doc.errors.forEach(errors.prettifyError(source, lineCounter2));
-          doc.warnings.forEach(errors.prettifyError(source, lineCounter2));
+          doc.errors.forEach(errors.prettifyError(source2, lineCounter2));
+          doc.warnings.forEach(errors.prettifyError(source2, lineCounter2));
         }
       if (docs.length > 0)
         return docs;
       return Object.assign([], { empty: true }, composer$1.streamInfo());
     }
-    function parseDocument4(source, options = {}) {
+    function parseDocument4(source2, options = {}) {
       const { lineCounter: lineCounter2, prettyErrors } = parseOptions(options);
       const parser$1 = new parser.Parser(lineCounter2?.addNewLine);
       const composer$1 = new composer.Composer(options);
       let doc = null;
-      for (const _doc of composer$1.compose(parser$1.parse(source), true, source.length)) {
+      for (const _doc of composer$1.compose(parser$1.parse(source2), true, source2.length)) {
         if (!doc)
           doc = _doc;
         else if (doc.options.logLevel !== "silent") {
@@ -34286,8 +34355,8 @@ var require_public_api = __commonJS({
         }
       }
       if (prettyErrors && lineCounter2) {
-        doc.errors.forEach(errors.prettifyError(source, lineCounter2));
-        doc.warnings.forEach(errors.prettifyError(source, lineCounter2));
+        doc.errors.forEach(errors.prettifyError(source2, lineCounter2));
+        doc.warnings.forEach(errors.prettifyError(source2, lineCounter2));
       }
       return doc;
     }
@@ -34392,29 +34461,56 @@ var require_dist = __commonJS({
 });
 
 // ../cli/src/lib/io.ts
+var BoardError;
 var init_io = __esm({
   "../cli/src/lib/io.ts"() {
     "use strict";
+    BoardError = class extends Error {
+      // `kind` is the machine-readable name of the refusal (card-not-found, no-board,
+      // unknown-module, …). It is what a caller reads; the exit code stays 1 for every
+      // refusal, so nobody has to keep a table of numbers.
+      kind;
+      // Only `cloud image` / `cloud tts` set it: 2 for a usage error, as the scripts they replaced did.
+      exitCode;
+      // `bare` says the message is already the whole thing a person should see — a usage
+      // block, say — so the dispatcher prints it without putting the command in front of it.
+      bare;
+      details;
+      constructor(message, { kind = "refused", bare = false, exitCode = 1, ...details } = {}) {
+        super(message);
+        this.name = "BoardError";
+        this.kind = kind;
+        this.bare = bare;
+        this.exitCode = exitCode;
+        this.details = details;
+      }
+    };
   }
 });
 
 // ../cli/src/lib/machine/project.ts
 import fs4 from "node:fs";
 import path4 from "node:path";
-function realPathOf(dir) {
-  const here = path4.resolve(dir);
-  const rest = [];
-  let at = here;
-  for (; ; ) {
-    try {
-      return path4.join(fs4.realpathSync(at), ...rest);
-    } catch {
-      const up = path4.dirname(at);
-      if (up === at) return here;
-      rest.unshift(path4.basename(at));
-      at = up;
-    }
+function realPathOf(file2, links = 0) {
+  const here = path4.resolve(file2);
+  try {
+    return fs4.realpathSync(here);
+  } catch (error) {
+    if (!missing(error)) throw error;
   }
+  const parent = path4.dirname(here);
+  if (parent === here) return here;
+  let link;
+  try {
+    link = fs4.readlinkSync(here);
+  } catch (error) {
+    if (!missing(error) && error.code !== "EINVAL") throw error;
+  }
+  if (link !== void 0) {
+    if (links >= 40) throw new Error(`Too many symbolic links: ${file2}`);
+    return realPathOf(path4.resolve(parent, link), links + 1);
+  }
+  return path4.join(realPathOf(parent, links), path4.basename(here));
 }
 function stateRootOf(board) {
   let dir = realPathOf(board);
@@ -34430,23 +34526,53 @@ function rootAbove(board) {
   const parent = path4.dirname(board);
   return ["docs", ".akb"].includes(path4.basename(parent)) ? path4.dirname(parent) : parent;
 }
-function projectStateDir(board, root2 = stateRootOf(board)) {
-  const relative = path4.relative(realPathOf(root2), realPathOf(board));
+function assertBoardStatePath(file2, state, id) {
+  if (NESTED_STATE.test(file2)) throw new InvalidBoardStatePath(file2, state, id);
+}
+function stateLayout(board, root2) {
+  assertBoardStatePath(board);
+  assertBoardStatePath(root2);
+  const project = realPathOf(root2);
+  const recorded = realPathOf(board);
+  assertBoardStatePath(project);
+  assertBoardStatePath(recorded);
+  const relative = path4.relative(project, recorded);
   if (relative === ".." || relative.startsWith(`..${path4.sep}`) || path4.isAbsolute(relative)) {
     throw new Error("The board must be inside its project root.");
   }
-  return path4.join(realPathOf(root2), ".akb", "boards", relative || "_root");
+  const hiddenPrefix = `.akb${path4.sep}`;
+  const hidden = relative.startsWith(hiddenPrefix);
+  const runnerBoard = relative === `${hiddenPrefix}kanban`;
+  const akb = path4.join(project, ".akb");
+  const state = runnerBoard ? path4.join(akb, "state") : hidden ? path4.join(akb, "hidden-boards", relative.slice(hiddenPrefix.length)) : path4.join(akb, "boards", relative || "_root");
+  assertBoardStatePath(state, state);
+  assertBoardStatePath(realPathOf(state), state);
+  const legacy = hidden ? [path4.join(akb, "boards", relative)] : [];
+  if (runnerBoard) legacy.push(path4.join(akb, "hidden-boards", "kanban"));
+  return { project, state, legacy, runnerBoard };
 }
-var SESSIONS_FILE, SESSIONS_FOLDER, ASSETS_FOLDER, SESSIONS_LOCK, INDEX_LOCK, UI_CONFIG_FILE;
+function projectStateDir(board, root2 = stateRootOf(board)) {
+  return stateLayout(board, root2).state;
+}
+var SESSIONS_FILE, SESSIONS_FOLDER, ASSETS_FOLDER, SESSIONS_LOCK, INDEX_LOCK, UI_CONFIG_FILE, missing, NESTED_STATE, InvalidBoardStatePath;
 var init_project = __esm({
   "../cli/src/lib/machine/project.ts"() {
     "use strict";
+    init_io();
     SESSIONS_FILE = "sessions.json";
     SESSIONS_FOLDER = "sessions";
     ASSETS_FOLDER = "assets";
     SESSIONS_LOCK = "sessions.lock";
     INDEX_LOCK = "index.lock";
     UI_CONFIG_FILE = "ui.config.json";
+    missing = (error) => ["ENOENT", "ENOTDIR"].includes(error.code ?? "");
+    NESTED_STATE = /(^|[/\\])\.akb[/\\](?:(?:boards|hidden-boards)[/\\])?\.akb(?=[/\\]|$)/;
+    InvalidBoardStatePath = class extends BoardError {
+      constructor(file2, state, id) {
+        const use = state ? `Use ${state}${id ? ` or an asset:<path> reference` : ""}.` : "Use the board\u2019s project-local state directory.";
+        super(`Invalid nested board state path: ${file2}. ${use}`, { kind: "board-state-path" });
+      }
+    };
   }
 });
 
@@ -34553,6 +34679,70 @@ var init_paths = __esm({
 });
 
 // ../cli/src/lib/lock.ts
+import { randomUUID } from "node:crypto";
+import fs5 from "node:fs";
+import path6 from "node:path";
+function pidAlive(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+function removeClaim(dir, token) {
+  if (token) {
+    try {
+      fs5.unlinkSync(path6.join(dir, token));
+    } catch (err) {
+      if (err.code !== "ENOENT") throw err;
+    }
+  }
+  try {
+    fs5.rmdirSync(dir);
+    return true;
+  } catch (err) {
+    const code = err.code;
+    if (code === "ENOENT") return true;
+    if (code === "ENOTEMPTY" || code === "EEXIST") return false;
+    throw err;
+  }
+}
+function tryLock(dir) {
+  fs5.mkdirSync(path6.dirname(dir), { recursive: true });
+  const token = `${process.pid}-${randomUUID()}`;
+  const candidate = fs5.mkdtempSync(`${dir}.`);
+  try {
+    fs5.writeFileSync(path6.join(candidate, token), "");
+    for (; ; ) {
+      try {
+        fs5.renameSync(candidate, dir);
+        return () => {
+          removeClaim(dir, token);
+        };
+      } catch (err) {
+        const code = err.code;
+        if (code !== "ENOTEMPTY" && code !== "EEXIST") throw err;
+      }
+      let entries;
+      try {
+        entries = fs5.readdirSync(dir);
+      } catch (err) {
+        if (err.code === "ENOENT") continue;
+        throw err;
+      }
+      if (entries.length) {
+        if (entries.length !== 1 || !/^\d+-[a-f0-9-]{36}$/.test(entries[0])) return void 0;
+        const owner = Number(entries[0].split("-")[0]);
+        if (pidAlive(owner)) return void 0;
+      }
+      if (!removeClaim(dir, entries[0])) return void 0;
+    }
+  } finally {
+    fs5.rmSync(candidate, { recursive: true, force: true });
+  }
+}
 var init_lock = __esm({
   "../cli/src/lib/lock.ts"() {
     "use strict";
@@ -36251,12 +36441,12 @@ var require_code2 = __commonJS({
       });
     }
     exports.checkReportMissingProp = checkReportMissingProp;
-    function checkMissingProp({ gen, data, it: { opts } }, properties, missing) {
-      return (0, codegen_1.or)(...properties.map((prop) => (0, codegen_1.and)(noPropertyInData(gen, data, prop, opts.ownProperties), (0, codegen_1._)`${missing} = ${prop}`)));
+    function checkMissingProp({ gen, data, it: { opts } }, properties, missing2) {
+      return (0, codegen_1.or)(...properties.map((prop) => (0, codegen_1.and)(noPropertyInData(gen, data, prop, opts.ownProperties), (0, codegen_1._)`${missing2} = ${prop}`)));
     }
     exports.checkMissingProp = checkMissingProp;
-    function reportMissingProp(cxt, missing) {
-      cxt.setParams({ missingProperty: missing }, true);
+    function reportMissingProp(cxt, missing2) {
+      cxt.setParams({ missingProperty: missing2 }, true);
       cxt.error();
     }
     exports.reportMissingProp = reportMissingProp;
@@ -37196,18 +37386,18 @@ var require_validate = __commonJS({
         const { schemaCode } = this;
         this.fail((0, codegen_1._)`${schemaCode} !== undefined && (${(0, codegen_1.or)(this.invalid$data(), condition)})`);
       }
-      error(append, errorParams, errorPaths) {
+      error(append2, errorParams, errorPaths) {
         if (errorParams) {
           this.setParams(errorParams);
-          this._error(append, errorPaths);
+          this._error(append2, errorPaths);
           this.setParams({});
           return;
         }
-        this._error(append, errorPaths);
+        this._error(append2, errorPaths);
       }
-      _error(append, errorPaths) {
+      _error(append2, errorPaths) {
         ;
-        (append ? errors_1.reportExtraError : errors_1.reportError)(this, this.def.error, errorPaths);
+        (append2 ? errors_1.reportExtraError : errors_1.reportError)(this, this.def.error, errorPaths);
       }
       $dataError() {
         (0, errors_1.reportError)(this, this.def.$dataError || errors_1.keyword$DataError);
@@ -37321,11 +37511,11 @@ var require_validate = __commonJS({
         jsonPointer = $data;
         data = names_1.default.rootData;
       } else {
-        const matches = RELATIVE_JSON_POINTER.exec($data);
-        if (!matches)
+        const matches2 = RELATIVE_JSON_POINTER.exec($data);
+        if (!matches2)
           throw new Error(`Invalid JSON-pointer: ${$data}`);
-        const up = +matches[1];
-        jsonPointer = matches[2];
+        const up = +matches2[1];
+        jsonPointer = matches2[2];
         if (jsonPointer === "#") {
           if (up >= dataLevel)
             throw new Error(errorMsg("property/index", up));
@@ -37789,8 +37979,8 @@ var require_utils2 = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path26) {
-      let input = path26;
+    function removeDotSegments(path28) {
+      let input = path28;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -37864,11 +38054,11 @@ var require_utils2 = __commonJS({
       }
       return output.join("");
     }
-    function removeDotSegmentsRelative(path26) {
-      if (path26 === "" || path26[0] === "/") {
-        return removeDotSegments(path26);
+    function removeDotSegmentsRelative(path28) {
+      if (path28 === "" || path28[0] === "/") {
+        return removeDotSegments(path28);
       }
-      const segments = path26.split("/");
+      const segments = path28.split("/");
       const last2 = segments.length - 1;
       const output = [];
       let trailingDirectory = false;
@@ -38231,8 +38421,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path26 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path26 && path26 !== "/" ? path26 : void 0;
+        const path28 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path28 && path28 !== "/" ? path28 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -38244,11 +38434,11 @@ var require_schemes = __commonJS({
         urnComponent.error = "URN can not be parsed";
         return urnComponent;
       }
-      const matches = urnComponent.path.match(URN_REG);
-      if (matches && matches[0] === urnComponent.path) {
+      const matches2 = urnComponent.path.match(URN_REG);
+      if (matches2 && matches2[0] === urnComponent.path) {
         const scheme = options.scheme || urnComponent.scheme || "urn";
-        urnComponent.nid = matches[1].toLowerCase();
-        urnComponent.nss = matches[2];
+        urnComponent.nid = matches2[1].toLowerCase();
+        urnComponent.nss = matches2[2];
         const urnScheme = `${scheme}:${options.nid || urnComponent.nid}`;
         const schemeHandler = getSchemeHandler(urnScheme);
         urnComponent.path = void 0;
@@ -38569,8 +38759,8 @@ var require_fast_uri = __commonJS({
     var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
     var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
     var AUTHORITY_INTRODUCER_REGION = /^(?:[^#/:?]+:)?([/\\\t\n\r]*)/;
-    function getParseError(parsed, matches) {
-      if (matches[2] !== void 0 && parsed.path && parsed.path[0] !== "/") {
+    function getParseError(parsed, matches2) {
+      if (matches2[2] !== void 0 && parsed.path && parsed.path[0] !== "/") {
         return 'URI path must start with "/" when authority is present.';
       }
       if (typeof parsed.port === "number" && (parsed.port < 0 || parsed.port > 65535)) {
@@ -38592,9 +38782,9 @@ var require_fast_uri = __commonJS({
     function isIPLiteral(host) {
       return host[0] === "[" && host[host.length - 1] === "]";
     }
-    function hasMalformedComponentPercentEncoding(matches) {
-      const host = matches[4];
-      return hasMalformedPercentEncoding(matches[3]) || host !== void 0 && !isIPLiteral(host) && hasMalformedPercentEncoding(host) || hasMalformedPercentEncoding(matches[6]) || hasMalformedPercentEncoding(matches[7]) || hasMalformedPercentEncoding(matches[8]);
+    function hasMalformedComponentPercentEncoding(matches2) {
+      const host = matches2[4];
+      return hasMalformedPercentEncoding(matches2[3]) || host !== void 0 && !isIPLiteral(host) && hasMalformedPercentEncoding(host) || hasMalformedPercentEncoding(matches2[6]) || hasMalformedPercentEncoding(matches2[7]) || hasMalformedPercentEncoding(matches2[8]);
     }
     function canonicalizeHost(parsed, options, schemeHandler, isIP) {
       if (hasForbiddenDomainHost(parsed, options, schemeHandler, isIP)) {
@@ -38669,15 +38859,15 @@ var require_fast_uri = __commonJS({
           }
         }
       }
-      const matches = uri.match(URI_PARSE);
-      if (matches) {
-        parsed.scheme = matches[1];
-        parsed.userinfo = matches[3];
-        parsed.host = matches[4];
-        parsed.port = parseInt(matches[5], 10);
-        parsed.path = matches[6] || "";
-        parsed.query = matches[7];
-        parsed.fragment = matches[8];
+      const matches2 = uri.match(URI_PARSE);
+      if (matches2) {
+        parsed.scheme = matches2[1];
+        parsed.userinfo = matches2[3];
+        parsed.host = matches2[4];
+        parsed.port = parseInt(matches2[5], 10);
+        parsed.path = matches2[6] || "";
+        parsed.query = matches2[7];
+        parsed.fragment = matches2[8];
         if (parsed.scheme !== void 0) {
           if (VALID_SCHEME.test(parsed.scheme)) {
             parsed.scheme = parsed.scheme.toLowerCase();
@@ -38686,14 +38876,14 @@ var require_fast_uri = __commonJS({
             malformedScheme = true;
           }
         }
-        malformedPercentEncoding = hasMalformedComponentPercentEncoding(matches);
+        malformedPercentEncoding = hasMalformedComponentPercentEncoding(matches2);
         if (malformedPercentEncoding) {
           parsed.error = parsed.error || "URI contains malformed percent-encoding.";
         }
         if (isNaN(parsed.port)) {
-          parsed.port = matches[5];
+          parsed.port = matches2[5];
         }
-        const parseError = getParseError(parsed, matches);
+        const parseError = getParseError(parsed, matches2);
         if (parseError !== void 0) {
           parsed.error = parsed.error || parseError;
           malformedAuthorityOrPort = true;
@@ -39527,12 +39717,12 @@ var require_ref = __commonJS({
       function callSyncRef() {
         cxt.result((0, code_1.callValidateCode)(cxt, v, passCxt), () => addEvaluatedFrom(v), () => addErrorsFrom(v));
       }
-      function addErrorsFrom(source) {
-        const errs = (0, codegen_1._)`${source}.errors`;
+      function addErrorsFrom(source2) {
+        const errs = (0, codegen_1._)`${source2}.errors`;
         gen.assign(names_1.default.vErrors, (0, codegen_1._)`${names_1.default.vErrors} === null ? ${errs} : ${names_1.default.vErrors}.concat(${errs})`);
         gen.assign(names_1.default.errors, (0, codegen_1._)`${names_1.default.vErrors}.length`);
       }
-      function addEvaluatedFrom(source) {
+      function addEvaluatedFrom(source2) {
         var _a;
         if (!it.opts.unevaluated)
           return;
@@ -39543,7 +39733,7 @@ var require_ref = __commonJS({
               it.props = util_1.mergeEvaluated.props(gen, schEvaluated.props, it.props);
             }
           } else {
-            const props = gen.var("props", (0, codegen_1._)`${source}.evaluated.props`);
+            const props = gen.var("props", (0, codegen_1._)`${source2}.evaluated.props`);
             it.props = util_1.mergeEvaluated.props(gen, props, it.props, codegen_1.Name);
           }
         }
@@ -39553,7 +39743,7 @@ var require_ref = __commonJS({
               it.items = util_1.mergeEvaluated.items(gen, schEvaluated.items, it.items);
             }
           } else {
-            const items = gen.var("items", (0, codegen_1._)`${source}.evaluated.items`);
+            const items = gen.var("items", (0, codegen_1._)`${source2}.evaluated.items`);
             it.items = util_1.mergeEvaluated.items(gen, items, it.items, codegen_1.Name);
           }
         }
@@ -39818,14 +40008,14 @@ var require_required = __commonJS({
           }
         }
         function exitOnErrorMode() {
-          const missing = gen.let("missing");
+          const missing2 = gen.let("missing");
           if (useLoop || $data) {
             const valid = gen.let("valid", true);
-            cxt.block$data(valid, () => loopUntilMissing(missing, valid));
+            cxt.block$data(valid, () => loopUntilMissing(missing2, valid));
             cxt.ok(valid);
           } else {
-            gen.if((0, code_1.checkMissingProp)(cxt, schema, missing));
-            (0, code_1.reportMissingProp)(cxt, missing);
+            gen.if((0, code_1.checkMissingProp)(cxt, schema, missing2));
+            (0, code_1.reportMissingProp)(cxt, missing2);
             gen.else();
           }
         }
@@ -39835,10 +40025,10 @@ var require_required = __commonJS({
             gen.if((0, code_1.noPropertyInData)(gen, data, prop, opts.ownProperties), () => cxt.error());
           });
         }
-        function loopUntilMissing(missing, valid) {
-          cxt.setParams({ missingProperty: missing });
-          gen.forOf(missing, schemaCode, () => {
-            gen.assign(valid, (0, code_1.propertyInData)(gen, data, missing, opts.ownProperties));
+        function loopUntilMissing(missing2, valid) {
+          cxt.setParams({ missingProperty: missing2 });
+          gen.forOf(missing2, schemaCode, () => {
+            gen.assign(valid, (0, code_1.propertyInData)(gen, data, missing2, opts.ownProperties));
             gen.if((0, codegen_1.not)(valid), () => {
               cxt.error();
               gen.break();
@@ -40376,7 +40566,7 @@ var require_dependencies = __commonJS({
       const { gen, data, it } = cxt;
       if (Object.keys(propertyDeps).length === 0)
         return;
-      const missing = gen.let("missing");
+      const missing2 = gen.let("missing");
       for (const prop in propertyDeps) {
         const deps = propertyDeps[prop];
         if (deps.length === 0)
@@ -40394,8 +40584,8 @@ var require_dependencies = __commonJS({
             }
           });
         } else {
-          gen.if((0, codegen_1._)`${hasProperty} && (${(0, code_1.checkMissingProp)(cxt, deps, missing)})`);
-          (0, code_1.reportMissingProp)(cxt, missing);
+          gen.if((0, codegen_1._)`${hasProperty} && (${(0, code_1.checkMissingProp)(cxt, deps, missing2)})`);
+          (0, code_1.reportMissingProp)(cxt, missing2);
           gen.else();
         }
       }
@@ -41521,15 +41711,15 @@ var init_icon = __esm({
 });
 
 // ../cli/src/lib/shared/preview-blocks.ts
-function sourcePosition(source, offset) {
-  const before = source.slice(0, offset);
+function sourcePosition(source2, offset) {
+  const before = source2.slice(0, offset);
   return { line: before.split("\n").length, column: offset - before.lastIndexOf("\n") };
 }
-function withoutCode(source) {
+function withoutCode(source2) {
   const blank2 = (s) => s.replace(/[^\n\r]/g, " ");
   let fence;
   let indented = false, afterBlank = true, inList = false;
-  return source.split(/(?<=\n)/).map((line) => {
+  return source2.split(/(?<=\n)/).map((line) => {
     const marker = /^ {0,3}(`{3,}|~{3,})(.*)/.exec(line);
     if (fence) {
       if (marker && marker[1][0] === fence.char && marker[1].length >= fence.length && !marker[2].trim()) fence = void 0;
@@ -41555,19 +41745,19 @@ function withoutCode(source) {
     return line;
   }).join("").replace(/(`+)([^]*?)\1(?!`)/g, blank2);
 }
-function parsePreviewBlocks(source, file2 = "STUDIO.md") {
+function parsePreviewBlocks(source2, file2 = "STUDIO.md") {
   const blocks = [], problems = [];
-  const masked = withoutCode(source);
+  const masked = withoutCode(source2);
   let open;
   const seen = /* @__PURE__ */ new Set();
-  const fail = (offset, id, code, message, hint2) => problems.push({ file: file2, ...sourcePosition(source, offset), path: id ? `previews.${id}` : "previews", code, message, hint: hint2 });
+  const fail = (offset, id, code, message, hint2) => problems.push({ file: file2, ...sourcePosition(source2, offset), path: id ? `previews.${id}` : "previews", code, message, hint: hint2 });
   for (const tag of masked.matchAll(/<\/?Preview\b[^>]*(?:>|$)/g)) {
     const offset = tag.index, text2 = tag[0];
     const closing = /^<\/Preview\s*>$/.test(text2);
     if (closing) {
       if (!open) fail(offset, "", "preview-unexpected-close", "Preview has no opening tag", "Remove it or restore its opening tag.");
       else {
-        const instructions = source.slice(open.content, offset).trim();
+        const instructions = source2.slice(open.content, offset).trim();
         if (!instructions) fail(open.start, open.id, "preview-empty", `Preview ${open.id} is empty`, "Describe the requested output inside the block.");
         blocks.push({ id: open.id, instructions, start: open.start, end: offset + text2.length });
         open = void 0;
@@ -41615,23 +41805,21 @@ function landSections(body, previews) {
     const start = heading.index;
     const end = start + heading[0].length;
     if (!/^ {0,3}##[ \t]+Land(?:[ \t]+#+)?[ \t]*$/.test(visible.slice(start, end))) return [];
-    return [{
-      offset: start + heading[0].indexOf("#"),
-      empty: !visible.slice(end, headings[index + 1]?.index).replace(comments, "").trim()
-    }];
+    const text2 = visible.slice(end, headings[index + 1]?.index).replace(comments, "").trim();
+    return [{ offset: start + heading[0].indexOf("#"), empty: !text2, text: text2 }];
   });
 }
-function parseStudioFile(id, source, from, { requirePreviewCopy = false, requireLand = false } = {}) {
+function parseStudioFile(id, source2, from, { requirePreviewCopy = false, requireLand = false } = {}) {
   const problems = [];
-  const fail = (offset, path26, code, message, hint2) => problems.push({ file: from, ...sourcePosition(source, offset), path: path26, code, message, hint: hint2 });
+  const fail = (offset, path28, code, message, hint2) => problems.push({ file: from, ...sourcePosition(source2, offset), path: path28, code, message, hint: hint2 });
   const result = () => ({ problem: problems.map((p) => `${p.file}:${p.line}:${p.column} ${p.path}: ${p.code} \u2014 ${p.message}. ${p.hint}`).join("\n"), problems });
   if (!STUDIO_ID.test(id)) fail(0, "id", "studio-schema", `Invalid Studio ID ${id}`, "Use lowercase letters, digits and dashes.");
-  const front = /^---\r?\n([^]*?)\r?\n---(?:\r?\n|$)/.exec(source);
+  const front = /^---\r?\n([^]*?)\r?\n---(?:\r?\n|$)/.exec(source2);
   if (!front) {
     fail(0, "", "yaml-syntax", "Missing YAML frontmatter", "Enclose metadata between --- lines.");
     return result();
   }
-  const metaOffset = source.indexOf("\n") + 1, bodyOffset = front[0].length;
+  const metaOffset = source2.indexOf("\n") + 1, bodyOffset = front[0].length;
   const counter = new import_yaml.LineCounter();
   const document = (0, import_yaml.parseDocument)(front[1], { lineCounter: counter, uniqueKeys: true, strict: true });
   for (const error of document.errors) fail(metaOffset + (error.pos[0] ?? 0), "", error.code === "DUPLICATE_KEY" ? "yaml-duplicate-key" : "yaml-syntax", error.message.split("\n")[0], "Correct the indicated YAML location.");
@@ -41652,9 +41840,9 @@ function parseStudioFile(id, source, from, { requirePreviewCopy = false, require
       fail(metaOffset + (node?.range?.[0] ?? 0), parts.join("."), "studio-schema", `${parts.join(".") || "metadata"} ${error.message}`, "Use only Studio metadata and previews: {id: {title?, description?, icon?}} with the declared field types.");
     }
   }
-  const body = source.slice(bodyOffset);
+  const body = source2.slice(bodyOffset);
   const parsed = parsePreviewBlocks(body, from);
-  problems.push(...parsed.problems.map((p) => ({ ...p, line: p.line + source.slice(0, bodyOffset).split("\n").length - 1 })));
+  problems.push(...parsed.problems.map((p) => ({ ...p, line: p.line + source2.slice(0, bodyOffset).split("\n").length - 1 })));
   if (problems.length) return result();
   const map = raw.previews ?? {};
   for (const block of parsed.blocks) if (!Object.hasOwn(map, block.id)) fail(bodyOffset + block.start, `previews.${block.id}`, "preview-metadata-missing", `Preview ${block.id} has no metadata entry`, "Add the ID under previews, using {} if needed.");
@@ -41767,8 +41955,8 @@ var init_studio_screenshots = __esm({
 });
 
 // ../cli/src/lib/shared/studio-files.ts
-function skillMetadata(source, directory) {
-  const front = /^\uFEFF?---[^\S\r\n]*\r?\n([\s\S]*?)^---[^\S\r\n]*(?:\r?\n|$)/m.exec(source);
+function skillMetadata(source2, directory) {
+  const front = /^\uFEFF?---[^\S\r\n]*\r?\n([\s\S]*?)^---[^\S\r\n]*(?:\r?\n|$)/m.exec(source2);
   if (!front || front.index !== 0) return "Start SKILL.md with YAML frontmatter";
   const doc = (0, import_yaml3.parseDocument)(front[1]);
   if (doc.errors.length || !(0, import_yaml3.isMap)(doc.contents)) return "Use valid YAML frontmatter with unique keys";
@@ -41788,9 +41976,9 @@ function skillMetadata(source, directory) {
   if (Object.keys(extra).length) return "Use standard Agent Skills fields and put custom fields under metadata";
   return { name: directory, description: description.trim().replace(/\s+/g, " ") };
 }
-function studioFileBody(path26, text2) {
-  if (isStudioScreenshot(path26)) {
-    const prefix = studioScreenshotPrefix(path26);
+function studioFileBody(path28, text2) {
+  if (isStudioScreenshot(path28)) {
+    const prefix = studioScreenshotPrefix(path28);
     if (text2.startsWith(prefix)) {
       const data = text2.slice(prefix.length);
       if (/^[A-Za-z0-9+/]*={0,2}$/.test(data) && data.length % 4 === 0) {
@@ -41906,8 +42094,8 @@ function inspect(value, official, { allowLegacyPreviewCopy, allowLegacyLand } = 
       hint: "Follow the Agent Skills specification at https://agentskills.io/specification."
     });
   }
-  const source = files[STUDIO_FILE];
-  const read2 = typeof source === "string" ? parseStudioFile("studio", source, STUDIO_FILE, { requirePreviewCopy: !official && !allowLegacyPreviewCopy, requireLand: !allowLegacyLand }) : null;
+  const source2 = files[STUDIO_FILE];
+  const read2 = typeof source2 === "string" ? parseStudioFile("studio", source2, STUDIO_FILE, { requirePreviewCopy: !official && !allowLegacyPreviewCopy, requireLand: !allowLegacyLand }) : null;
   if (!read2) fail(STUDIO_FILE, "is missing");
   else if ("problem" in read2) for (const problem of read2.problems) problems.push({ ...problem, reason: problem.message });
   if (!read2 || "problem" in read2) return { problems };
@@ -41963,7 +42151,7 @@ var init_studio_files = __esm({
     skillFile = (name) => "skills/" + name + "/SKILL.md";
     isStudioGuide = (file2) => /^(?:README|ABOUT)(?:\.[a-zA-Z0-9-]+)?\.md$/.test(file2);
     isAboutFile = (file2) => /^ABOUT(\.[a-z]{2})?\.md$/.test(file2) || isStudioScreenshot(file2);
-    studioScreenshotPrefix = (path26) => "data:" + (path26.endsWith(".png") ? "image/png" : /\.jpe?g$/.test(path26) ? "image/jpeg" : "image/webp") + ";base64,";
+    studioScreenshotPrefix = (path28) => "data:" + (path28.endsWith(".png") ? "image/png" : /\.jpe?g$/.test(path28) ? "image/jpeg" : "image/webp") + ";base64,";
   }
 });
 
@@ -42034,19 +42222,19 @@ var init_board_files = __esm({
 });
 
 // ../cli/src/lib/agent/studio-folder.ts
-import fs5 from "node:fs";
-import path6 from "node:path";
+import fs6 from "node:fs";
+import path7 from "node:path";
 function filesOf(dir, base = dir) {
-  return fs5.readdirSync(dir, { withFileTypes: true }).filter((e) => e.name.toLowerCase() !== ".git" && (dir !== base || e.name !== PUBLICATION_FILE)).flatMap((e) => {
-    const full = path6.join(dir, e.name);
+  return fs6.readdirSync(dir, { withFileTypes: true }).filter((e) => e.name.toLowerCase() !== ".git" && (dir !== base || e.name !== PUBLICATION_FILE)).flatMap((e) => {
+    const full = path7.join(dir, e.name);
     if (!e.isFile() && !e.isDirectory()) throw new Error(full + ": only regular files and directories are allowed");
-    return e.isDirectory() ? filesOf(full, base) : [path6.relative(base, full).split(path6.sep).join("/")];
+    return e.isDirectory() ? filesOf(full, base) : [path7.relative(base, full).split(path7.sep).join("/")];
   });
 }
 function readStudioFile(dir, file2) {
-  const full = path6.join(dir, file2);
-  const bytes = fs5.readFileSync(full);
-  if (isAboutFile(file2) && !file2.endsWith(".md")) return "data:" + MIME[path6.extname(file2)] + ";base64," + bytes.toString("base64");
+  const full = path7.join(dir, file2);
+  const bytes = fs6.readFileSync(full);
+  if (isAboutFile(file2) && !file2.endsWith(".md")) return "data:" + MIME[path7.extname(file2)] + ";base64," + bytes.toString("base64");
   try {
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
@@ -42058,7 +42246,7 @@ function readStudioFolder(dir) {
   if (files.filter((file2) => file2 !== VERSION_FILE).length > FILE_LIMITS.count) throw new Error("Studio file count limit exceeded");
   let total = 0;
   return Object.fromEntries(files.map((file2) => {
-    const size = fs5.statSync(path6.join(dir, file2)).size;
+    const size = fs6.statSync(path7.join(dir, file2)).size;
     if (file2 !== VERSION_FILE) total += size;
     const problem = studioSizeProblem(file2, size, total);
     if (problem) throw new Error(problem.file + ": " + problem.reason);
@@ -42076,13 +42264,13 @@ var init_studio_folder = __esm({
 
 // ../official/pack.ts
 import crypto4 from "node:crypto";
-import fs6 from "node:fs";
-import path7 from "node:path";
+import fs7 from "node:fs";
+import path8 from "node:path";
 import { fileURLToPath } from "node:url";
 function packOfficial(root2 = OFFICIAL, loose = false) {
-  const studiosDir = path7.join(root2, "studios");
+  const studiosDir = path8.join(root2, "studios");
   return dirs(studiosDir).map((folder) => {
-    const files = readStudioFolder(path7.join(studiosDir, folder));
+    const files = readStudioFolder(path8.join(studiosDir, folder));
     const parsed = parseStudioFile(folder, files[STUDIO_FILE] ?? "", STUDIO_FILE);
     if ("problem" in parsed) throw new Error(parsed.problem);
     const def = parsed.def;
@@ -42107,17 +42295,17 @@ var init_pack = __esm({
     init_studio_def();
     init_studio_folder();
     init_studio_files();
-    OFFICIAL = path7.dirname(fileURLToPath(import.meta.url));
-    dirs = (dir) => fs6.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+    OFFICIAL = path8.dirname(fileURLToPath(import.meta.url));
+    dirs = (dir) => fs7.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
     hashOf = (files) => crypto4.createHash("sha256").update(hashInput(files)).digest("hex");
   }
 });
 
 // ../cli/src/lib/machine/home.ts
 import os3 from "node:os";
-import path8 from "node:path";
+import path9 from "node:path";
 function machineHome() {
-  return process.env.AI4KANBAN_HOME || path8.join(os3.homedir(), ".ai4kanban");
+  return process.env.AI4KANBAN_HOME || path9.join(os3.homedir(), ".ai4kanban");
 }
 var init_home2 = __esm({
   "../cli/src/lib/machine/home.ts"() {
@@ -42126,12 +42314,12 @@ var init_home2 = __esm({
 });
 
 // ../cli/src/lib/cloud/session.ts
-import fs7 from "node:fs";
-import path9 from "node:path";
+import fs8 from "node:fs";
+import path10 from "node:path";
 function readSession() {
   let raw;
   try {
-    raw = fs7.readFileSync(sessionFile(), "utf8");
+    raw = fs8.readFileSync(sessionFile(), "utf8");
   } catch {
     return null;
   }
@@ -42150,7 +42338,7 @@ var init_session = __esm({
     "use strict";
     init_home2();
     init_config();
-    sessionFile = () => path9.join(machineHome(), "session.json");
+    sessionFile = () => path10.join(machineHome(), "session.json");
   }
 });
 
@@ -42166,22 +42354,22 @@ var init_response = __esm({
 });
 
 // ../cli/src/lib/cloud/tasks.ts
-import fs8 from "node:fs";
-import path10 from "node:path";
+import fs9 from "node:fs";
+import path11 from "node:path";
 function workspaceTask() {
   const id = process.env[TASK_ENV];
   return id && id.trim() ? id.trim() : null;
 }
 function runnerProject(board) {
-  if (path10.basename(board) !== "kanban" || path10.basename(path10.dirname(board)) !== ".akb") return null;
-  const linked = linkedProject(board, path10.dirname(path10.dirname(board)));
+  if (path11.basename(board) !== "kanban" || path11.basename(path11.dirname(board)) !== ".akb") return null;
+  const linked = linkedProject(board, path11.dirname(path11.dirname(board)));
   return linked.ok ? linked.value : null;
 }
 function linkedProject(board, root2) {
-  const file2 = path10.join(root2, ".akb", "base.json");
-  if (!fs8.existsSync(file2)) return { ok: true, value: null };
+  const file2 = path11.join(root2, ".akb", "base.json");
+  if (!fs9.existsSync(file2)) return { ok: true, value: null };
   try {
-    const base = JSON.parse(fs8.readFileSync(file2, "utf8"));
+    const base = JSON.parse(fs9.readFileSync(file2, "utf8"));
     if (!base || typeof base !== "object" || base.project !== void 0 && (typeof base.project !== "string" || !base.project.trim()) || base.files !== void 0 && (!base.files || typeof base.files !== "object" || Array.isArray(base.files))) throw new Error();
     const projects = new Set(Object.keys(base.files ?? {}).flatMap((p) => /^projects\/([^/]+)\//.exec(p)?.[1] ?? []));
     if (typeof base.project === "string") projects.add(base.project);
@@ -42204,14 +42392,14 @@ var init_tasks = __esm({
 });
 
 // ../cli/src/lib/file-memo.ts
-import fs9 from "node:fs";
-import path11 from "node:path";
+import fs10 from "node:fs";
+import path12 from "node:path";
 function stamp(paths) {
   const parts = [];
   const visit = (p) => {
     let st;
     try {
-      st = fs9.statSync(p, { bigint: true });
+      st = fs10.statSync(p, { bigint: true });
     } catch {
       parts.push(`${p}:-`);
       return;
@@ -42223,11 +42411,11 @@ function stamp(paths) {
     parts.push(`${p}/`);
     let names;
     try {
-      names = fs9.readdirSync(p).sort();
+      names = fs10.readdirSync(p).sort();
     } catch {
       return;
     }
-    for (const name of names) if (name !== "node_modules" && name !== ".git") visit(path11.join(p, name));
+    for (const name of names) if (name !== "node_modules" && name !== ".git") visit(path12.join(p, name));
   };
   for (const p of paths) visit(p);
   return parts.join("\n");
@@ -42275,12 +42463,12 @@ var init_file_memo = __esm({
 });
 
 // ../cli/src/lib/agent/cloud-studios.ts
-import { createHash, randomUUID } from "node:crypto";
-import fs10 from "node:fs";
-import path12 from "node:path";
+import { createHash, randomUUID as randomUUID2 } from "node:crypto";
+import fs11 from "node:fs";
+import path13 from "node:path";
 function readJson(file2) {
   try {
-    return JSON.parse(fs10.readFileSync(file2, "utf8"));
+    return JSON.parse(fs11.readFileSync(file2, "utf8"));
   } catch {
     return null;
   }
@@ -42333,11 +42521,11 @@ var init_cloud_studios = __esm({
     init_studio_def();
     STUDIO_SNAPSHOT_ENV = "AI4KANBAN_STUDIO_SNAPSHOT";
     DEV = "AI4KANBAN_STUDIOS";
-    root = () => path12.join(machineHome(), "studios");
+    root = () => path13.join(machineHome(), "studios");
     safe = (name) => name.replace(/[^\w.@-]/g, "_");
-    versionFile = (id, version) => path12.join(root(), "versions", `${safe(id)}@${version}.json`);
-    listFile = (project) => path12.join(root(), "lists", `${safe(project)}.json`);
-    pinFile = (task) => path12.join(root(), "tasks", `${safe(task)}.json`);
+    versionFile = (id, version) => path13.join(root(), "versions", `${safe(id)}@${version}.json`);
+    listFile = (project) => path13.join(root(), "lists", `${safe(project)}.json`);
+    pinFile = (task) => path13.join(root(), "tasks", `${safe(task)}.json`);
     filesHash = (files) => createHash("sha256").update(hashInput(files)).digest("hex");
     readVersion = (id, version) => {
       const held2 = readJson(versionFile(id, version));
@@ -42494,8 +42682,8 @@ var init_installed = __esm({
 });
 
 // ../cli/src/lib/agent/spawnable.ts
-import fs11 from "node:fs";
-import path13 from "node:path";
+import fs12 from "node:fs";
+import path14 from "node:path";
 function cmdArg(arg) {
   const quoted = `"${arg.replace(/\r?\n|\r/g, " ").replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1")}"`;
   return quoted.replace(META, "^$1").replace(META, "^$1");
@@ -42504,21 +42692,21 @@ function cmdLine(file2, args2) {
   return `"${[file2.replace(META, "^$1"), ...args2.map(cmdArg)].join(" ")}"`;
 }
 function shimTarget(text2, file2) {
-  const dir = path13.win32.dirname(file2);
+  const dir = path14.win32.dirname(file2);
   const found = /"%(?:~dp0|dp0%)\\?([^"%]+)"\s+%\*/i.exec(text2);
   if (!found || !/\\node\.exe"/i.test(text2)) return null;
-  const script = path13.win32.resolve(dir, found[1].replace(/\//g, "\\"));
-  const local = path13.win32.join(dir, "node.exe");
+  const script = path14.win32.resolve(dir, found[1].replace(/\//g, "\\"));
+  const local = path14.win32.join(dir, "node.exe");
   const nodePath = /SET "NODE_PATH=([^"]*)"/i.exec(text2)?.[1];
-  return { script, node: fs11.existsSync(local) ? local : "node", env: nodePath ? { NODE_PATH: nodePath } : {} };
+  return { script, node: fs12.existsSync(local) ? local : "node", env: nodePath ? { NODE_PATH: nodePath } : {} };
 }
 function onWindowsPath(name, env2) {
   const exts = (env2.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
   const key = Object.keys(env2).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
   for (const dir of (env2[key] ?? "").split(";").filter(Boolean)) {
     for (const ext of exts) {
-      const file2 = path13.win32.join(dir, `${name}${ext.toLowerCase()}`);
-      if (fs11.existsSync(file2)) return file2;
+      const file2 = path14.win32.join(dir, `${name}${ext.toLowerCase()}`);
+      if (fs12.existsSync(file2)) return file2;
     }
   }
   return void 0;
@@ -42526,13 +42714,13 @@ function onWindowsPath(name, env2) {
 function spawnable(command, args2, options = {}, platform = process.platform) {
   if (platform !== "win32") return { command, args: args2, options };
   const env2 = options.env ?? process.env;
-  const file2 = path13.extname(command) || /[\\/]/.test(command) ? command : onWindowsPath(command, env2) ?? command;
-  const ext = path13.extname(file2).toLowerCase();
+  const file2 = path14.extname(command) || /[\\/]/.test(command) ? command : onWindowsPath(command, env2) ?? command;
+  const ext = path14.extname(file2).toLowerCase();
   const hidden = { ...options, windowsHide: true, shell: false };
   if (ext !== ".cmd" && ext !== ".bat") return { command: file2, args: args2, options: hidden };
   let text2 = "";
   try {
-    text2 = fs11.readFileSync(file2, "utf8");
+    text2 = fs12.readFileSync(file2, "utf8");
   } catch {
   }
   const shim = shimTarget(text2, file2);
@@ -42555,9 +42743,9 @@ var init_spawnable = __esm({
 
 // ../cli/src/lib/agent/locate.ts
 import { spawn, spawnSync } from "node:child_process";
-import fs12 from "node:fs";
+import fs13 from "node:fs";
 import os4 from "node:os";
-import path14 from "node:path";
+import path15 from "node:path";
 function versionIn(output) {
   const plain = output.replace(/\x1b\[[0-9;]*m/g, "");
   return /(?<![\w.-])v?(\d+(?:\.\d+)+(?:-[0-9A-Za-z.-]+)?)/.exec(plain)?.[1] ?? null;
@@ -42595,14 +42783,14 @@ function newest(copies) {
 function pick(copies) {
   const live = copies.filter((copy2) => copy2.starts);
   if (!live.length) return copies.find((copy2) => copy2.entry) ?? copies[0] ?? null;
-  const entry2 = live.find((copy2) => copy2.entry);
+  const entry = live.find((copy2) => copy2.entry);
   const best = newest(live);
-  if (best) return entry2 && compareVersions(entry2.version, best.version) === 0 ? entry2 : best;
-  return entry2 ?? newest(live.filter((copy2) => copy2.version)) ?? live[0];
+  if (best) return entry && compareVersions(entry.version, best.version) === 0 ? entry : best;
+  return entry ?? newest(live.filter((copy2) => copy2.version)) ?? live[0];
 }
 function folders(parent) {
   try {
-    return fs12.readdirSync(parent, { withFileTypes: true }).filter((one) => one.isDirectory()).map((one) => one.name);
+    return fs13.readdirSync(parent, { withFileTypes: true }).filter((one) => one.isDirectory()).map((one) => one.name);
   } catch {
     return [];
   }
@@ -42621,28 +42809,28 @@ function byVersion(names) {
 function latestIn(parent, tail = "") {
   let names;
   try {
-    names = fs12.readdirSync(parent);
+    names = fs13.readdirSync(parent);
   } catch {
     return [];
   }
-  return byVersion(names.filter((name) => !name.startsWith("."))).slice(0, 2).map((name) => path14.join(parent, name, tail));
+  return byVersion(names.filter((name) => !name.startsWith("."))).slice(0, 2).map((name) => path15.join(parent, name, tail));
 }
 function commonDirs() {
   const home3 = os4.homedir();
-  const under = (...parts) => path14.join(home3, ...parts);
-  const nodes = (root2, tail = []) => root2 ? folders(root2).map((version) => path14.join(root2, version, ...tail)) : [];
+  const under = (...parts) => path15.join(home3, ...parts);
+  const nodes = (root2, tail = []) => root2 ? folders(root2).map((version) => path15.join(root2, version, ...tail)) : [];
   if (WINDOWS2) {
     const [app, local, data, programs] = [env("APPDATA"), env("LOCALAPPDATA"), env("ProgramData"), env("ProgramFiles")];
     return [
       under(".local", "bin"),
       under(".bun", "bin"),
       under("scoop", "shims"),
-      ...app ? [path14.join(app, "npm")] : [],
-      ...local ? [path14.join(local, "pnpm"), path14.join(local, "Volta", "bin"), path14.join(local, "Microsoft", "WinGet", "Links")] : [],
-      ...data ? [path14.join(data, "chocolatey", "bin")] : [],
-      ...programs ? [path14.join(programs, "nodejs")] : [],
+      ...app ? [path15.join(app, "npm")] : [],
+      ...local ? [path15.join(local, "pnpm"), path15.join(local, "Volta", "bin"), path15.join(local, "Microsoft", "WinGet", "Links")] : [],
+      ...data ? [path15.join(data, "chocolatey", "bin")] : [],
+      ...programs ? [path15.join(programs, "nodejs")] : [],
       ...nodes(env("NVM_HOME")),
-      ...app ? nodes(path14.join(app, "fnm", "node-versions"), ["installation"]) : []
+      ...app ? nodes(path15.join(app, "fnm", "node-versions"), ["installation"]) : []
     ];
   }
   const support = process.platform === "darwin" ? under("Library", "Application Support") : under(".local", "share");
@@ -42659,10 +42847,10 @@ function commonDirs() {
     ...env("PNPM_HOME") ? [env("PNPM_HOME")] : [],
     under("Library", "pnpm"),
     under(".local", "share", "pnpm"),
-    path14.join(env("VOLTA_HOME") || under(".volta"), "bin"),
-    ...nodes(path14.join(env("NVM_DIR") || under(".nvm"), "versions", "node"), ["bin"]),
-    ...nodes(path14.join(env("FNM_DIR") || path14.join(support, "fnm"), "node-versions"), ["installation", "bin"]),
-    ...nodes(path14.join(env("ASDF_DATA_DIR") || under(".asdf"), "installs", "nodejs"), ["bin"]),
+    path15.join(env("VOLTA_HOME") || under(".volta"), "bin"),
+    ...nodes(path15.join(env("NVM_DIR") || under(".nvm"), "versions", "node"), ["bin"]),
+    ...nodes(path15.join(env("FNM_DIR") || path15.join(support, "fnm"), "node-versions"), ["installation", "bin"]),
+    ...nodes(path15.join(env("ASDF_DATA_DIR") || under(".asdf"), "installs", "nodejs"), ["bin"]),
     ...nodes(under(".local", "share", "mise", "installs", "node"), ["bin"]),
     ...nodes(under(".nodenv", "versions"), ["bin"]),
     ...nodes("/usr/local/n/versions/node", ["bin"])
@@ -42670,19 +42858,19 @@ function commonDirs() {
 }
 function onPath(binary) {
   const names = WINDOWS2 ? (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean).map((ext) => `${binary}${ext.toLowerCase()}`) : [binary];
-  return (process.env.PATH ?? "").split(path14.delimiter).filter(Boolean).flatMap((dir) => names.map((name) => path14.join(dir, name)));
+  return (process.env.PATH ?? "").split(path15.delimiter).filter(Boolean).flatMap((dir) => names.map((name) => path15.join(dir, name)));
 }
 function copyFiles(harness) {
   const pinned = harness.pinned?.();
   if (pinned && isFile(pinned)) return [{ file: pinned, entry: false }];
   const binary = commandBinary(harness.command);
-  const exe = (file2) => WINDOWS2 && !path14.extname(file2) ? [`${file2}.exe`, `${file2}.cmd`] : [file2];
+  const exe = (file2) => WINDOWS2 && !path15.extname(file2) ? [`${file2}.exe`, `${file2}.cmd`] : [file2];
   const path_ = onPath(binary).filter(isFile);
-  const elsewhere = process.env.AI4KANBAN_PATH_ONLY ? [] : [...harness.installs?.() ?? [], ...commonDirs().map((dir) => path14.join(dir, binary))];
+  const elsewhere = process.env.AI4KANBAN_PATH_ONLY ? [] : [...harness.installs?.() ?? [], ...commonDirs().map((dir) => path15.join(dir, binary))];
   const others = elsewhere.flatMap(exe).filter(isFile);
   const seen = /* @__PURE__ */ new Set();
   return [...path_, ...others].flatMap((file2, i) => {
-    const real = fs12.realpathSync.native(file2);
+    const real = fs13.realpathSync.native(file2);
     if (seen.has(real)) return [];
     seen.add(real);
     return [{ file: file2, entry: i === 0 && path_.length > 0 }];
@@ -42691,7 +42879,7 @@ function copyFiles(harness) {
 function kept() {
   if (answers) return answers;
   try {
-    answers = JSON.parse(fs12.readFileSync(answersFile(), "utf8"));
+    answers = JSON.parse(fs13.readFileSync(answersFile(), "utf8"));
   } catch {
     answers = {};
   }
@@ -42700,16 +42888,16 @@ function kept() {
 function keep(file2, answer) {
   kept()[file2] = answer;
   try {
-    fs12.mkdirSync(machineHome(), { recursive: true });
+    fs13.mkdirSync(machineHome(), { recursive: true });
     const staged = `${answersFile()}.${process.pid}`;
-    fs12.writeFileSync(staged, JSON.stringify(answers));
-    fs12.renameSync(staged, answersFile());
+    fs13.writeFileSync(staged, JSON.stringify(answers));
+    fs13.renameSync(staged, answersFile());
   } catch {
   }
 }
 function keyOf(file2) {
-  const real = fs12.realpathSync.native(file2);
-  const stat = fs12.statSync(real);
+  const real = fs13.realpathSync.native(file2);
+  const stat = fs13.statSync(real);
   return `${real}|${stat.size}|${stat.mtimeMs}`;
 }
 function known(file2, maxAge) {
@@ -42722,8 +42910,8 @@ function judge(code, status2, stdout, stderr) {
   return { starts: true, version: status2 === 0 ? versionIn(stdout) ?? versionIn(stderr) : null };
 }
 function copyEnv(file2, given = process.env) {
-  if (!path14.isAbsolute(file2)) return given;
-  return { ...given, PATH: [path14.dirname(file2), given.PATH].filter(Boolean).join(path14.delimiter) };
+  if (!path15.isAbsolute(file2)) return given;
+  return { ...given, PATH: [path15.dirname(file2), given.PATH].filter(Boolean).join(path15.delimiter) };
 }
 function probe(file2) {
   const key = keyOf(file2);
@@ -42736,9 +42924,9 @@ function probe(file2) {
 }
 function locate(harness, maxAge = KEEP_MS) {
   const files = copyFiles(harness);
-  const copies = files.map(({ file: file2, entry: entry2 }) => {
+  const copies = files.map(({ file: file2, entry }) => {
     const { starts, version } = known(file2, KEEP_MS) ?? probe(file2);
-    return { file: file2, entry: entry2, starts, version };
+    return { file: file2, entry, starts, version };
   });
   for (; ; ) {
     const best = pick(copies);
@@ -42763,12 +42951,12 @@ var init_locate = __esm({
     env = (name) => process.env[name]?.trim() ?? "";
     isFile = (file2) => {
       try {
-        return fs12.statSync(file2).isFile();
+        return fs13.statSync(file2).isFile();
       } catch {
         return false;
       }
     };
-    answersFile = () => path14.join(machineHome(), "agent-copies.json");
+    answersFile = () => path15.join(machineHome(), "agent-copies.json");
     probeOptions = (file2) => ({ cwd: os4.tmpdir(), env: copyEnv(file2), windowsHide: true, shell: false });
   }
 });
@@ -42824,20 +43012,20 @@ var init_models = __esm({
 
 // ../cli/src/lib/agent/harnesses/types.ts
 import { createHash as createHash2 } from "node:crypto";
-import fs13 from "node:fs";
-import path15 from "node:path";
+import fs14 from "node:fs";
+import path16 from "node:path";
 function namesFlag(argv, flags) {
   return argv.some((tok) => flags.some((flag) => tok === flag || tok.startsWith(`${flag}=`)));
 }
 function machineFile(name, text2) {
   const suffix = createHash2("sha256").update(text2).digest("hex").slice(0, 16);
-  const file2 = path15.join(machineHome(), "prompts", `${path15.parse(name).name}-${suffix}${path15.extname(name)}`);
+  const file2 = path16.join(machineHome(), "prompts", `${path16.parse(name).name}-${suffix}${path16.extname(name)}`);
   try {
-    if (fs13.readFileSync(file2, "utf8") === text2) return file2;
+    if (fs14.readFileSync(file2, "utf8") === text2) return file2;
   } catch {
   }
-  fs13.mkdirSync(path15.dirname(file2), { recursive: true });
-  fs13.writeFileSync(file2, text2);
+  fs14.mkdirSync(path16.dirname(file2), { recursive: true });
+  fs14.writeFileSync(file2, text2);
   return file2;
 }
 var RAW_ARGS_KEY, MODEL_KEY, RAW_ARGS, MCP_CONFIG;
@@ -42878,12 +43066,12 @@ var init_types2 = __esm({
 });
 
 // ../cli/src/lib/machine/settings.ts
-import fs14 from "node:fs";
-import path16 from "node:path";
+import fs15 from "node:fs";
+import path17 from "node:path";
 function heldSettings() {
   let text2;
   try {
-    text2 = fs14.readFileSync(settingsFile(), "utf8");
+    text2 = fs15.readFileSync(settingsFile(), "utf8");
   } catch (err) {
     if (err.code === "ENOENT") return { unreadable: false, values: {} };
     return { unreadable: true, values: {} };
@@ -42906,7 +43094,7 @@ var init_settings = __esm({
     "use strict";
     init_home2();
     init_types2();
-    settingsFile = () => path16.join(machineHome(), "settings.json");
+    settingsFile = () => path17.join(machineHome(), "settings.json");
     held = () => heldSettings().values;
   }
 });
@@ -42938,13 +43126,13 @@ function clipDetail(text2) {
   if (!trimmed) return void 0;
   return trimmed.length > MAX_DETAIL_CHARS ? `${trimmed.slice(0, MAX_DETAIL_CHARS - 1)}\u2026` : trimmed;
 }
-function makeFailure(source, rawSummary, options) {
+function makeFailure(source2, rawSummary, options) {
   const summary2 = clipSummary(rawSummary) || "Execution failed.";
   const rawDetail = options?.detail?.trim() || (rawSummary.trim().length > summary2.length || rawSummary.includes("\n") ? rawSummary.trim() : void 0);
   const detail = clipDetail(rawDetail);
   return {
     ...options?.code ? { code: options.code } : {},
-    source,
+    source: source2,
     summary: summary2,
     ...detail && detail !== summary2 ? { detail } : {},
     ...typeof options?.retryAfterMs === "number" && Number.isFinite(options.retryAfterMs) && options.retryAfterMs >= 0 ? { retryAfterMs: options.retryAfterMs } : {}
@@ -43094,16 +43282,16 @@ var init_failures = __esm({
 });
 
 // ../cli/src/lib/agent/wire/acp-cost.ts
-import fs15 from "node:fs";
-import path17 from "node:path";
+import fs16 from "node:fs";
+import path18 from "node:path";
 import { createHash as createHash3 } from "node:crypto";
 function acpCostFile(tool, cwd, session) {
   const key = createHash3("sha256").update(JSON.stringify([tool, cwd, session])).digest("hex");
-  return path17.join(machineHome(), "usage", "acp", `${key}.json`);
+  return path18.join(machineHome(), "usage", "acp", `${key}.json`);
 }
 function readAcpCost(file2) {
   try {
-    const n = JSON.parse(fs15.readFileSync(file2, "utf8"));
+    const n = JSON.parse(fs16.readFileSync(file2, "utf8"));
     return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : void 0;
   } catch {
     return void 0;
@@ -43112,10 +43300,10 @@ function readAcpCost(file2) {
 function saveAcpCost(file2, cost) {
   if (cost === void 0) return;
   try {
-    fs15.mkdirSync(path17.dirname(file2), { recursive: true, mode: 448 });
+    fs16.mkdirSync(path18.dirname(file2), { recursive: true, mode: 448 });
     const tmp = `${file2}.${process.pid}.tmp`;
-    fs15.writeFileSync(tmp, JSON.stringify(cost), { mode: 384 });
-    fs15.renameSync(tmp, file2);
+    fs16.writeFileSync(tmp, JSON.stringify(cost), { mode: 384 });
+    fs16.renameSync(tmp, file2);
   } catch {
   }
 }
@@ -43177,6 +43365,17 @@ ${files.map((file2) => `- ${file2}`).join("\n")}` : "";
 });
 
 // ../cli/src/lib/agent/wire/events.ts
+import { createHash as createHash4 } from "node:crypto";
+function progressSnapshots() {
+  const seen = /* @__PURE__ */ new Set();
+  return (key, text2) => {
+    if (!text2) return false;
+    const digest = createHash4("sha256").update(key).update("\0").update(text2).digest("base64");
+    if (seen.has(digest)) return false;
+    seen.add(digest);
+    return true;
+  };
+}
 function targetOf(raw) {
   const line = raw.split("\n")[0].trim();
   if (!line) return void 0;
@@ -43207,6 +43406,8 @@ function createEventCollector() {
   let queue = [];
   let said = "";
   let activity = 0;
+  const fresh = progressSnapshots();
+  const polls = /* @__PURE__ */ new Map();
   const todoCalls = /* @__PURE__ */ new Set();
   const held2 = /* @__PURE__ */ new Map();
   let todos = [];
@@ -43224,6 +43425,9 @@ function createEventCollector() {
     activity: () => activity,
     progress: () => {
       activity++;
+    },
+    progressSnapshot(key, text2) {
+      if (fresh(key, toolOutput(text2))) activity++;
     },
     submitted() {
       queue.push({ kind: "phase", data: { phase: "submitted", at: (/* @__PURE__ */ new Date()).toISOString() } });
@@ -43246,6 +43450,8 @@ function createEventCollector() {
             todoCalls.add(id);
             return;
           }
+          const title = str2(u.title);
+          if (isPollingTool(title)) polls.set(id, `${title}:${str2(obj2(u.rawInput).task_id) || str2(obj2(u.rawInput).CommandId)}`);
           const target = targetIn(u);
           const subagent = /^(?:Task|Agent|delegate_task|spawn_agent)$/i.test(str2(u.title)) || !!obj2(u.rawInput).subagent_type;
           const data = { toolCallId: id, title: str2(u.title) || "tool", kind: toolKind(u.kind), status: str2(u.status) || "pending", ...subagent ? { subagent: true } : {}, ...target ? { target } : {} };
@@ -43261,7 +43467,9 @@ function createEventCollector() {
             return;
           }
           release(id, targetIn(u));
-          const result = contentText(u.content);
+          const result = contentText(u.content) || str2(obj2(u.rawOutput).output) || str2(u.rawOutput);
+          const poll = polls.get(id);
+          if (poll && fresh(poll, toolOutput(result))) activity++;
           if (!u.status && !result) return;
           queue.push({
             kind: "tool_call_update",
@@ -43301,8 +43509,8 @@ function createEventCollector() {
     todos(raw, merge) {
       close();
       const items = (Array.isArray(raw) ? raw : []).map(obj2).flatMap((e) => {
-        const [entry2] = entriesOf([e]);
-        return entry2 ? [{ ...entry2, id: str2(e.id) }] : [];
+        const [entry] = entriesOf([e]);
+        return entry ? [{ ...entry, id: str2(e.id) }] : [];
       });
       const next = merge ? [...todos] : [];
       for (const item of items) {
@@ -43334,12 +43542,16 @@ function createEventCollector() {
     }
   };
 }
-var TOOL_KINDS, toolKind, isTodoCall, inputTarget, targetIn;
+var TOOL_KINDS, isPollingTool, toolOutput, toolKind, isTodoCall, inputTarget, targetIn;
 var init_events = __esm({
   "../cli/src/lib/agent/wire/events.ts"() {
     "use strict";
     init_json();
     TOOL_KINDS = ["read", "edit", "delete", "move", "search", "execute", "fetch", "other"];
+    isPollingTool = (title) => /^(?:.*\.)?(?:command_status|wait(?:_5_seconds|_agent)?|TaskOutput)$/i.test(title);
+    toolOutput = (text2) => text2.split(/\r?\n/).map((line) => line.trim()).filter(
+      (line) => line && !/^(?:\[?heartbeat\]?(?:\b|\s|$)|(?:status:\s*)?(?:(?:command|task) (?:is )?(?:still )?running|running|in[_ ]progress|pending)[.!]?$)/i.test(line)
+    ).join("\n");
     toolKind = (v) => TOOL_KINDS.includes(str2(v)) ? v : "other";
     isTodoCall = (u) => str2(u.title) === "todowrite" || str2(obj2(u.rawInput)._toolName) === "updateTodos";
     inputTarget = (input) => str2(input.command) || str2(input.path) || str2(input.filePath);
@@ -43500,8 +43712,8 @@ var init_package = __esm({
   "../cli/package.json"() {
     package_default = {
       name: "wildcrane",
-      version: "0.11.100",
-      akbContract: 33,
+      version: "0.11.106",
+      akbContract: 41,
       canonicalCommands: true,
       description: "WildCrane's `akb` command \u2014 scaffold the Markdown board under docs/kanban/, put an agent on a card, and carry the flows the agent works by.",
       keywords: [
@@ -43580,11 +43792,11 @@ var init_version = __esm({
 });
 
 // ../cli/src/lib/agent/wire/acp.ts
-import fs16 from "node:fs";
+import fs17 from "node:fs";
 function whereHint(update2, title) {
   const locations = Array.isArray(update2.locations) ? update2.locations : [];
-  const path26 = str2(obj2(locations[0]).path);
-  return path26 && !title.includes(path26) ? hint(path26) : "";
+  const path28 = str2(obj2(locations[0]).path);
+  return path28 && !title.includes(path28) ? hint(path28) : "";
 }
 function saidBy(update2) {
   const content = Array.isArray(update2.content) ? update2.content : [];
@@ -43622,14 +43834,14 @@ function usageOf(value, grossInput = false) {
   const cacheCreation = num2(usage.cachedWriteTokens) + num2(usage.cacheCreationTokens);
   const cacheRead = num2(usage.cachedReadTokens);
   const input = num2(usage.inputTokens);
-  const counts = {
+  const counts2 = {
     input: grossInput ? Math.max(input - cacheRead - cacheCreation, 0) : input,
     cacheCreation,
     cacheRead,
     output: num2(usage.outputTokens)
   };
-  const sum = counts.input + counts.cacheCreation + counts.cacheRead + counts.output;
-  return sum > 0 ? counts : void 0;
+  const sum = counts2.input + counts2.cacheCreation + counts2.cacheRead + counts2.output;
+  return sum > 0 ? counts2 : void 0;
 }
 async function newSession(rpc, cwd, mcpServers) {
   const opened = await rpc.call("session/new", { cwd, mcpServers });
@@ -43642,7 +43854,7 @@ function ticksUsd(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? ticks / TICKS_PER_USD : void 0;
 }
 function mcpServersIn(file2) {
-  const servers = obj2(obj2(JSON.parse(fs16.readFileSync(file2, "utf8"))).mcpServers);
+  const servers = obj2(obj2(JSON.parse(fs17.readFileSync(file2, "utf8"))).mcpServers);
   return Object.entries(servers).map(([name, raw]) => {
     const s = obj2(raw);
     return {
@@ -43791,7 +44003,7 @@ async function oneTurn(io, options) {
     const images = [];
     const files = [];
     for (const file2 of io.imageFiles ?? []) {
-      const bytes = caps.image === true ? fs16.readFileSync(file2) : void 0;
+      const bytes = caps.image === true ? fs17.readFileSync(file2) : void 0;
       const mimeType = bytes && imageMime(bytes);
       if (mimeType) images.push({ type: "image", mimeType, data: bytes.toString("base64") });
       else files.push(file2);
@@ -44158,7 +44370,7 @@ var init_antigravity_session = __esm({
 });
 
 // ../cli/src/lib/agent/wire/antigravity.ts
-import path18 from "node:path";
+import path19 from "node:path";
 function failureHint(reason) {
   const zh = translating();
   const hint2 = /authentication (?:required|failed)|not (?:logged|signed) in|unauthenticated|unauthorized|invalid credentials/i.test(reason) ? zh ? "\u8BF7\u5728\u672C\u673A\u8FD0\u884C agy \u767B\u5F55\u540E\u91CD\u8BD5\u3002" : "Run agy on this computer to sign in, then retry." : /invalid model|model.*(?:unavailable|not found|not recognized)/i.test(reason) ? zh ? "\u8BF7\u8FD0\u884C agy models\uFF0C\u9009\u62E9\u53EF\u7528\u6A21\u578B\u540E\u91CD\u8BD5\u3002" : "Run agy models and choose an available model, then retry." : /quota|rate.?limit|resource.exhausted|credits|429/i.test(reason) ? zh ? "\u8BF7\u7B49\u5F85\u989D\u5EA6\u6062\u590D\uFF0C\u6216\u68C0\u67E5 Antigravity \u8D26\u53F7\u989D\u5EA6\u540E\u91CD\u8BD5\u3002" : "Wait for the limit to reset or check your Antigravity credits, then retry." : /network|connection|unavailable|deadline|timeout|timed out|dial tcp|DNS|502|503/i.test(reason) ? zh ? "\u8BF7\u68C0\u67E5\u7F51\u7EDC\u8FDE\u63A5\u540E\u91CD\u8BD5\u3002" : "Check the network connection, then retry." : /permission|denied|soft.den/i.test(reason) ? zh ? "\u8BF7\u68C0\u67E5 Antigravity \u7684\u6743\u9650\u89C4\u5219\u540E\u91CD\u8BD5\u3002" : "Check Antigravity permission rules, then retry." : "";
@@ -44268,8 +44480,8 @@ function createAntigravityRenderer(expectedSession, cwd = process.cwd()) {
           contextLimitStep = -1;
           contextLimitLookedAt = 0;
           const u = obj2(step.usage);
-          const counts = [u.input_tokens, u.cache_read_tokens];
-          const promptTokens = counts.every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0) ? num2(u.input_tokens) + num2(u.cache_read_tokens) : 0;
+          const counts2 = [u.input_tokens, u.cache_read_tokens];
+          const promptTokens = counts2.every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0) ? num2(u.input_tokens) + num2(u.cache_read_tokens) : 0;
           context = promptTokens > 0 && Number.isFinite(promptTokens) ? { used: promptTokens } : void 0;
         }
         if (step.state === "DONE" && step.usage && !counted.has(index)) {
@@ -44287,10 +44499,21 @@ function createAntigravityRenderer(expectedSession, cwd = process.cwd()) {
         let out = "";
         if (!calls.has(id)) {
           calls.add(id);
-          events.toolCall(id, name, KINDS[name] ?? "other", target);
+          if (["invoke_subagent", "browser_subagent"].includes(name)) events.subagent(id, target || name);
+          else events.toolCall(id, name, KINDS[name] ?? "other", target);
           out = `
 \u23FA ${name}${target ? ` ${target}` : ""}
 `;
+        }
+        const output = str2(tool.output);
+        if (isPollingTool(name)) {
+          const command = str2(p.CommandId) || str2(p.CommandID) || name;
+          const commandOutput = /(?:^|\n)Command output:\s*([\s\S]*)/.exec(output)?.[1].trim();
+          const exit = /(?:^|\n)(Command exited with code -?\d+\.)/.exec(output)?.[1];
+          if (commandOutput) events.progressSnapshot(`command:${command}`, commandOutput);
+          if (exit) events.progressSnapshot(`exit:${command}`, exit);
+        } else if (!["DONE", "ERROR", "CANCELED", "INTERRUPTED"].includes(str2(step.state))) {
+          events.progressSnapshot(id, output);
         }
         const error = obj2(tool.error);
         const reason = str2(error.message) || str2(error.type);
@@ -44298,7 +44521,7 @@ function createAntigravityRenderer(expectedSession, cwd = process.cwd()) {
           closed.add(id);
           const failed = !!reason || step.state !== "DONE";
           if (["read_file", "view_file"].includes(name) && imagePath(target)) {
-            const file2 = path18.resolve(cwd, target);
+            const file2 = path19.resolve(cwd, target);
             if (failed) {
               imageErrors.set(file2, reason || str2(step.state));
               out += `
@@ -44309,7 +44532,7 @@ ${imageError(target, reason || str2(step.state))}
               imageErrors.delete(file2);
             }
           }
-          events.toolResult(id, failed ? "failed" : "completed", str2(tool.output) || reason);
+          events.toolResult(id, failed ? "failed" : "completed", output || reason);
         }
         return out;
       }
@@ -44330,8 +44553,8 @@ ${imageError(target, reason || str2(step.state))}
       used = previous ? { input: Math.max(0, total.input - previous.input), output: Math.max(0, total.output - previous.output), cacheRead: Math.max(0, total.cacheRead - previous.cacheRead), cacheCreation: 0 } : num2(result.num_turns) === 1 ? total : turnUsage;
       previous = total;
       if (!Object.values(used).some((n) => n > 0)) used = void 0;
-      const missing = requiredImages.length ? requiredImages.filter((file2) => !readImages.has(file2)) : [...imageErrors.keys()];
-      imageFailure = missing.length ? missing.map((file2) => imageError(file2, imageErrors.get(file2) || (translating() ? "\u672C\u8F6E\u672A\u6210\u529F\u8BFB\u53D6\u6240\u9700\u56FE\u7247\u3002" : "Required image was not successfully read this turn."))).join("\n") : void 0;
+      const missing2 = requiredImages.length ? requiredImages.filter((file2) => !readImages.has(file2)) : [...imageErrors.keys()];
+      imageFailure = missing2.length ? missing2.map((file2) => imageError(file2, imageErrors.get(file2) || (translating() ? "\u672C\u8F6E\u672A\u6210\u529F\u8BFB\u53D6\u6240\u9700\u56FE\u7247\u3002" : "Required image was not successfully read this turn."))).join("\n") : void 0;
       if (imageFailure) events.error(imageFailure);
       readImages.clear();
       imageErrors.clear();
@@ -44351,7 +44574,7 @@ ${imageError(target, reason || str2(step.state))}
   return {
     push: reader.push,
     setRequiredImages(files) {
-      requiredImages = files.filter(imagePath).map((file2) => path18.resolve(cwd, file2));
+      requiredImages = files.filter(imagePath).map((file2) => path19.resolve(cwd, file2));
     },
     flush() {
       const text2 = reader.flush();
@@ -44428,9 +44651,9 @@ var init_antigravity = __esm({
 });
 
 // ../cli/src/lib/agent/harnesses/antigravity.ts
-import fs17 from "node:fs";
-import path19 from "node:path";
-import { createHash as createHash4 } from "node:crypto";
+import fs18 from "node:fs";
+import path20 from "node:path";
+import { createHash as createHash5 } from "node:crypto";
 import { spawnSync as spawnSync2 } from "node:child_process";
 function antigravityModels(output) {
   const seen = /* @__PURE__ */ new Set();
@@ -44450,7 +44673,7 @@ function args(argv, resume) {
   if (namesFlag(argv, ["--continue", "-c", "--conversation", "--remote-agent"])) throw new Error(translating() ? "\u8BF7\u901A\u8FC7 WildCrane \u9009\u62E9 Antigravity \u4F1A\u8BDD\uFF0C\u4E0D\u8981\u5728\u989D\u5916\u53C2\u6570\u4E2D\u6307\u5B9A\u4F1A\u8BDD\u6216\u8FDC\u7A0B\u6267\u884C\u3002" : "Antigravity: select a session through WildCrane, not extra arguments.");
   if (resume) {
     const file2 = antigravityConversationFile(resume);
-    if (!file2 || !fs17.existsSync(file2)) throw new ExecutionError(makeFailure("runtime", translating() ? "Antigravity \u4F1A\u8BDD\u4E0D\u5B58\u5728\u3002\u8BF7\u5728\u672C\u673A\u6062\u590D\u539F\u4F1A\u8BDD\u540E\u7EED\u63A5\u3002" : "Antigravity session not found. Restore the original conversation on this computer before resuming.", { code: "session_not_found" }));
+    if (!file2 || !fs18.existsSync(file2)) throw new ExecutionError(makeFailure("runtime", translating() ? "Antigravity \u4F1A\u8BDD\u4E0D\u5B58\u5728\u3002\u8BF7\u5728\u672C\u673A\u6062\u590D\u539F\u4F1A\u8BDD\u540E\u7EED\u63A5\u3002" : "Antigravity session not found. Restore the original conversation on this computer before resuming.", { code: "session_not_found" }));
   }
   const extra = resume ? ["--conversation", resume] : [];
   if (!namesFlag(argv, ["--output-format"])) extra.push("--output-format", "stream-json");
@@ -44462,11 +44685,11 @@ function systemPrompt(text2, _argv, env2) {
   const rule = `${text2}
 
 The task working directory is ${env2.PWD ?? process.cwd()}. Use it as the base for project files and commands. This additional workspace contains only language rules; do not write task output here.`;
-  const hash = createHash4("sha256").update(rule).digest("hex").slice(0, 16);
-  const root2 = path19.join(machineHome(), "prompts", `antigravity-${hash}`);
-  const file2 = path19.join(root2, ".agents", "rules", "language.md");
-  fs17.mkdirSync(path19.dirname(file2), { recursive: true });
-  fs17.writeFileSync(file2, `---
+  const hash = createHash5("sha256").update(rule).digest("hex").slice(0, 16);
+  const root2 = path20.join(machineHome(), "prompts", `antigravity-${hash}`);
+  const file2 = path20.join(root2, ".agents", "rules", "language.md");
+  fs18.mkdirSync(path20.dirname(file2), { recursive: true });
+  fs18.writeFileSync(file2, `---
 trigger: always_on
 ---
 
@@ -44719,6 +44942,7 @@ function createStreamRenderer() {
   const plans = /* @__PURE__ */ new Set();
   const subagents = /* @__PURE__ */ new Map();
   const detached = /* @__PURE__ */ new Set();
+  const taskUsage = /* @__PURE__ */ new Map();
   const endSubagent = (id, status2) => {
     if (subagents.get(id) !== false) return;
     subagents.set(id, true);
@@ -44730,8 +44954,18 @@ function createStreamRenderer() {
     if (!ev) return `${line}
 `;
     if (model === void 0) model = eventModel(ev);
-    if (str2(ev.parent_tool_use_id)) return "";
-    if (ev.type === "assistant" || ev.type === "stream_event" && obj2(ev.event).type === "content_block_delta") events.progress();
+    const parent = str2(ev.parent_tool_use_id);
+    const content = obj2(ev.message).content;
+    const streamEvent = obj2(ev.event);
+    const delta = obj2(streamEvent.delta);
+    if (ev.type === "stream_event" && streamEvent.type === "content_block_delta" && (str2(delta.text) || str2(delta.thinking) || str2(delta.partial_json))) events.progress();
+    if (parent) {
+      if (["assistant", "user"].includes(str2(ev.type)) && Array.isArray(content)) {
+        const useful = content.map(obj2).filter((block) => !!str2(block.text).trim() || !!str2(block.thinking).trim() || block.type === "tool_use" || block.type === "tool_result" && !!resultText(block.content).trim());
+        if (useful.length) events.progressSnapshot(parent, JSON.stringify(useful));
+      }
+      return "";
+    }
     switch (ev.type) {
       case "assistant": {
         apiFailure = typeof ev.error === "string" ? providerFailure({ type: ev.error }, "Claude could not complete the request.") : void 0;
@@ -44747,6 +44981,8 @@ function createStreamRenderer() {
 
 `);
             events.message(b.text);
+          } else if (b?.type === "thinking" && str2(b.thinking).trim()) {
+            events.progressSnapshot("thinking", str2(b.thinking));
           } else if (b?.type === "tool_use" && typeof b.name === "string") {
             out.push(`\u23FA ${b.name}${argHint(b.input, ARG_KEYS)}
 `);
@@ -44766,8 +45002,8 @@ function createStreamRenderer() {
         return out.join("");
       }
       case "user": {
-        const content = obj2(ev.message).content;
-        for (const raw of Array.isArray(content) ? content : []) {
+        const content2 = obj2(ev.message).content;
+        for (const raw of Array.isArray(content2) ? content2 : []) {
           const b = obj2(raw);
           if (b.type !== "tool_result" || plans.has(str2(b.tool_use_id))) continue;
           if (subagents.has(str2(b.tool_use_id))) {
@@ -44811,8 +45047,20 @@ function createStreamRenderer() {
         if (ev.subtype === "task_notification" && subagents.has(str2(ev.tool_use_id))) {
           endSubagent(str2(ev.tool_use_id), str2(ev.status) === "completed" ? "completed" : "failed");
         }
-        if (ev.subtype === "task_notification" && backgrounded.has(str2(ev.task_id)) && str2(ev.summary)) {
-          return `\u23FA ${str2(ev.summary)}
+        const task = str2(ev.task_id);
+        if (ev.subtype === "task_progress" && task) {
+          const usage2 = obj2(ev.usage);
+          const previous = taskUsage.get(task) ?? { tokens: 0, tools: 0 };
+          const tokens = Math.max(previous.tokens, Number(usage2.total_tokens) || 0);
+          const tools = Math.max(previous.tools, Number(usage2.tool_uses) || 0);
+          if (tokens > previous.tokens || tools > previous.tools) {
+            taskUsage.set(task, { tokens, tools });
+            events.progress();
+          }
+        }
+        if (ev.subtype === "task_notification" && backgrounded.delete(task)) {
+          events.progress();
+          if (str2(ev.summary)) return `\u23FA ${str2(ev.summary)}
 `;
         }
         return "";
@@ -44960,10 +45208,10 @@ function findRollout(threadId) {
     }
     for (const name of names) {
       if (!name.startsWith("rollout-") || !name.endsWith(tail)) continue;
-      const path26 = join2(dir, name);
+      const path28 = join2(dir, name);
       try {
-        const at = statSync2(path26).mtimeMs;
-        if (!newest2 || at > newest2.at) newest2 = { path: path26, at };
+        const at = statSync2(path28).mtimeMs;
+        if (!newest2 || at > newest2.at) newest2 = { path: path28, at };
       } catch {
       }
     }
@@ -44971,11 +45219,11 @@ function findRollout(threadId) {
   return newest2?.path;
 }
 function readCodexRunFacts(threadId) {
-  const path26 = findRollout(threadId);
-  if (!path26) return void 0;
+  const path28 = findRollout(threadId);
+  if (!path28) return void 0;
   let raw;
   try {
-    raw = readFileSync2(path26, "utf8");
+    raw = readFileSync2(path28, "utf8");
   } catch {
     return void 0;
   }
@@ -44988,17 +45236,17 @@ function readCodexRunFacts(threadId) {
   const children = /* @__PURE__ */ new Set();
   for (const line of raw.split("\n")) {
     if (!line.includes('"session_meta"') && !line.includes('"turn_context"') && !line.includes('"token_count"') && !line.includes('"task_complete"') && !line.includes('"task_started"') && !line.includes('"function_call"') && !line.includes('"function_call_output"')) continue;
-    let entry2;
+    let entry;
     try {
       const parsed = JSON.parse(line);
       if (!parsed || typeof parsed !== "object") continue;
-      entry2 = parsed;
+      entry = parsed;
     } catch {
       continue;
     }
-    const payload = entry2.payload;
+    const payload = entry.payload;
     if (!payload) continue;
-    if (payload.type === "task_started") at = entry2.timestamp ? Date.parse(entry2.timestamp) : void 0;
+    if (payload.type === "task_started") at = entry.timestamp ? Date.parse(entry.timestamp) : void 0;
     if (payload.type === "function_call" && payload.name === "spawn_agent" && typeof payload.call_id === "string") spawns.add(payload.call_id);
     if (payload.type === "function_call_output" && spawns.has(String(payload.call_id))) {
       try {
@@ -45007,8 +45255,8 @@ function readCodexRunFacts(threadId) {
       } catch {
       }
     }
-    if (entry2.type === "session_meta") facts.provider ??= text(payload.model_provider);
-    if (entry2.type === "turn_context") facts.model = text(payload.model) ?? facts.model;
+    if (entry.type === "session_meta") facts.provider ??= text(payload.model_provider);
+    if (entry.type === "turn_context") facts.model = text(payload.model) ?? facts.model;
     if (payload.type === "token_count") {
       facts.context = contextIn(payload.info) ?? facts.context;
       const info = payload.info && typeof payload.info === "object" ? payload.info : {};
@@ -45101,8 +45349,8 @@ function renderCompleted(item) {
       const changes = Array.isArray(item.changes) ? item.changes : [];
       return changes.map((raw) => {
         const change = obj2(raw);
-        const path26 = str2(change.path);
-        return path26 ? `\u23FA ${str2(change.kind) || "change"}(${path26})
+        const path28 = str2(change.path);
+        return path28 ? `\u23FA ${str2(change.kind) || "change"}(${path28})
 ` : "";
       }).join("");
     }
@@ -45190,23 +45438,20 @@ function createCodexStreamRenderer(carried = false) {
   const started = /* @__PURE__ */ new Set();
   const background = createBackgroundTasks();
   const subagents = /* @__PURE__ */ new Set();
-  const collabItems = /* @__PURE__ */ new Set();
-  const collab = (item, done) => {
+  const collab = (item) => {
     if (item.type !== "collab_tool_call") return;
-    const key = `${str2(item.id)}:${done}`;
-    if (collabItems.has(key)) return;
-    collabItems.add(key);
     for (const [id, raw] of Object.entries(obj2(item.agents_states))) {
       const state = obj2(raw);
       const status2 = str2(state.status);
       if (!["pending_init", "running", "completed", "interrupted", "errored", "shutdown", "not_found"].includes(status2)) continue;
       const previous = background.results().find((t2) => t2.id === id);
-      if (["shutdown", "not_found"].includes(status2) && previous && previous.status !== "running") continue;
+      const running = status2 === "pending_init" || status2 === "running";
+      if ((running || ["shutdown", "not_found"].includes(status2)) && previous && previous.status !== "running") continue;
       if (!subagents.has(id)) {
         subagents.add(id);
         events.subagent(`agent:${id}`, str2(item.prompt) || "Agent");
       }
-      const running = status2 === "pending_init" || status2 === "running";
+      if (running) events.progressSnapshot(`agent:${id}`, str2(state.message));
       const failed = !running && status2 !== "completed";
       if (background.update(id, running ? "running" : failed ? "failed" : "completed", str2(state.message)) && !running) {
         events.toolResult(`agent:${id}`, failed ? "failed" : "completed", str2(state.message));
@@ -45239,15 +45484,21 @@ function createCodexStreamRenderer(carried = false) {
         if (!threadId) threadId = str2(ev.thread_id).trim() || void 0;
         return "";
       case "item.started":
-        collab(obj2(ev.item), false);
+        collab(obj2(ev.item));
         itemEvents(events, started, obj2(ev.item), false);
         return renderStarted(obj2(ev.item));
-      case "item.updated":
-        if (obj2(ev.item).type === "todo_list") itemEvents(events, started, obj2(ev.item), false);
+      case "item.updated": {
+        const item = obj2(ev.item);
+        collab(item);
+        if (item.type === "todo_list") itemEvents(events, started, item, false);
+        if (item.type === "command_execution" && started.has(str2(item.id))) {
+          events.progressSnapshot(`command:${str2(item.id)}`, str2(item.aggregated_output));
+        }
         return "";
+      }
       case "item.completed": {
         const item = obj2(ev.item);
-        collab(item, true);
+        collab(item);
         if (item.type === "mcp_tool_call" && !/view_image|read_image|open_image/.test(str2(item.tool))) {
           const content = obj2(item.result).content;
           for (const block of Array.isArray(content) ? content : []) {
@@ -45410,16 +45661,16 @@ function readIndex() {
 function findKimiSession(cwd, since) {
   const want = resolve(cwd);
   let newest2;
-  for (const entry2 of readIndex().values()) {
-    if (resolve(entry2.workDir) !== want) continue;
+  for (const entry of readIndex().values()) {
+    if (resolve(entry.workDir) !== want) continue;
     let at;
     try {
-      at = statSync3(entry2.sessionDir).mtimeMs;
+      at = statSync3(entry.sessionDir).mtimeMs;
     } catch {
       continue;
     }
     if (at < since) continue;
-    if (!newest2 || at > newest2.at) newest2 = { id: entry2.sessionId, at };
+    if (!newest2 || at > newest2.at) newest2 = { id: entry.sessionId, at };
   }
   return newest2?.id;
 }
@@ -45435,15 +45686,15 @@ function wireFiles(sessionDir) {
   return ordered.map((name) => ({ path: join3(agents, name, "wire.jsonl"), main: name === "main" }));
 }
 function readKimiRunFacts(sessionId) {
-  const entry2 = readIndex().get(sessionId);
-  if (!entry2) return void 0;
+  const entry = readIndex().get(sessionId);
+  if (!entry) return void 0;
   const total = { input: 0, cacheCreation: 0, cacheRead: 0, output: 0 };
   let model;
   let holding = 0;
-  for (const { path: path26, main } of wireFiles(entry2.sessionDir)) {
+  for (const { path: path28, main } of wireFiles(entry.sessionDir)) {
     let raw;
     try {
-      raw = readFileSync3(path26, "utf8");
+      raw = readFileSync3(path28, "utf8");
     } catch {
       continue;
     }
@@ -45534,7 +45785,8 @@ function createKimiStreamRenderer(cwd, resumeId) {
 `;
     switch (row.role) {
       case "assistant": {
-        events.progress();
+        const thought = str2(row.reasoning_content);
+        if (thought) events.progressSnapshot("reasoning", thought);
         const said = str2(row.content).trim();
         if (said) final = said;
         if (said) events.message(said);
@@ -45619,7 +45871,7 @@ var init_kimi_stream = __esm({
 });
 
 // ../cli/src/lib/agent/wire/zcode.ts
-import path20 from "node:path";
+import path21 from "node:path";
 function whereHint2(input, title) {
   const named = obj2(input);
   for (const key of ["command", "file_path", "path", "url", "pattern"]) {
@@ -45629,14 +45881,14 @@ function whereHint2(input, title) {
   return "";
 }
 function usageOf4(value) {
-  const counts = {
+  const counts2 = {
     input: num2(value.inputTokens),
     cacheCreation: num2(value.cacheCreationTokens) || num2(value.cacheWriteTokens),
     cacheRead: num2(value.cacheReadTokens),
     output: num2(value.outputTokens)
   };
-  const sum = counts.input + counts.cacheCreation + counts.cacheRead + counts.output;
-  return sum > 0 ? counts : void 0;
+  const sum = counts2.input + counts2.cacheCreation + counts2.cacheRead + counts2.output;
+  return sum > 0 ? counts2 : void 0;
 }
 function modelOf2(ref) {
   const model = obj2(ref);
@@ -45645,7 +45897,7 @@ function modelOf2(ref) {
   const provider = str2(model.providerId);
   return provider ? `${provider}/${id}` : id;
 }
-function createParts(tail) {
+function createParts(tail, activity) {
   const written = /* @__PURE__ */ new Map();
   const tools = /* @__PURE__ */ new Set();
   const named = /* @__PURE__ */ new Map();
@@ -45654,6 +45906,7 @@ function createParts(tail) {
     const fresh = text2.startsWith(before) ? text2.slice(before.length) : text2;
     if (!fresh) return;
     written.set(partId, text2);
+    activity();
     if (kind === "reasoning" || kind === "thought") tail.thought(fresh);
     else tail.text(fresh);
   };
@@ -45665,7 +45918,10 @@ function createParts(tail) {
       const partId = str2(part.partId);
       if (type === "text" || type === "reasoning" || type === "thought") {
         if (partId) say(partId, type, str2(part.text));
-        else tail.text(str2(part.text));
+        else if (str2(part.text)) {
+          activity();
+          tail.text(str2(part.text));
+        }
         return;
       }
       if (type !== "tool") return;
@@ -45689,14 +45945,18 @@ function createParts(tail) {
       const delta = str2(event2.delta);
       if (!delta) return;
       written.set(partId, (written.get(partId) ?? "") + delta);
+      activity();
       if (field === "reasoning") tail.thought(delta);
       else tail.text(delta);
     },
     /** A piece of the turn, as `model.streaming` sends it. */
     streaming(payload) {
       const kind = str2(payload.kind);
-      if (kind === "text_delta") return tail.text(str2(payload.delta));
-      if (kind === "reasoning_delta") return tail.thought(str2(payload.delta));
+      const delta = str2(payload.delta);
+      if (delta && (kind === "text_delta" || kind === "reasoning_delta")) {
+        activity();
+        return kind === "text_delta" ? tail.text(delta) : tail.thought(delta);
+      }
       if (kind !== "tool_call") return;
       const callId = str2(payload.toolCallId);
       const name = str2(payload.toolName) || "tool";
@@ -45728,7 +45988,7 @@ function stopped(io, why) {
 }
 async function oneTurn2(io, options) {
   const tail = createTail(io.log);
-  const parts = createParts(tail);
+  const parts = createParts(tail, () => io.activity?.());
   const activityEvents = createEventCollector();
   const activeCalls = /* @__PURE__ */ new Set();
   let live = false;
@@ -45755,7 +46015,6 @@ async function oneTurn2(io, options) {
             const part = obj2(payload.part);
             const state = obj2(part.state);
             const type = str2(envelope.type);
-            if (["part.delta", "model.streaming"].includes(type) && str2(payload.delta)) io.activity?.();
             const id = str2(payload.toolCallId) || str2(part.callId) || str2(part.partId);
             const name = str2(payload.toolName) || str2(part.tool) || str2(state.title);
             if (id && name && !activeCalls.has(id)) {
@@ -45764,7 +46023,21 @@ async function oneTurn2(io, options) {
               else activityEvents.toolCall(id, name, /^(?:bash|shell|execute|run_command|terminal)$/i.test(name) ? "execute" : "other");
             }
             const status2 = str2(state.status) || str2(payload.kind);
-            if (id && ["completed", "error", "result"].includes(status2)) activityEvents.toolResult(id, status2 === "error" ? "failed" : "completed", "");
+            const output = str2(state.output) || str2(payload.output);
+            if (type === "part.delta" && payload.field === "output") {
+              const before = activityEvents.activity();
+              activityEvents.progressSnapshot(id || str2(payload.partId), str2(payload.delta));
+              if (activityEvents.activity() > before) io.activity?.();
+            }
+            if (id && ["completed", "error", "result"].includes(status2)) {
+              activityEvents.toolResult(id, status2 === "error" ? "failed" : "completed", output);
+            } else if (id && output) {
+              activityEvents.update({
+                sessionUpdate: "tool_call_update",
+                toolCallId: id,
+                content: [{ type: "content", content: { text: output } }]
+              });
+            }
             for (const e of activityEvents.events()) io.event?.(e);
           }
           event(envelope, parts, tail, live, ended);
@@ -45797,7 +46070,7 @@ async function oneTurn2(io, options) {
     { stringIds: true }
   );
   try {
-    const workspacePath = path20.resolve(io.cwd);
+    const workspacePath = path21.resolve(io.cwd);
     const workspace = { workspacePath, workspaceKey: workspacePath };
     let opened;
     if (io.resumeId) {
@@ -45833,6 +46106,7 @@ async function oneTurn2(io, options) {
     });
     const before = io.resumeId ? await tokensOf(rpc, sessionId) : ZERO_USAGE;
     live = true;
+    io.event?.({ kind: "phase", data: { phase: "submitted", at: (/* @__PURE__ */ new Date()).toISOString() } });
     const accepted = await rpc.call("session/send", { sessionId, content: io.prompt });
     if (accepted.accepted === false) throw new Error("the agent would not take the prompt");
     const done = await finished;
@@ -45940,14 +46214,14 @@ var init_zcode = __esm({
 });
 
 // ../cli/src/lib/agent/idle.ts
-var IDLE_MS, IDLE_ERROR, IDLE_FAILURE, PROVIDER_RETRY_MS;
+var IDLE_MS, IDLE_ERROR, IDLE_FAILURE;
 var init_idle = __esm({
   "../cli/src/lib/agent/idle.ts"() {
     "use strict";
+    init_events();
     IDLE_MS = 5 * 6e4;
-    IDLE_ERROR = "No response for 5 minutes (idle timeout).";
+    IDLE_ERROR = "No verifiable progress for 5 minutes (idle timeout).";
     IDLE_FAILURE = { code: "idle_timeout", source: "runtime", summary: IDLE_ERROR };
-    PROVIDER_RETRY_MS = { announcement: 10 * 6e4, episode: 30 * 6e4 };
   }
 });
 
@@ -45967,11 +46241,11 @@ function summary(text2, bytes = 1800) {
 function batch(work) {
   const result = [];
   let bytes = 0;
-  for (const entry2 of work) {
-    const size = Buffer.byteLength(JSON.stringify(entry2));
+  for (const entry of work) {
+    const size = Buffer.byteLength(JSON.stringify(entry));
     if (size > 15e3) throw Error("A Codex background identifier exceeds the snapshot limit.");
     if (bytes + size > 15e3) break;
-    result.push(entry2);
+    result.push(entry);
     bytes += size;
   }
   return result;
@@ -45994,7 +46268,7 @@ var init_codex_background = __esm({
 });
 
 // ../cli/src/lib/agent/wire/codex-work.ts
-async function* terminals(rpc, threadId, alive, verify = false) {
+async function* terminals(rpc, threadId, alive, verify2 = false) {
   let cursor;
   const cursors = /* @__PURE__ */ new Set();
   do {
@@ -46005,7 +46279,7 @@ async function* terminals(rpc, threadId, alive, verify = false) {
     }
     const page = await rpc.call("thread/backgroundTerminals/list", { threadId, ...cursor === void 0 ? {} : { cursor } });
     if (!alive()) return;
-    if (verify && (!Array.isArray(page.data) || page.nextCursor != null && typeof page.nextCursor !== "string")) {
+    if (verify2 && (!Array.isArray(page.data) || page.nextCursor != null && typeof page.nextCursor !== "string")) {
       throw Error("Codex background terminal state is unconfirmed.");
     }
     for (const terminal of list(page.data)) {
@@ -46116,11 +46390,11 @@ function codexWork() {
       for (const child of retained) if (child !== id) children.add(child);
     },
     freeze() {
-      for (const [id, entry2] of entries) if (entry2.status === "running") background.add(id);
+      for (const [id, entry] of entries) if (entry.status === "running") background.add(id);
     },
     work: () => [...entries.values()].filter((e) => background.has(e.id)),
-    async terminate(rpc, entry2, alive) {
-      const { id, threadId, itemId, processId } = entry2;
+    async terminate(rpc, entry, alive) {
+      const { id, threadId, itemId, processId } = entry;
       const result = await rpc.call("thread/backgroundTerminals/terminate", { threadId, processId });
       if (!alive()) return;
       if (result.terminated !== true) throw Error("Codex did not acknowledge terminating the background terminal.");
@@ -46168,10 +46442,10 @@ function codexWork() {
           continue;
         }
         if (!alive()) return;
-        const missing = [...entries.values()].filter((e) => background.has(e.id) && e.threadId === threadId && e.kind === "terminal" && e.status === "running" && !present.has(e.id));
-        if (missing.length) {
+        const missing2 = [...entries.values()].filter((e) => background.has(e.id) && e.threadId === threadId && e.kind === "terminal" && e.status === "running" && !present.has(e.id));
+        if (missing2.length) {
           await readThread(rpc, threadId);
-          for (const entry2 of missing) if (entries.get(entry2.id)?.status === "running") entries.get(entry2.id).status = "unknown";
+          for (const entry of missing2) if (entries.get(entry.id)?.status === "running") entries.get(entry.id).status = "unknown";
         }
       }
     }
@@ -46190,7 +46464,7 @@ var init_codex_work = __esm({
 });
 
 // ../cli/src/lib/agent/wire/codex.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { randomUUID as randomUUID3 } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 function createCodexConnection(argv) {
   const execAt = argv.indexOf("exec");
@@ -46283,7 +46557,7 @@ async function run(io, options, count2) {
   };
   const work = codexWork();
   const children = work.children;
-  const execution = randomUUID2();
+  const execution = randomUUID3();
   let host = {};
   let cleanup = { status: "confirmed", execution, kept: [] };
   let hostCleanup;
@@ -46296,6 +46570,7 @@ async function run(io, options, count2) {
   const offered = /* @__PURE__ */ new Map();
   const snapshot = (w) => JSON.stringify([w.threadId, w.processId, w.status, w.exitCode, w.result]);
   const childEvents = /* @__PURE__ */ new Map();
+  const freshOutput = progressSnapshots();
   const seenItems = /* @__PURE__ */ new Set();
   const completedTurns = /* @__PURE__ */ new Set();
   const historicalTurns = /* @__PURE__ */ new Set();
@@ -46330,6 +46605,9 @@ async function run(io, options, count2) {
     io.stdout.off("close", closed);
     io.stdin.off("error", inputFailed);
     if (settlement) flushMessages(work.work().some((w) => !w.intentionalStop && !["running", "unknown"].includes(w.status) && presented.get(w.id) !== snapshot(w)));
+    if (classified?.code === "codex_ownership_unconfirmed") {
+      cleanup = { ...cleanup, status: "unconfirmed", detail: classified.detail ?? classified.summary };
+    }
     cleanup.items = work.work().map(({ id, threadId: threadId2, processId, status: status3, disposition }) => ({ id, threadId: threadId2, processId, status: status3, disposition }));
     io.log(renderer.flush());
     const usage = ownUsage(total, baseline);
@@ -46390,7 +46668,9 @@ async function run(io, options, count2) {
   io.idleSignal?.addEventListener("abort", idle, { once: true });
   const childUpdates = () => {
     for (const w of work.entries.values()) {
-      if (w.kind !== "agent" || childEvents.get(w.id) === w.status) continue;
+      if (w.kind !== "agent") continue;
+      if (w.status === "running" && freshOutput(w.id, toolOutput(w.result))) io.activity?.();
+      if (childEvents.get(w.id) === w.status) continue;
       if (!childEvents.has(w.id)) io.event?.({ kind: "tool_call", data: { toolCallId: w.id, title: "Agent", kind: "other", status: "in_progress", subagent: true } });
       if (w.status !== "running") io.event?.({ kind: "tool_call_update", data: { toolCallId: w.id, status: w.status === "completed" ? "completed" : "failed", result: w.result } });
       childEvents.set(w.id, w.status);
@@ -46447,7 +46727,7 @@ async function run(io, options, count2) {
     startupTimer = setTimeout(() => {
       if (!started) io.event?.({ kind: "log", data: { text: "[conversation] start_unconfirmed" } });
     }, CONVERSATION_MS.start);
-    await bounded(rpc.call("turn/start", { threadId, input: [{ type: "text", text: text2 }, ...images.map((path26) => ({ type: "localImage", path: path26 }))] }), CONVERSATION_MS.start, "Codex turn/start timed out; submission outcome is unknown.").catch((error) => {
+    await bounded(rpc.call("turn/start", { threadId, input: [{ type: "text", text: text2 }, ...images.map((path28) => ({ type: "localImage", path: path28 }))] }), CONVERSATION_MS.start, "Codex turn/start timed out; submission outcome is unknown.").catch((error) => {
       if (!started) throw error;
     });
   };
@@ -46494,17 +46774,17 @@ async function run(io, options, count2) {
     }
     end();
   };
-  const terminate = async (entry2, until) => {
+  const terminate = async (entry, until) => {
     let expired = false;
-    const failure = `Could not confirm stopping Codex background terminal ${entry2.id}`;
+    const failure = `Could not confirm stopping Codex background terminal ${entry.id}`;
     try {
       const remaining = until - Date.now();
       if (remaining <= 0) throw Error("Termination verification timed out.");
-      await bounded(work.terminate(rpc, entry2, () => !ended && !expired), remaining, "Termination verification timed out.");
+      await bounded(work.terminate(rpc, entry, () => !ended && !expired), remaining, "Termination verification timed out.");
     } catch (e) {
       if (ended) return;
-      const current2 = work.entries.get(entry2.id);
-      if (!current2 || current2.processId !== entry2.processId) throw Error("Codex background ownership changed during termination.");
+      const current2 = work.entries.get(entry.id);
+      if (!current2 || current2.processId !== entry.processId) throw Error("Codex background ownership changed during termination.");
       current2.disposition = "unconfirmed";
       note(`${failure}: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -46567,7 +46847,7 @@ async function run(io, options, count2) {
       const outstanding = work.work().filter((w) => offered.get(w.id) !== snapshot(w) && presented.get(w.id) !== snapshot(w) && w.disposition !== "keep" && w.disposition !== "unconfirmed" && !(w.intentionalStop && !["running", "unknown"].includes(w.status)));
       if (outstanding.length) {
         const entries = batch(outstanding).map((w) => ({ ...w }));
-        for (const entry2 of entries) offered.set(entry2.id, snapshot(entry2));
+        for (const entry of entries) offered.set(entry.id, snapshot(entry));
         settlement = { work: entries, polled: /* @__PURE__ */ new Set(), messages: [] };
         armCleanup();
         await start(settlementPrompt(entries, execution, !!host.instance));
@@ -46606,12 +46886,12 @@ async function run(io, options, count2) {
       }
       return;
     }
-    const source = str2(p.threadId);
-    if (!work.own(source)) return;
+    const source2 = str2(p.threadId);
+    if (!work.own(source2)) return;
     if (msg.method === "item/commandExecution/terminalInteraction") {
       const turnId2 = str2(p.turnId);
-      if (source === threadId && (!active || historicalTurns.has(turnId2) || completedTurns.has(turnId2) || currentTurn2 && turnId2 && currentTurn2 !== turnId2)) return;
-      const w = work.entries.get(terminalKey(source, str2(p.itemId)));
+      if (source2 === threadId && (!active || historicalTurns.has(turnId2) || completedTurns.has(turnId2) || currentTurn2 && turnId2 && currentTurn2 !== turnId2)) return;
+      const w = work.entries.get(terminalKey(source2, str2(p.itemId)));
       if (w && w.processId && w.processId === p.processId && w.status === "running") {
         if (str2(p.stdin).includes("")) w.intentionalStop = true;
         else if (settlement && p.stdin === "") settlement.polled.add(w.id);
@@ -46620,29 +46900,42 @@ async function run(io, options, count2) {
     }
     if (msg.method === "item/started" || msg.method === "item/completed") {
       const raw = obj2(p.item);
-      work.observe(source, raw);
-      if (source === threadId && active) {
-        if (raw.type === "commandExecution") visible.add(terminalKey(source, str2(raw.id)));
+      work.observe(source2, raw);
+      if (source2 === threadId && active) {
+        if (raw.type === "commandExecution") visible.add(terminalKey(source2, str2(raw.id)));
         if (raw.type === "collabAgentToolCall") for (const id of Object.keys(obj2(raw.agentsStates))) visible.add(`agent:${id}`);
       }
       armCleanup();
-      if (source === threadId && obj2(p.item).type !== "agentMessage") item(obj2(p.item), msg.method === "item/completed", false);
+      if (source2 === threadId && obj2(p.item).type !== "agentMessage") item(obj2(p.item), msg.method === "item/completed", false);
     }
-    if (source !== threadId) {
+    const turnId = str2(p.turnId) || str2(obj2(p.turn).id);
+    const main = source2 === threadId;
+    const live = main ? !historicalTurns.has(turnId) && (!currentTurn2 || !turnId || currentTurn2 === turnId) : work.entries.get(`agent:${source2}`)?.status === "running";
+    const delta = str2(p.delta);
+    if (submitted && live && delta) {
+      if (["item/agentMessage/delta", "item/plan/delta", "item/reasoning/summaryTextDelta", "item/reasoning/textDelta"].includes(msg.method ?? "")) {
+        if (main) {
+          if (msg.method?.startsWith("item/reasoning/")) thinking();
+          else recovered();
+        }
+        io.activity?.();
+      }
+      const terminal = terminalKey(source2, str2(p.itemId));
+      if (msg.method === "item/commandExecution/outputDelta" && work.entries.get(terminal)?.status === "running" && freshOutput(terminal, toolOutput(delta))) io.activity?.();
+    }
+    if (!main) {
+      if (live && msg.method === "item/completed") {
+        const item2 = obj2(p.item);
+        if (freshOutput(`${source2}:${str2(item2.id)}`, toolOutput(str2(item2.text) || str2(item2.aggregatedOutput)))) io.activity?.();
+      }
       if (msg.method === "turn/completed") {
-        work.observeTurn(source, obj2(p.turn));
+        work.observeTurn(source2, obj2(p.turn));
         armCleanup();
       }
       childUpdates();
       return;
     }
-    const turnId = str2(p.turnId) || str2(obj2(p.turn).id);
-    if (historicalTurns.has(turnId) || currentTurn2 && turnId && currentTurn2 !== turnId) return;
-    if (submitted && ["item/agentMessage/delta", "item/plan/delta", "item/reasoning/summaryTextDelta", "item/reasoning/textDelta"].includes(msg.method ?? "") && str2(p.delta)) {
-      if (msg.method?.startsWith("item/reasoning/")) thinking();
-      else recovered();
-      io.activity?.();
-    }
+    if (!live) return;
     if (msg.method === "turn/started") {
       if (!submitted || completedTurns.has(turnId)) return;
       currentTurn2 = turnId;
@@ -46662,16 +46955,16 @@ async function run(io, options, count2) {
     if (msg.method === "thread/tokenUsage/updated") {
       if (!submitted) return;
       const token = obj2(p.tokenUsage);
-      const counts = obj2(token.total);
-      const input = Number(counts.inputTokens) || 0;
-      const read2 = Number(counts.cachedInputTokens) || 0;
-      const write = Number(counts.cacheWriteInputTokens) || 0;
-      total = { input: Math.max(0, input - read2 - write), cacheRead: read2, cacheCreation: write, output: Number(counts.outputTokens) || 0 };
+      const counts2 = obj2(token.total);
+      const input = Number(counts2.inputTokens) || 0;
+      const read2 = Number(counts2.cachedInputTokens) || 0;
+      const write = Number(counts2.cacheWriteInputTokens) || 0;
+      total = { input: Math.max(0, input - read2 - write), cacheRead: read2, cacheCreation: write, output: Number(counts2.outputTokens) || 0 };
       const last2 = obj2(token.last);
       if (!baseline && Object.keys(last2).length) {
-        const cached2 = Number(last2.cachedInputTokens) || 0;
+        const cached3 = Number(last2.cachedInputTokens) || 0;
         const written = Number(last2.cacheWriteInputTokens) || 0;
-        baseline = ownUsage(total, { input: Math.max(0, (Number(last2.inputTokens) || 0) - cached2 - written), cacheRead: cached2, cacheCreation: written, output: Number(last2.outputTokens) || 0 });
+        baseline = ownUsage(total, { input: Math.max(0, (Number(last2.inputTokens) || 0) - cached3 - written), cacheRead: cached3, cacheCreation: written, output: Number(last2.outputTokens) || 0 });
       }
       context = { used: (Number(last2.inputTokens) || 0) + (Number(last2.outputTokens) || 0), ...Number(token.modelContextWindow) > 0 ? { limit: Number(token.modelContextWindow) } : {} };
       io.gotContext?.(context);
@@ -46744,7 +47037,6 @@ async function run(io, options, count2) {
           waiting2 = true;
           io.event?.({ kind: "log", data: { text: failure.summary } });
         }
-        io.activity?.();
         await delay(500, void 0, { signal: io.signal });
         preparingUntil = Date.now() + CONVERSATION_MS.prepare;
       }
@@ -46777,6 +47069,7 @@ var init_codex = __esm({
   "../cli/src/lib/agent/wire/codex.ts"() {
     "use strict";
     init_idle();
+    init_events();
     init_retry();
     init_failures();
     init_conversation();
@@ -46809,22 +47102,22 @@ var init_wire = __esm({
 });
 
 // ../cli/src/lib/agent/harnesses/claude-code.ts
-import path21 from "node:path";
+import path22 from "node:path";
 function claudeStreamArgs(argv) {
   if (argv.includes("--output-format")) return [];
   return ["--output-format", "stream-json", "--verbose", ...argv.includes("--input-format") ? [] : ["--input-format", "stream-json"]];
 }
 function claudeOnWindows() {
   const [local, roaming] = [process.env.LOCALAPPDATA?.trim(), process.env.APPDATA?.trim()];
-  const packages = local ? path21.join(local, "Packages") : "";
+  const packages = local ? path22.join(local, "Packages") : "";
   const data = [
-    ...folders(packages).filter((name) => /^(\w+\.)?Claude_/i.test(name)).sort().map((name) => path21.join(packages, name, "LocalCache", "Roaming", "Claude")),
-    ...roaming ? [path21.join(roaming, "Claude")] : []
+    ...folders(packages).filter((name) => /^(\w+\.)?Claude_/i.test(name)).sort().map((name) => path22.join(packages, name, "LocalCache", "Roaming", "Claude")),
+    ...roaming ? [path22.join(roaming, "Claude")] : []
   ];
   return data.flatMap(
-    (dir) => latestIn(path21.join(dir, "claude-code")).flatMap((version) => [
-      path21.join(version, "claude.exe"),
-      ...folders(version).map((build) => path21.join(version, build, "claude.exe"))
+    (dir) => latestIn(path22.join(dir, "claude-code")).flatMap((version) => [
+      path22.join(version, "claude.exe"),
+      ...folders(version).map((build) => path22.join(version, build, "claude.exe"))
     ])
   );
 }
@@ -47080,7 +47373,7 @@ var init_claude_code = __esm({
         ...latestIn(home(".local", "share", "claude", "versions")),
         // The copy Claude Desktop carries.
         ...process.platform === "win32" ? claudeOnWindows() : latestIn(home("Library", "Application Support", "Claude", "claude-code")).flatMap(
-          (version) => folders(version).map((build) => path21.join(version, build, "claude.app", "Contents", "MacOS", "claude"))
+          (version) => folders(version).map((build) => path22.join(version, build, "claude.app", "Contents", "MacOS", "claude"))
         )
       ],
       install: "npm install -g @anthropic-ai/claude-code"
@@ -47124,8 +47417,8 @@ var init_worktree = __esm({
 });
 
 // ../cli/src/lib/agent/harnesses/codex.ts
-import fs18 from "node:fs";
-import path22 from "node:path";
+import fs19 from "node:fs";
+import path23 from "node:path";
 function codexExtraArgs(argv, cwd = REPO_ROOT) {
   const extra = [];
   if (!namesFlag(argv, ["--json", "--experimental-json"])) extra.push("--json");
@@ -47141,10 +47434,10 @@ function codexExtraArgs(argv, cwd = REPO_ROOT) {
   }
   const flags = [...argv, ...extra];
   const workspaceWrite = flags.some((arg, i) => arg === "--full-auto" || arg === "--sandbox=workspace-write" || (arg === "--sandbox" || arg === "-s") && flags[i + 1] === "workspace-write");
-  if (workspaceWrite && path22.resolve(cwd) !== path22.resolve(REPO_ROOT)) {
+  if (workspaceWrite && path23.resolve(cwd) !== path23.resolve(REPO_ROOT)) {
     for (const dir of [KANBAN, AKB_DIR]) {
-      const relative = path22.relative(cwd, dir);
-      if (relative === ".." || relative.startsWith(`..${path22.sep}`) || path22.isAbsolute(relative)) {
+      const relative = path23.relative(cwd, dir);
+      if (relative === ".." || relative.startsWith(`..${path23.sep}`) || path23.isAbsolute(relative)) {
         extra.push("--add-dir", dir);
       }
     }
@@ -47167,7 +47460,7 @@ function envRoot(name) {
 }
 function modified(file2) {
   try {
-    return fs18.statSync(file2).mtimeMs;
+    return fs19.statSync(file2).mtimeMs;
   } catch {
     return 0;
   }
@@ -47192,28 +47485,28 @@ function codexOnWindows() {
   const local = envRoot("LOCALAPPDATA");
   const profile = envRoot("USERPROFILE");
   const programs = envRoot("ProgramFiles");
-  const cache = local ? path22.join(local, "OpenAI", "Codex", "bin") : "";
-  const releases = profile ? path22.join(profile, ".codex", "packages", "standalone", "releases") : "";
-  const packages = programs ? path22.join(programs, "WindowsApps") : "";
+  const cache = local ? path23.join(local, "OpenAI", "Codex", "bin") : "";
+  const releases = profile ? path23.join(profile, ".codex", "packages", "standalone", "releases") : "";
+  const packages = programs ? path23.join(programs, "WindowsApps") : "";
   return [
     // Desktop's relocated CLI cache: a folder per build hash, newest file first.
-    ...byNewest(folders(cache).map((name) => path22.join(cache, name, "codex.exe"))),
+    ...byNewest(folders(cache).map((name) => path23.join(cache, name, "codex.exe"))),
     // The separate standalone launcher, at a path with nothing variable in it.
-    ...local ? [path22.join(local, "Programs", "OpenAI", "Codex", "bin", "codex.exe")] : [],
+    ...local ? [path23.join(local, "Programs", "OpenAI", "Codex", "bin", "codex.exe")] : [],
     // That launcher's release payload: a folder per version and target.
     ...byVersion(folders(releases).filter(ourArch)).map(
-      (name) => path22.join(releases, name, "bin", "codex.exe")
+      (name) => path23.join(releases, name, "bin", "codex.exe")
     ),
     // Desktop's own MSIX package.
     ...byVersion(folders(packages).filter((name) => name.startsWith("OpenAI.Codex_")).filter(ourArch)).map(
-      (name) => path22.join(packages, name, "app", "resources", "codex.exe")
+      (name) => path23.join(packages, name, "app", "resources", "codex.exe")
     )
   ];
 }
 function codexInstalls() {
   const chosen = process.env.CODEX_INSTALL_DIR?.trim();
   return [
-    ...chosen ? [path22.join(chosen, "codex")] : [],
+    ...chosen ? [path23.join(chosen, "codex")] : [],
     ...process.platform === "win32" ? codexOnWindows() : [
       // macOS, where Codex now lives in the merged app — `codex-cli/bin/` since 26.928…
       "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
@@ -47272,7 +47565,7 @@ var init_codex2 = __esm({
       systemPrompt(text2, argv) {
         if (namesFlag(argv, ["developer_instructions", "model_instructions_file"])) return {};
         try {
-          const config = fs18.readFileSync(path22.join(process.env.CODEX_HOME || home(".codex"), "config.toml"), "utf8");
+          const config = fs19.readFileSync(path23.join(process.env.CODEX_HOME || home(".codex"), "config.toml"), "utf8");
           if (/^\s*(?:developer_instructions|model_instructions_file)\s*=/m.test(config)) return {};
         } catch {
         }
@@ -47525,24 +47818,24 @@ var init_cursor = __esm({
 });
 
 // ../cli/src/lib/agent/harnesses/dsh.ts
-import fs19 from "node:fs";
-import path23 from "node:path";
+import fs20 from "node:fs";
+import path24 from "node:path";
 function dshHome(argv) {
   const binary = argv[0];
   if (!binary) return void 0;
-  const names = process.platform === "win32" && !path23.extname(binary) ? [".exe", ".cmd"].map((ext) => binary + ext) : [binary];
-  const candidates2 = binary.includes("/") || binary.includes("\\") ? names : (process.env.PATH ?? "").split(path23.delimiter).filter(Boolean).flatMap((dir2) => names.map((name) => path23.join(dir2, name)));
+  const names = process.platform === "win32" && !path24.extname(binary) ? [".exe", ".cmd"].map((ext) => binary + ext) : [binary];
+  const candidates = binary.includes("/") || binary.includes("\\") ? names : (process.env.PATH ?? "").split(path24.delimiter).filter(Boolean).flatMap((dir2) => names.map((name) => path24.join(dir2, name)));
   let dir;
   try {
-    const found = candidates2.find((candidate) => fs19.existsSync(candidate));
+    const found = candidates.find((candidate) => fs20.existsSync(candidate));
     if (!found) return void 0;
-    const script = /\.cmd$/i.test(found) ? shimTarget(fs19.readFileSync(found, "utf8"), found)?.script : void 0;
-    dir = path23.dirname(fs19.realpathSync(script ?? found));
+    const script = /\.cmd$/i.test(found) ? shimTarget(fs20.readFileSync(found, "utf8"), found)?.script : void 0;
+    dir = path24.dirname(fs20.realpathSync(script ?? found));
   } catch {
     return void 0;
   }
-  for (let up = path23.dirname(dir); dir !== up; up = path23.dirname(dir)) {
-    if (fs19.existsSync(path23.join(dir, "package.json"))) return dir;
+  for (let up = path24.dirname(dir); dir !== up; up = path24.dirname(dir)) {
+    if (fs20.existsSync(path24.join(dir, "package.json"))) return dir;
     dir = up;
   }
   return void 0;
@@ -48260,6 +48553,40 @@ var init_secrets = __esm({
   }
 });
 
+// src/sync-debug.ts
+import { monitorEventLoopDelay } from "node:perf_hooks";
+function logSync(event2, fields2 = {}) {
+  if (syncDebug) console.error("[sync-debug]", JSON.stringify({ time: (/* @__PURE__ */ new Date()).toISOString(), pid: process.pid, event: event2, ...fields2 }));
+}
+var syncDebug, counts;
+var init_sync_debug = __esm({
+  "src/sync-debug.ts"() {
+    "use strict";
+    syncDebug = process.env.WILDCRANE_DEBUG_SYNC === "1";
+    counts = {};
+    if (syncDebug) {
+      const delay2 = monitorEventLoopDelay({ resolution: 20 });
+      delay2.enable();
+      let cpu = process.cpuUsage();
+      let at = performance.now();
+      setInterval(() => {
+        const now = performance.now();
+        const used = process.cpuUsage(cpu);
+        logSync("health", {
+          cpuPercent: Math.round((used.user + used.system) / (now - at) / 10),
+          delayMaxMs: Math.round(delay2.max / 1e6),
+          delayP99Ms: Math.round(delay2.percentile(99) / 1e6),
+          ...counts
+        });
+        for (const name of Object.keys(counts)) delete counts[name];
+        cpu = process.cpuUsage();
+        at = now;
+        delay2.reset();
+      }, 5e3).unref();
+    }
+  }
+});
+
 // src/api.ts
 var FILE_TIMEOUT_MS;
 var init_api = __esm({
@@ -48273,6 +48600,7 @@ var init_api = __esm({
     init_response();
     init_protocol();
     init_secrets();
+    init_sync_debug();
     FILE_TIMEOUT_MS = 10 * 6e4;
   }
 });
@@ -48288,18 +48616,34 @@ var init_folders = __esm({
 
 // src/cache.ts
 import crypto5 from "node:crypto";
-import fs20 from "node:fs";
-import path24 from "node:path";
+import fs21 from "node:fs";
+import path25 from "node:path";
+function hold(dir) {
+  fs21.mkdirSync(holdsDir(), { recursive: true, mode: 448 });
+  fs21.writeFileSync(holdFile(dir), "", { mode: 384 });
+  holds.set(dir, (holds.get(dir) ?? 0) + 1);
+  let held2 = true;
+  return () => {
+    if (!held2) return;
+    held2 = false;
+    const left = holds.get(dir) - 1;
+    if (left) holds.set(dir, left);
+    else {
+      holds.delete(dir);
+      fs21.rmSync(holdFile(dir), { force: true });
+    }
+  };
+}
 function busy(dir) {
   if (holds.has(dir)) return true;
-  const prefix = path24.basename(holdFile(dir)).split(".")[0] + ".";
+  const prefix = path25.basename(holdFile(dir)).split(".")[0] + ".";
   try {
-    return fs20.readdirSync(holdsDir()).filter((file2) => file2.startsWith(prefix)).some((file2) => {
+    return fs21.readdirSync(holdsDir()).filter((file2) => file2.startsWith(prefix)).some((file2) => {
       try {
         process.kill(Number(file2.split(".")[1]), 0);
         return true;
       } catch {
-        fs20.rmSync(path24.join(holdsDir(), file2), { force: true });
+        fs21.rmSync(path25.join(holdsDir(), file2), { force: true });
         return false;
       }
     });
@@ -48321,15 +48665,221 @@ var init_cache = __esm({
     IDLE_MS2 = 7 * 24 * 60 * 6e4;
     SWEEP_MS = 24 * 60 * 6e4;
     holds = /* @__PURE__ */ new Map();
-    holdsDir = () => path24.join(runnerHome(), "holds");
-    holdFile = (dir) => path24.join(holdsDir(), `${crypto5.createHash("sha256").update(dir).digest("hex")}.${process.pid}`);
+    holdsDir = () => path25.join(runnerHome(), "holds");
+    holdFile = (dir) => path25.join(holdsDir(), `${crypto5.createHash("sha256").update(dir).digest("hex")}.${process.pid}`);
+  }
+});
+
+// src/runner-log.ts
+var runner_log_exports = {};
+__export(runner_log_exports, {
+  errno: () => errno,
+  logRunner: () => logRunner,
+  startRunnerLogMaintenance: () => startRunnerLogMaintenance
+});
+import fs22 from "node:fs";
+import path26 from "node:path";
+function logDay(file2, stat) {
+  const prefix = Buffer.alloc(20);
+  const fd = fs22.openSync(file2, fs22.constants.O_RDONLY | NO_FOLLOW);
+  try {
+    fs22.readSync(fd, prefix);
+  } finally {
+    fs22.closeSync(fd);
+  }
+  return /^\{"time":"(\d{4}-\d{2}-\d{2})T/.exec(prefix.toString())?.[1] ?? utcDay(stat.mtimeMs);
+}
+function append(file2, bytes, size) {
+  const fd = fs22.openSync(file2, fs22.constants.O_WRONLY | fs22.constants.O_CREAT | fs22.constants.O_APPEND | NO_FOLLOW, 384);
+  try {
+    if (fs22.writeSync(fd, bytes) !== bytes.length) {
+      fs22.ftruncateSync(fd, size);
+      throw new Error("Incomplete Runner log write");
+    }
+  } finally {
+    fs22.closeSync(fd);
+  }
+}
+function maintain(dir, now, line) {
+  const current2 = path26.join(dir, "runner.log");
+  const today = utcDay(+now);
+  const oldest = utcDay(+now - 6 * DAY_MS);
+  let stat = fs22.lstatSync(current2, { throwIfNoEntry: false });
+  if (stat && !stat.isFile()) throw new Error("Invalid Runner log file");
+  const day = stat?.size ? logDay(current2, stat) : today;
+  if (stat && (day < oldest || stat.size > MAX_BYTES)) {
+    fs22.unlinkSync(current2);
+    stat = void 0;
+  }
+  const size = stat?.size ?? 0;
+  const rotate = size > 0 && (day !== today || size + (line?.length ?? 0) > MAX_BYTES);
+  const archives = fs22.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const match = entry.isFile() && ARCHIVE_NAME.exec(entry.name);
+    return match ? [{ file: path26.join(dir, entry.name), day: match[1], seq: Number(match[2]) }] : [];
+  }).sort((a, b) => b.day.localeCompare(a.day) || b.seq - a.seq);
+  let kept2 = 0;
+  const seq = (archives.find((archive) => archive.day === day)?.seq ?? 0) + 1;
+  for (const archive of archives) {
+    if (kept2 >= ARCHIVES - Number(rotate) || archive.day < oldest || fs22.statSync(archive.file).size > MAX_BYTES) {
+      fs22.unlinkSync(archive.file);
+    } else kept2++;
+  }
+  if (rotate) fs22.renameSync(current2, `${current2}.${day}.${seq}`);
+  if (line) append(current2, line, rotate ? 0 : size);
+}
+function withLogLock(write) {
+  try {
+    const dir = path26.join(runnerHome(), "logs");
+    fs22.mkdirSync(dir, { recursive: true, mode: 448 });
+    if (!fs22.lstatSync(dir).isDirectory()) throw new Error("Invalid Runner log directory");
+    const deadline = performance.now() + 150;
+    do {
+      const unlock = tryLock(path26.join(dir, "runner.log.lock"));
+      if (unlock) {
+        try {
+          write(dir);
+        } finally {
+          unlock();
+        }
+        return;
+      }
+      Atomics.wait(waitWord, 0, 0, 5);
+    } while (performance.now() < deadline);
+  } catch {
+  }
+  if (performance.now() - lastWarning >= MAINTENANCE_MS) {
+    lastWarning = performance.now();
+    try {
+      fs22.writeSync(2, "WildCrane could not write its local Runner log.\n");
+    } catch {
+    }
+  }
+}
+function startRunnerLogMaintenance() {
+  maintenance ??= setInterval(() => withLogLock((dir) => maintain(dir, /* @__PURE__ */ new Date())), MAINTENANCE_MS).unref();
+}
+function logRunner(component, event2, fields2 = {}) {
+  if (!Object.hasOwn(EVENTS, component) || !EVENTS[component].includes(event2)) return;
+  withLogLock((dir) => {
+    const now = /* @__PURE__ */ new Date();
+    const record = {
+      time: now.toISOString(),
+      component,
+      event: event2,
+      version: matches(VERSION2, fields2.version),
+      source: allowed(SOURCES2, fields2.source),
+      stage: allowed(STAGES, fields2.stage),
+      task: integer(fields2.task, 1, Number.MAX_SAFE_INTEGER),
+      job: matches(UUID, fields2.job),
+      code: fields2.code === void 0 ? void 0 : allowed(CODES, fields2.code) ?? "unknown_error",
+      status: integer(fields2.status, 100, 599),
+      exitCode: integer(fields2.exitCode, 0, 255),
+      signal: allowed(SIGNALS, fields2.signal)
+    };
+    maintain(dir, now, Buffer.from(JSON.stringify(record) + "\n"));
+  });
+}
+var MAX_BYTES, ARCHIVES, DAY_MS, MAINTENANCE_MS, ARCHIVE_NAME, NO_FOLLOW, waitWord, EVENTS, SOURCES2, STAGES, CODES, SIGNALS, VERSION2, UUID, allowed, matches, integer, errno, utcDay, lastWarning, maintenance;
+var init_runner_log = __esm({
+  "src/runner-log.ts"() {
+    "use strict";
+    init_lock();
+    init_home();
+    MAX_BYTES = 5 * 1024 * 1024;
+    ARCHIVES = 3;
+    DAY_MS = 864e5;
+    MAINTENANCE_MS = 6e4;
+    ARCHIVE_NAME = /^runner\.log\.(\d{4}-\d{2}-\d{2})\.([1-9]\d*)$/;
+    NO_FOLLOW = fs22.constants.O_NOFOLLOW ?? 0;
+    waitWord = new Int32Array(new SharedArrayBuffer(4));
+    EVENTS = {
+      launcher: ["starting", "startup_failed", "connected", "exited", "update_ready", "update_failed", "update_deferred", "rollback"],
+      runner: ["starting", "startup_failed", "connected", "reconnecting", "connection_refused", "exited"],
+      worker: ["starting", "exited"],
+      board: ["failed"],
+      preview: ["failed"]
+    };
+    SOURCES2 = /* @__PURE__ */ new Set(["terminal", "codex", "claude-code", "cursor", "dsh", "zcode", "kimi", "grok", "opencode", "antigravity"]);
+    STAGES = /* @__PURE__ */ new Set([
+      "plugin_entry",
+      "spawn",
+      "download",
+      "signin",
+      "lock",
+      "startup",
+      "registration",
+      "realtime",
+      "pull",
+      "push",
+      "create_artifact",
+      "create_upload",
+      "upload",
+      "complete_upload",
+      "commit_version"
+    ]);
+    CODES = /* @__PURE__ */ new Set([
+      "already_running",
+      "artifacts_unavailable",
+      "bad_request",
+      "board_content_conflict",
+      "conflict",
+      "content_too_large",
+      "connection_closed",
+      "crashed",
+      "daily_write_budget_reached",
+      "forbidden",
+      "heartbeat_error",
+      "heartbeat_timeout",
+      "idempotency_in_progress",
+      "integrity",
+      "invalid_response",
+      "join_timeout",
+      "local_changed",
+      "machine_offline",
+      "node",
+      "not_found",
+      "open_timeout",
+      "ph_close",
+      "ph_error",
+      "quota_exceeded",
+      "refused",
+      "runner_elsewhere",
+      "runner_outdated",
+      "send_failed",
+      "service_unavailable",
+      "signed_out",
+      "storage_limit_reached",
+      "system",
+      "timeout",
+      "unauthenticated",
+      "unavailable",
+      "unreachable",
+      "version_conflict",
+      "EACCES",
+      "EADDRINUSE",
+      "EIO",
+      "EMFILE",
+      "ENOENT",
+      "ENOSPC",
+      "ENOTDIR",
+      "EPERM",
+      "EROFS"
+    ]);
+    SIGNALS = /* @__PURE__ */ new Set(["SIGINT", "SIGTERM", "SIGHUP", "SIGKILL", "SIGABRT", "SIGQUIT", "SIGSEGV"]);
+    VERSION2 = /^\d{1,9}\.\d{1,9}\.\d{1,9}(?:-(?:alpha|beta|rc|test)(?:\.\d{1,9}){0,3})?$/;
+    UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+    allowed = (values, value) => typeof value === "string" && values.has(value) ? value : void 0;
+    matches = (pattern, value) => typeof value === "string" && pattern.test(value) ? value : void 0;
+    integer = (value, min, max) => typeof value === "number" && Number.isSafeInteger(value) && value >= min && value <= max ? value : void 0;
+    errno = (error) => error instanceof Error ? error.code ?? "unknown_error" : "unknown_error";
+    utcDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+    lastWarning = -Infinity;
   }
 });
 
 // src/launcher.ts
 var launcher_exports = {};
 __export(launcher_exports, {
-  candidates: () => candidates,
   launch: () => launch,
   pluginEntry: () => pluginEntry,
   pluginOf: () => pluginOf,
@@ -48337,35 +48887,39 @@ __export(launcher_exports, {
   readState: () => readState
 });
 import { spawn as spawn2 } from "node:child_process";
-import fs21 from "node:fs";
-import path25 from "node:path";
+import fs23 from "node:fs";
+import path27 from "node:path";
 function readState() {
   try {
-    const held2 = JSON.parse(fs21.readFileSync(stateFile(), "utf8"));
-    return { ...held2, good: held2.good ?? [], bad: held2.bad ?? [] };
+    const { verified, good, retry: retry2, alpha, rollbackAt } = JSON.parse(fs23.readFileSync(stateFile(), "utf8"));
+    const last2 = verified === void 0 && Array.isArray(good) ? good[0] : verified;
+    return { verified: isVersion(last2) ? last2 : null, retry: retry2, alpha, rollbackAt };
   } catch {
-    return { good: [], bad: [] };
+    return { verified: null };
   }
 }
 function writeState(state) {
-  fs21.mkdirSync(versionsDir(), { recursive: true });
-  fs21.writeFileSync(stateFile(), `${JSON.stringify(state, null, 2)}
+  const staged = `${stateFile()}.${process.pid}.tmp`;
+  fs23.mkdirSync(versionsDir(), { recursive: true });
+  fs23.writeFileSync(staged, `${JSON.stringify(state, null, 2)}
 `);
+  fs23.renameSync(staged, stateFile());
 }
-function markGood(version) {
+function verify(candidate) {
   const state = readState();
-  state.good = [version, ...state.good.filter((v) => v !== version)].slice(0, KEEP);
+  const changed = state.verified !== candidate.version;
+  state.verified = candidate.version;
+  if (state.retry?.version === candidate.version || (state.retry?.after ?? 0) <= Date.now()) delete state.retry;
+  if (candidate.target) remember(state, candidate.target);
   writeState(state);
-  for (const name of fs21.readdirSync(versionsDir())) {
-    if (name === "state.json" || state.good.includes(name) || name.endsWith(".tmp") || busy(path25.join(versionsDir(), name))) continue;
-    fs21.rmSync(path25.join(versionsDir(), name), { recursive: true, force: true });
+  if (!changed) return;
+  for (const version of fs23.readdirSync(versionsDir()).filter(isVersion)) {
+    if (version !== candidate.version && !busy(versionDir(version))) fs23.rmSync(versionDir(version), { recursive: true, force: true });
   }
 }
-function markBad(version) {
-  const state = readState();
-  state.bad = [.../* @__PURE__ */ new Set([...state.bad, version])];
-  state.good = state.good.filter((v) => v !== version);
-  writeState(state);
+function cooling(version) {
+  const { retry: retry2 } = readState();
+  return retry2?.version === version && retry2.after > Date.now();
 }
 async function askTarget(machine) {
   const alpha = acceptAlphaUpdates();
@@ -48376,7 +48930,7 @@ async function askTarget(machine) {
     if (!answer.ok) return null;
     const { version, restartable, alpha: selectedAlpha, rollback } = await answer.json();
     if (acceptAlphaUpdates() !== alpha) return null;
-    return typeof version === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) ? { version, restartable: restartable === true, alpha: selectedAlpha === true, rollback } : null;
+    return isVersion(version) ? { version, restartable: restartable === true, alpha: selectedAlpha === true, rollback } : null;
   } catch {
     return null;
   }
@@ -48385,60 +48939,80 @@ function waiting(target, current2) {
   const state = readState();
   return !target.alpha && !!state.alpha?.includes(current2) && compare(target.version, current2) < 0 && (target.rollback === void 0 || target.rollback === (state.rollbackAt?.[current2] ?? 0));
 }
-function remember(target) {
-  const state = readState();
-  if (target.alpha) state.alpha = [.../* @__PURE__ */ new Set([...state.alpha ?? [], target.version])];
-  if (target.rollback !== void 0) state.rollbackAt = { ...state.rollbackAt, [target.version]: target.rollback };
-  writeState(state);
+function remember(state, target) {
+  let changed = false;
+  if (target.alpha && !state.alpha?.includes(target.version)) {
+    state.alpha = [...state.alpha ?? [], target.version];
+    changed = true;
+  }
+  if (target.rollback !== void 0 && state.rollbackAt?.[target.version] !== target.rollback) {
+    state.rollbackAt = { ...state.rollbackAt, [target.version]: target.rollback };
+    changed = true;
+  }
+  return changed;
+}
+function verifiedCandidate() {
+  const { verified } = readState();
+  if (!verified) return null;
+  const entry = entryOf(versionDir(verified));
+  return fs23.existsSync(entry) ? { version: verified, entry } : null;
 }
 function provenNewer(own) {
-  const proven = readState().good.find((v) => fs21.existsSync(entryOf(versionDir(v))));
-  return proven && compare(proven, own) > 0 ? proven : null;
+  const verified = verifiedCandidate();
+  return verified && compare(verified.version, own) > 0 ? verified.version : null;
 }
-async function candidates(own) {
-  const state = readState();
-  const proven = provenNewer(own.version);
-  const current2 = proven ? { version: proven, entry: entryOf(versionDir(proven)) } : own;
+async function findUpdate(own, current2, source2, online = false) {
   const desired = await askTarget(machineId());
-  const target = desired?.version;
-  if (!desired || !target || waiting(desired, current2.version) || state.bad.includes(target)) return [current2];
-  if (target === current2.version) {
-    remember(desired);
-    return [current2];
+  if (!desired || online && !desired.restartable || waiting(desired, current2.version)) return null;
+  const version = desired.version;
+  if (version === current2.version) return { ...current2, target: desired };
+  if (cooling(version)) return null;
+  let entry = own.entry;
+  if (version !== own.version || !fs23.existsSync(entry)) {
+    const got = await install2(version);
+    if (!got.ok) {
+      logRunner("launcher", "update_failed", { version, source: source2, stage: "download", code: got.why });
+      if (got.why === "node") status(t.nodeTooOld(got.detail));
+      else if (online) status(t.updateDownloadFailed());
+      return null;
+    }
+    entry = entryOf(got.dir);
   }
-  if (target === own.version) {
-    remember(desired);
-    return [own, current2];
-  }
-  const got = await install2(target);
-  if (got.ok) {
-    const latest = await askTarget(machineId());
-    if (!latest || latest.version !== target || waiting(latest, current2.version)) return [current2];
-    remember(latest);
-    const known2 = state.good.includes(target);
-    return [{ version: target, entry: entryOf(got.dir), fresh: !known2 }, current2];
-  }
-  if (got.why === "node") status(t.nodeTooOld(got.detail));
-  return [current2];
+  const latest = await askTarget(machineId());
+  if (latest?.version !== version || online && !latest.restartable || waiting(latest, current2.version)) return null;
+  logRunner("launcher", "update_ready", { version, source: source2, stage: "download" });
+  return { version, entry, target: latest };
 }
-async function pluginEntry(min) {
+async function pluginEntry(min, source2, bundled) {
   if (process.env.WILDCRANE_RUNNER_DIR) return pluginOf(process.env.WILDCRANE_RUNNER_DIR);
-  const { bad } = readState();
+  const { verified, retry: retry2 } = readState();
   let names = [];
   try {
-    names = fs21.readdirSync(versionsDir());
+    names = fs23.readdirSync(versionsDir());
   } catch {
   }
-  const newest2 = names.filter((v) => !bad.includes(v) && fs21.existsSync(pluginOf(versionDir(v)))).sort(compare).at(-1);
-  if (newest2 && (!min || compare(newest2, min) >= 0)) return pluginOf(versionDir(newest2));
+  const installed = names.filter((v) => isVersion(v) && (!min || compare(v, min) >= 0) && fs23.existsSync(pluginOf(versionDir(v)))).sort((a, b) => a === verified ? -1 : b === verified ? 1 : compare(b, a)).filter((v) => retry2?.version !== v || retry2.after <= Date.now());
+  const current2 = installed.find((v) => !bundled || compare(v, bundled) >= 0);
+  if (current2) return pluginOf(versionDir(current2));
   const target = await askTarget(machineId());
-  if (!target || min && compare(target.version, min) < 0) return null;
-  const got = await install2(target.version);
-  if (!got.ok || !fs21.existsSync(pluginOf(got.dir))) return null;
-  remember(target);
-  return pluginOf(got.dir);
+  const offered = target && (!bundled || compare(target.version, bundled) >= 0) && !cooling(target.version) ? target.version : void 0;
+  for (const version of /* @__PURE__ */ new Set([offered, bundled])) {
+    if (!version || min && compare(version, min) < 0) continue;
+    const got = await install2(version);
+    if (!got.ok) {
+      logRunner("launcher", "update_failed", { version, source: source2, stage: "download", code: got.why });
+      continue;
+    }
+    if (fs23.existsSync(pluginOf(got.dir))) {
+      logRunner("launcher", "update_ready", { version, source: source2, stage: "download" });
+      return pluginOf(got.dir);
+    }
+  }
+  return installed[0] ? pluginOf(versionDir(installed[0])) : null;
 }
-function runOnce(candidate, options) {
+function runOnce(own, candidate, options, trial) {
+  const fields2 = { version: candidate.version, source: options.kind ?? "terminal" };
+  logRunner("launcher", "starting", fields2);
   return new Promise((resolve2) => {
     const child = spawn2(process.execPath, [candidate.entry], {
       cwd: runnerCwd(),
@@ -48455,20 +49029,14 @@ function runOnce(candidate, options) {
       if (checking || stopping || update2) return;
       checking = true;
       try {
-        const desired = await askTarget(machineId());
-        if (!desired?.restartable || waiting(desired, candidate.version)) return;
-        const target = desired.version;
-        if (!target || target === candidate.version || readState().bad.includes(target)) return;
-        const got = await install2(target);
-        if (!got.ok) {
-          status("Runner \u66F4\u65B0\u4E0B\u8F7D\u5931\u8D25\uFF0C\u7EE7\u7EED\u8FD0\u884C\u5F53\u524D\u7248\u672C\uFF0C\u7A0D\u540E\u91CD\u8BD5\u3002");
+        const next = await findUpdate(own, candidate, fields2.source, true);
+        if (!next || stopping || !child.connected) return;
+        if (next.version === candidate.version) {
+          const state = readState();
+          if (next.target && state.verified === candidate.version && remember(state, next.target)) writeState(state);
           return;
         }
-        if (stopping || child.exitCode !== null || child.signalCode !== null) return;
-        const latest = await askTarget(machineId());
-        if (!latest?.restartable || latest.version !== target || waiting(latest, candidate.version)) return;
-        remember(latest);
-        update2 = { version: target, entry: entryOf(got.dir), fresh: !readState().good.includes(target) };
+        update2 = next;
         child.send({ type: "update" }, () => {
         });
       } finally {
@@ -48480,20 +49048,15 @@ function runOnce(candidate, options) {
       });
     }, Number(process.env.WILDCRANE_UPDATE_MS) || 6e4);
     let connected = false;
-    let timer = null;
     let timedOut = false;
     let stopping = false;
     let duplicate = false;
     let forceKill;
-    const watchConnection = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGTERM");
-        forceKill = setTimeout(() => child.kill("SIGKILL"), 5e3);
-      }, Number(process.env.WILDCRANE_CONNECT_MS) || CONNECT_MS);
-    };
-    if (candidate.fresh) watchConnection();
+    const timer = trial ? setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      forceKill = setTimeout(() => child.kill("SIGKILL"), 5e3);
+    }, Number(process.env.WILDCRANE_CONNECT_MS) || CONNECT_MS) : void 0;
     const forward = (signal) => () => {
       stopping = true;
       child.kill(signal);
@@ -48505,8 +49068,10 @@ function runOnce(candidate, options) {
     options.signal?.addEventListener("abort", onTerm, { once: true });
     if (options.signal?.aborted) onTerm();
     child.on("message", (message) => {
-      if (message.type === "update-deferred") update2 = null;
-      if (message.type === "reconnecting" && candidate.fresh && !connected && !timedOut) watchConnection();
+      if (message.type === "update-deferred") {
+        if (update2) logRunner("launcher", "update_deferred", { ...fields2, version: update2.version });
+        update2 = null;
+      }
       if (message.type === "waiting") {
         duplicate = true;
         process.stderr.write(`${t.alreadyRunning()}
@@ -48514,13 +49079,14 @@ function runOnce(candidate, options) {
         child.kill("SIGTERM");
         return;
       }
+      if (timedOut || duplicate || stopping) return;
       if (message.type === "connected" && !connected) {
         connected = true;
+        logRunner("launcher", "connected", fields2);
         if (timer) clearTimeout(timer);
-        if (candidate.entry.startsWith(versionsDir() + path25.sep)) fs21.rmSync(legacyVersionsDir(), { recursive: true, force: true });
-        const installed = candidate.entry.startsWith(versionsDir() + path25.sep);
-        if (candidate.fresh || installed && !readState().good.includes(candidate.version)) markGood(candidate.version);
-        if (candidate.fresh) status(t.updated(candidate.version));
+        if (cached2(candidate)) fs23.rmSync(legacyVersionsDir(), { recursive: true, force: true });
+        verify(candidate);
+        if (trial) status(t.updated(candidate.version));
       }
       options.onMessage?.(message);
     });
@@ -48535,42 +49101,68 @@ function runOnce(candidate, options) {
       process.off("SIGINT", onInt);
       process.off("SIGTERM", onTerm);
       options.signal?.removeEventListener("abort", onTerm);
+      logRunner("launcher", "exited", { ...fields2, exitCode: code, signal });
       if (spawnError) {
-        status(`Runner \u65E0\u6CD5\u542F\u52A8\uFF1A${spawnError.message}`);
-        return resolve2({ exit: 1 });
+        logRunner("launcher", "startup_failed", { ...fields2, stage: "spawn", code: errno(spawnError) });
+        status(t.spawnFailed(spawnError.message));
+        return resolve2(trial && !stopping ? { failed: "crashed" } : { exit: 1 });
       }
-      if (duplicate || code === EXIT_ALREADY_RUNNING) return resolve2({ exit: EXIT_ALREADY_RUNNING });
+      if (duplicate || code === EXIT_ALREADY_RUNNING) {
+        logRunner("launcher", "startup_failed", { ...fields2, code: "already_running" });
+        return resolve2({ exit: EXIT_ALREADY_RUNNING });
+      }
       if (code === EXIT_UPDATE && update2 && !stopping) return resolve2({ update: update2 });
-      if (connected || !candidate.fresh || stopping) return resolve2({ exit: code ?? (signal ? 1 : 0) });
-      if (timedOut) return resolve2({ failed: "timeout" });
-      if (code === 0 || code === EXIT_REFUSED || code === EXIT_OUTDATED) return resolve2({ exit: code });
-      resolve2({ failed: "crashed" });
+      const failed = timedOut ? "timeout" : "crashed";
+      if (!connected && !stopping && (trial || code === null || code === 1)) {
+        logRunner("launcher", "startup_failed", { ...fields2, code: failed });
+      }
+      resolve2(trial && !connected && !stopping ? { failed } : { exit: code ?? (signal ? 1 : 0) });
     });
   });
 }
 async function launch(own, options = {}) {
-  const list3 = await candidates(own);
-  for (let i = 0; i < list3.length; i++) {
-    if (options.signal?.aborted) return 0;
-    const candidate = list3[i];
-    const outcome = await runOnce(candidate, options);
+  startRunnerLogMaintenance();
+  const source2 = options.kind ?? "terminal";
+  const release = cached2(own) ? hold(versionDir(own.version)) : void 0;
+  try {
+    return await supervise(own, source2, options);
+  } catch (error) {
+    logRunner("launcher", "startup_failed", { version: own.version, source: source2, code: errno(error) });
+    throw error;
+  } finally {
+    release?.();
+  }
+}
+async function supervise(own, source2, options) {
+  const verified = verifiedCandidate();
+  const current2 = verified && (cached2(own) || compare(verified.version, own.version) > 0) ? verified : own;
+  let candidate = await findUpdate(own, current2, source2) ?? current2;
+  let previous = candidate.version === current2.version ? null : current2;
+  while (!options.signal?.aborted) {
+    if (previous && compare(candidate.version, previous.version) < 0) logRunner("launcher", "rollback", { version: candidate.version, source: source2 });
+    const outcome = await runOnce(own, candidate, options, previous !== null);
     if ("exit" in outcome) return outcome.exit;
     if ("update" in outcome) {
       const latest = await askTarget(machineId());
-      if (!latest || latest.version !== outcome.update.version || waiting(latest, candidate.version)) {
-        list3.splice(i + 1, list3.length, candidate);
+      if (!latest?.restartable || latest.version !== outcome.update.version || waiting(latest, candidate.version)) {
+        previous = null;
         continue;
       }
-      list3.splice(i + 1, list3.length, outcome.update, candidate);
-      continue;
+      previous = candidate;
+      candidate = { ...outcome.update, target: latest };
+    } else if (previous) {
+      const state = readState();
+      state.retry = { version: candidate.version, after: Date.now() + RETRY_MS };
+      writeState(state);
+      logRunner("launcher", "rollback", { version: previous.version, source: source2, code: outcome.failed });
+      status(t.rolledBack(previous.version));
+      candidate = previous;
+      previous = null;
     }
-    markBad(candidate.version);
-    const next = list3[i + 1];
-    if (next) status(t.rolledBack(next.version));
   }
-  return 1;
+  return 0;
 }
-var ASK_MS, CONNECT_MS, KEEP, stateFile, pluginOf;
+var ASK_MS, CONNECT_MS, RETRY_MS, isVersion, stateFile, cached2, pluginOf;
 var init_launcher = __esm({
   "src/launcher.ts"() {
     "use strict";
@@ -48581,11 +49173,14 @@ var init_launcher = __esm({
     init_protocol();
     init_update();
     init_cache();
+    init_runner_log();
     ASK_MS = 5e3;
     CONNECT_MS = 2 * 6e4;
-    KEEP = 2;
-    stateFile = () => path25.join(versionsDir(), "state.json");
-    pluginOf = (dir) => path25.join(dir, "dist", "plugin.mjs");
+    RETRY_MS = 5 * 6e4;
+    isVersion = (value) => typeof value === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value);
+    stateFile = () => path27.join(versionsDir(), "state.json");
+    cached2 = (candidate) => candidate.entry === entryOf(versionDir(candidate.version));
+    pluginOf = (dir) => path27.join(dir, "dist", "plugin.mjs");
   }
 });
 
@@ -48606,11 +49201,20 @@ if (Number(process.versions.node.split(".")[0]) < 22) {
 }
 var { useRunnerHome: useRunnerHome2 } = await Promise.resolve().then(() => (init_home(), home_exports));
 var { pluginEntry: pluginEntry2 } = await Promise.resolve().then(() => (init_launcher(), launcher_exports));
+var { VERSION: VERSION3 } = await Promise.resolve().then(() => (init_protocol(), protocol_exports));
+var { errno: errno2, logRunner: logRunner2 } = await Promise.resolve().then(() => (init_runner_log(), runner_log_exports));
 var FIRST = { kimi: "0.6.35", grok: "0.6.53", opencode: "0.6.55", antigravity: "0.6.107" };
 useRunnerHome2();
-var entry = await pluginEntry2(FIRST[process.argv[2] ?? ""]);
-if (entry) await import(pathToFileURL(entry).href);
-else {
-  process.stderr.write("WildCrane could not download its Runner. Check the network, then restart.\n");
-  process.exit(1);
+var source = process.argv[2] ?? "claude-code";
+try {
+  const entry = await pluginEntry2(FIRST[source], source, VERSION3);
+  if (entry) await import(pathToFileURL(entry).href);
+  else {
+    logRunner2("launcher", "startup_failed", { source, stage: "plugin_entry", code: "unavailable" });
+    process.stderr.write("WildCrane could not download its Runner. Check the network, then restart.\n");
+    process.exit(1);
+  }
+} catch (error) {
+  logRunner2("launcher", "startup_failed", { source, stage: "plugin_entry", code: errno2(error) });
+  throw error;
 }

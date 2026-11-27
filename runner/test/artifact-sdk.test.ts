@@ -30,13 +30,13 @@ describe('SDK 资源声明与依赖图', () => {
     assert.deepEqual(bodyReferences(body).map(r => r.src), ['a.png', 'a.png', 'b.png', 'old.tsx', 'a.mp4', 'b.json', 'time.json', 'slides.json', 'notes.pdf'])
   })
 
-  it('递归分镜与对比、规范路径去重，时间轴与普通 JSON 保持附件用途', () => {
+  it('递归分镜与对比、规范路径去重，时间轴与普通 JSON 保持附件用途', async () => {
     const files: Record<string, unknown> = {
       '/c/a.json': { a: 'v.mp4', b: 'b.json', shots: 'time.json' },
       '/c/b.json': { slides: [{ preview: { src: 'p.html' }, assets: ['x.png', './x.png'] }], shots: [{ frames: [{ src: 'x.png' }] }] },
       '/c/time.json': [{ id: 'S1', start: 0, end: 1, name: '一' }],
     }
-    const graph = collect('<Compare a="a.json" b="v.mp4" />', '/c/card.md', {
+    const graph = await collect('<Compare a="a.json" b="v.mp4" />', '/c/card.md', {
       resolve: (src, owner) => { const key = new URL(src, `file://${owner}`).pathname; return { key, file: key } },
       read: key => key.endsWith('.json') ? JSON.stringify(files[key]) : '<main>页面</main>', retained: () => [],
     })
@@ -50,7 +50,7 @@ describe('SDK 资源声明与依赖图', () => {
     assert.deepEqual(bodyReferences('<Asset\n    src="zh.png"\n    variants=\'{"中文":"zh.png","English":"en.png"}\'\n/>\n`跨行\n<Asset src="code.png" />\n`\n[附件](notes.pdf)').map(r => r.src), ['zh.png', 'zh.png', 'en.png', 'notes.pdf'])
   })
 
-  it('collects video overlays independently and follows relative HTML and CSS files', () => {
+  it('collects video overlays independently and follows relative HTML and CSS files', async () => {
     const video = `<Asset src="film.mp4" variants='{"English":"film.mp4","中文":"film.mp4","Audio description":"film.mp4"}' overlay='{"English":"titles/en.html","中文":"titles/zh.htm"}' />`
     const shared = '<Asset src="loop.webm" overlay="titles/en.html" loop />'
     const [tag, loop] = mockupTags(`${video}\n${shared}`)
@@ -68,7 +68,7 @@ describe('SDK 资源声明与依赖图', () => {
       '/c/titles/style.css': '@font-face { src: url(../fonts/title.woff2); }',
       '/c/star.svg': '', '/c/fonts/title.woff2': '',
     }
-    const graph = collect(video, '/c/card.md', {
+    const graph = await collect(video, '/c/card.md', {
       resolve: (src, owner) => {
         const key = new URL(src, `file://${owner}`).pathname
         if (!Object.hasOwn(files, key)) throw new Error('file not found')
@@ -77,8 +77,8 @@ describe('SDK 资源声明与依赖图', () => {
       read: file => files[file]!, retained: () => [],
     })
     assert.deepEqual(graph.map(node => [node.key, node.error]), [
-      ['/c/film.mp4', undefined], ['/c/star.svg', undefined], ['/c/fonts/title.woff2', undefined],
-      ['/c/titles/style.css', undefined], ['/c/titles/en.html', undefined], ['titles/zh.htm', 'file not found'],
+      ['/c/film.mp4', undefined], ['/c/fonts/title.woff2', undefined], ['/c/titles/style.css', undefined],
+      ['/c/star.svg', undefined], ['/c/titles/en.html', undefined], ['titles/zh.htm', 'file not found'],
     ])
   })
 
@@ -97,6 +97,25 @@ describe('SDK 资源声明与依赖图', () => {
     const single = '<Asset src="podcast.mp3" captions="podcast.vtt" />'
     assert.equal(captionsPath(mockupTags(single)[0]!.captions, null), 'podcast.vtt')
     assert.equal(bodyReferences(single)[1]?.src, 'podcast.vtt')
+  })
+
+  it('collects task references from playback options and Markdown', () => {
+    const body = `<Asset src="asset:films/demo.mp4" label="Demo" captions="asset:captions/demo.vtt" overlay="asset:overlays/demo.html" />
+
+[Report](asset:report.pdf)
+[Download](asset:reports/Release%20notes%20(final).pdf)
+![Cover](asset:images/cover(draft(v2)).png "Cover (draft)") ![Logo](<asset:images/logo (new).png> 'Logo')
+[Slides](asset:slides(deck).pdf (Download slides))
+[Unclosed](asset:broken(v2).pdf
+<!-- [Hidden](asset:comment(v1).png) -->
+` + String.raw`[Escaped](asset:appendix\).pdf)`
+    const lines: number[] = []
+    assert.deepEqual(bodyReferences(body, (_, line) => lines.push(line)).map(({ src }) => src), [
+      'asset:films/demo.mp4', 'asset:overlays/demo.html', 'asset:captions/demo.vtt', 'asset:report.pdf',
+      'asset:reports/Release%20notes%20(final).pdf', 'asset:images/cover(draft(v2)).png', 'asset:images/logo (new).png',
+      'asset:slides(deck).pdf', 'asset:appendix).pdf',
+    ])
+    assert.deepEqual(lines, [1, 1, 1, 3, 4, 5, 5, 6, 9])
   })
 
   it('reads and downloads the pinned subtitle bytes, handling invalid or unavailable cues independently', async () => {
@@ -121,35 +140,35 @@ describe('SDK 资源声明与依赖图', () => {
     assert.deepEqual(await service.captionsOfSrc('missing.vtt').load!(), [])
   })
 
-  it('循环仍抛错；缺失文件、无效 JSON 和不符合声明的分镜记在节点上（#457、#458）', () => {
+  it('循环仍抛错；缺失文件、无效 JSON 和不符合声明的分镜记在节点上（#457、#458）', async () => {
     const host = { resolve: (src: string) => ({ key: src, file: src }), retained: () => [], read: () => JSON.stringify({ a: 'loop.json', b: 'v.mp4' }) }
-    assert.throws(() => collect('<Compare a="loop.json" b="v.mp4" />', 'card.md', host), /loop.json.*资源依赖循环/)
-    const bad = collect('<Storyboard src="bad.json" />', 'card.md', { ...host, read: () => '{' })
+    await assert.rejects(() => collect('<Compare a="loop.json" b="v.mp4" />', 'card.md', host), /loop.json.*circular asset dependency/)
+    const bad = await collect('<Storyboard src="bad.json" />', 'card.md', { ...host, read: () => '{' })
     assert.equal(bad.find(n => n.key === 'bad.json')!.error, 'not valid JSON: bad.json')
-    assert.match(collect('<Storyboard src="bad.json" />', 'card.md', { ...host, read: () => '{"slides":"x"}' }).at(-1)!.error!, /does not match storyboard at \/slides/)
-    const missing = collect('<Storyboard src="deck.json" />\n\n<Asset src="gone.png" />', 'card.md', {
+    assert.match((await collect('<Storyboard src="bad.json" />', 'card.md', { ...host, read: () => '{"slides":"x"}' })).at(-1)!.error!, /does not match storyboard at \/slides/)
+    const missing = await collect('<Storyboard src="deck.json" />\n\n<Asset src="gone.png" />', 'card.md', {
       ...host, read: () => JSON.stringify({ slides: [{ preview: { src: 'gone.html' } }] }),
       resolve: src => { if (src.startsWith('gone')) throw new Error(`file not found: ${src}`); return { key: src, file: src } },
     })
     assert.deepEqual(missing.map(n => [n.key, n.error]), [['deck.json', 'file not found: gone.html'], ['gone.png', 'file not found: gone.png']])
   })
 
-  it('页面引用的图片、样式和字体按 html 清单收集，缺失的文件记在页面的那一行（#458）', () => {
+  it('页面引用的图片、样式和字体按 html 清单收集，缺失的文件记在页面的那一行（#458）', async () => {
     const page = '<html><head><style>@font-face{src:url("../fonts/a.otf")}</style></head>\n<body><img src="logo.svg?v=1">\n<img srcset="a.png 1x, b.png 2x" src="https://x.test/c.png">\n<img src="gone.png"><a href="other.html">x</a></body></html>'
-    const graph = collect('<Asset src="pages/p.html" />', '/c/card.md', {
+    const graph = await collect('<Asset src="pages/p.html" />', '/c/card.md', {
       resolve: (src, owner) => { const key = new URL(src, `file://${owner}`).pathname; if (key.includes('gone')) throw new Error('no such file'); return { key, file: key } },
       read: () => page, retained: () => [],
     })
     const p = graph.at(-1)!
-    assert.deepEqual([...p.dependencies.keys()], ['logo.svg?v=1', 'a.png', 'b.png', '../fonts/a.otf'])
+    assert.deepEqual([...p.dependencies.keys()], ['../fonts/a.otf', 'logo.svg?v=1', 'a.png', 'b.png'])
     assert.deepEqual(p.problems, [{ src: 'gone.png', line: 4, message: 'no such file' }])
     assert.equal(p.error, 'no such file')
     assert.match(mapReferences(manifestOf('html'), page, s => s === 'a.png' ? 'art_a' : s) as string, /srcset="art_a 1x, b.png 2x"/)
   })
 
-  it('脚本里的文字不算引用，标签和样式里缺失的文件照旧报错（#560）', () => {
+  it('脚本里的文字不算引用，标签和样式里缺失的文件照旧报错（#560）', async () => {
     const page = '<script src="app.js"></script><script>const f = e => `url(${e})`; el.innerHTML = \'<img src="x.png">\'</script>\n<img src="gone.png"><style>b{background:url(gone-bg.png)}</style><link rel="stylesheet" href="s.css">'
-    const graph = collect('<Asset src="p.html" />', '/c/card.md', {
+    const graph = await collect('<Asset src="p.html" />', '/c/card.md', {
       resolve: (src, owner) => { const key = new URL(src, `file://${owner}`).pathname; if (key.includes('gone')) throw new Error('no such file'); return { key, file: key } },
       read: () => page, retained: () => [],
     })
@@ -158,14 +177,14 @@ describe('SDK 资源声明与依赖图', () => {
     assert.deepEqual(p.problems.map(x => x.src), ['gone.png', 'gone-bg.png'])
   })
 
-  it('collects external stylesheets and their relative imports and images', () => {
+  it('collects external stylesheets and their relative imports and images', async () => {
     const files: Record<string, string> = {
       '/c/page.html': '<link rel="stylesheet" href="styles/main.css">',
       '/c/styles/main.css': '@import "theme/skin.css"; /* url(missing.png) */',
       '/c/styles/theme/skin.css': 'main { background: url(../../images/cover.svg#detail) }',
       '/c/images/cover.svg': '<svg />',
     }
-    const graph = collect('<Asset src="page.html" />', '/c/card.md', {
+    const graph = await collect('<Asset src="page.html" />', '/c/card.md', {
       resolve: (src, owner) => {
         const key = new URL(src, `file://${owner}`).pathname
         if (!(key in files)) throw new Error(`file not found: ${key}`)
@@ -181,8 +200,8 @@ describe('SDK 资源声明与依赖图', () => {
     assert.ok(graph.every(node => !node.error))
   })
 
-  it('本机缺少已有云端分镜时，仍保留依赖的用途和嵌套资源', () => {
-    const graph = collect('<Storyboard src="remote.json" />', 'card.md', {
+  it('本机缺少已有云端分镜时，仍保留依赖的用途和嵌套资源', async () => {
+    const graph = await collect('<Storyboard src="remote.json" />', 'card.md', {
       resolve: src => ({ key: src, file: src === 'remote.json' ? null : src }),
       retained: key => key === 'remote.json' ? [{ src: 'nested.json', types: ['storyboard'] }] : [],
       read: () => JSON.stringify({ shots: [{ frames: [{ src: 'image.png' }] }] }),
@@ -191,23 +210,23 @@ describe('SDK 资源声明与依赖图', () => {
     assert.equal(graph[1]!.kind, 'storyboard')
   })
 
-  it('Tiled 地图的外置 .tsx 图块集按 tiled 收集，并带上它的图片（#480）', () => {
+  it('Tiled 地图的外置 .tsx 图块集按 tiled 收集，并带上它的图片（#480）', async () => {
     const files: Record<string, string> = {
       '/c/level.tmx': '<map><tileset firstgid="1" source="tiles/forest.tsx"/><imagelayer><image source="sky.png"/></imagelayer></map>',
       '/c/tiles/forest.tsx': '<tileset name="forest"><image source="forest.png" width="64" height="64"/></tileset>',
     }
-    const graph = collect('<Asset src="level.tmx" />', '/c/card.md', {
+    const graph = await collect('<Asset src="level.tmx" />', '/c/card.md', {
       resolve: (src, owner) => { const key = new URL(src, `file://${owner}`).pathname; return { key, file: key } },
       read: key => files[key] ?? '', retained: () => [],
     })
     assert.deepEqual(graph.map(n => [n.key, n.kind]), [['/c/tiles/forest.png', 'image'], ['/c/tiles/forest.tsx', 'tiled'], ['/c/sky.png', 'image'], ['/c/level.tmx', 'tiled']])
   })
-  it('TexturePacker 帧数据按 spritesheet 收集并带上图片，Aseprite 导出仍是附件（#481）', () => {
+  it('TexturePacker 帧数据按 spritesheet 收集并带上图片，Aseprite 导出仍是附件（#481）', async () => {
     const files: Record<string, string> = {
       '/c/hero.json': JSON.stringify({ frames: { 'run_01.png': { frame: { x: 0, y: 0, w: 8, h: 8 } } }, meta: { app: 'https://www.codeandweb.com/texturepacker', image: 'hero.png' } }),
       '/c/ase.json': JSON.stringify({ frames: [{ filename: 'a 0', frame: { x: 0, y: 0, w: 8, h: 8 }, duration: 100 }], meta: { app: 'https://www.aseprite.org/', image: 'ase.png' } }),
     }
-    const graph = collect('<Asset src="hero.json" />\n\n<Asset src="ase.json" />\n\n<Asset src="pic.png" />', '/c/card.md', {
+    const graph = await collect('<Asset src="hero.json" />\n\n<Asset src="ase.json" />\n\n<Asset src="pic.png" />', '/c/card.md', {
       resolve: (src, owner) => { const key = new URL(src, `file://${owner}`).pathname; return { key, file: key } },
       read: key => files[key] ?? '', retained: () => [],
     })
@@ -319,16 +338,41 @@ describe('SDK 内置预览运行时', () => {
   })
 
   it('文档里的图片换成可显示的地址，缺失的图记在文档那一行（#497）', async () => {
-    const text = '# 试跑\n\n![待机](gif)\n<img src="gone.png">\n![远程](https://x.test/y.png)'
-    const p = preview([art('notes', 'markdown', [version(1, text)]), art('gif', 'image', [version(1, null, 'image/gif')])])
-    const shown = (await p.viewOfArtifact('notes').deferred!.load()).article!.text
-    assert.match(shown, /!\[待机\]\(blob:[^)]+\)\n<img src="gone.png">\n!\[远程\]\(https:\/\/x.test\/y.png\)/)
-    const graph = collect('<Asset src="trial/notes.md" />', '/c/card.md', {
+    const nested = 'moves/idle%20(draft(v2)).gif'
+    const paired = 'moves/run(final).gif'
+    const local = 'asset:trial/moves/idle%20(draft(v2)).gif'
+    const doc = 'asset:trial/notes.mdx'
+    const body = `# 试跑\n\n![待机](<${nested}> "封面 (v2)") 正文\n![运行](${paired} (运行中))\n<img src="${paired}">\n<img src="gone.png">\n![远程](https://x.test/y\\(1\\).png)\n[链接](missing.pdf)`
+    const examples = [
+      '```md',
+      '![封面](<' + nested + '>)',
+      '<img src="' + paired + '">',
+      '![示例](only-an-example.png)',
+      '```',
+      '',
+      '`![运行](' + paired + ')`',
+    ].join('\n')
+    const text = body + '\n\n' + examples
+    const p = preview([
+      art('notes', 'markdown', [version(1, text)], doc),
+      art('idle', 'image', [version(1, null, 'image/gif'), version(2, null, 'image/gif')], local),
+      art('run', 'image', [version(1, null, 'image/gif')], `asset:trial/${paired}`),
+    ], {
+      [doc]: { artifact: 'notes', version: 1 },
+      [local]: { artifact: 'idle', version: 1 },
+      [`asset:trial/${paired}`]: { artifact: 'run', version: 1 },
+    }, { readFile: async url => {
+      assert.equal(url, 'file-1-image/gif')
+      return new Blob(['图像'], { type: 'image/gif' })
+    } })
+    const shown = (await p.viewOfSrc(doc).deferred!.load()).article!.text
+    assert.equal(shown.replace(/blob:[^\s>)"]+/g, 'blob:image'), body.replaceAll(nested, 'blob:image').replaceAll(paired, 'blob:image') + '\n\n' + examples)
+    const graph = await collect('<Asset src="trial/notes.mdx" />', '/c/card.md', {
       resolve: (src, owner) => { const key = new URL(src, `file://${owner}`).pathname; if (key.includes('gone')) throw new Error('no such file'); return { key, file: key } },
-      read: () => text.replace('(gif)', '(moves/idle.gif)'), retained: () => [],
+      read: () => text, retained: () => [],
     })
-    assert.deepEqual(graph.map(n => n.key), ['/c/trial/moves/idle.gif', '/c/trial/notes.md'])
-    assert.deepEqual(graph.at(-1)!.problems, [{ src: 'gone.png', line: 4, message: 'no such file' }])
+    assert.deepEqual(graph.map(n => n.key), [`/c/trial/${nested}`, `/c/trial/${paired}`, '/c/trial/notes.mdx'])
+    assert.deepEqual(graph.at(-1)!.problems, [{ src: 'gone.png', line: 6, message: 'no such file' }])
   })
 
   it('第三方组件继续提供 SDK Context，审核只读，保存验证权限与 schema', async () => {
@@ -426,9 +470,9 @@ describe('画不出的预览（#456）', () => {
 it('Studio reviews declare frozen files and every result dependency, preserve partial failures and enforce current-task pins', async () => {
   const review = { version: 2, base: null, fingerprint: 'draft', agents: [{ agent: 'writer', title: { en: 'Writer' } }], files: [{ path: 'agents/writer/AGENT.md', before: null, after: 'after.txt', diff: 'change.diff' }], results: [{ agent: 'writer', component: 'Compare', a: 'cycle.json', b: 'page.html' }] }
   const files: Record<string, string> = { 'review.json': JSON.stringify(review), 'after.txt': 'Write.', 'change.diff': '+Write.', 'cycle.json': '{"a":"cycle.json","b":"page.html"}', 'page.html': '<p>Existing result</p>' }
-  const graph = collect('<Studio src="review.json" />', 'card.md', { resolve: src => { if (!(src in files)) throw Error(`Missing: ${src}`); return { key: src, file: src } }, read: file => files[file]!, retained: () => [] })
+  const graph = await collect('<Studio src="review.json" />', 'card.md', { resolve: src => { if (!(src in files)) throw Error(`Missing: ${src}`); return { key: src, file: src } }, read: file => files[file]!, retained: () => [] })
   assert.equal(graph.at(-1)?.error, undefined)
-  assert.match(graph.find(n => n.key === 'cycle.json')!.error!, /循环/)
+  assert.match(graph.find(n => n.key === 'cycle.json')!.error!, /circular asset dependency/)
   const p = preview([
     art('root', 'studio', [version(1, review)]),
     art('after', 'asset', [version(1, 'Pinned text'), version(2, 'Newer unreviewed text')]),

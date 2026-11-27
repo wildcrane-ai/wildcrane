@@ -159,14 +159,83 @@ describe('akb template', () => {
 
   it('fetches previews under the template’s name, apart from the template', async () => {
     signIn()
+    const previewUrl = `${API}/v1/catalog/hero-tilted-screen/media/rev-1/cover.png`
+    const pageUrl = 'https://wildcrane.ai/templates/hero-tilted-screen'
     serve({
-      '/hero-tilted-screen/previews': json({ previews: [{ path: 'cover.png', size: 3 }] }),
+      '/hero-tilted-screen/previews': json({
+        name: 'hero-tilted-screen',
+        revision: 'rev-1',
+        pageUrl,
+        previews: [{ path: 'cover.png', size: 3, sha256: sha('png'), url: previewUrl }],
+      }),
       '/hero-tilted-screen/previews/cover.png': () => new Response('png'),
     })
     const to = path.join(home, 'assets')
-    const { code } = await akb(['template', 'preview', 'hero-tilted-screen', '--to', to])
+    const { code, out } = await akb(['template', 'preview', 'hero-tilted-screen', '--to', to, '--json'])
     assert.equal(code, 0)
     assert.deepEqual(fs.readdirSync(to), ['hero-tilted-screen-cover.png'])
+    const file = path.join(to, 'hero-tilted-screen-cover.png')
+    assert.deepEqual(JSON.parse(out), {
+      ok: true,
+      name: 'hero-tilted-screen',
+      revision: 'rev-1',
+      pageUrl,
+      previews: [file],
+      files: [{ path: 'cover.png', file, size: 3, sha256: sha('png'), url: previewUrl }],
+      output: `${file} (${previewUrl})\npage: ${pageUrl}`,
+    })
+  })
+
+  it('includes revision, pageUrl, website.scope, and preview URLs in search and get', async () => {
+    signIn()
+    const previewUrl = `${API}/v1/catalog/harbor-demo-landing/media/rev-2/landing.webp`
+    const pageUrl = 'https://wildcrane.ai/templates/harbor-demo-landing'
+    serve({
+      '': json({
+        templates: [{
+          name: 'harbor-demo-landing',
+          title: 'Harbor Demo Landing Page',
+          summary: 'A B2B SaaS landing page.',
+          description: 'Full page.',
+          tags: ['website'],
+          access: 'pro',
+          revision: 'rev-2',
+          pageUrl,
+          previews: [{ path: 'landing.webp', size: 7, url: previewUrl }],
+          website: {
+            scope: 'page',
+            useCase: 'b2b-saas',
+            primaryAction: 'book-demo',
+            entry: '/',
+            pages: [{ path: '/', title: '预约演示', role: 'landing', previewUrl }],
+          },
+        }],
+      }),
+      '/harbor-demo-landing': json({
+        template: {
+          title: 'Harbor Demo Landing Page',
+          revision: 'rev-2',
+          pageUrl,
+          previews: [{ path: 'landing.webp', size: 7, url: previewUrl }],
+          files: [{ path: 'template.md', size: 8, sha256: sha('# Harbor') }],
+        },
+      }),
+      '/harbor-demo-landing/files/template.md': () => new Response('# Harbor'),
+    })
+    const searched = await akb(['template', 'search', '--category', 'ui', '--tags', 'website'])
+    assert.equal(searched.code, 0)
+    assert.match(searched.out, /\[pro, page, rev rev-2\]/)
+    assert.match(searched.out, new RegExp(`page: ${pageUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+    assert.match(searched.out, new RegExp(`landing\\.webp \\(${previewUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`))
+
+    const got = await akb(['template', 'get', 'harbor-demo-landing', '--to', path.join(home, 'site'), '--json'])
+    assert.equal(got.code, 0)
+    const parsed = JSON.parse(got.out)
+    assert.equal(parsed.title, 'Harbor Demo Landing Page')
+    assert.equal(parsed.revision, 'rev-2')
+    assert.equal(parsed.pageUrl, pageUrl)
+    assert.deepEqual(parsed.previews, [{ path: 'landing.webp', size: 7, url: previewUrl }])
+    assert.deepEqual(parsed.files, ['template.md'])
   })
 
   it('keeps a preview already named after the template as it is', async () => {

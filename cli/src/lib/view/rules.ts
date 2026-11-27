@@ -63,10 +63,6 @@ const planUnfinished = (card: Card): boolean => card.deliversIn === 'plan' && pl
 
 // ---- pick order ------------------------------------------------------------
 //
-// Which card to start next. `ready` cards lead (vetted, plan concrete), `implementing`
-// follows (already in flight), raw `todo` last; then priority, then id. Unranked
-// — an empty or unknown value — sorts after everything ranked.
-
 const LEVEL_RANK: Record<string, number> = { high: 0, med: 1, low: 2 }
 
 const rank = (table: Record<string, number>, value: string): number =>

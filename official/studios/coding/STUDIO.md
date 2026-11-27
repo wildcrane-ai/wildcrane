@@ -29,6 +29,9 @@ previews:
     icon: schema
     title: {en: Schema, zh: 数据库结构}
     description: {en: "Review table changes, migrations, and data risks.", zh: "审阅表结构变更、迁移方案与潜在风险。"}
+  compatibility:
+    title: {en: Compatibility, zh: 兼容性}
+    description: {en: "Review external breaking changes that require weighing backward compatibility options.", zh: "审阅需要人工权衡向后兼容方案的外部破坏性变更。"}
   prompts:
     icon: prompt
     title: {en: Prompts, zh: 提示词}
@@ -44,8 +47,7 @@ Previews the task needs and read linked references or AKB Guides when needed.
 
 ## Land
 
-Follow [delivery requirements](references/delivery.md) to check the approved work and merge it into
-the target branch or apply it to the project. Record the commit and branch for Git projects.
+Use [delivery requirements](references/delivery.md) to verify the saved implementation, merge or apply it to the target project, and archive the task. Record the commit and branch for Git projects.
 
 ## Preview memory
 
@@ -107,6 +109,17 @@ Recommended display: Asset for the diff; inline Markdown for the note.
 
 </Preview>
 
+<Preview id="compatibility">
+
+Use only when a change breaks existing use by external users, clients, or integrations
+and a reviewer needs to weigh backward compatibility options.
+Skip internal database migrations, refactors, and routine fixes that delivery can safely
+handle without user action.
+
+Briefly state what breaks, who is affected, and the recommended migration with its compatibility tradeoff.
+
+</Preview>
+
 <Preview id="prompts">
 
 Show changed instructions (unified `.diff` per target), following `akb guide write-prompt`;
@@ -121,7 +134,7 @@ For more than two changed files, use a Set with one diff Asset per file.
 
 Compare relevant competitors beside our design (for named competitors without a planned
 feature, write one capability table per competitor; for research-only cards, write a single
-archive todo and never mark `ready`):
+archive todo):
 
 | | <Competitor> | Ours |
 | --- | --- | --- |

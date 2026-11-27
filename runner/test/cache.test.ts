@@ -113,6 +113,16 @@ describe('the cache (#2147)', () => {
     assert.deepEqual([has('prj_running'), has('prj_paused'), has('prj_unsent')], [false, false, false])
   })
 
+  it('keeps legacy board state until the shared initializer can migrate it', async () => {
+    const dir = cached('prj_legacy', OLD)
+    const file = path.join(dir, '.akb/boards/.akb/kanban/assets/1/saved.txt')
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, 'Unsynced asset')
+    assert.equal(clearAkb(dir), false)
+    assert.ok(!(await sweepCache(MACHINE, NOW)).includes(dir))
+    assert.equal(fs.readFileSync(file, 'utf8'), 'Unsynced asset')
+  })
+
   it('drops by idleness alone when Cloud cannot say who has access', async () => {
     cached('prj_fresh')
     cached('prj_old', OLD)

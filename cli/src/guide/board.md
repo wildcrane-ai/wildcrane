@@ -63,6 +63,9 @@ as needed. Write results in matching Preview blocks and preserve unrelated work.
 preferences for a specific output, match its configuration to the current action and the task's
 project (`akb task show <id> --json`).
 
+Save task assets in the `Asset folder` shown by `akb task show <id>`.
+In the card, reference a file by its path within that folder, for example `asset:home.html`.
+
 Reread configuration before Land and after a Setup answer. Studio preferences override project
 defaults for the same key. Ask through `akb guide update-questions` when a required Setup choice
 first matters. Pause the dependent action and use declared defaults for optional choices.

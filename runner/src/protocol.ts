@@ -11,8 +11,7 @@ export const VERSION = typeof __RUNNER_VERSION__ === 'string' ? __RUNNER_VERSION
 export const AKB_VERSION = typeof __AKB_VERSION__ === 'string' ? __AKB_VERSION__ : '0.0.0'
 export const AKB_CONTRACT = typeof __AKB_CONTRACT__ === 'number' ? __AKB_CONTRACT__ : 0
 
-/** Cloud said no for good — another computer, an account not admitted, a failed sign-in.
- *  Not a crash: the launcher keeps this version. */
+/** Cloud refused registration, or sign-in did not complete. */
 export const EXIT_REFUSED = 10
 /** Cloud no longer takes this protocol. A restart updates. */
 export const EXIT_OUTDATED = 11

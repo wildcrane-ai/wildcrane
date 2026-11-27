@@ -1,5 +1,6 @@
 import { reviewBoundary, taskReviewBoundary } from '../shared/review-plan'
-import { SAVED_PREVIEW_FILE_ENV, taskReviewContext } from './env'
+import { recordDeliveryArchive } from './delivery-archive'
+import { deliveryPhase, SAVED_PREVIEW_FILE_ENV, taskReviewContext } from './env'
 import { connectionIdentity, connectionStopped, endConnection } from './connection-process'
 import { deliveryFor, findDelivery } from './deliveries'
 import { studioForRun } from './runner'
@@ -7,7 +8,7 @@ import { runnerProject, workspaceTask } from '../cloud/tasks'
 import { missingStudioVersion, readRuntimeContext, readVersion, saveRuntimeContext, saveStudioSession, STUDIO_SNAPSHOT_ENV, type HeldVersion } from './cloud-studios'
 import { listedStudioVersion, studioContextBlocks } from './studio-shared'
 import { compactReview, contextAction, contextFingerprint, contextUpdate, reviewBlock, taskCardBlock, type ContextBlock } from './runtime-context'
-import { parseStudioFile } from './studio-def'
+import { parseStudioFile, studioLand } from './studio-def'
 import { boardCommand } from './command'
 import { studioFor } from './studios'
 // The process that watches one run.
@@ -46,10 +47,10 @@ import { openPlan } from './resolve'
 import { promptInput } from './harnesses/launch'
 import { createIdleWatchdog, IDLE_FAILURE, IDLE_MS } from './idle'
 import { idleStopConfirmed } from './wire/codex-background-types'
-import { agentRecovery, backoffMs, isSessionMissingFailure, makeFailure, MAX_RETRY_ATTEMPTS, pauseLine, planRetry, retryBudget, RETRY_FILE_ENV, retryContinuePrompt, retryLine, retryRecord, syncRepairPrompt, waitForRetry, type ExecutionFailure, type RetryPause, type RetryRecord, type RetryRuntime, type SessionAction } from './retry'
+import { agentRecovery, backoffMs, isSessionMissingFailure, makeFailure, MAX_RETRY_ATTEMPTS, pauseLine, planRetry, retryBudget, RETRY_FILE_ENV, retryContinuePrompt, retryLine, retryRecord, resumeBlocked, syncRepairPrompt, waitForRetry, type ExecutionFailure, type RetryPause, type RetryRecord, type RetryRuntime, type SessionAction } from './retry'
 import { runtimeById } from './runtimes'
 import { executionFailure } from './wire/failures'
-import { turnSubmitted } from './wire/events'
+import { isPollingTool, turnSubmitted } from './wire/events'
 import { executionHeld, executionOf } from '../cloud/execution'
 import {
   claimChanges,
@@ -70,7 +71,6 @@ import {
   peekRun,
   readRefineAsks,
   readSpec,
-  liveSubRuns,
   stopSubRuns,
   resumeSessionId,
   setCardStatus,
@@ -90,10 +90,6 @@ const STOP_CLOSE_MS = 2_000
 // And how long the ending path itself gets to write the board out before the process
 // leaves anyway.
 const STOP_FINISH_MS = 10_000
-
-// Five minutes of pure waiting, excluding active local work.
-const silenceSaid = (minutes: number): string =>
-  `the agent said nothing for ${minutes} minute${minutes === 1 ? '' : 's'}, so the run was ended.`
 
 
 export async function watchRun(sessionId: string, resume = startResume, retryBackoff = backoffMs): Promise<number> {
@@ -189,7 +185,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   const event = (e: RunEvent) => {
     observeActivity(e)
     const hadPending = pendingOperations.size > 0
-    if (e.kind === 'tool_call' && !['read', 'search', 'fetch'].includes(e.data.kind)) {
+    if (e.kind === 'tool_call' && !isPollingTool(e.data.title) && !['read', 'search', 'fetch'].includes(e.data.kind)) {
       hadEffects = true
       if (!['completed', 'failed'].includes(e.data.status)) pendingOperations.add(e.data.toolCallId)
     }
@@ -240,7 +236,8 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   const scope = task ?? 'board-' + contextFingerprint(KANBAN)
   const fromSession = record.continues?.resumeId ?? (carriesSession(record) ? active.resumeId : undefined)
   const previous = fromSession ? readRuntimeContext(scope, record.harness, fromSession) : undefined
-  const action = contextAction(record.action)
+  const land = record.action === 'implement' && deliveryPhase() === 'land'
+  const action = land ? 'land' : contextAction(record.action)
   const parsed = studio && parseStudioFile(studio.id, studio.files['STUDIO.md'] ?? '', 'STUDIO.md')
   const command = boardCommand()
   const studioBlocks = studio ? studioContextBlocks(studio, action, parsed && 'def' in parsed ? parsed.def : { name: studio.name, rules: '' },
@@ -260,9 +257,16 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
     ? review.plan === null ? compactReview(review, reviewContext.assigned) : taskReviewBoundary(review, reviewContext.assigned)
     : reviewBoundary(savedPreviews ? { ...review, stages: review.stages.map(stage => ({ ...stage, snapshot: null })) }
       : review, reviewContext.assigned, studioPreviews))
-  const savedPrompt = !compact && savedPreviews
+  const savedPrompt = (!compact || land) && savedPreviews
     ? `Use the task inputs and pinned files listed in \`${savedPreviews}\`. Follow the task's delivery instructions.`
     : ''
+  const landRules = land && parsed && 'def' in parsed ? studioLand(parsed.def.rules) : ''
+  const delivery = land ? deliveryFor(studioRequest) : undefined
+  const landingContext = land ? [
+    `Project folder: ${REPO_ROOT}. Saved workspace: ${active.cwd ?? record.cwd}.`,
+    delivery?.targetBranch ? `Target branch: ${delivery.targetBranch}.` : '',
+    landRules && `## Land\n\n${landRules}\n\nRead linked Studio files with the Studio file command.`,
+  ].filter(Boolean).join('\n\n') : ''
   const retryDiag = record.retry
     ? record.failure
       ? retryContinuePrompt(record.failure, record.retry.attempt, record.retry.of)
@@ -270,10 +274,10 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
     : ''
   const blocks = (prior: typeof previous): ContextBlock[] => [
     ...(card ? [taskCardBlock(card)] : []),
-    ...studioBlocks.filter(([key]) => key === 'studio' || key === 'skills'),
+    ...studioBlocks.filter(([key]) => key === 'studio' || !land && key === 'skills'),
     reviewBlock(boundary ?? '', review, prior),
-    ...studioBlocks.filter(([key]) => key === 'setup' && compact || key === 'config' && (compact || spec.studioAtLaunch)),
-    ['inline-studio', launchStudio], ['approved-inputs', savedPrompt],
+    ...studioBlocks.filter(([key]) => !land && key === 'setup' && compact || key === 'config' && (compact || spec.studioAtLaunch)),
+    ['inline-studio', launchStudio], ['land', landingContext], ['approved-inputs', savedPrompt],
   ]
   const context = contextUpdate(previous, blocks(previous))
   const diagnostics = [process.env.AI4KANBAN_SYNC_DIAGNOSTIC ? syncRepairPrompt(process.env.AI4KANBAN_SYNC_DIAGNOSTIC) : '',
@@ -287,11 +291,9 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   }
   const prompt = assemble(basePrompt, context.parts)
 
-  // The board as it was the moment before the agent touched it. The difference between this
-  // and the same read at the close is what this run could be answerable for; which of it
-  // really is its own — and not a neighbouring run's — is settled at the close by
-  // `claimChanges`, and that is what earns a card the refine that follows.
-  const before = markBoard()
+  // Cloud dispatches changes to the shared board independently of this task.
+  const scansBoard = !sub && !(record.cloudExecution && (record.cardId !== null || record.action === 'review-dismissals'))
+  const before = scansBoard ? markBoard() : new Map<number, string>()
   active.renderer?.setRequiredImages?.(record.pictures ?? [])
   const { command: cmd, args, stdin } = promptInput(active, prompt)
   const workDir = active.cwd ?? REPO_ROOT
@@ -506,7 +508,6 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       afterTurn()
       if (renderer.terminalFailure?.()) endTerminal()
     }
-    // After the render, so the window it restarts knows what is in the background now.
     const version = renderer?.activity?.() ?? 0
     if (version !== activityVersion) { activityVersion = version; touch() }
   })
@@ -549,6 +550,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
     // The idle clock belongs to this execution.
     let silent = false
     let uncertainAtIdle = false
+    let recordedProgress = 0
     let watchdog: ReturnType<typeof createIdleWatchdog> | undefined
     // How a wait between retry attempts is cut short (#525). Set only while one is going,
     // and it is what a stop reaches then: there is no child left to signal.
@@ -571,7 +573,8 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       let asked = wanted
       watchdog?.close()
       // Its sub-runs end first, so what they leave is in the folder this close reads.
-      await stopSubRuns(sessionId)
+      const subRunsStopped = await stopSubRuns(sessionId)
+      if (silent && !subRunsStopped) patch(sessionId, run => { run.cleanup = { status: 'unconfirmed', execution: sessionId, kept: [] } })
       const taskCompleted = completed()
       if (taskCompleted && !client?.managedProcess) {
         endChild()
@@ -608,7 +611,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       // would advance and the refinements behind it would run on work that never happened.
       const held = peekRun(sessionId) ?? record
       const rendered = renderer?.failure?.() ?? (!taskCompleted && renderer?.background?.() ? 'The agent exited with unfinished background tasks.' : undefined)
-      const said = spawnError ?? (silent ? silenceSaid(silenceFor) : spoken?.error ?? rendered)
+      const said = spawnError ?? (silent ? IDLE_FAILURE.summary : spoken?.error ?? rendered)
       const failed = code !== 0 || spoken?.ok === false || !!rendered || silent || !!blocker
       const failure: ExecutionFailure | undefined = failed && !asked
         ? silent ? makeFailure('runtime', said ?? IDLE_FAILURE.summary, { code: IDLE_FAILURE.code, detail: said ?? IDLE_FAILURE.summary })
@@ -622,6 +625,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       const result = spoken ? spoken.result : renderer?.result()
       let retryPause: RetryPause | undefined
       let retrying = false
+      let resumeDiagnostic: string | undefined
       let retryHistory: RetryRecord[] | undefined = held.retryHistory ? [...held.retryHistory] : undefined
       let sessionAction: SessionAction | undefined
       if (failure && !sub && !taskCompleted) {
@@ -634,10 +638,10 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
         while (!stopped() && Date.now() < until) await sleep(100)
         const isStopped = stopped()
         const session = structured && !spawnFailure && !missingSession ? resumeSessionId(held) : undefined
-        const unconfirmedCleanup = pendingOperations.size > 0 || !!blocker || spoken?.cleanup?.status === 'unconfirmed'
-          || failure.code === 'codex_ownership_unconfirmed'
-          || (client?.managedProcess && silent && (uncertainAtIdle || !idleStopConfirmed(spoken?.cleanup, session)))
-        const canResetReplay = isStopped && !unconfirmedCleanup && !pendingOperations.size && !submitted
+        const unconfirmedCleanup = pendingOperations.size > 0 || !subRunsStopped || !!blocker
+          || !!renderer?.background?.() || spoken?.cleanup?.status === 'unconfirmed'
+          || (silent && (uncertainAtIdle || client?.managedProcess && !idleStopConfirmed(spoken?.cleanup, session)))
+        const canResetReplay = !silent && isStopped && !unconfirmedCleanup && !pendingOperations.size && !submitted
           && (held.unspawned === true || (structured && !hadEffects && !record.resumedFrom))
         const recovery = missingSession
           ? (canResetReplay ? 'replay' : 'unsafe')
@@ -652,6 +656,12 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
         retryHistory = [...(retryHistory ?? []), failedAttempt]
         if (recovery === 'unsafe') {
           retryPause = 'unsafe'
+          resumeDiagnostic = resumeBlocked({ stopped: isStopped, session, unconfirmedCleanup })
+          if (resumeDiagnostic) {
+            const text = `[recovery] ${resumeDiagnostic} Saved work was preserved.`
+            log.write(`\n${text}\n`)
+            event({ kind: 'log', data: { text } })
+          }
         } else {
           const decision = planRetry(failure, attempt, Date.now(), retryBackoff, !!held.cloudExecution)
           if ('pause' in decision) {
@@ -713,7 +723,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       }
       asked ||= stoppedByUser()
       retrying &&= !asked
-      const error = asked ? undefined : joinNotes(said ?? failure?.summary, retryPause ? pauseLine(retryPause) : undefined)
+      const error = asked ? undefined : joinNotes(said ?? failure?.summary, resumeDiagnostic ?? (retryPause ? pauseLine(retryPause) : undefined))
       const status: RunStatus = asked ? 'stopped' : failed || code !== 0 ? 'error' : 'done'
       if (status === 'done' && !sub && retryHistory?.length) {
         const lastRetry = retryHistory[retryHistory.length - 1]!
@@ -750,7 +760,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       // the stream, so this is where its ring gets its one update (#675).
       if (spoken) gotContext(spoken.context)
       if (!sub) cleanupDiscardedCards(sessionId)
-      const changed = sub ? [] : claimChanges(before, sessionId).filter((id) => !peekRun(sessionId)?.discardedCards?.some((c) => c.id === id))
+      const changed = scansBoard ? claimChanges(before, sessionId).filter((id) => !peekRun(sessionId)?.discardedCards?.some((c) => c.id === id)) : []
       const original = before
       // The log is closed here and not before it, so what the board had to say about the run
       // sits with the agent's output rather than after the marker that ends it.
@@ -782,6 +792,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       //
       // Worked out BEFORE the record closes, so anything watching for the run to end sees
       // the note it ended with rather than catching the record a beat too early.
+      if (status === 'done' && !sub && record.cardId === null && record.deliveryId) recordDeliveryArchive(null, sessionId)
       const settled = status === 'done' && !sub ? settleBoard(record, changed, original) : null
       const note = status === 'done' ? settled?.stalled : undefined
       const noteWhy: RunReason[] = status === 'done' ? settled?.stalledWhy ?? [] : []
@@ -837,7 +848,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       // by either. `before` is the board as it stood at the spawn, which is the only record of
       // what was still open then. The board's timer starts the reflection (#1475).
       if (status === 'done') queueCompleted(before.keys())
-      if (status === 'done') await followUp(sessionId, record.flowId, settled?.runs ?? [])
+      if (status === 'done') await followUp(record, settled?.runs ?? [])
       finishWatch(status === 'done' ? 0 : 1)
     }
 
@@ -910,12 +921,23 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
     watchdog = createIdleWatchdog(() => {
       if (done || stopped || silent) return
       silent = true
-      log.write(`\n[board] ${silenceSaid(silenceFor)}\n`)
-      if (!client?.idleRecovery) { giveUp(false); return }
+      log.write(`\n[board] ${IDLE_FAILURE.summary}\n`)
       uncertainAtIdle = pendingOperations.size > 0
-      patch(sessionId, run => { run.cleanup = { status: 'unconfirmed', execution: sessionId, kept: [] } })
-      idle.abort()
-    }, () => !!(client?.background?.() ?? renderer?.background?.()) || liveSubRuns(sessionId).length > 0)
+      patch(sessionId, run => {
+        run.failure = IDLE_FAILURE
+        if (client?.idleRecovery || uncertainAtIdle) run.cleanup = { status: 'unconfirmed', execution: sessionId, kept: [] }
+      })
+      if (client?.idleRecovery) idle.abort()
+      else { cancellation.abort(); giveUp(false) }
+    }, {
+      onProgress: record.parentId ? at => {
+        if (at - recordedProgress < 1000) return
+        recordedProgress = at
+        patch(sessionId, run => { run.lastProgressAt = at })
+      } : undefined,
+      childProgress: () => readRuns().reduce((latest, run) =>
+        run.parentId === sessionId ? Math.max(latest, run.lastProgressAt ?? 0) : latest, 0),
+    })
     touch = watchdog.touch
     observeActivity = watchdog.event
 
@@ -1004,17 +1026,19 @@ function settleBoard(
 // run on it, and that run is doing more than this one would have. Nothing here can fail the
 // run that just ended — it is over.
 async function followUp(
-  sessionId: string,
-  flowId: string | undefined,
+  run: RunRecord,
   runs: AgentRequest[],
 ): Promise<void> {
+  const { sessionId, flowId } = run
   // A request that already names its flow keeps it — a refinement pass carries its loop's
   // id, and that loop is this flow anyway.
   const join = (req: AgentRequest): AgentRequest =>
     req.flowId || !flowId ? req : { ...req, flowId }
   try {
     const asked = refineRunsAfter(readRefineAsks(sessionId))
-    for (const req of asked) await startRun(join(req))
+    for (const req of asked) {
+      if (!run.cloudExecution || req.id === run.cardId) await startRun(join(req))
+    }
     clearAsks(sessionId)
     for (const req of runs) await startRun(join(req))
   } catch {

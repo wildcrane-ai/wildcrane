@@ -122,6 +122,7 @@ export function createStreamRenderer(): StreamRenderer {
   // Subagents by call id, true once ended. A background one ends on its `task_notification`.
   const subagents = new Map<string, boolean>()
   const detached = new Set<string>()
+  const taskUsage = new Map<string, { tokens: number; tools: number }>()
   const endSubagent = (id: string, status: 'completed' | 'failed') => {
     if (subagents.get(id) !== false) return
     subagents.set(id, true)
@@ -136,9 +137,21 @@ export function createStreamRenderer(): StreamRenderer {
     // First one wins, so this settles on the opening banner's id and never drifts
     // to whatever a later turn happens to say.
     if (model === undefined) model = eventModel(ev)
-    // A subagent's own turns: neither the main agent's steps nor its context.
-    if (str(ev.parent_tool_use_id)) return ''
-    if (ev.type === 'assistant' || (ev.type === 'stream_event' && obj(ev.event).type === 'content_block_delta')) events.progress()
+    const parent = str(ev.parent_tool_use_id)
+    const content = obj(ev.message).content
+    const streamEvent = obj(ev.event)
+    const delta = obj(streamEvent.delta)
+    if (ev.type === 'stream_event' && streamEvent.type === 'content_block_delta'
+      && (str(delta.text) || str(delta.thinking) || str(delta.partial_json))) events.progress()
+    if (parent) {
+      if (['assistant', 'user'].includes(str(ev.type)) && Array.isArray(content)) {
+        const useful = content.map(obj).filter(block =>
+          !!str(block.text).trim() || !!str(block.thinking).trim() || block.type === 'tool_use'
+          || block.type === 'tool_result' && !!resultText(block.content).trim())
+        if (useful.length) events.progressSnapshot(parent, JSON.stringify(useful))
+      }
+      return ''
+    }
     switch (ev.type) {
       case 'assistant': {
         apiFailure = typeof ev.error === 'string' ? providerFailure({ type: ev.error }, 'Claude could not complete the request.') : undefined
@@ -154,6 +167,8 @@ export function createStreamRenderer(): StreamRenderer {
           if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
             out.push(`${b.text.trim()}\n\n`)
             events.message(b.text)
+          } else if (b?.type === 'thinking' && str(b.thinking).trim()) {
+            events.progressSnapshot('thinking', str(b.thinking))
           } else if (b?.type === 'tool_use' && typeof b.name === 'string') {
             out.push(`⏺ ${b.name}${argHint(b.input, ARG_KEYS)}\n`)
             if (SUBAGENT_TOOLS.has(b.name)) {
@@ -235,9 +250,20 @@ export function createStreamRenderer(): StreamRenderer {
         if (ev.subtype === 'task_notification' && subagents.has(str(ev.tool_use_id))) {
           endSubagent(str(ev.tool_use_id), str(ev.status) === 'completed' ? 'completed' : 'failed')
         }
-        // A foreground command reports one too; only a background one is news.
-        if (ev.subtype === 'task_notification' && backgrounded.has(str(ev.task_id)) && str(ev.summary)) {
-          return `⏺ ${str(ev.summary)}\n`
+        const task = str(ev.task_id)
+        if (ev.subtype === 'task_progress' && task) {
+          const usage = obj(ev.usage)
+          const previous = taskUsage.get(task) ?? { tokens: 0, tools: 0 }
+          const tokens = Math.max(previous.tokens, Number(usage.total_tokens) || 0)
+          const tools = Math.max(previous.tools, Number(usage.tool_uses) || 0)
+          if (tokens > previous.tokens || tools > previous.tools) {
+            taskUsage.set(task, { tokens, tools })
+            events.progress()
+          }
+        }
+        if (ev.subtype === 'task_notification' && backgrounded.delete(task)) {
+          events.progress()
+          if (str(ev.summary)) return `⏺ ${str(ev.summary)}\n`
         }
         return ''
       default:

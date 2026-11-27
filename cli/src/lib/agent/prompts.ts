@@ -1,4 +1,4 @@
-import { taskReviewContext } from './env'
+import { deliveryPhase, taskReviewContext } from './env'
 import { runnerProject, workspaceTask } from '../cloud/tasks'
 import { reviewPreviewIds } from '../shared/review-plan'
 import { deliveryStep } from './progress'
@@ -59,7 +59,9 @@ function stopReason(deliveryId: string): string | undefined {
   const ids = new Set(delivery.sessions)
   const last = readRuns().filter((r) => ids.has(r.sessionId) && r.action === 'implement' && r.status !== 'running').at(-1)
   if (!last) return undefined
-  if (last.status === 'done' && delivery.status === 'active') return notCompletedWhy(deliveryId, boardCommand())
+  if (last.status === 'done' && delivery.status === 'active' && deliveryPhase() !== 'implement') {
+    return notCompletedWhy(delivery.cardId, boardCommand())
+  }
   if (last.status === 'error' || last.status === 'interrupted') return firstLine(last.error)
   return undefined
 }
@@ -110,10 +112,6 @@ const RESTARTABLE: ReadonlySet<AgentAction> = new Set<AgentAction>([
 const RESTART_LEAD = [
   `Continue work.`,
 ].join(' ')
-
-/** Whether `restartPrompt` has an ask to write for this run — the cheap half, for a list. */
-export const restartable = (run: { action: AgentAction; cardId: number | null; deliveryId?: string }): boolean =>
-  (run.cardId !== null || !!run.deliveryId) && RESTARTABLE.has(run.action)
 
 /** Restart a lost conversation with its original action. Builds recover approved requirements;
  *  other restartable actions receive their own ask. */
@@ -301,6 +299,12 @@ export function compactTaskPrompt(req: Pick<AgentRequest, 'id' | 'action'>): boo
 }
 
 function followTaskGuide(action: AgentAction, command: string): string {
+  if (action === 'implement' && deliveryPhase() === 'land') {
+    return `Land the saved work under the Studio's Land instructions. Check existing results before applying pending changes. Follow \`${command} guide archive\`.`
+  }
+  if (action === 'implement' && deliveryPhase() === 'implement') {
+    return `Follow \`${command} guide implement\`. Build and verify in this delivery workspace. Leave merge, application and archive to Land.`
+  }
   return `Follow \`${command} guide ${taskGuides[action]}\`.`
 }
 

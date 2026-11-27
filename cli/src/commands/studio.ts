@@ -6,6 +6,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import zlib from 'node:zlib'
 
 import { findSpecAgent } from '../lib/agents'
 import { locate } from '../lib/cards'
@@ -320,4 +321,145 @@ export async function cmdStudioInstructions(agent: string, opts: NoteOptions): P
     'the saved instructions', value => value.agent === agent && value.rule === rule)
   say(rule ? `saved ${agent}'s instructions (this project)` : `cleared ${agent}'s instructions`)
   return { agent, rule, scope: 'project' }
+}
+
+const DASHBOARD_MAX_BYTES = 25 * 1024 * 1024
+const DASHBOARD_MAX_FILES = 1000
+
+function tarHeader(name: string, size: number, kind = '0'): Uint8Array {
+  const header = new Uint8Array(512)
+  const writeStr = (at: number, val: string) => header.set(Buffer.from(val, 'utf8'), at)
+  writeStr(0, name)
+  writeStr(100, '0000644\0')
+  writeStr(108, '0000000\0')
+  writeStr(116, '0000000\0')
+  writeStr(124, `${size.toString(8).padStart(11, '0')}\0`)
+  writeStr(136, '00000000000\0')
+  writeStr(148, '        ')
+  header[156] = kind.charCodeAt(0)
+  writeStr(257, 'ustar\0')
+  writeStr(263, '00')
+  const sum = header.reduce((a, b) => a + b, 0)
+  writeStr(148, `${sum.toString(8).padStart(6, '0')}\0 `)
+  return header
+}
+
+function tarBlock(body: Uint8Array): Uint8Array {
+  const pad = Math.ceil(body.length / 512) * 512
+  if (pad === 0) return new Uint8Array(0)
+  const out = new Uint8Array(pad)
+  out.set(body)
+  return out
+}
+
+export function packDashboardDir(dir: string): { gzip: Uint8Array; fileCount: number; sizeBytes: number } {
+  const root = path.resolve(dir)
+  if (!fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) {
+    die(`${dir} is not a folder`, 'bad-args')
+  }
+  const indexStat = fs.lstatSync(path.join(root, 'index.html'), { throwIfNoEntry: false })
+  if (!indexStat?.isFile()) {
+    die(`${dir} must contain index.html at its root`, 'bad-args')
+  }
+
+  const files: { rel: string; body: Uint8Array }[] = []
+  let totalBytes = 0
+  const walk = (current: string, prefix: string) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.isSymbolicLink()) die(`Symlinks are not allowed in dashboard bundles: ${prefix}${entry.name}`, 'bad-args')
+      const full = path.join(current, entry.name)
+      const rel = `${prefix}${entry.name}`
+      if (entry.isDirectory()) {
+        walk(full, `${rel}/`)
+      } else if (entry.isFile()) {
+        const body = fs.readFileSync(full)
+        totalBytes += body.length
+        if (files.length >= DASHBOARD_MAX_FILES) die(`Dashboard bundle exceeds ${DASHBOARD_MAX_FILES} files`, 'bad-args')
+        if (totalBytes > DASHBOARD_MAX_BYTES) die('Dashboard bundle exceeds 25 MB unpacked', 'bad-args')
+        files.push({ rel, body })
+      }
+    }
+  }
+  walk(root, '')
+
+  const chunks: Uint8Array[] = []
+  for (const { rel, body } of files) {
+    const nameBytes = Buffer.byteLength(rel, 'utf8')
+    if (nameBytes > 100) {
+      const paxEntry = `path=${rel}\n`
+      const len = Buffer.byteLength(paxEntry, 'utf8') + String(Buffer.byteLength(paxEntry, 'utf8') + 4).length + 1
+      const paxBody = Buffer.from(`${len} ${paxEntry}`, 'utf8')
+      chunks.push(tarHeader(`pax/${rel.slice(0, 80)}`, paxBody.length, 'x'), tarBlock(paxBody))
+      chunks.push(tarHeader(rel.slice(0, 99), body.length), tarBlock(body))
+    } else {
+      chunks.push(tarHeader(rel, body.length), tarBlock(body))
+    }
+  }
+  chunks.push(new Uint8Array(1024))
+  return { gzip: zlib.gzipSync(Buffer.concat(chunks)), fileCount: files.length, sizeBytes: totalBytes }
+}
+
+interface DashboardResponse {
+  id: string
+  studio: string
+  url: string
+  access: 'private' | 'public'
+  fileCount: number
+  sizeBytes: number
+}
+
+/** `akb studio dashboard publish <studioId> <dir>`: pack and publish a Studio's static Dashboard. */
+export async function cmdStudioDashboardPublish(
+  studioId: string,
+  dir: string,
+  opts: { access?: string; name?: string; workspace?: string } = {},
+): Promise<MoveResult> {
+  if (opts.access !== undefined && opts.access !== 'private' && opts.access !== 'public') {
+    die('--access must be "private" or "public"', 'bad-args')
+  }
+  const { gzip } = packDashboardDir(dir)
+  const workspace = opts.workspace ?? (await cloudScope()).workspace
+  const listed = requireResponse(
+    cloudOk(await call<{ data: DashboardResponse[] }>('GET', `/v1/dashboards?workspace=${enc(workspace)}&studio=${enc(studioId)}&limit=1`)),
+    'the Studio dashboard list',
+    (v) => Array.isArray(v.data),
+  )
+
+  let dash = listed.data[0]
+  if (!dash) {
+    dash = requireResponse(
+      cloudOk(await call<DashboardResponse>('POST', '/v1/dashboards', {
+        workspace,
+        studio: studioId,
+        name: opts.name?.trim() || studioId,
+        ...(opts.access ? { access: opts.access } : {}),
+      })),
+      'the created dashboard',
+      (v) => typeof v.id === 'string',
+    )
+  } else if (opts.access !== undefined || opts.name !== undefined) {
+    dash = requireResponse(
+      cloudOk(await call<DashboardResponse>('PATCH', `/v1/dashboards/${enc(dash.id)}`, {
+        ...(opts.name !== undefined ? { name: opts.name.trim() } : {}),
+        ...(opts.access !== undefined ? { access: opts.access } : {}),
+      })),
+      'the updated dashboard',
+      (v) => typeof v.id === 'string',
+    )
+  }
+
+  const published = requireResponse(
+    cloudOk(await call<DashboardResponse>('PUT', `/v1/dashboards/${enc(dash.id)}/bundle`, new Blob([new Uint8Array(gzip)], { type: 'application/gzip' }))),
+    'the published dashboard',
+    (v) => typeof v.id === 'string' && typeof v.url === 'string',
+  )
+  say(`${published.id}  ${published.studio}  ${published.access}  ${published.url}  (${published.fileCount} files, ${published.sizeBytes} bytes)`)
+  return {
+    id: published.id,
+    studio: published.studio,
+    url: published.url,
+    access: published.access,
+    fileCount: published.fileCount,
+    sizeBytes: published.sizeBytes,
+  }
 }

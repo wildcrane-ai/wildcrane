@@ -68,7 +68,7 @@ describe('canonical command discovery and legacy routes', () => {
 
   it('shows public options and keeps scheduler flags out of help', async () => {
     for (const [argv, visible, hidden] of [
-      [['task', 'create'], '--title', /--body-file|--no-body|--previews|--question/],
+      [['task', 'create'], '--previews', /--body-file|--no-body|--question/],
       [['task', 'implement'], '--print', /--(?:new-session|session|fork|transcript|follow|events)\b/],
       [['run', 'resume'], '--fresh', /--require-session/],
       [['memory', 'review'], '--task', /--(?:print|follow|events)\b/],

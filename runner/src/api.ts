@@ -14,6 +14,7 @@ import { cloudProblem, invalidResponse, isRecord, readCloudJson } from '../../cl
 export { temporaryCloudFailure } from '../../cli/src/lib/cloud/response'
 import { AKB_CONTRACT } from './protocol'
 import { secretsSet } from './secrets'
+import { logSync } from './sync-debug'
 
 import type { ExecutionFailure, FailureDetail, RetryRecord } from '../../cli/src/lib/agent/retry'
 
@@ -111,10 +112,14 @@ export interface AgentJob {
 }
 
 export interface Flow {
+  phase?: 'implement' | 'land'
+  land_from?: string
+  delivery_id?: string
   review_stages?: string[]
   review_revision?: number
   sync_recovery_of?: string
   recovery_attempts?: number
+  resume_execution?: string
   verify_delivery?: { id?: string; confirmed?: boolean; landing?: JobReport['landing']; attempts?: number }
   historical_recovery?: boolean
   historical_conflict?: boolean
@@ -177,7 +182,7 @@ export interface SettingDecl {
 
 /** Raised by Cloud when it no longer takes this Runner's protocol. 9 keeps keys (#2135); 10 stops
  *  a flow job, pausing its board runs (#2128); 11 holds the computer's lock (#2161); 14 shares local settings and account revocation; 18 says Studio (#645). */
-export const PROTOCOL = 31
+export const PROTOCOL = 33
 
 const TIMEOUT_MS = 20_000
 
@@ -185,9 +190,12 @@ type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
 /** A file's bytes go as they are, with their type; anything else as JSON. */
 async function send(method: Method, route: string, body: unknown, signedIn: boolean, ms: number, type?: string, extra: Record<string, string> = {}): Promise<Call<Response>> {
+  const started = performance.now()
+  const endpoint = route.split('?')[0]
   const headers: Record<string, string> = { accept: 'application/json', ...extra }
   if (signedIn) {
     const token = await accessToken()
+    logSync('http.auth', { method, endpoint, ms: Math.round(performance.now() - started), ok: token.ok })
     if (!token.ok) {
       return token.reason === 'unreachable'
         ? { ok: false, error: token.error }
@@ -204,8 +212,10 @@ async function send(method: Method, route: string, body: unknown, signedIn: bool
       body: body === undefined ? undefined : raw ? (body as Uint8Array<ArrayBuffer>) : JSON.stringify(body),
       signal: AbortSignal.timeout(ms),
     })
+    logSync('http.headers', { method, endpoint, ms: Math.round(performance.now() - started), status: response.status })
     return { ok: true, value: response }
   } catch (e) {
+    logSync('http.failed', { method, endpoint, ms: Math.round(performance.now() - started) })
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
   }
 }
@@ -220,8 +230,11 @@ async function answerOf<T>(response: Response): Promise<Call<T>> {
 }
 
 export async function request<T>(method: Method, route: string, body?: unknown, signedIn = true): Promise<Call<T>> {
+  const started = performance.now()
   const sent = await send(method, route, body, signedIn, TIMEOUT_MS)
-  return sent.ok ? answerOf<T>(sent.value) : sent
+  const result = sent.ok ? await answerOf<T>(sent.value) : sent
+  logSync('http.done', { method, endpoint: route.split('?')[0], ms: Math.round(performance.now() - started), ok: result.ok })
+  return result
 }
 
 /** Files move slower than calls. */
@@ -327,6 +340,7 @@ export interface Subagents {
 }
 
 export interface JobReport {
+  landReady?: { deliveryId?: string }
   deliveryCompleted?: boolean
   deliveryDirect?: boolean
   deliveryId?: string
@@ -532,7 +546,7 @@ export async function commitBoard(project: string, job: string | null, machine: 
   } | null
   const problems = answer?.error?.details?.problems
   return {
-    ok: false, error: answer?.error?.message ?? `Cloud answered ${status}`, code: answer?.error?.code ?? 'refused',
+    ok: false, error: answer?.error?.message ?? `Cloud answered ${status}`, code: answer?.error?.code ?? 'refused', status,
     ...(status === 409 && answer?.files ? { files: answer.files } : {}),
     ...(status === 400 && Array.isArray(problems) ? { previewProblems: problems } : {}),
   }

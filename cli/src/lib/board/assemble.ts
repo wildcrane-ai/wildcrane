@@ -31,18 +31,14 @@ export function countTodos(body: string): { total: number; done: number } {
 
 export { subtaskLines }
 
-/**
- * Work out what is really blocking each card. A `blocked_by` id counts only when it names a
- * card that is still open — an id no longer on the board was archived or rejected, so that
- * work is done. A card naming itself is skipped: it never clears.
- */
-export function attachBlockers(cards: Card[]): void {
-  const byId = new Map(cards.map((c) => [c.id, c]))
+/** A card can wait on an open card or an archive still awaiting Land confirmation. */
+export function attachBlockers(cards: Card[], pending: { id: number; title: string }[] = []): void {
+  const byId = new Map([...pending, ...cards].map(c => [c.id, c]))
   for (const card of cards) {
     card.openBlockers = card.blocked_by
       .filter((n) => n !== card.id)
       .map((n) => byId.get(n))
-      .filter((b): b is Card => !!b)
+      .filter(b => b !== undefined)
       .map((b) => ({ id: b.id, title: b.title }))
   }
 }

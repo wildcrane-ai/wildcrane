@@ -6,4 +6,4 @@ Each `studios/<studio>/` holds its `STUDIO.md`, `agents/<agent>/` definitions an
 - **Chinese name**: `names: zh` in each `STUDIO.md`.
 - **Test**: `node --test official/test/*.test.ts`; akb's tests read this folder through `AI4KANBAN_STUDIOS`.
 
-- **UI checker**: after editing the checker or shared preview renderer, run `node cli/scripts/build-mockup-check.mjs` to refresh the standalone UI Designer script.
+- **UI checker**: Coding and Studio Builder ship their own copies of `skills/ui-mockup/`. Regenerate and sync them from `shared/skills/` in the source repository.

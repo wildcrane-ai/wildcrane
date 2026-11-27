@@ -5,6 +5,7 @@ import path from 'node:path'
 import http from 'node:http'
 import { it } from 'node:test'
 import { createAntigravityRenderer } from '../src/lib/agent/wire/antigravity'
+import { IDLE_TIMEOUT } from '../src/lib/agent/idle'
 import { startRun } from '../src/lib/agent/start'
 import { openResume, patch } from '../src/lib/agent/sessions'
 import { readRuns } from '../src/lib/agent/store'
@@ -97,6 +98,56 @@ it('preserves an Antigravity task and its result after an unclassified EOF (#841
     if (oldHome === undefined) delete process.env.HOME
     else process.env.HOME = oldHome
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+    forgetMachineState(root)
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+
+it('stops a stalled Antigravity task, keeps its saved work and pauses when a command result is unknown', { timeout: 15_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-idle-'))
+  const oldHome = process.env.HOME
+  const originalIdle = IDLE_TIMEOUT.milliseconds
+  const session = '00000000-0000-4000-8000-000000001200'
+  try {
+    process.env.HOME = root
+    IDLE_TIMEOUT.milliseconds = 600
+    setBoardRoot(root)
+    fs.mkdirSync(path.join(root, 'docs/kanban/todo'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'docs/kanban/next-id'), '1\n')
+    await move(root, ['create', '--title', 'Confirm idle stop'])
+    const script = path.join(root, 'agy.mjs')
+    const output = path.join(root, 'saved.txt')
+    fs.writeFileSync(script, `
+      import fs from 'node:fs'
+      fs.writeFileSync(${JSON.stringify(output)}, 'saved once');
+      const out = e => console.log(JSON.stringify(e));
+      out({event: 'init', conversation_id: '${session}'});
+      const command = {conversation_id: '${session}', step_index: 79, step_type: 'tool', state: 'ACTIVE',
+        tool_info: {name: 'run_command', parameters: {CommandLine: 'node --test'}}};
+      out({event: 'step_update', step_update: command});
+      setInterval(() => {
+        out({event: 'step_update', step_update: command});
+        console.error('root agent idle; waiting for 2 background task(s) to finish');
+      }, 40);
+    `)
+    fs.writeFileSync(uiConfigOf(root, 'docs', 'kanban'), JSON.stringify({ runtimes: [{ id: 'global', name: 'Global', harness: 'antigravity', settings: { command: `node ${script}` } }] }))
+    const started = await startRun({ action: 'clarify', id: 1 })
+    if ('error' in started) throw Error(started.error)
+    patch(started.run.sessionId, r => { r.pid = process.pid })
+    fs.writeFileSync(started.run.logPath, '')
+    await watchRun(started.run.sessionId, async () => { throw Error('Unconfirmed operations cannot be retried') }, () => 0)
+    const ended = readRuns().find(r => r.sessionId === started.run.sessionId)!
+    assert.equal(ended.resumeId, session)
+    assert.equal(ended.failure?.code, 'idle_timeout')
+    assert.equal(ended.retryPause, 'unsafe')
+    assert.equal(ended.cleanup?.status, 'unconfirmed')
+    assert.throws(() => process.kill(ended.agentPid!, 0), { code: 'ESRCH' })
+    assert.equal(fs.readFileSync(output, 'utf8'), 'saved once')
+  } finally {
+    IDLE_TIMEOUT.milliseconds = originalIdle
+    if (oldHome === undefined) delete process.env.HOME
+    else process.env.HOME = oldHome
     forgetMachineState(root)
     fs.rmSync(root, { recursive: true, force: true })
   }

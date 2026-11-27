@@ -5,7 +5,25 @@ Preview 是供审阅的草稿或成果。任务背景和要求留在卡片正文
 
 ## Review Plan
 
-输入为标准 JSON 节点列表；数组顺序只决定展示顺序，`after` 决定依赖。
+`ReviewPlan = { rule: string, previews: string[] } | LegacyReviewNode[] | null`。新计划按 Goal 或 Task 保存一句提审规则，并从有效 Preview 目录选择 ID。空字符串取消额外审批，空数组清空所选 Preview。`null` 表示待定。
+
+```json
+{"rule":"先审核心创意，获批后再写成稿并提审。","previews":["copy"]}
+```
+
+`GET /v1/tasks/{id}` 和 `GET /v1/shared/{token}` 返回两种计划格式。分享沿用现有访问范围及历史决定。新计划的待审批项为 `{ stage, revision, preview, question }`，同一 Preview 可以生成多个独立目标。
+
+```json
+{"operation":"request_approval","preview":"copy","question":"核心创意可以作为文案方向吗？","review_revision":8}
+```
+
+将上述请求发到 `POST /v1/tasks/{id}/review`。`review_revision` 使用 Task 审核总版本，响应返回最新 Task 和冻结的正文与资产版本。重复请求复用同一待审目标。内容变化后旧决定返回 `409 review_outdated`。
+
+`POST /v1/tasks/{id}/decisions` 使用待审批项的 `stage` 和 `revision`，提交 `{ decision: "approve" | "request_changes", stage, review_revision }`。批准后继续工作，要求修改后修订当前稿并重新提审。重复决定返回原回执。普通问答、`execute` 和 `resume` 均保留独立审批。
+
+### 旧计划
+
+旧计划使用 JSON 节点数组，`after` 决定依赖。
 
 ```json
 [
@@ -24,13 +42,12 @@ Preview 是供审阅的草稿或成果。任务背景和要求留在卡片正文
 前后端、CLI 与 Runner 共用 Zod Schema 和 Kahn 拓扑校验纯函数，开放代码不导入 Cloud 或 Web。
 先校验字段类型与非空值，再拒绝重复 ID、重复依赖、未知引用、自依赖、循环和未知 Preview。
 引用可指向数组后面的节点。校验输出规范化列表（补齐两个空数组）和拓扑层级；层级由依赖计算，不另存一份计划。
-节点写入只接受上述字段。既有计划和冻结快照仍可读取。审核图仅显示有效 Preview 的依赖，旧计划仍可使用服务端返回的批准操作。
+节点写入只接受上述字段。既有计划和冻结快照仍可读取。旧计划仍可使用服务端返回的批准操作。
 失败不部分保存、不派发工作；HTTP 返回 `400 bad_request`，CLI 非零退出，MCP 返回 `isError:true`。
 
-## 读取任务
+## 读取旧计划任务
 
-`GET /v1/tasks/{id}` 返回原 Task 元数据，审核字段改为以下结构。
-移除单一 `review.phase/status/kind/snapshot` 和每 Agent 审核进度。
+`GET /v1/tasks/{id}` 返回以下结构。
 
 ```http
 GET /v1/tasks/W-818
@@ -48,7 +65,7 @@ GET /v1/tasks/W-818
     "previews": {"keyframes":"not_generated","storyboard":"waiting"},
     "approvals": [{"stage":"script","revision":7,"starts":[]}],
     "stages": [
-      {"id":"script","status":"ready","revision":7,"snapshot":{
+      {"id":"script","status":"waiting_review","revision":7,"snapshot":{
         "kind":"stage",
         "stageId":"script",
         "body":"已同步的脚本正文",
@@ -68,14 +85,14 @@ GET /v1/tasks/W-818
 
 - **`preview_definitions`** 为任务当前的自定义定义。 `GET /v1/tasks/{id}/studio` 的 `previews` 包含绑定 Studio 和有效定义。分享页在既有可见范围内返回显示名称和图标。
 - **`review.revision`**：任务审核状态的总版本，供计划和状态写入做并发校验。
-- **`stages`**：与有效计划 ID 一一对应；`blocked` 等前置批准，`available` 可开始，`running` 制作中，`ready` 待批准，`approved` 已批准，`done` 已完成。
+- **`stages`**：与有效计划 ID 一一对应；`blocked` 等前置批准，`available` 可开始，`running` 制作中，`waiting_review` 待批准，`approved` 已批准，`done` 已完成。
 - **节点 `revision`**：该节点最后变化时的审核总版本；无关节点变化不更新它。
 - **`snapshot`**：已提交成果的冻结证据，未冻结时为 `null`。服务端保存所审计划、`body` 正文和 Preview 资产版本；`previews:[]` 时仍保存正文。
 
 - **`review.previews`**：仅列出尚不可读取的 Preview，值为 `not_generated` 或 `waiting`。任务详情的 `preview_inputs` 提供已同步正文和资产引用，执行前也可读取。
 - **`approvals`**：当前可批准的冻结阶段及其版本。一次批准可立即派发一个下游节点时，`starts` 给出其 Preview ID。网页和 CLI 使用同一结果。
 
-多个节点可同时 `running` 或 `ready`，没有单一“当前阶段”。
+多个节点可同时 `running` 或 `waiting_review`，没有单一“当前阶段”。
 例中风格节点的版本 8 不使脚本待审版本 7 过期。
 无权访问等读取错误沿用既有响应；读取不派发工作。
 
@@ -106,7 +123,7 @@ GET /v1/tasks/W-818
 ```
 
 `status` 接受 `running|done`，`stage` 必填，只允许更新依赖已满足的节点。
-`done` 要求相关正文及资产已同步，并生成该节点的冻结快照。每个引用 Preview 的审核阶段都进入 `ready`，须批准当前版本。普通工作依赖可以在前置节点进入 `ready` 时继续。
+`done` 要求相关正文及资产已同步，并生成该节点的冻结快照。每个引用 Preview 的审核阶段都进入 `waiting_review`，须批准当前版本。普通工作依赖可以在前置节点进入 `waiting_review` 时继续。
 版本匹配时，重复报告同一状态与同一内容返回原结果，不增加修订。
 保存正文或资产的新版本会使受影响的旧审阅版本过期。同步后重新报告 `done`，即可按新版本审阅。单独保存草稿不派发或中断执行。
 
@@ -121,7 +138,7 @@ GET /v1/tasks/W-818
 
 错误见下表。失败不改变计划、节点或执行队列。
 
-## 执行已就绪的任务
+## 执行已就绪的任务（旧计划）
 
 任务返回 `can_execute: true` 时，用户可直接执行该任务。`POST /v1/tasks/{id}/execute` 仍使用 `review.revision`，并按已保存的安排派发工作。直接执行不会记录审阅决定。
 
@@ -137,7 +154,7 @@ Content-Type: application/json
 
 成功返回 `200 Task`。过期版本返回 `409 review_outdated`。任务尚未准备好、存在待答问题或对话仍在回复时返回 `409`，这些情况不会部分接受产物或派发工作。可使用相同的幂等键重试。
 
-## 批准或要求修改
+## 批准或要求修改（旧计划）
 
 `POST /v1/tasks/{id}/decisions` 接收 `decision: approve|request_changes`。
 产物决定传 `stage` 和 **`stages[].revision`**。仅有一项可批准时可省略 `stage`，否则返回 `409 conflict`。
@@ -182,7 +199,8 @@ Question 继续使用独立问答入口；回答不批准节点，批准不关�
 
 ```sh
 akb task review W-818
-akb task review W-818 --review 'UI design + API docs -> Prompts' --revision 8
+akb task review W-818 --previews copy --review 'Approve the final copy.' --revision 8
+akb task review W-818 --request-approval 'Approve this copy?' --preview copy --revision 9
 akb task review W-818 --preview-definitions-file revised-previews.json --revision 8
 akb task review W-818 --stage style --status done --revision 9
 akb task review W-818 --revise-from script --revision 10
@@ -190,7 +208,7 @@ akb task approve W-818 --stage script --revision 7
 ```
 
 - **读取**：不带写参数返回生效安排、尚不可读取的 Preview、冻结版本和当前可用批准。
-- **报告**：`--review`、`--file`、`--status`、`--revise-from` 互斥，`--revision` 对应审核总版本。`--preview-definitions-file` 可单独提交或与计划输入合用。计划输入见[目标与任务审阅 CLI](goal-previews.md#cli)。
+- **写入**：设置计划、提审、报告旧节点状态及修订旧节点为独立操作。`--revision` 对应审核总版本。`--preview-definitions-file` 可单独提交或与计划输入合用。计划输入见[目标与任务审阅 CLI](goal-previews.md#cli)。
 - **批准**：`--revision` 对应所审节点的版本。`--stage` 的省略规则与 HTTP 相同。输出既有决定结果。
 - **失败**：参数或文件错误非零退出且不写入；服务端错误保留原错误码。批准不得自动读取新版本代填。
 
@@ -227,6 +245,7 @@ sequenceDiagram
 
 ## Deployment and rollback
 
+- **Status retirement (0318)**: Coordinate Cloud, Web, and Runner with AKB contract 41. Existing cards read `ready` as `planned` and use `planned` on write. Pending stages use `waiting_review` with the same approval target, revision, and frozen Preview. The `review.ready` event retains its name.
 - **Task-specific Previews (0254)**: Apply the additive migration and coordinate AKB contract 27 and Runner protocol 29 with Cloud and Web. Existing rows have empty definitions. Before rolling back an environment with custom definitions, pause writes and back up definitions and review snapshots.
 
 - **Compatibility**: deploy CLI contract 19 and Runner protocol 25 with the Worker and Web. Drain older Runner sessions before reopening task writes; the Worker refuses their registration.

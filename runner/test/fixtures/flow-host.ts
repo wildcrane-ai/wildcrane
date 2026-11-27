@@ -10,8 +10,8 @@ const machine = '44444444-4444-4444-8444-444444444444'
 const deps = {
   ...defaultDeps(machine),
   akb: () => ({ command: process.execPath, args: [process.env.FAKE_AKB_ENTRY!], version: 'test', shim: path.join(runnerHome(), 'bin/akb/test/shim') }),
-  runtimes: async () => [{ name: 'claude-code' as const, installed: true }],
-  watchMs: null, renewMs: 50, leaseMs: 2000, endMs: 100, stopMs: 2000, retryMs: 50,
+  runtimes: async () => [{ name: 'claude-code' as const, installed: true }, { name: 'antigravity' as const, installed: true }, { name: 'codex' as const, installed: true }],
+  watchMs: null, renewMs: 50, leaseMs: 2000, endMs: 100, stopMs: 2000, retryMs: 50, syncBackoff: () => 25,
 }
 if (process.argv[2] === '--reclaim') {
   await reclaimFlowWorkerAfterExit(process.argv[3]!, process.argv[5]!, deps, process.argv[4])

@@ -141,7 +141,7 @@ describe('entering refinement', () => {
       process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify(review)
       process.env.AI4KANBAN_REVIEW_STAGES = JSON.stringify(['delivery'])
       assert.equal('error' in refinementRequest({ action: 'refine', id: 7 }), false)
-      for (const status of ['blocked', 'ready', 'approved']) {
+      for (const status of ['blocked', 'ready', 'waiting_review', 'approved']) {
         review.stages[1]!.status = status
         process.env.AI4KANBAN_TASK_REVIEW = JSON.stringify(review)
         assert.equal('error' in refinementRequest({ action: 'refine', id: 7 }), true)
@@ -217,7 +217,7 @@ describe('the planning session', () => {
     writeCard()
     const { runs, stalled, stalledWhy } = afterSession('clarify', 1, () => {})
     assert.deepEqual(runs, [])
-    assert.match(stalled ?? '', /#7 is still in To do after planning/)
+    assert.match(stalled ?? '', /#7 still needs planning/)
     assert.deepEqual(stalledWhy, [{ kind: 'refineStalled', args: { card: '7' } }])
   })
 
@@ -525,5 +525,12 @@ describe('refining an existing group (#688)', () => {
     assert.equal(canRefine({ ...card, status: 'implementing' }), false)
     assert.equal(canRefine({ ...card, deliversIn: 'plan', todos: { total: 2, done: 2 } }), false)
     assert.equal(canRefine({ ...card, questions: [{ text: 'Choose?', options: ['A', 'B'] }] }), false)
+  })
+
+  it('still schedules refine for a newly created card marked ready without a Preview', () => {
+    const before = markBoard()
+    writeCard({ status: 'ready' })
+    const result = closing(run('implement', 1, { cardId: 99 }), before)
+    assert.deepEqual(result.runs.map((req) => ({ action: req.action, id: req.id })), [{ action: 'clarify', id: 7 }])
   })
 })

@@ -79,7 +79,7 @@ describe('card creation', () => {
       const made = await create(['--title', `Draft ${i}`, '--body-file', bodyFile])
       const file = path.join(root, String(made.file))
       const written = fs.readFileSync(file, 'utf8')
-      assert.deepEqual(validateSpec(file, written), [])
+      assert.deepEqual(await validateSpec(file, written), [])
       assert.ok(written.includes(draft.split('\n')[0]!))
       assert.match(written, /## Todo\n- \[ \] every task must have todos/)
       if (i) {
@@ -103,7 +103,7 @@ describe('card creation', () => {
       const made = await create(['--title', `Full ${i}`, '--body-file', bodyFile])
       const file = path.join(root, String(made.file))
       const written = fs.readFileSync(file, 'utf8')
-      assert.deepEqual(validateSpec(file, written), [])
+      assert.deepEqual(await validateSpec(file, written), [])
       assert.ok(written.endsWith(i === 2 ? proper : body))
     }
   })

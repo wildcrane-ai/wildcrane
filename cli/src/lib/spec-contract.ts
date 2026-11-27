@@ -4,10 +4,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { enclosingGroupRoot, idPrefix, isLegacyRecurring, walkMd } from './cards'
-import { ARCHIVE, ASSETS, rel, TODO } from './paths'
+import { ARCHIVE, BOARD_STATE, KANBAN, rel, TODO } from './paths'
 import { compareAttrs, compareKind, shotsProblem, storyboardProblem, type Shot } from './compare'
 import { assetName, storyboardMarkers, storyboardTag, studioTag } from './storyboard'
 import { validatePreviewFiles } from './preview-files'
+import { isTaskAssetRef } from '../../../artifact-sdk/src/internal/task-assets'
+import { resolveBoardAsset } from './machine/asset-path'
 import { dependencyCycle } from './validate'
 import { scanCardLines } from './shared/card-lines'
 import { cardHeaderProblems, cardTodoProblems, type CardStudioContext } from './shared/card-structure'
@@ -54,7 +56,7 @@ function enclosingGroups(file: string): number[] {
 /** Format, plus a dependency cycle through the card's own group; other semantic planning decisions remain
  *  the agent's responsibility. With `id`, a storyboard the card points at must be a file in
  *  its asset folder. */
-export function validateSpec(file: string, text: string, id?: number, context?: CardStudioContext): ContractError[] {
+export async function validateSpec(file: string, text: string, id?: number, context?: CardStudioContext, warn?: (message: string) => void): Promise<ContractError[]> {
   const errors: ContractError[] = []
   const add = (line: number, rule: string, message: string) => errors.push({ file: rel(file), line, rule, message })
   const header = cardHeaderProblems(file, text, context, true)
@@ -116,24 +118,24 @@ export function validateSpec(file: string, text: string, id?: number, context?: 
       if (device !== undefined && device !== 'mobile' && device !== 'desktop') add(i + 1, 'mockup-device', `device="${device}" is not a device. Use device="mobile" or device="desktop".`)
       const src = line.match(/\bsrc="([^"]*)"/)?.[1] ?? ''
       const variants = line.match(/\bvariants='([^']*)'/)?.[1]
-      const why = variants === undefined ? null : variantsProblem(variants, src, id)
+      const why = variants === undefined ? null : variantsProblem(variants, src, file, id)
       if (why) add(i + 1, 'mockup-variants', why)
-      else if (id !== undefined && src.startsWith('.assets/') && !inside(ASSETS, src.slice('.assets/'.length))) {
-        add(i + 1, 'asset-src', `src="${src}" names no file. Write it as ${rel(ASSETS)}/${src.slice('.assets/'.length)}, or fix the path.`)
+      else if (id !== undefined && isTaskAssetRef(src) && !existingAsset(file, id, src)) {
+        add(i + 1, 'asset-src', `src="${src}" must name a file within this task's asset folder. Fix the reference or add the file.`)
       }
     }
     if (/^\s*<Storyboard\b/.test(line) && (storyboardTag(line) === null || lines[i - 1]?.trim() || lines[i + 1]?.trim())) {
-      add(i + 1, 'storyboard-block', 'Put one self-closing <Storyboard src=".assets/<card id>/storyboard.json" /> tag on its own line, with blank lines around it.')
+      add(i + 1, 'storyboard-block', 'Put one self-closing <Storyboard src="asset:storyboard.json" /> tag on its own line, with blank lines around it.')
     }
     if (/^\s*<Studio\b/.test(line) && (!studioTag(line) || lines[i - 1]?.trim() || lines[i + 1]?.trim())) {
-      add(i + 1, 'studio-block', 'Put one self-closing <Studio src=".assets/<card id>/studio-review/review.json" /> tag on its own line, with blank lines around it.')
+      add(i + 1, 'studio-block', 'Put one self-closing <Studio src="asset:studio-review/review.json" /> tag on its own line, with blank lines around it.')
     }
     if (/^\s*<Compare\b/.test(line)) {
       const attrs = compareAttrs(line)
       if (!attrs || lines[i - 1]?.trim() || lines[i + 1]?.trim()) add(i + 1, 'compare-block', 'Put one self-closing <Compare a="..." b="..." label="..." /> tag on its own line, with blank lines around it.')
       else if (!attrs.a || !attrs.b || !attrs.label) add(i + 1, 'compare-attributes', 'Add non-empty a="...", b="..." and label="..." attributes to the Compare tag.')
       else if (id !== undefined) {
-        const why = compareProblem(attrs, id)
+        const why = compareProblem(attrs, file, id)
         if (why) add(i + 1, why.rule, why.message)
       }
     }
@@ -167,7 +169,12 @@ export function validateSpec(file: string, text: string, id?: number, context?: 
   for (const title of required) if (!seen.has(title)) add(end + 2, 'missing-section', `Missing ## ${title}. Restore that section; keep its title in English.`)
   if (markers.length !== 1) add(markers[1] ?? end + 2, 'boundary', `Found ${markers.length} <!-- agent --> boundaries; expected exactly one, between the human and agent sections.`)
   for (const problem of cardTodoProblems(file, visible, inPreview)) add(problem.line, problem.code, `${problem.message}. ${problem.hint}`)
-  if (id !== undefined) errors.push(...validateStoryboards(file, id, text), ...validatePreviewFiles(file, id, text))
+  if (id !== undefined) {
+    errors.push(...validateStoryboards(file, id, text))
+    const attachments = await validatePreviewFiles(file, id, text, warn)
+    errors.push(...attachments.filter(problem => problem.rule !== 'asset-reference'
+      || !errors.some(error => error.file === problem.file && error.line === problem.line)))
+  }
   return errors
 }
 
@@ -184,21 +191,15 @@ function setEnd(lines: string[], at: number): number {
   return i
 }
 
-/** A file inside `dir`, symlinks resolved — `null` when absent or when it leads out. */
-function inside(dir: string, name: string): string | null {
+function existingAsset(card: string, id: number, source: string): string | null {
   try {
-    const root = fs.realpathSync(dir)
-    const real = fs.realpathSync(path.join(dir, name))
-    return real.startsWith(root + path.sep) && fs.statSync(real).isFile() ? real : null
-  } catch {
-    return null
-  }
+    const file = resolveBoardAsset(KANBAN, BOARD_STATE, id, source, card)
+    return file && fs.statSync(file, { throwIfNoEntry: false })?.isFile() ? file : null
+  } catch { return null }
 }
 
-/** What is wrong with an Asset tag's `variants` (#1663), or null. With `id`, every file must be
- *  in that card's asset folder. */
-function variantsProblem(raw: string, src: string, id?: number): string | null {
-  const shape = `Write variants='{"<label>": ".assets/<card id>/<file>", ...}' with at least two versions.`
+function variantsProblem(raw: string, src: string, card: string, id?: number): string | null {
+  const shape = `Write variants='{"<label>": "asset:<path>", ...}' with at least two versions.`
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
@@ -210,11 +211,9 @@ function variantsProblem(raw: string, src: string, id?: number): string | null {
   if (files.length < 2 || !files.every((f) => typeof f === 'string' && f)) return `variants needs at least two labels, each naming a file. ${shape}`
   if (!files.includes(src)) return `src="${src}" is not one of the variants. Set src to the version shown first.`
   if (id === undefined) return null
-  const dir = path.join(ASSETS, String(id))
-  for (const f of files as string[]) {
-    const parts = f.split('/')
-    if (parts.length !== 3 || parts[0] !== '.assets' || parts[1] !== String(id) || !inside(dir, parts[2]!)) {
-      return `Variant ${f} names no file in this card's asset folder .assets/${id}/. Write the file there or fix the path.`
+  for (const file of files as string[]) {
+    if (!isTaskAssetRef(file) || !existingAsset(card, id, file)) {
+      return `Variant ${file} must name a file within this task's asset folder. Fix the reference or add the file.`
     }
   }
   return null
@@ -223,8 +222,7 @@ function variantsProblem(raw: string, src: string, id?: number): string | null {
 /** What is wrong with a Compare tag's files (#1740), or null: `a` and `b` are any files in this
  *  card's asset folder but another compare (#526). `shots` is for video `a` beside a video or a
  *  storyboard of it (#1803), and required with the storyboard; it may itself be a storyboard. */
-function compareProblem(attrs: Record<string, string>, id: number): { rule: string; message: string } | null {
-  const dir = path.join(ASSETS, String(id))
+function compareProblem(attrs: Record<string, string>, card: string, id: number): { rule: string; message: string } | null {
   const src = (message: string) => ({ rule: 'compare-src', message })
   const shots = (message: string) => ({ rule: 'compare-shots', message })
   const json = (file: string): unknown => {
@@ -238,7 +236,7 @@ function compareProblem(attrs: Record<string, string>, id: number): { rule: stri
   for (const side of ['a', 'b'] as const) {
     const named = assetName(attrs[side]!, id, [])
     if (!('name' in named)) return src(`Compare ${side} is ${named.actual}; expected ${named.expected}.`)
-    const file = inside(dir, named.name)
+    const file = existingAsset(card, id, attrs[side]!)
     if (!file) return src(`Compare ${side} ${attrs[side]} names no file in this card's asset folder. Write the file there or fix the path.`)
     const data = (files[side] = json(file)) as { a?: unknown; b?: unknown } | null
     if (typeof data?.a === 'string' && typeof data.b === 'string') return src(`Compare ${side} ${attrs[side]} is another compare. Compare its two files directly.`)
@@ -251,7 +249,7 @@ function compareProblem(attrs: Record<string, string>, id: number): { rule: stri
   const read = (at: string): { data: unknown } | { message: string } => {
     const named = assetName(at, id, ['json'])
     if (!('name' in named)) return { message: `Compare shots is ${named.actual}; expected ${named.expected}.` }
-    const file = inside(dir, named.name)
+    const file = existingAsset(card, id, at)
     if (!file) return { message: `Compare shots ${at} names no file in this card's asset folder. Write the JSON there or fix the path.` }
     try {
       return { data: JSON.parse(fs.readFileSync(file, 'utf8')) }
@@ -275,16 +273,15 @@ function compareProblem(attrs: Record<string, string>, id: number): { rule: stri
  *  owner agent's to check, with that agent's `scripts/validate-storyboard.mjs` (#992). */
 export function validateStoryboards(file: string, id: number, text: string): ContractError[] {
   const errors: ContractError[] = []
-  const dir = path.join(ASSETS, String(id))
   for (const [tag, tagOf, rule, fix] of [
     ['Storyboard', storyboardTag, 'storyboard-src', 'Write the JSON there or fix the path.'],
     ['Studio', studioTag, 'studio-src', 'Fix the path or freeze the draft with `akb studio preview <card> --folder <draft> --base <baseline>` and use the returned Studio tag.'],
   ] as const) {
     for (const marker of storyboardMarkers(text, tagOf)) {
-      const named = assetName(marker.src, id, ['json'], tag === 'Studio')
+      const named = assetName(marker.src, id, ['json'])
       const add = (message: string) => errors.push({ file: rel(file), line: marker.line, rule, message })
       if (!('name' in named)) add(`${tag} src is ${named.actual}; expected ${named.expected}.`)
-      else if (!inside(dir, named.name)) add(`${tag} src ${marker.src} names no file in this card's asset folder. ${fix}`)
+      else if (!existingAsset(file, id, marker.src)) add(`${tag} src ${marker.src} names no file in this card's asset folder. ${fix}`)
     }
   }
   return errors

@@ -97,7 +97,7 @@ function modelOf(ref: unknown): string {
 // delta appends; an upsert whose text continues what we have appends the rest of it; an
 // upsert that rewrites a part from the start is the agent replacing its own words, and only
 // the new tail is worth a log line.
-function createParts(tail: Tail) {
+function createParts(tail: Tail, activity: () => void) {
   const written = new Map<string, string>()
   const tools = new Set<string>()
   // What each call was named, kept because the event carrying its result names only the id.
@@ -108,6 +108,7 @@ function createParts(tail: Tail) {
     const fresh = text.startsWith(before) ? text.slice(before.length) : text
     if (!fresh) return
     written.set(partId, text)
+    activity()
     if (kind === 'reasoning' || kind === 'thought') tail.thought(fresh)
     else tail.text(fresh)
   }
@@ -120,7 +121,7 @@ function createParts(tail: Tail) {
       const partId = str(part.partId)
       if (type === 'text' || type === 'reasoning' || type === 'thought') {
         if (partId) say(partId, type, str(part.text))
-        else tail.text(str(part.text))
+        else if (str(part.text)) { activity(); tail.text(str(part.text)) }
         return
       }
       if (type !== 'tool') return
@@ -148,14 +149,18 @@ function createParts(tail: Tail) {
       const delta = str(event.delta)
       if (!delta) return
       written.set(partId, (written.get(partId) ?? '') + delta)
+      activity()
       if (field === 'reasoning') tail.thought(delta)
       else tail.text(delta)
     },
     /** A piece of the turn, as `model.streaming` sends it. */
     streaming(payload: Json) {
       const kind = str(payload.kind)
-      if (kind === 'text_delta') return tail.text(str(payload.delta))
-      if (kind === 'reasoning_delta') return tail.thought(str(payload.delta))
+      const delta = str(payload.delta)
+      if (delta && (kind === 'text_delta' || kind === 'reasoning_delta')) {
+        activity()
+        return kind === 'text_delta' ? tail.text(delta) : tail.thought(delta)
+      }
       // `tool_input_start`, `tool_input_delta` and `tool_input_end` are one call's
       // arguments being spelled out; `tool_call` is the same call with them all in.
       if (kind !== 'tool_call') return
@@ -245,7 +250,7 @@ interface TurnStop {
 
 async function oneTurn(io: ClientTurn, options: ZcodeOptions): Promise<TurnEnd> {
   const tail = createTail(io.log)
-  const parts = createParts(tail)
+  const parts = createParts(tail, () => io.activity?.())
   const activityEvents = createEventCollector()
   const activeCalls = new Set<string>()
   // Nothing reaches the log until the prompt goes out. Opening a session is bookkeeping,
@@ -276,7 +281,6 @@ async function oneTurn(io: ClientTurn, options: ZcodeOptions): Promise<TurnEnd> 
             const part = obj(payload.part)
             const state = obj(part.state)
             const type = str(envelope.type)
-            if (['part.delta', 'model.streaming'].includes(type) && str(payload.delta)) io.activity?.()
             const id = str(payload.toolCallId) || str(part.callId) || str(part.partId)
             const name = str(payload.toolName) || str(part.tool) || str(state.title)
             if (id && name && !activeCalls.has(id)) {
@@ -285,7 +289,18 @@ async function oneTurn(io: ClientTurn, options: ZcodeOptions): Promise<TurnEnd> 
               else activityEvents.toolCall(id, name, /^(?:bash|shell|execute|run_command|terminal)$/i.test(name) ? 'execute' : 'other')
             }
             const status = str(state.status) || str(payload.kind)
-            if (id && ['completed', 'error', 'result'].includes(status)) activityEvents.toolResult(id, status === 'error' ? 'failed' : 'completed', '')
+            const output = str(state.output) || str(payload.output)
+            if (type === 'part.delta' && payload.field === 'output') {
+              const before = activityEvents.activity()
+              activityEvents.progressSnapshot(id || str(payload.partId), str(payload.delta))
+              if (activityEvents.activity() > before) io.activity?.()
+            }
+            if (id && ['completed', 'error', 'result'].includes(status)) {
+              activityEvents.toolResult(id, status === 'error' ? 'failed' : 'completed', output)
+            } else if (id && output) {
+              activityEvents.update({ sessionUpdate: 'tool_call_update', toolCallId: id,
+                content: [{ type: 'content', content: { text: output } }] })
+            }
             for (const e of activityEvents.events()) io.event?.(e)
           }
           event(envelope, parts, tail, live, ended!)
@@ -375,6 +390,7 @@ async function oneTurn(io: ClientTurn, options: ZcodeOptions): Promise<TurnEnd> 
 
     const before = io.resumeId ? await tokensOf(rpc, sessionId) : ZERO_USAGE
     live = true
+    io.event?.({ kind: 'phase', data: { phase: 'submitted', at: new Date().toISOString() } })
     const accepted = await rpc.call('session/send', { sessionId, content: io.prompt })
     if (accepted.accepted === false) throw new Error('the agent would not take the prompt')
 

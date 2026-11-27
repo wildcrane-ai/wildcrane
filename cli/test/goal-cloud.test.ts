@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, it } from 'node:test'
 import { cloudGoal, cloudGoalStudios, queryPreviews } from '../src/commands/goal-cloud'
-import { taskReview } from '../src/commands/task'
+import { taskCreate, taskReview } from '../src/commands/task'
 import { parseReviewFlow } from '../src/lib/shared/review-plan'
 import type { PreviewDefinition } from '../src/lib/shared/preview-definitions'
 import { writeSession } from '../src/lib/cloud/session'
@@ -16,6 +16,7 @@ let goals: Record<string, unknown>[]
 let version: number
 let started: unknown
 let conflict: boolean
+let savedTaskReview: { plan: unknown; revision: number }
 let calls: { url: URL; method: string; body: Record<string, unknown> }[]
 const catalog = [{ id: 'ui-design', title: { en: 'UI design' }, instructions: 'A full condition.\nWith exceptions.' }, { id: 'api-docs', title: { en: 'API docs' }, instructions: '' }]
 beforeEach(() => {
@@ -27,6 +28,7 @@ beforeEach(() => {
   process.env.CODEX_THREAD_ID = 'test-thread'
   process.env.CLAUDE_CODE_SESSION_ID = ''
   writeSession({ version: 1, supabaseUrl: 'https://project.test', subject: 'test-account', accessToken: 'test-token', refreshToken: 'test-refresh', expiresAt: Date.now() + 3600_000 })
+  savedTaskReview = { plan: null, revision: 2 }
   started = { id: 'task_1' }; goals = []; version = 1; conflict = false; calls = []
   globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input)); const body = JSON.parse(String(init?.body || '{}'))
@@ -45,13 +47,20 @@ beforeEach(() => {
       }))]
       result = { id: 'dsc_test', workspace: 'ws_test', version: ++version, goals }
     } else if (url.pathname.endsWith('/start')) result = started
+    else if (url.pathname === '/v1/tasks') {
+      savedTaskReview = { plan: body.review_plan ?? null, revision: 0 }
+      result = { id: 'task_1', key: 'W-1', title: body.title, status: 'queued', review: savedTaskReview }
+    }
+    else if (url.pathname === '/v1/tasks/W-1') result = { id: 'task_1', review: savedTaskReview }
     else if (url.pathname === '/v1/tasks/W-1/studio') result = { previews: catalog }
     else if (url.pathname === '/v1/tasks/W-1/review') {
       try {
         const plan = typeof body.review_flow === 'string'
           ? parseReviewFlow(body.review_flow, [...catalog, ...((body.preview_definitions ?? []) as PreviewDefinition[])])
           : body.review_plan
-        result = { review: { plan, revision: 3 } }
+        savedTaskReview = { plan: body.operation === 'request_approval' ? savedTaskReview.plan : plan,
+          revision: Math.max(3, savedTaskReview.revision + (typeof plan === 'object' && plan !== null && !Array.isArray(plan) ? 1 : 0)) }
+        result = { review: savedTaskReview }
       } catch (e) {
         return Response.json({ error: { code: 'bad_request', message: (e as Error).message } }, { status: 400 })
       }
@@ -111,7 +120,7 @@ it('目标与任务使用同一套 Preview 名称，输入无效时不提交计�
   fs.writeFileSync(reviewFile, JSON.stringify([{ id: 'plan-review' }, { id: 'handoff', after: ['plan-review'] }]))
   await assert.rejects(cloudGoal(['save'], { id: String(id), reviewFile }), /Review node "plan-review".*\(ui-design\).*card body/)
   await assert.rejects(taskReview('W-1', { review: 'UI design ->', revision: '3' }), /empty Preview/)
-  await assert.rejects(taskReview('W-1', { review: '', file: bodyFile, revision: '3' }), /Use one of/)
+  await assert.rejects(taskReview('W-1', { review: '', file: bodyFile, revision: '3' }), /operations cannot be combined/)
   assert.deepEqual(calls.slice(before).filter(c => c.url.pathname.endsWith('/draft') || c.url.pathname.endsWith('/review')).map(c => c.body.review_flow), ['UI design ->'])
 
   await cloudGoal(['save'], { id: String(id), review: '' })
@@ -166,4 +175,75 @@ it('requires a task receipt before reporting an external goal started', async ()
   await assert.rejects(cloudGoal(['start'], { id: 'idea_1' }), /Cloud did not return a started task/)
   started = { id: 'task_2' }
   assert.equal((await cloudGoal(['start'], { id: 'idea_1' })).task, 'task_2')
+})
+
+it('keeps a flat Goal or Task rule and its Preview IDs independently editable', async () => {
+  const bodyFile = path.join(root, 'goal.md')
+  fs.writeFileSync(bodyFile, 'Prepare the design.')
+  const { id } = await cloudGoal(['new'], { title: 'Design', bodyFile, previews: 'ui-design, ui-design', review: 'Review the direction first.' })
+  await cloudGoal(['new'], { title: 'Another design', bodyFile, previews: 'ui-design', review: 'Review the finished design.' })
+  assert.deepEqual(goals.map(goal => goal.review_plan), [
+    { rule: 'Review the direction first.', previews: ['ui-design'] },
+    { rule: 'Review the finished design.', previews: ['ui-design'] },
+  ])
+  await assert.rejects(cloudGoal(['save'], { id: String(id), previews: 'unknown' }), /Available Previews/)
+  await cloudGoal(['save'], { id: String(id), review: '' })
+  assert.deepEqual(goals[0].review_plan, { rule: '', previews: ['ui-design'] })
+  await cloudGoal(['save'], { id: String(id), previews: '' })
+  assert.deepEqual(goals[0].review_plan, { rule: '', previews: [] })
+
+  await taskCreate('Prepare the design', { project: 'prj_test', studio: 'coding', previews: 'ui-design', review: 'Review final design.' })
+  assert.deepEqual(calls.at(-1)?.body.review_plan, { rule: 'Review final design.', previews: ['ui-design'] })
+  await taskReview('W-1', { previews: '', revision: '0' })
+  assert.deepEqual(calls.at(-1)?.body.review_plan, { rule: 'Review final design.', previews: [] })
+  await taskReview('W-1', { review: '', revision: '3' })
+  assert.deepEqual(calls.at(-1)?.body.review_plan, { rule: '', previews: [] })
+  await taskReview('W-1', { requestApproval: 'Approve the draft?', preview: 'ui-design', revision: '4' })
+  assert.deepEqual(calls.at(-1)?.body, {
+    operation: 'request_approval', preview: 'ui-design', question: 'Approve the draft?', review_revision: 4,
+  })
+})
+
+it('merges Preview definitions and appends stages with --add-previews', async () => {
+  const existingDef = { id: 'existing-custom', title: { en: 'Existing', zh: '已有' }, instructions: 'Keep.' }
+  const addedDef = { id: 'new-custom', title: { en: 'New', zh: '新增' }, instructions: 'Add.' }
+  const defsFile = path.join(root, 'add-defs.json')
+  fs.writeFileSync(defsFile, JSON.stringify([addedDef]))
+  const prevFetch = globalThis.fetch
+  const reviewBodies: any[] = []
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    const pathname = new URL(String(url)).pathname
+    if (pathname === '/v1/tasks/W-1' && (!init?.method || init.method === 'GET')) {
+      return Response.json({
+        id: 'task_1', key: 'W-1',
+        review: {
+          revision: 5,
+          plan: [{ id: 'api-docs', after: [], previews: ['api-docs'] }, { id: 'delivery-handoff', after: ['api-docs'], previews: [] }],
+          stages: [{ id: 'api-docs', status: 'approved', revision: 4, snapshot: {} }, { id: 'delivery-handoff', status: 'blocked', revision: 0, snapshot: null }],
+          preview_definitions: [existingDef],
+        },
+      })
+    }
+    if (pathname === '/v1/tasks/W-1/review' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body))
+      reviewBodies.push(body)
+      return Response.json({ id: 'task_1', key: 'W-1', review: { revision: 6, plan: body.review_plan, stages: [], preview_definitions: body.preview_definitions } })
+    }
+    return prevFetch(url, init)
+  }) as typeof fetch
+  try {
+    await taskReview('W-1', { addPreviews: 'api-docs, new-custom', previewDefinitionsFile: defsFile, revision: '5' })
+    assert.deepEqual(reviewBodies.at(-1), {
+      operation: 'plan',
+      review_plan: [
+        { id: 'api-docs', after: [], previews: ['api-docs'] },
+        { id: 'new-custom', after: [], previews: ['new-custom'] },
+        { id: 'delivery-handoff', after: ['api-docs', 'new-custom'], previews: [] },
+      ],
+      preview_definitions: [existingDef, addedDef],
+      review_revision: 5,
+    })
+  } finally {
+    globalThis.fetch = prevFetch
+  }
 })

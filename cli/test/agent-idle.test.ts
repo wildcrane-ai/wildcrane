@@ -1,72 +1,142 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import { test } from 'node:test'
-import { createIdleWatchdog, IDLE_MS, PROVIDER_RETRY_MS } from '../src/lib/agent/idle'
+import { createIdleWatchdog, IDLE_MS } from '../src/lib/agent/idle'
+import { createAntigravityRenderer } from '../src/lib/agent/wire/antigravity'
+import { createStreamRenderer } from '../src/lib/agent/wire/claude-stream'
+import { createCodexStreamRenderer } from '../src/lib/agent/wire/codex-stream'
+import { createKimiStreamRenderer } from '../src/lib/agent/wire/kimi-stream'
+import type { RunEvent } from '../src/lib/agent/wire/events'
+import type { StreamRenderer } from '../src/lib/agent/wire/stream'
 
-test('five minutes of pure waiting; local calls, subagents and background work suspend the clock', () => {
-  for (const kind of ['execute', 'subagent', 'background']) {
-    let now = 0, expired = 0, busy = false
-    const watch = createIdleWatchdog(() => expired++, () => busy, IDLE_MS, () => now)
-    const call = { toolCallId: 'a', title: 'work', kind: 'execute' as const, status: 'in_progress', ...(kind === 'subagent' ? { subagent: true as const } : {}) }
-    if (kind === 'background') busy = true
-    else watch.event({ kind: 'tool_call', data: call })
-    now = IDLE_MS * 3; watch.check()
-    assert.equal(expired, 0)
-    if (kind === 'background') busy = false
-    else watch.event({ kind: 'tool_call_update', data: { toolCallId: 'a', status: 'completed' } })
-    watch.check()
-    now += IDLE_MS - 1; watch.check(); assert.equal(expired, 0)
-    now++; watch.check(); assert.equal(expired, 1)
-    now += IDLE_MS; watch.check(); assert.equal(expired, 1)
-    watch.close()
+function clock(childProgress?: () => number) {
+  let now = 0
+  let expired = 0
+  const watch = createIdleWatchdog(() => expired++, { now: () => now, childProgress })
+  return {
+    watch,
+    expired: () => expired,
+    hence(ms: number) { now += ms; watch.check() },
+    feed(renderer: StreamRenderer, frame: object) {
+      const prior = renderer.activity?.()
+      renderer.push(JSON.stringify(frame) + '\n')
+      if (renderer.activity?.() !== prior) watch.touch()
+      for (const event of renderer.events?.() ?? []) watch.event(event)
+    },
   }
-})
+}
 
-test('model deltas reset the clock; heartbeats and repeated tool updates cannot keep remote calls alive', () => {
-  let now = 0, expired = 0
-  const watch = createIdleWatchdog(() => expired++, () => false, IDLE_MS, () => now)
-  const remote = { kind: 'tool_call' as const, data: { toolCallId: 'remote', title: 'MCP', kind: 'other' as const, status: 'in_progress' } }
-  watch.event(remote)
-  now = IDLE_MS - 1; watch.touch()
-  now += IDLE_MS - 1
-  watch.event({ kind: 'log', data: { text: 'heartbeat' } }); watch.event(remote); watch.check()
-  assert.equal(expired, 0)
-  now++; watch.check(); assert.equal(expired, 1)
-  watch.close()
-})
-
-test('announced native retries survive a 316-second capacity wait, without an unlimited heartbeat exemption (#885)', () => {
-  let now = 0, expired = 0
-  const watch = createIdleWatchdog(() => expired++, () => false, IDLE_MS, () => now)
-  const waiting = { kind: 'status' as const, data: { source: 'codex' as const, state: 'retrying' as const, code: 'service_overloaded' } }
-  now = IDLE_MS - 15_000
-  watch.event(waiting)
-  now += 316_000; watch.check(); assert.equal(expired, 0)
-  watch.event({ kind: 'status', data: { state: 'thinking', source: 'codex' } })
-  now += IDLE_MS; watch.check(); assert.equal(expired, 1)
-  watch.close()
-
-  now = 0; expired = 0
-  const bounded = createIdleWatchdog(() => expired++, () => false, IDLE_MS, () => now)
-  bounded.event(waiting)
-  while (now < PROVIDER_RETRY_MS.episode) {
-    now += IDLE_MS
-    bounded.event(waiting)
+test('W-1195 idle replay: an active command and the root waiting for two background tasks cannot reset the idle timer', () => {
+  const { watch, hence, expired } = clock()
+  // Last two normalized events from W-1195, with the local checkout path replaced.
+  const capture = fs.readFileSync('test/fixtures/antigravity/w-1195-idle.events.ndjson', 'utf8')
+  const [call, waiting] = capture.trim().split('\n').map(line => JSON.parse(line) as RunEvent)
+  watch.event(call!)
+  watch.event(waiting!)
+  for (let i = 0; i < 4; i++) {
+    hence(60_000)
+    watch.event(call!)
+    watch.event(waiting!)
+    watch.event({ kind: 'tool_call_update', data: { toolCallId: '79', status: 'running', result: 'Command is still running.' } })
+    watch.event({ kind: 'status', data: { state: 'running', source: 'sync' } })
+    watch.event({ kind: 'log', data: { text: `Heartbeat ${i}` } })
   }
-  assert.equal(expired, 1)
-  bounded.close()
+  hence(59_999); assert.equal(expired(), 0)
+  hence(1); assert.equal(expired(), 1)
+  hence(IDLE_MS); assert.equal(expired(), 1)
 })
 
-test('a missing native retry announcement still expires and plain recovery text grants no exemption (#885)', () => {
-  let now = 0, expired = 0
-  const watch = createIdleWatchdog(() => expired++, () => false, IDLE_MS, () => now)
-  watch.event({ kind: 'status', data: { source: 'codex', state: 'retrying', code: 'connection_lost' } })
-  now = PROVIDER_RETRY_MS.announcement - 1; watch.check(); assert.equal(expired, 0)
-  now++; watch.check(); assert.equal(expired, 1)
-  watch.close()
+test('a new background command result, subagent output and verified child progress can each extend long work', () => {
+  let childAt = 0
+  const { watch, hence, expired } = clock(() => childAt)
+  watch.event({ kind: 'tool_call', data: { toolCallId: 'command', title: 'Test', kind: 'execute', status: 'in_progress' } })
+  hence(240_000)
+  const output = (result: string) => watch.event({ kind: 'tool_call_update', data: { toolCallId: 'command', status: 'running', result } })
+  output('Built 45/90 targets')
+  hence(240_000)
+  watch.event({ kind: 'tool_call', data: { toolCallId: 'child', title: 'Check build', kind: 'other', subagent: true, status: 'running' } })
+  hence(240_000)
+  childAt = 720_000
+  watch.check()
+  hence(240_000)
+  output('Built 90/90 targets')
+  watch.event({ kind: 'tool_call_update', data: { toolCallId: 'child', status: 'completed', result: 'Verified outputs' } })
+  hence(240_000)
+  output('Built 45/90 targets\nHeartbeat at 20:00')
+  output('Built 90/90 targets')
+  hence(59_999); assert.equal(expired(), 0)
+  hence(1); assert.equal(expired(), 1)
+})
 
-  now = 0; expired = 0
-  const plain = createIdleWatchdog(() => expired++, () => false, IDLE_MS, () => now)
-  plain.event({ kind: 'log', data: { text: '[provider-recovery] waiting' } })
-  now = IDLE_MS; plain.check(); assert.equal(expired, 1)
-  plain.close()
+test('thinking, native retry announcements and transport phases cannot extend the shared clock', () => {
+  const { watch, hence, expired } = clock()
+  hence(240_000)
+  watch.event({ kind: 'status', data: { source: 'codex', state: 'retrying', code: 'service_overloaded' } })
+  watch.event({ kind: 'status', data: { source: 'acp', state: 'thinking' } })
+  watch.event({ kind: 'phase', data: { phase: 'started', at: 'test', contentAt: 'test' } })
+  hence(60_000)
+  assert.equal(expired(), 1)
+})
+
+test('Antigravity measures command output across repeated polls and accepts subagent output after five minutes', () => {
+  const { watch, hence, expired, feed } = clock()
+  const r = createAntigravityRenderer()
+  const step = (index: number, name: string, output = '', state = 'ACTIVE') => feed(r, {
+    event: 'step_update', step_update: {
+      step_index: index, step_type: 'tool', state, tool_info: { name, parameters: { CommandId: 'build' }, output },
+    },
+  })
+  step(1, 'run_command')
+  step(2, 'invoke_subagent')
+  hence(240_000)
+  step(3, 'command_status', 'Created At: 00:04\nCommand output:\nCompiled target A', 'DONE')
+  hence(180_000)
+  step(4, 'command_status', 'Created At: 00:07\nCommand output:\nCompiled target A\nHeartbeat at 00:07', 'DONE')
+  hence(60_000)
+  step(2, 'invoke_subagent', 'Inspected target A')
+  hence(240_000)
+  step(5, 'command_status', 'Command exited with code 0.\n\nCommand output:\nCompiled target A\nCompiled target B', 'DONE')
+  step(2, 'invoke_subagent', 'Verified both targets', 'DONE')
+  feed(r, { event: 'result', result: { status: 'SUCCESS', response: 'Build verified.' } })
+  assert.equal(expired(), 0)
+  assert.equal(r.result(), 'Build verified.')
+  watch.close()
+})
+
+test('Antigravity polling ids and timestamps do not count as new background progress', () => {
+  const { hence, expired, feed } = clock()
+  const r = createAntigravityRenderer()
+  for (let i = 0; i < 5; i++) {
+    feed(r, { event: 'step_update', step_update: { step_index: i, step_type: 'tool', state: 'DONE',
+      tool_info: { name: 'command_status', parameters: { CommandId: 'hung' }, output: `Created At: 00:0${i}\nCommand is running.` } } })
+    hence(60_000)
+  }
+  assert.equal(expired(), 1)
+})
+
+test('Claude subagent and Codex and Kimi streams report work while ignoring repeat snapshots', () => {
+  for (const [renderer, events] of [
+    [createStreamRenderer(), [
+      { type: 'system', subtype: 'task_progress', task_id: 'child', usage: { total_tokens: 20, duration_ms: 5 } },
+      { type: 'system', subtype: 'task_progress', task_id: 'child', usage: { total_tokens: 20, duration_ms: 10 } },
+    ]],
+    [createCodexStreamRenderer(), [
+      { type: 'item.updated', item: { id: 'command', type: 'command_execution', aggregated_output: 'Compiled target A' } },
+      { type: 'item.updated', item: { id: 'command', type: 'command_execution', aggregated_output: 'Compiled target A' } },
+    ]],
+    [createKimiStreamRenderer('/tmp'), [
+      { role: 'assistant', reasoning_content: 'Reviewing the work so far.' },
+      { role: 'assistant', reasoning_content: 'Reviewing the work so far.' },
+    ]],
+  ] as const) {
+    const { hence, expired, feed } = clock()
+    feed(renderer, { type: 'item.started', item: { id: 'command', type: 'command_execution', command: 'build' } })
+    hence(240_000)
+    feed(renderer, events[0])
+    hence(240_000)
+    assert.equal(expired(), 0)
+    feed(renderer, events[1])
+    hence(60_000)
+    assert.equal(expired(), 1)
+  }
 })

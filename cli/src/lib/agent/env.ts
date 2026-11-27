@@ -29,6 +29,9 @@ export function runEnv(env: NodeJS.ProcessEnv, value: string): NodeJS.ProcessEnv
   return { ...env, [RUN_ENV]: value }
 }
 
+export const DELIVERY_PHASE_ENV = 'AI4KANBAN_DELIVERY_PHASE'
+export const deliveryPhase = () => process.env[DELIVERY_PHASE_ENV]
+
 export const TASK_REQUEST_ENV = 'AI4KANBAN_TASK_REQUEST'
 export const SAVED_PREVIEW_FILE_ENV = 'AI4KANBAN_SAVED_PREVIEW_FILE'
 

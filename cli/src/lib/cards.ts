@@ -8,7 +8,9 @@ import path from 'node:path'
 
 import { LEGACY_RECURRING, idPrefix, isGroupFolder, isLegacyRecurring, subtaskLines } from './board/assemble'
 import { dropRefsIn, markSubtaskIn } from './leaving'
-import { die, rel, TODO, ARCHIVE } from './paths'
+import { die, rel, TODO, ARCHIVE, KANBAN } from './paths'
+import { landArchiveOwners } from './shared/land-archives'
+import { normalizeCardFrontmatter, parseFrontmatter } from './frontmatter'
 import type { Found } from './types'
 
 // The board's own reading rules live in `board/assemble.ts` — one copy, so a hosted page
@@ -96,6 +98,20 @@ export function boardCardIds(): Set<number> {
   return ids
 }
 
+/** Archived upstream cards whose Runner still owns the Land receipt. */
+export function pendingLandBlockers(): { id: number; title: string }[] {
+  if (!fs.existsSync(ARCHIVE)) return []
+  const owners = landArchiveOwners(KANBAN)
+  if (!owners.length) return []
+  const pending = new Set(owners.map(owner => owner.number))
+  return walkMd(ARCHIVE).flatMap(file => {
+    const id = idPrefix(path.basename(file) === 'root.md' ? path.basename(path.dirname(file)) : path.basename(file))
+    if (id === null || !pending.has(id)) return []
+    const { meta } = parseFrontmatter(fs.readFileSync(file, 'utf8'))
+    return meta?.archived && !meta.rejected ? [{ id, title: meta.title }] : []
+  })
+}
+
 // If `file` is a subtask nested inside a group task, return that group's root.md
 // (the nearest ancestor folder holding one). Null for a standalone card. Used so
 // archiving a subtask can tick it off in the group's tracking card.
@@ -114,7 +130,7 @@ export function enclosingGroupRoot(file: string): string | null {
 export function markSubtask(rootFile: string, id: number, action: 'tick' | 'strike'): boolean {
   const marked = markSubtaskIn(fs.readFileSync(rootFile, 'utf8'), id, action)
   if (marked === null) return false
-  fs.writeFileSync(rootFile, marked)
+  fs.writeFileSync(rootFile, normalizeCardFrontmatter(marked))
   return true
 }
 
@@ -132,15 +148,14 @@ export function archiveDest(found: Found): string {
 
 // Remove `id` from every other card's `blocked_by`/`related`. Run when a card leaves the
 // board (archive or reject): the id is gone, so a card still listing it is blocked by
-// nothing and pointing at nothing. A hand-written block list falls through to the reconcile
-// warning instead of being silently missed.
-export function dropCrossRefs(id: number): string[] {
+// nothing and pointing at nothing. A managed Land dependency waits for Cloud.
+export function dropCrossRefs(id: number, keepBlocker = false): string[] {
   const touched: string[] = []
   for (const file of walkMd(TODO)) {
     if (path.basename(file) === 'README.md') continue
-    const { text, fields } = dropRefsIn(fs.readFileSync(file, 'utf8'), id)
+    const { text, fields } = dropRefsIn(fs.readFileSync(file, 'utf8'), id, keepBlocker)
     if (!fields.length) continue
-    fs.writeFileSync(file, text)
+    fs.writeFileSync(file, normalizeCardFrontmatter(text))
     touched.push(`${path.relative(TODO, file).split(path.sep).join('/')} (${fields.join(', ')})`)
   }
   return touched

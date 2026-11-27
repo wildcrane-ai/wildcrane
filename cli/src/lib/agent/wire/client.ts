@@ -27,9 +27,7 @@ export interface ClientTurn {
   activity?: () => void
   signal?: AbortSignal
   idleSignal?: AbortSignal
-  /** The command's own streams. The client owns the conversation on both: this stdout is a
-   *  protocol, not a log, and nothing else reads it for meaning. The runner listens to it
-   *  too, but only to count bytes against the silence window (#394). */
+  /** The protocol client's input and output streams. */
   stdout: Readable
   stdin: Writable
   /** The owning task has recorded final completion; background work can be disposed. */

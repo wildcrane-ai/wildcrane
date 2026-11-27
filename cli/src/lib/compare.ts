@@ -1,6 +1,6 @@
 // ---- a card's `<Compare>` marker (#1740) ------------------------------------------------------------
 //
-//   <Compare a=".assets/1734/source.mp4" b=".assets/1734/clone.mp4" label="Source vs clone" shots=".assets/1734/shots.json" />
+//   <Compare a="asset:source.mp4" b="asset:clone.mp4" label="Source vs clone" shots="asset:shots.json" />
 //
 // Two images or two videos from the card's asset folder, drawn together. `a-label` and `b-label`
 // name each side; `shots` (videos only) is a JSON list that cuts the shared play bar per shot.

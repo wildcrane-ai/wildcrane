@@ -1,6 +1,8 @@
+import { isTaskAssetRef, taskAssetPath } from '../../../artifact-sdk/src/internal/task-assets'
+
 // ---- a card's storyboard marker (#963) -----------------------------------------------------------
 //
-//   <Storyboard src=".assets/963/storyboard.json" label="3:4" />
+//   <Storyboard src="asset:storyboard.json" label="3:4" />
 //
 // The tag stands alone in its paragraph and points at a JSON file in the card's asset folder;
 // `label` is an optional heading that tells several on one card apart (#1117).
@@ -11,7 +13,6 @@ const TAG = /^<Storyboard\b([^<>]*?)\/>$/
 const attr = (name: string) => new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`)
 const SRC_ATTR = attr('src')
 const LABEL_ATTR = attr('label')
-const SEGMENT = /^(?!\.)[^/\\]+$/
 
 /** The `src` and `label` of a block that is exactly one `<Storyboard … />` tag — `null` for
  *  anything else. */
@@ -53,16 +54,14 @@ export function storyboardMarkers(body: string, tagOf: (raw: string) => string |
   return found
 }
 
-/** The file name a same-card `.assets/<card>/<name>` path points at, or why it may not. No
- *  `exts` takes any type; `nested` lets the name sit in a subfolder, `previews/cover.png`. */
-export function assetName(src: string, cardId: number, exts: readonly string[], nested = false): { name: string } | { expected: string; actual: string } {
-  const expected = `.assets/${cardId}/<file>${!exts.length ? '' : `.${exts.length === 1 ? exts[0] : `{${exts.join(',')}}`}`} in this card's asset folder`
-  if (/^[a-z][a-z0-9+.-]*:/i.test(src)) return { expected, actual: `an external address ${JSON.stringify(src)}` }
-  const parts = src.split('/')
-  if (parts[0] !== '.assets' || parts.length < 3 || (!nested && parts.length !== 3)) return { expected, actual: JSON.stringify(src) }
-  if (parts[1] !== String(cardId)) return { expected, actual: `another card's folder ${JSON.stringify(parts[1])}` }
-  if (!parts.slice(2).every((part) => SEGMENT.test(part))) return { expected, actual: JSON.stringify(src) }
-  const name = parts.slice(2).join('/')
+/** Check a task reference and the extension the component expects. */
+export function assetName(src: string, cardId: number, exts: readonly string[]): { name: string } | { expected: string; actual: string } {
+  const expected = `asset:<path>${!exts.length ? '' : `.${exts.length === 1 ? exts[0] : `{${exts.join(',')}}`}`} in this task's asset folder`
+  const name = taskAssetPath(src, cardId)
+  if (name === null) {
+    const actual = !isTaskAssetRef(src) && /^[a-z][\w+.-]*:/i.test(src) ? `an external address ${JSON.stringify(src)}` : JSON.stringify(src)
+    return { expected, actual }
+  }
   const ext = name.split('.').pop()!.toLowerCase()
   if (exts.length && (!name.includes('.') || !exts.includes(ext))) return { expected, actual: `file type ${JSON.stringify(name.includes('.') ? ext : '')}` }
   return { name }

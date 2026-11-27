@@ -220,11 +220,16 @@ function refinesAfter(
   const mine = new Set(FOLLOWS_CREATED.has(action) ? changed.filter((id) => !before.has(id)) : changed)
   return cards
     .filter((card) => mine.has(card.id))
-    .filter((card) => card.openBlockers.length === 0 && refinementStep(card) !== 'done')
+    .filter((card) => {
+      if (card.openBlockers.length > 0) return false
+      if (refinementStep(card) !== 'done') return true
+      return !before.has(card.id) && card.status === 'planned' && !/<Preview\b/i.test(card.body) && !card.questions.length
+    })
     .sort(byDispatchOrder)
     .flatMap((card) => {
-      const action = refinementStep(card)
-      return action === 'done' ? [] : [{ action, id: card.id, title: card.title, refineRound: 1 }]
+      const step = refinementStep(card)
+      const nextAction = step === 'done' ? 'clarify' : step
+      return [{ action: nextAction, id: card.id, title: card.title, refineRound: 1 }]
     })
 }
 
@@ -235,7 +240,7 @@ function stalledLine(cardId: number | null, next: AgentRequest | null): string |
   if (next !== null) return null
   const card = cardId === null ? null : currentCard(cardId)
   if (!card || card.isGroup || refinementStep(card) === 'done') return null
-  return `#${card.id} is still in To do after planning, and the board won't plan it again on its own — refine it again, or mark it ready yourself.`
+  return `#${card.id} still needs planning. Refine it again or finish the plan and set --status planned.`
 }
 
 export interface RefinementFollowUp {
@@ -252,7 +257,7 @@ export function refinementRunsAfter(
   const next = run.cardId !== null && ['clarify', 'resolve', 'edit', 'approve'].includes(run.action)
     ? refinementAfter(run.action, run.cardId, run.flowId)
     : null
-  const starts = refinesAfter(run.action, changed, before).filter(
+  const starts = run.cloudExecution && run.cardId !== null ? [] : refinesAfter(run.action, changed, before).filter(
     (req) => req.id !== run.cardId || run.refineRound === undefined,
   )
   const stalled = (run.refineRound !== undefined && stalledLine(run.cardId, next)) || undefined

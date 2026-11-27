@@ -47,7 +47,8 @@ export function nextDeliveryRun(deliveryId?: string): AgentRequest | undefined {
     }
   }
   // A failed spawn after superseding still owes the approved card a fresh delivery.
-  const owed = store.deliveries.find((d) => d.cardId !== null && d.steps.some((s) => s.step === 'superseded') &&
+  const owed = store.deliveries.find((d) => (!deliveryId || d.deliveryId === deliveryId) &&
+    d.cardId !== null && d.steps.some((s) => s.step === 'superseded') &&
     !d.steps.some((s) => s.step === 'dropped') && !store.deliveries.some((other) => other.cardId === d.cardId && other.deliveryId !== d.deliveryId && other.startedAt >= (d.endedAt ?? 0)) &&
     !store.runs.some((r) => r.cardId === d.cardId && r.status === 'running') && openQuestions(d.cardId!) === 0 && approvedRequirements(d.cardId!))
   return owed ? { action: 'implement', id: owed.cardId!, title: owed.title, session: 'new' } : undefined

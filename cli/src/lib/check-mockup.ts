@@ -1,12 +1,15 @@
 // Runs from the isolated environment prepared by the UI Designer's standalone script.
 import fs from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import vm from 'node:vm'
 import ts from 'typescript'
 import { isHtmlFile } from './dress-page'
 import { drawMockup, MOCKUP_IMPORTS } from './draw-mockup'
 import { renderError } from './preview-validation'
-import { manifestOf, mapReferences } from '../../../artifact-sdk/src/internal/manifest'
+import { fileManifest, splitFileReference } from '../../../artifact-sdk/src/internal/file-references'
+import { decodeFilePath } from '../../../artifact-sdk/src/internal/task-assets'
+import { mapReferences } from '../../../artifact-sdk/src/internal/manifest'
 import { TYPES } from '../../../artifact-sdk/src/internal/references'
 
 const CODE = /\.(?:[cm]?js|jsx|tsx?)$/i
@@ -78,7 +81,9 @@ export function checkMockupTypes(files: string[], root: string, work: string): v
   }).join('\n'))
 }
 
-async function pageFor(entry: string, work: string): Promise<string> {
+type MockupFile = { type: string; bytes?: string; css?: string }
+
+async function pageFor(entry: string, work: string): Promise<{ html: string; files: MockupFile[]; prefix: string }> {
   entry = fs.realpathSync(entry)
   const isHtml = isHtmlFile(entry)
   if (!isHtml && !/\.tsx$/i.test(entry)) throw new Error(`${entry}: expected an HTML or TSX entry`)
@@ -118,35 +123,44 @@ async function pageFor(entry: string, work: string): Promise<string> {
   if (!isHtml) checkMockupTypes([...files], root, work)
   let html = await drawMockup(entry)
   // Use the upload manifest: files named only inside scripts are deliberately unreachable.
-  const assets = new Map<string, string>()
+  const filesToDraw: MockupFile[] = []
+  const prefix = `__wildcrane_${randomUUID()}_`
+  const loading = new Set<string>()
+  const loaded = new Map<string, string>()
   const checkResources = (text: string, owner: string): void => {
-    if (/(?:\b(?:src|poster|srcset|href)\s*=\s*["']|url\(\s*["']?)(https?:|\/\/)/i.test(text.replace(/<a\b[^>]*>/gi, ''))) throw new Error(`${owner}: remote resources cannot render offline`)
     if (/<[a-z][^<>]*\son[a-z]+\s*=/i.test(text)) throw new Error(`${owner}: remove interactive handlers`)
     if (/<script\b[^>]*\bsrc\s*=/i.test(text)) throw new Error(`${owner}: use an inline script for offline motion`)
   }
   const checkCss = (css: string, file: string): void => {
     checkResources(css, file)
     postcss.parse(css, { from: file })
-    if (/@import\s/i.test(css)) throw new Error(`${file}: HTML stylesheets must inline CSS imports`)
   }
-  const inline = (text: string, owner: string): string => mapReferences(manifestOf('html'), text, (src, found) => {
+  const inline = (text: string, owner: string): string => mapReferences(fileManifest(isHtmlFile(owner) || owner === entry ? 'html' : 'asset', owner), text, (src, found) => {
+    if (/^(https?:|\/\/)/i.test(src)) throw new Error(`${owner}: remote resources cannot render offline`)
+    if (!src || /^(?:[a-z][\w+.-]*:|\/|#)/i.test(src)) return src
+    const [name, suffix] = splitFileReference(src)
     let file: string
-    try { file = contained(path.resolve(path.dirname(owner), src.replace(/[?#].*$/, '')), root) }
+    try { file = contained(path.resolve(path.dirname(owner), decodeFilePath(name)), root) }
     catch (error) { throw new Error(`${owner}:${found.line ?? 1}: ${src}: ${error instanceof Error ? error.message : String(error)}`) }
     const ext = path.extname(file).toLowerCase()
-    if (assets.has(file)) throw new Error(`${owner}:${found.line ?? 1}: cyclic asset ${src}`)
-    assets.set(file, '')
-    let bytes = fs.readFileSync(file)
-    if (ext === '.css') { checkCss(bytes.toString(), file); bytes = Buffer.from(inline(bytes.toString(), file)) }
-    assets.delete(file)
-    return `data:${TYPES[ext] ?? 'application/octet-stream'};base64,${bytes.toString('base64')}`
-  }) as string
-  // Check HTML source before dressing it, which may otherwise leave missing CSS links intact.
-  if (isHtml) {
-    const original = fs.readFileSync(entry, 'utf8')
-    checkResources(original, entry)
-    inline(original, entry)
-  }
+    if (loading.has(file)) throw new Error(`${owner}:${found.line ?? 1}: cyclic asset ${src}`)
+    let token = loaded.get(file)
+    if (!token) {
+      loading.add(file)
+      const bytes = fs.readFileSync(file)
+      const type = TYPES[ext] ?? 'application/octet-stream'
+      let asset: MockupFile
+      if (ext === '.css') {
+        const css = bytes.toString()
+        checkCss(css, file)
+        asset = { type, css: inline(css, file) }
+      } else asset = { type, bytes: bytes.toString('base64') }
+      token = prefix + filesToDraw.push(asset) + '_'
+      loaded.set(file, token)
+      loading.delete(file)
+    }
+    return token + (suffix.match(/#.*$/)?.[0] ?? '')
+  }, true) as string
   checkResources(html, entry)
   for (const style of html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi)) checkCss(style[1]!, entry)
   html = inline(html, entry)
@@ -163,7 +177,7 @@ async function pageFor(entry: string, work: string): Promise<string> {
     try { new vm.Script(match[2]!, { filename: entry, lineOffset: line - 1 }) }
     catch (error) { throw new Error(`${entry}:${line}: ${error instanceof Error ? error.message : String(error)}`) }
   }
-  return html
+  return { html, files: filesToDraw, prefix }
 }
 
 export async function checkMockups(entries: string[], work: string, signal?: AbortSignal): Promise<boolean> {
@@ -179,7 +193,7 @@ export async function checkMockups(entries: string[], work: string, signal?: Abo
       const entry = path.resolve(name)
       let page
       try {
-        const html = await pageFor(entry, work)
+        const { html, files, prefix } = await pageFor(entry, work)
         page = await browser.newPage()
         const errors: string[] = []
         page.on('pageerror', (error: Error) => errors.push(error.stack || error.message || String(error)))
@@ -188,7 +202,18 @@ export async function checkMockups(entries: string[], work: string, signal?: Abo
         for (const viewport of [{width: 1280, height: 800}, {width: 393, height: 852}]) {
           await page.goto('about:blank')
           await page.setViewportSize(viewport)
-          await page.setContent(html, { waitUntil: 'load', timeout: 10000 })
+          const urls: string[] = await page.evaluate(({ files, prefix }: { files: MockupFile[]; prefix: string }) => {
+            const pattern = new RegExp(prefix + '(\\d+)_', 'g')
+            const urls: string[] = []
+            for (const file of files) {
+              const data = file.css !== undefined ? file.css.replace(pattern, (_, id) => urls[Number(id) - 1]!)
+                : Uint8Array.from(atob(file.bytes!), char => char.charCodeAt(0))
+              urls.push(URL.createObjectURL(new Blob([data], { type: file.type })))
+            }
+            return urls
+          }, { files, prefix })
+          const doc = html.replace(new RegExp(prefix + '(\\d+)_', 'g'), (_, id) => urls[Number(id) - 1]!)
+          await page.setContent(doc, { waitUntil: 'load', timeout: 10000 })
           await page.evaluate('document.fonts.ready')
           await page.screenshot({ timeout: 10000 })
           const broken = await page.evaluate('Array.from(document.images).filter(image => !image.complete || !image.naturalWidth).map(image => image.alt || image.src.slice(0, 80))')

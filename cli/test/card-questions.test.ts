@@ -156,7 +156,7 @@ describe('a question an old akb marked skipped', () => {
     const file = path.join(todo, fs.readdirSync(todo).find((f) => f.endsWith('.md'))!)
     fs.writeFileSync(file, card().replace('recommend: []', 'recommend: []\n    skipped: true'))
     await move(root, ['update', '1', '--status', 'ready'])
-    assert.match(card(), /status: ready/)
+    assert.match(card(), /status: planned/)
     assert.match(card(), /questions: \[\]/)
     await refuses(root, ['update-questions', '1', '--skip', '1'], /unknown option/)
   })

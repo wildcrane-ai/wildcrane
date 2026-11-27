@@ -5,7 +5,7 @@ import path from 'node:path'
 import { killMarked, processesStopped, type Mark } from '../../cli/src/lib/agent/stop'
 import { agentRecovery, isSessionMissingFailure, readFailure, readRetryHistory, readRetryPause, readRetryPlan, type ExecutionFailure, type RetryPause, type RetryPlan, type RetryRecord } from '../../cli/src/lib/agent/retry'
 import type { LocalReplyPart } from '../../cli/src/lib/shared/reply-parts'
-import { turnSubmitted, type RunEvent } from '../../cli/src/lib/agent/wire/events'
+import { isPollingTool, turnSubmitted, type RunEvent } from '../../cli/src/lib/agent/wire/events'
 import { cloudLanguage } from '../../cli/src/lib/agent/language'
 import { idleStopConfirmed } from '../../cli/src/lib/agent/wire/codex-background-types'
 import * as api from './api'
@@ -29,12 +29,12 @@ export interface Checkpoint {
   retryRound?: string
   syncRetries?: Partial<Record<SyncStep, { attempt: number; at: number; record?: RetryRecord }>>
   syncFailure?: { failure: ExecutionFailure; pause: RetryPause; safe: boolean }
-  ending?: { outcome: 'done' | 'failed' | 'conflict' | 'stopped'; reason: string; report?: JobReport; unconfirmed?: boolean }
+  ending?: { outcome: 'done' | 'failed' | 'conflict' | 'stopped'; reason: string; report?: JobReport; unconfirmed?: boolean; refreshArchive?: boolean }
   reconcileRetry?: { attempt: number; at: number }
   taskRecovery?: api.TaskRecovery
   verifyingDelivery?: boolean
   boardRepair?: { reason: string; run: string }
-  flowRun?: { id: string; finished: boolean; deliveryId?: string; from?: string; failure?: ExecutionFailure; retryPause?: RetryPause; priorSpend?: BoardRunSpend[] }
+  flowRun?: { id: string; finished: boolean; card?: number; agentSession?: string; deliveryId?: string; from?: string; failure?: ExecutionFailure; retryPause?: RetryPause; resumeDiagnostic?: string | null; priorSpend?: BoardRunSpend[] }
   forkSource?: string
   reviewMarks?: ReturnType<typeof import('./chats').reviewMarks>
   reviewedRejections?: import('./triage').Laid
@@ -119,7 +119,7 @@ export function clearCheckpoint(id: string): void {
 
 export function checkpointEvent(checkpoint: Checkpoint, event: RunEvent): void {
   if (turnSubmitted(event)) checkpoint.submitted = true
-  if (event.kind === 'tool_call') {
+  if (event.kind === 'tool_call' && !isPollingTool(event.data.title)) {
     const { toolCallId, status, kind } = event.data
     if (!['read', 'search', 'fetch'].includes(kind)) checkpoint.effects = true
     if (['completed', 'failed'].includes(status)) checkpoint.pending = checkpoint.pending.filter((id) => id !== toolCallId)
@@ -158,8 +158,9 @@ export function checkpointRecovery(job: Job, checkpoint: Checkpoint, stopped: bo
   const unconfirmedCleanup = !!checkpoint.boardContinuation && checkpoint.pending.length > 0
     || checkpoint.cleanup?.status === 'unconfirmed'
     || failure?.code === 'codex_ownership_unconfirmed'
-    || checkpoint.managedProcess && failure?.code === 'idle_timeout' && !idleStopConfirmed(checkpoint.cleanup, checkpoint.session)
-  const canReplay = replayable(checkpoint) && (!board || checkpoint.started === false)
+    || failure?.code === 'idle_timeout' && (checkpoint.pending.length > 0
+      || checkpoint.managedProcess && !idleStopConfirmed(checkpoint.cleanup, checkpoint.session))
+  const canReplay = failure?.code !== 'idle_timeout' && replayable(checkpoint) && (!board || checkpoint.started === false)
     && (job.runtime !== 'antigravity' || checkpoint.started === false)
   if (isSessionMissingFailure(failure)) {
     if (!stopped || unconfirmedCleanup) return 'unsafe'
@@ -182,7 +183,7 @@ export function replyRecovery(job: Job, checkpoint: Checkpoint, stopped: boolean
 /** Both the Runner and a detached worker sweep use the same handoff after checking ownership and process exit. */
 export async function recoverInterruptedJob(machine: string, job: Job, checkpoint: Checkpoint | null,
   stopped: boolean, valid: () => boolean, reason?: string) {
-  if (!valid()) return
+  if (!valid() || job.flow && !stopped) return
   const recovery = checkpoint ? checkpointRecovery(job, checkpoint, stopped, checkpoint.retry?.pending?.failure ?? checkpoint.failure) : 'unsafe'
   const proof = stopped ? { processesStopped: true } : undefined
   const reply = isReply(job)
@@ -190,7 +191,7 @@ export async function recoverInterruptedJob(machine: string, job: Job, checkpoin
     ...proof, session: checkpoint.session, reply: checkpoint.partialReply, ...replySpent(checkpoint, job.runtime),
     recovery: replyRecovery(job, checkpoint, stopped),
   } : proof
-  if (checkpoint && recovery !== 'unsafe') {
+  if (checkpoint && recovery !== 'unsafe' && job.flow?.phase !== 'land') {
     const prepared = await api.finishJob(machine, job.id, 'update_prepare', '', report)
     if (!valid() || !prepared.ok) return
     if (prepared.value.finished) {

@@ -1,12 +1,16 @@
 import { cloudEndpoints } from './config'
 import { accessToken } from './session'
 
-export interface CloudExecution { job: string; machine: string }
+export interface CloudExecution { job: string; machine: string; card?: number }
+export const WRONG_TASK = 'This execution belongs to a different task. Start the other task through Cloud.'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export function executionOf(value: unknown = process.env.AI4KANBAN_EXECUTION): CloudExecution | undefined {
   try {
     const held = typeof value === 'string' ? JSON.parse(value) : value
-    if (held && UUID.test(held.job) && UUID.test(held.machine)) return { job: held.job, machine: held.machine }
+    if (held && UUID.test(held.job) && UUID.test(held.machine)) {
+      const card = Number.isSafeInteger(held.card) && held.card > 0 ? held.card as number : undefined
+      return { job: held.job, machine: held.machine, ...(card === undefined ? {} : { card }) }
+    }
   } catch {}
   return undefined
 }

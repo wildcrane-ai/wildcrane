@@ -157,6 +157,13 @@ export interface SignInOptions {
   onUrl?: (url: string) => void
   /** Aborting gives up the wait. */
   signal?: AbortSignal
+  /** Skip opening the system browser (used by tests). */
+  noBrowser?: boolean
+}
+
+function sameToken(a: string | null, b: string): boolean {
+  if (!a || a.length !== b.length) return false
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b))
 }
 
 /** Sign in through the browser and write the session. Resolves to why it failed, or null. */
@@ -164,12 +171,28 @@ export async function signIn(options: SignInOptions = {}): Promise<SignInFailure
   const generation = accountGeneration()
   const verifier = base64url(crypto.randomBytes(32))
   const challenge = base64url(crypto.createHash('sha256').update(verifier).digest())
+  const oauthState = base64url(crypto.randomBytes(24))
 
   let finish: (failure: SignInFailure | null) => void = () => {}
   const answered = new Promise<SignInFailure | null>((resolve) => (finish = resolve))
   let answering = false
+  let expectedOrigin = ''
   const server = http.createServer(async (req, res) => {
+    res.setHeader('cache-control', 'no-store')
+    res.setHeader('referrer-policy', 'no-referrer')
+    res.setHeader('x-content-type-options', 'nosniff')
+    const expectedHost = expectedOrigin.slice(7)
+    const secFetchSite = req.headers['sec-fetch-site'] ? String(req.headers['sec-fetch-site']) : null
+    if (req.headers.host !== expectedHost || (req.headers.origin && req.headers.origin !== expectedOrigin)) {
+      res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify({ error: 'forbidden' }))
+      return
+    }
     const asked = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const isCallback = asked.pathname === '/signed-in'
+    if (secFetchSite && !(isCallback ? ['same-origin', 'none', 'cross-site'] : ['same-origin', 'none']).includes(secFetchSite)) {
+      res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify({ error: 'forbidden' }))
+      return
+    }
     const lang = langOf(req.headers['accept-language'])
     if (asked.pathname === '/' && !answering) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
@@ -177,6 +200,10 @@ export async function signIn(options: SignInOptions = {}): Promise<SignInFailure
       return
     }
     if (req.method === 'POST' && (asked.pathname === '/send' || asked.pathname === '/verify') && !answering) {
+      if (req.headers.origin !== expectedOrigin) {
+        res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify({ error: 'forbidden' }))
+        return
+      }
       const asks = (await readJson(req)) as { email?: string; code?: string }
       const answer = asked.pathname === '/send'
         ? await sendCode(asks.email ?? '', lang)
@@ -198,7 +225,11 @@ export async function signIn(options: SignInOptions = {}): Promise<SignInFailure
     const params = asked.searchParams
     const code = params.get('code')
     const error = params.get('error')
-    const failure: SignInFailure | null = code ? await exchange(code, verifier, generation, options.signal)
+    const stateOk = sameToken(params.get('state'), oauthState)
+    const failure: SignInFailure | null = !stateOk
+      ? { why: 'other', detail: 'invalid oauth state' }
+      : code
+      ? await exchange(code, verifier, generation, options.signal)
       : { why: error === 'access_denied' ? 'denied' : 'other',
           detail: params.get('error_description') || error || 'no code came back' }
     const outcome = !failure ? 'ok' : failure.why === 'denied' ? 'denied' : 'failed'
@@ -208,6 +239,7 @@ export async function signIn(options: SignInOptions = {}): Promise<SignInFailure
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const { port } = server.address() as { port: number }
+  expectedOrigin = `http://127.0.0.1:${port}`
 
   const { supabaseUrl } = cloudEndpoints()
   const authorize = (provider: Provider) => {
@@ -217,12 +249,13 @@ export async function signIn(options: SignInOptions = {}): Promise<SignInFailure
     if (provider === 'github') url.searchParams.set('scopes', 'user:email')
     url.searchParams.set('code_challenge', challenge)
     url.searchParams.set('code_challenge_method', 's256')
+    url.searchParams.set('state', oauthState)
     return url.toString().replace(/&/g, '&amp;')
   }
   const choose = `http://127.0.0.1:${port}/`
   const onUrl = options.onUrl ?? ((u: string) => status(t.signIn(u)))
   onUrl(choose)
-  openBrowser(choose)
+  if (!options.noBrowser) openBrowser(choose)
 
   const timer = setTimeout(() => finish({ why: 'timeout', detail: 'timed out' }), WAIT_MS)
   const cancel = () => finish({ why: 'cancelled', detail: 'cancelled' })
@@ -230,6 +263,7 @@ export async function signIn(options: SignInOptions = {}): Promise<SignInFailure
   const failure = await answered
   clearTimeout(timer)
   options.signal?.removeEventListener('abort', cancel)
+  server.closeAllConnections()
   server.close()
   return failure
 }

@@ -46,7 +46,7 @@ const cardText = (
   title: string,
   questions: string[] = [],
   scope = 'a requirement',
-  status = 'ready',
+  status = 'planned',
   // `## Worth noting after implementation` — decisions the build itself settled, which
   // sit outside the approved copy and travel to the next delivery on the card (#637).
   notes: string[] = [],
@@ -142,20 +142,21 @@ const said = (id: number, outcome: 'unchanged' | 'changed', why = 'what it is bu
 }
 
 // The card as it reads once the question has been answered and the answer moved the plan.
-const answered = (id: number, scope: string, status = 'ready'): void => {
+const answered = (id: number, scope: string, status = 'planned'): void => {
   said(id, 'changed', 'the requirement it was approved to build is a different one now')
   fs.writeFileSync(cardPath(id), cardText(id, 'card one', [], scope, status))
 }
 
 describe('discarding a build', () => {
   it('puts the card back at the stage the delivery took it from, not at todo', async () => {
+    setStatus(1, 'ready')
     const built = run('implement', 1, 'card one')
     setStatus(1, 'implementing') // what the run's claim writes
     await end(built, 'error')
 
     assert.equal((await cancelDelivery(activeDelivery(1)!.deliveryId)).ok, true)
-    // `ready`: throwing the work away is not the same as unsettling the plan.
-    assert.match(fs.readFileSync(cardPath(1), 'utf8'), /^status: ready$/m)
+    // `planned`: throwing the work away is not the same as unsettling the plan.
+    assert.match(fs.readFileSync(cardPath(1), 'utf8'), /^status: planned$/m)
   })
 
   it('rests the card at todo when a question is waiting on the user', async () => {
@@ -207,11 +208,11 @@ describe('claiming the card for a run', () => {
   it('remembers the stage on the record and leaves the write to its caller', async () => {
     const started = run('implement', 1, 'card one')
     const record = peekRun(started)!
-    // The card is `ready` on the board, and the claim only says what to write.
+    // The card is `planned` on the board, and the claim only says what to write.
     const claim = claimCard(record)
     assert.deepEqual(claim, { cardId: 1, status: 'implementing' })
-    assert.equal(record.priorStatus, 'ready')
-    assert.match(fs.readFileSync(cardPath(1), 'utf8'), /^status: ready$/m)
+    assert.equal(record.priorStatus, 'planned')
+    assert.match(fs.readFileSync(cardPath(1), 'utf8'), /^status: planned$/m)
   })
 
   it('claims nothing for a run with no card of its own', async () => {

@@ -2,6 +2,7 @@
 // reports in one shape: ACP agents hand theirs over as-is, Claude Code and Codex map onto it.
 // Messages arrive whole — chunks are held until a tool call, a plan or the turn's end.
 
+import { createHash } from 'node:crypto'
 import { obj, str, type Json } from './json'
 import type { RetryEventData } from '../retry'
 
@@ -35,6 +36,25 @@ export function turnSubmitted(event: RunEvent): boolean {
 }
 
 export type EventCollector = ReturnType<typeof createEventCollector>
+
+export const isPollingTool = (title: string): boolean =>
+  /^(?:.*\.)?(?:command_status|wait(?:_5_seconds|_agent)?|TaskOutput)$/i.test(title)
+
+export const toolOutput = (text: string): string => text.split(/\r?\n/).map(line => line.trim()).filter(line =>
+  line && !/^(?:\[?heartbeat\]?(?:\b|\s|$)|(?:status:\s*)?(?:(?:command|task) (?:is )?(?:still )?running|running|in[_ ]progress|pending)[.!]?$)/i.test(line),
+).join('\n')
+
+export function progressSnapshots() {
+  const seen = new Set<string>()
+  return (key: string, text: string) => {
+    if (!text) return false
+    const digest = createHash('sha256').update(key).update('\0').update(text).digest('base64')
+    if (seen.has(digest)) return false
+    seen.add(digest)
+    return true
+  }
+}
+
 
 const toolKind = (v: unknown): ToolKind => (TOOL_KINDS as readonly string[]).includes(str(v)) ? (v as ToolKind) : 'other'
 
@@ -90,6 +110,8 @@ export function createEventCollector() {
   let queue: RunEvent[] = []
   let said = ''
   let activity = 0
+  const fresh = progressSnapshots()
+  const polls = new Map<string, string>()
   const todoCalls = new Set<string>()
   // A call whose input names nothing yet (OpenCode's, Cursor's edits), until its first update
   // says what it is on — OpenCode opens a command with only its working folder.
@@ -110,6 +132,9 @@ export function createEventCollector() {
   return {
     activity: () => activity,
     progress: () => { activity++ },
+    progressSnapshot(key: string, text: string): void {
+      if (fresh(key, toolOutput(text))) activity++
+    },
     submitted(): void {
       queue.push({ kind: 'phase', data: { phase: 'submitted', at: new Date().toISOString() } })
     },
@@ -132,6 +157,8 @@ export function createEventCollector() {
             todoCalls.add(id)
             return
           }
+          const title = str(u.title)
+          if (isPollingTool(title)) polls.set(id, `${title}:${str(obj(u.rawInput).task_id) || str(obj(u.rawInput).CommandId)}`)
           const target = targetIn(u)
           const subagent = /^(?:Task|Agent|delegate_task|spawn_agent)$/i.test(str(u.title)) || !!obj(u.rawInput).subagent_type
           const data = { toolCallId: id, title: str(u.title) || 'tool', kind: toolKind(u.kind), status: str(u.status) || 'pending', ...(subagent ? { subagent: true as const } : {}), ...(target ? { target } : {}) }
@@ -148,7 +175,9 @@ export function createEventCollector() {
             return
           }
           release(id, targetIn(u))
-          const result = contentText(u.content)
+          const result = contentText(u.content) || str(obj(u.rawOutput).output) || str(u.rawOutput)
+          const poll = polls.get(id)
+          if (poll && fresh(poll, toolOutput(result))) activity++
           // Progress with nothing new to say is not an event.
           if (!u.status && !result) return
           queue.push({

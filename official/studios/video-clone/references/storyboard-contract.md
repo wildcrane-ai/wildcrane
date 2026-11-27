@@ -13,7 +13,7 @@ without fences or comments, in the same-card storyboard attachment.
 - **Content**: action states what changes or deliberately stays still; captions lists exact
   screen text, or an explicit empty array. Details defines layout, framing, typography, sound,
   motion and transitions, and links reusable frame sources. Frame entries contain only a
-  same-card src and descriptive alt. If more visual references are needed, link additional
+  path relative to the storyboard JSON and descriptive alt. If more visual references are needed, link additional
   same-card frames in details; frame limits do not determine shot boundaries.
 - **Timing**: unique stable S-number IDs, finite seconds, positive durations, starting at zero
   with consecutive shots meeting at their boundaries; the array determines playback order.

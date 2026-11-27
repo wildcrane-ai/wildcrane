@@ -1,5 +1,5 @@
 # Template selection
 
 - **Search**: run `akb template list-tags --category prop` or `--category motion`, then `akb template search` within the best tag, adding shot keywords when they help.
-- **Use a fit**: take a result whose style and timing fit the shot, and fetch it with `akb template get <name> --to <board-state>/assets/<card id>/<name>/`.
+- **Use a fit**: take a result whose style and timing fit the shot, and fetch it with `akb template get <name> --to <destination>`. Use a subfolder of the task’s Asset folder as the destination.
 - **No match**: when nothing fits, or the catalog cannot be reached, build it yourself; never ask the user to pick.

@@ -52,7 +52,7 @@ function pack(storyboard: unknown, files: Record<string, Buffer>) {
   return { res, zip: res.status === 0 ? unzip(fs.readFileSync(out)) : null }
 }
 
-const slide = (id: string, preview: string, notes?: string) => ({ id, title: id, copy: [], layout: 'x', assets: [], preview: { src: `.assets/969/${preview}`, alt: id }, ...(notes === undefined ? {} : { notes }) })
+const slide = (id: string, preview: string, notes?: string) => ({ id, title: id, copy: [], layout: 'x', assets: [], preview: { src: preview, alt: id }, ...(notes === undefined ? {} : { notes }) })
 const text = (zip: Map<string, Buffer>, name: string) => zip.get(name)!.toString('utf8')
 
 describe("Slide deck PowerPoint packer", () => {

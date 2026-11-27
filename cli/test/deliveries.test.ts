@@ -39,7 +39,7 @@ const CARD = [
   '---',
   'title: A card',
   'priority: med',
-  'status: ready',
+  'status: planned',
   'blocked_by: []',
   'related: []',
   'modules: []',
@@ -329,20 +329,20 @@ describe('a delivery with no card', () => {
     })
     assert.equal(
       resumePrompt(id, 'implement'),
-      `Continue delivery ${id}. The delivery has not recorded completion. Finish its unchecked todos, then run ${boardCommand()} delivery complete ${id}, with --commit <sha> --branch <name> in a git project.`,
+      `Continue delivery ${id}. The delivery has not recorded completion.`,
     )
   })
 
   // The card the run writes for itself (#470), handed to the delivery already in flight.
   describe('once the run has written its card', () => {
-    it('names it on the run and on the delivery, and rests it at ready', () => {
+    it('names it on the run and on the delivery, and rests it at planned', () => {
       const id = startCardless(session({ cardId: null }))
       assert.equal(adoptDirectCard(readStore().runs[0]!.sessionId, 9), true)
       const delivery = findDelivery(id)!
       assert.equal(delivery.cardId, 9)
-      assert.equal(delivery.priorStatus, 'ready')
+      assert.equal(delivery.priorStatus, 'planned')
       assert.equal(readStore().runs[0]!.cardId, 9)
-      assert.equal(readStore().runs[0]!.priorStatus, 'ready')
+      assert.equal(readStore().runs[0]!.priorStatus, 'planned')
       assert.equal(readAudit(id).cardId, 9)
     })
 
@@ -377,12 +377,12 @@ describe('a delivery with no card', () => {
 
     // A run that opened no delivery holds the card itself, and rests it where a cancel or a
     // discard hands back a settled card.
-    it('hands the card to a run with no delivery, resting it at ready', () => {
+    it('hands the card to a run with no delivery, resting it at planned', () => {
       withStore((store) => store.runs.push(session({ cardId: null })))
       const sessionId = readStore().runs[0]!.sessionId
       assert.equal(adoptDirectCard(sessionId, 9), true)
       assert.equal(readStore().runs[0]!.cardId, 9)
-      assert.equal(readStore().runs[0]!.priorStatus, 'ready')
+      assert.equal(readStore().runs[0]!.priorStatus, 'planned')
     })
   })
 
@@ -417,7 +417,7 @@ describe('a delivery the live record lost', () => {
         startedAt: 1_000,
         approved: '# A card\n',
         steps: [{ step: 'implement', at: 1_000 }],
-        priorStatus: 'ready',
+        priorStatus: 'planned',
         commitMode: 'auto',
         worktree,
         branch: `card/5/${id}`,
@@ -436,7 +436,7 @@ describe('a delivery the live record lost', () => {
     return dir
   }
 
-  const atImplementing = (): void => fs.writeFileSync(file, CARD.replace('status: ready', 'status: implementing'))
+  const atImplementing = (): void => fs.writeFileSync(file, CARD.replace('status: planned', 'status: implementing'))
 
   // A session that had already wrapped up when the record went missing — the delivery was
   // between steps, which is what makes it recoverable rather than failed.
@@ -476,7 +476,7 @@ describe('a delivery the live record lost', () => {
     atImplementing()
     onThisMachine(orphan('lost3333'))
     await recoverOrphanedDeliveries()
-    assert.match(fs.readFileSync(file, 'utf8'), /status: ready/)
+    assert.match(fs.readFileSync(file, 'utf8'), /status: planned/)
   })
 
   // `deliveries/` is in git, so a delivery running on a colleague's machine arrives here as
@@ -675,7 +675,7 @@ describe('carrying an ended delivery on', () => {
         endedAt: 2_000,
         approved: '# A card\n\n## Scope\n- **A requirement**: one line.\n',
         steps: [{ step: 'implement', at: 1_000 }],
-        priorStatus: 'ready',
+        priorStatus: 'planned',
         commitMode: 'auto',
         targetBranch: 'main',
         worktree,
@@ -695,7 +695,7 @@ describe('carrying an ended delivery on', () => {
 
   const rowOf = (id: string) => readStore().deliveries.find((d) => d.deliveryId === id)
 
-  const atImplementing = (): void => fs.writeFileSync(file, CARD.replace('status: ready', 'status: implementing'))
+  const atImplementing = (): void => fs.writeFileSync(file, CARD.replace('status: planned', 'status: implementing'))
 
   it('puts a failed delivery back to work, holding its card again', async () => {
     stopped('carry111')

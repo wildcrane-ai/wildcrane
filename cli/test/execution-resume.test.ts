@@ -58,7 +58,7 @@ it('attaches a verified new execution to the existing built delivery without reb
 it('keeps the previous execution when the new lease is lost, stopped or unreachable', async () => {
   for (const response of [{ renewed: false }, { renewed: true, stop: true }, null]) {
     globalThis.fetch = async () => { if (!response) throw new Error('offline'); return new Response(JSON.stringify(response)) }
-    assert.deepEqual(await resumeDelivery('built'), { ok: false, error: 'Could not confirm permission to resume this delivery. Try again later.' })
+    assert.deepEqual(await resumeDelivery('built'), { ok: false, reason: 'runContinued', error: 'Could not confirm permission to resume this delivery. Try again later.' })
     assert.deepEqual(readStore().deliveries[0]!.cloudExecution, old)
     assert.equal(readStore().deliveries[0]!.steps.length, 0)
   }

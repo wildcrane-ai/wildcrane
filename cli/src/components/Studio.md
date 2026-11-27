@@ -1,6 +1,6 @@
 # Studio
 
-Show STUDIO.md and its real differences with `<Studio src=".assets/<card id>/studio-review/review.json" />` alone in a paragraph. Inline and fenced examples remain text.
+Show STUDIO.md and its real differences with `<Studio src="asset:studio-review/review.json" />` alone in a paragraph. Inline and fenced examples remain text.
 
 - **Freeze**: `akb studio preview <card id> --folder <draft> --base <baseline>` freezes the complete draft and prints its Studio and attachment tags; use `--base empty` for a new Studio.
 - **Files**: put the attachment tags in the files Preview when present. Three or more changed files use a Set; paired file and diff Assets share a label.

@@ -11,6 +11,9 @@ import { transform } from 'sucrase'
 import { compile } from 'tailwindcss'
 import TAILWIND from 'tailwindcss/index.css' with { type: 'text' }
 
+import { splitFileReference } from '../../../artifact-sdk/src/internal/file-references'
+import { decodeFilePath, isTaskAssetRef } from '../../../artifact-sdk/src/internal/task-assets'
+import { cssDestinations } from '../../../artifact-sdk/src/internal/web-references'
 import { dressPage, head, isHtmlFile } from './dress-page'
 
 const DRAW_MS = 5000
@@ -77,7 +80,7 @@ async function loadPackage(id: string): Promise<unknown> {
 interface Graph {
   code: Map<string, string>
   links: Map<string, Map<string, string>>
-  sheets: { path: string; content: string }[]
+  sheets: string[]
   packages: Map<string, unknown>
 }
 
@@ -91,7 +94,7 @@ function resolveFile(id: string, from: string, folder: string): string {
   return file
 }
 
-async function readGraph(entry: string): Promise<Graph> {
+async function readGraph(entry: string, source: string): Promise<Graph> {
   const folder = path.dirname(entry)
   const graph: Graph = { code: new Map(), links: new Map(), sheets: [], packages: new Map() }
   const walk = async (file: string): Promise<void> => {
@@ -99,7 +102,7 @@ async function readGraph(entry: string): Promise<Graph> {
     if (graph.code.size >= MAX_FILES) throw new Error(`a mockup imports more than ${MAX_FILES} files`)
     let location = file
     try {
-      const js = transform(fs.readFileSync(file, 'utf8'), { transforms: ['typescript', 'jsx', 'imports'], jsxRuntime: 'automatic', production: true, filePath: file }).code
+      const js = transform(file === entry ? source : fs.readFileSync(file, 'utf8'), { transforms: ['typescript', 'jsx', 'imports'], jsxRuntime: 'automatic', production: true, filePath: file }).code
       graph.code.set(file, js)
       const link = new Map<string, string>()
       graph.links.set(file, link)
@@ -113,7 +116,7 @@ async function readGraph(entry: string): Promise<Graph> {
         const target = resolveFile(id, file, folder)
         link.set(id, target)
         if (!target.endsWith('.css')) await walk(target)
-        else if (!graph.sheets.some((s) => s.path === target)) graph.sheets.push({ path: target, content: fs.readFileSync(target, 'utf8') })
+        else if (!graph.sheets.includes(target)) graph.sheets.push(target)
       }
     } catch (error) {
       throw new Error(`${location}: ${error instanceof Error ? error.message : String(error)}`)
@@ -129,16 +132,40 @@ function run(script: string, context: vm.Context, name: string, deadline: number
   return vm.runInContext(script, context, { timeout: left, filename: name, lineOffset })
 }
 
-async function tailwindFor(markup: string, sheets: Graph['sheets'], folder: string): Promise<string> {
-  const source = sheets.length ? sheets.map((s) => s.content).join('\n') : '@import "tailwindcss";'
+const cssPath = (file: string) => file.split(path.sep).map(part => encodeURIComponent(part).replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16))).join('/')
+
+// Tailwind inlines quoted imports. Rebase the other URLs for the resulting inline style.
+function rebaseCss(css: string, owner: string, folder: string): string {
+  let result = ''
+  let last = 0
+  for (const ref of cssDestinations(css)) {
+    if (!ref.src || isTaskAssetRef(ref.src) || /^(?:[a-z][\w+.-]*:|\/|#)/i.test(ref.src)) continue
+    const [file, suffix] = splitFileReference(ref.src)
+    const decoded = decodeFilePath(file)
+    if (path.posix.isAbsolute(decoded) || path.win32.isAbsolute(decoded)) continue
+    const relative = cssPath(ref.importToken ? decoded : path.relative(folder, path.resolve(path.dirname(owner), decoded)))
+    const [start, end] = ref.importToken ?? [ref.start, ref.end]
+    result += css.slice(last, start) + (ref.importToken ? JSON.stringify(relative + suffix) : relative + suffix)
+    last = end
+  }
+  return result + css.slice(last)
+}
+
+async function tailwindFor(markup: string, sheets: string[], folder: string): Promise<string> {
+  const source = sheets.length ? sheets.map(file => `@import "./${cssPath(path.relative(folder, file))}";`).join('\n') : '@import "tailwindcss";'
+  const root = fs.realpathSync(folder) + path.sep
   const compiler = await compile(source, {
-    base: sheets.length ? path.dirname(sheets[0]!.path) : '/',
+    base: folder,
     loadStylesheet: async (id: string, from: string) => {
       if (id === 'tailwindcss' || id.startsWith('tailwindcss/')) return { path: 'tailwindcss/index.css', base: '/', content: TAILWIND }
-      if (!id.startsWith('.')) throw new Error(`a mockup cannot import ${id}`)
-      const at = path.resolve(from, id)
-      if (!fs.realpathSync(at).startsWith(fs.realpathSync(folder) + path.sep)) throw new Error(`${id} is outside the mockup's folder`)
-      return { path: at, base: path.dirname(at), content: fs.readFileSync(at, 'utf8') }
+      if (/^(?:[a-z][\w+.-]*:|[\\/])/i.test(id)) throw new Error(`a mockup cannot import ${id}`)
+      const [relative] = splitFileReference(id)
+      const decoded = decodeFilePath(relative)
+      const at = path.resolve(from, decoded)
+      if (path.posix.isAbsolute(decoded) || path.win32.isAbsolute(decoded) || !at.startsWith(folder + path.sep)) throw new Error(`${id} is outside the mockup's folder`)
+      if (!fs.statSync(at, { throwIfNoEntry: false })?.isFile()) throw new Error(`no such stylesheet: ${id} (from ${path.relative(folder, from) || '.'})`)
+      if (!fs.realpathSync(at).startsWith(root)) throw new Error(`${id} is outside the mockup's folder`)
+      return { path: at, base: path.dirname(at), content: rebaseCss(fs.readFileSync(at, 'utf8'), at, folder) }
     },
   })
   const classes = [...markup.matchAll(/class="([^"]*)"/g)].flatMap((m) => m[1]!.split(/\s+/))
@@ -147,8 +174,11 @@ async function tailwindFor(markup: string, sheets: Graph['sheets'], folder: stri
 
 /** Render a TSX or HTML mockup. */
 export async function drawMockup(entry: string): Promise<string> {
-  if (isHtmlFile(entry)) return dressPage(entry)
-  const graph = await readGraph(entry)
+  const source = fs.readFileSync(entry, 'utf8')
+  if (isHtmlFile(entry)) return dressPage(source)
+  // A synced TSX artifact has only rendered HTML on a computer without the source.
+  if (/^<!doctype html><html>/i.test(source)) return source
+  const graph = await readGraph(entry, source)
   const sandbox: Record<string, unknown> = { React, console: { log() {}, warn() {}, error() {}, info() {}, debug() {} } }
   const context = vm.createContext(sandbox)
   const deadline = Date.now() + DRAW_MS
@@ -183,4 +213,9 @@ export async function drawMockup(entry: string): Promise<string> {
   const markup = run('__draw()', context, entry, deadline) as string
   const css = (await tailwindFor(markup, graph.sheets, path.dirname(entry))).replace(/<\/style/gi, '<\\/style')
   return `<!doctype html><html><head>${head}<style>${css}</style></head><body>${markup}</body></html>`
+}
+
+/** Read the exact text used for dependency discovery and upload. */
+export function referenceText(file: string, kind: string): string | Promise<string> {
+  return kind === 'html' ? drawMockup(file) : fs.readFileSync(file, 'utf8')
 }

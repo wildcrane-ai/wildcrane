@@ -10,7 +10,20 @@ import { normalizeQuestion, parseQuestionsBlock } from './question-block.ts'
 import { hasOptions } from './view/rules.ts'
 import type { Meta, Question } from './types.ts'
 
-export const STATUSES = ['todo', 'ready', 'implementing']
+export const STATUSES = ['todo', 'planned', 'implementing']
+
+export const normalizeCardStatus = (status: string): string => status === 'ready' ? 'planned' : status
+
+/** Upgrade the header on write without changing the body or other metadata. */
+export function normalizeCardFrontmatter(text: string): string {
+  if (!/^status:[ \t]*(['"]?)ready\1[ \t]*\r?$/m.test(text)) return text
+  const lines = text.split('\n')
+  const end = frontmatterEnd(lines)
+  for (let i = 1; i < end; i++) {
+    lines[i] = lines[i]!.replace(/^(status:[ \t]*)(['"]?)ready\2([ \t]*\r?)$/, '$1$2planned$2$3')
+  }
+  return lines.join('\n')
+}
 
 // Takes a partial meta on purpose: a card being written names only the fields it has,
 // the way the old JS did, and the missing ones fall to their empty forms below.
@@ -18,7 +31,8 @@ export function serializeFrontmatter(m: Partial<Meta>): string {
   const out = ['---']
   out.push(`title: ${yamlScalar(m.title)}`)
   out.push(`priority: ${m.priority}`)
-  out.push(`status: ${STATUSES.includes(String(m.status)) ? m.status : 'todo'}`)
+  const status = normalizeCardStatus(String(m.status))
+  out.push(`status: ${STATUSES.includes(status) ? status : 'todo'}`)
   out.push(`blocked_by: [${(m.blocked_by || []).join(', ')}]`)
   out.push(`related: [${(m.related || []).join(', ')}]`)
   out.push(`modules: [${(m.modules || []).join(', ')}]`)
@@ -122,6 +136,7 @@ export function parseFrontmatter(text: string): { meta: Meta | null; body: strin
   if (!Array.isArray(meta.questions)) {
     meta.questions = meta.questions ? [normalizeQuestion(meta.questions)] : ([] as Question[])
   }
+  if (typeof meta.status === 'string') meta.status = normalizeCardStatus(meta.status)
   // A missing priority reads as empty rather than as a level nobody chose.
   meta.priority = typeof meta.priority === 'string' ? meta.priority.trim() : ''
   // modules is an optional string list; a card written before this field parses as [].

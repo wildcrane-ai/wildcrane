@@ -1,72 +1,62 @@
-import type { RunEvent } from './wire/events'
+import { isPollingTool, progressSnapshots, toolOutput, type RunEvent } from './wire/events'
 
 export const IDLE_MS = 5 * 60_000
 export const IDLE_TIMEOUT = { milliseconds: IDLE_MS }
-export const IDLE_ERROR = 'No response for 5 minutes (idle timeout).'
+export const IDLE_ERROR = 'No verifiable progress for 5 minutes (idle timeout).'
 export const IDLE_FAILURE = { code: 'idle_timeout', source: 'runtime' as const, summary: IDLE_ERROR } as const
-export const PROVIDER_RETRY_MS = { announcement: 10 * 60_000, episode: 30 * 60_000 }
 
-/** Local work and an explicitly announced native retry have separate clocks. */
-export function createIdleWatchdog(expired: () => void, busy = () => false, milliseconds = IDLE_TIMEOUT.milliseconds, now = Date.now) {
-  const calls = new Set<string>()
-  const local = new Set<string>()
-  const seen = new Map<string, string>()
+interface IdleOptions {
+  milliseconds?: number
+  now?: () => number
+  onProgress?: (at: number) => void
+  childProgress?: () => number
+}
+
+export function createIdleWatchdog(expired: () => void, options: IdleOptions = {}) {
+  const { milliseconds = IDLE_TIMEOUT.milliseconds, now = Date.now, onProgress, childProgress } = options
+  const calls = new Map<string, 'working' | 'finished' | 'polling'>()
+  const fresh = progressSnapshots()
   let last = now()
-  let working = false
   let closed = false
-  let recoveringAt: number | undefined
-  let retryUntil = 0
-  const touch = () => { if (!closed) { last = now(); recoveringAt = undefined; retryUntil = 0 } }
+
+  const advance = (at: number) => {
+    if (closed || at <= last) return
+    last = at
+    onProgress?.(at)
+  }
+  const touch = () => advance(now())
   const check = () => {
     if (closed) return
-    if (retryUntil > now()) return
-    const active = calls.size > 0 || busy()
-    if (active || working) last = now()
-    working = active
-    if (!active && now() - last >= milliseconds) { close(); expired() }
+    const at = now()
+    advance(Math.min(childProgress?.() ?? last, at))
+    if (at - last >= milliseconds) { close(); expired() }
   }
   const timer = setInterval(check, Math.min(1000, milliseconds))
   timer.unref?.()
-  const close = () => { closed = true; clearInterval(timer); calls.clear(); local.clear(); seen.clear() }
+  const close = () => { closed = true; clearInterval(timer); calls.clear() }
+
   return {
     touch, check, close,
     event(e: RunEvent) {
       if (closed) return
-      if (e.kind === 'status') {
-        if (e.data.state !== 'retrying') touch()
-        else {
-          recoveringAt ??= now()
-          retryUntil = Math.min(now() + PROVIDER_RETRY_MS.announcement, recoveringAt + PROVIDER_RETRY_MS.episode)
-        }
-        check()
-        return
+      if (e.kind === 'tool_call') {
+        const { toolCallId, title, status } = e.data
+        if (!toolCallId || calls.has(toolCallId)) return
+        const state = isPollingTool(title) ? 'polling' : ['completed', 'failed'].includes(status) ? 'finished' : 'working'
+        calls.set(toolCallId, state)
+        if (state !== 'polling') touch()
       }
-      if (e.kind === 'retry') {
-        if (e.data.state === 'waiting' || e.data.state === 'retrying') {
-          recoveringAt ??= now()
-          const target = e.data.nextRetryAt ? Date.parse(e.data.nextRetryAt) : NaN
-          const waitUntil = Number.isFinite(target) ? Math.max(target + 30_000, now() + PROVIDER_RETRY_MS.announcement) : now() + PROVIDER_RETRY_MS.announcement
-          retryUntil = Math.min(waitUntil, recoveringAt + PROVIDER_RETRY_MS.episode)
-        } else {
-          touch()
-        }
-        check()
-        return
+      if (e.kind === 'tool_call_update') {
+        const { toolCallId, status, result } = e.data
+        const state = calls.get(toolCallId)
+        if (state === 'polling') return
+        const finished = state === 'working' && ['completed', 'failed'].includes(status)
+        if (finished) calls.set(toolCallId, 'finished')
+        const newOutput = !!toolCallId && fresh(`tool:${toolCallId}`, toolOutput(result ?? ''))
+        if (finished || newOutput) touch()
       }
-      if (e.kind === 'log' || e.kind === 'context') return
-      if (e.kind === 'phase' && !e.data.contentAt) return
-      const key = e.kind === 'tool_call' || e.kind === 'tool_call_update' ? `${e.kind}:${e.data.toolCallId}` : e.kind
-      const value = JSON.stringify(e.data)
-      if (seen.get(key) === value) return
-      seen.set(key, value)
-      if (e.kind === 'tool_call' && (e.data.kind === 'execute' || e.data.subagent)) local.add(e.data.toolCallId)
-      if (e.kind === 'tool_call' || e.kind === 'tool_call_update') {
-        const { toolCallId, status } = e.data
-        if (local.has(toolCallId) && ['in_progress', 'running'].includes(status)) calls.add(toolCallId)
-        if (['completed', 'failed'].includes(status)) { calls.delete(toolCallId); local.delete(toolCallId) }
-      }
-      touch()
-      check()
+      if (e.kind === 'message' && e.data.text.trim() && fresh(e.kind, e.data.text.trim())) touch()
+      if (e.kind === 'plan' && e.data.entries.length && fresh(e.kind, JSON.stringify(e.data.entries))) touch()
     },
   }
 }

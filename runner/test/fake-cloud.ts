@@ -37,7 +37,7 @@ export interface FakeJob {
   resumeCostUsd?: number | null
   fork?: boolean
   transcript?: string | null
-  flow?: { review_stages?: string[]; review_revision?: number; sync_recovery_of?: string; verb: string; studio: string; card?: number; text?: string; title?: string; resume?: boolean; replan?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null
+  flow?: { phase?: 'implement' | 'land'; land_from?: string; delivery_id?: string; review_stages?: string[]; review_revision?: number; sync_recovery_of?: string; resume_execution?: string; verb: string; studio: string; card?: number; text?: string; title?: string; resume?: boolean; replan?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null
   discussion?: { id: string; workspace: string; version?: number; goals: Record<string, unknown>[] } | null
   chat?: { message: string; body: string } | null
   replyInput?: import('../src/api').Job['replyInput']
@@ -139,6 +139,8 @@ export class FakeCloud {
   unavailableUploadTypes = new Set<string>()
   boardTimeouts = 0
   boardWritesUnavailable = false
+  refuseBoardWrite?: (job: string | null, files: import('../src/api').BoardWrite[]) => string | undefined
+  refuseJobFinish?: (job: string, report?: import('../src/api').JobReport) => string | undefined
   cancelTask?: (task: string, body: { reason?: string; discard: boolean }) => { status: number; value: unknown }
   taskCancelReasons: Record<string, string> = {}
   completeArchives?: (body: any) => { receipts?: ArchiveCompletionReceipt[] } | null
@@ -520,6 +522,8 @@ export class FakeCloud {
         return send(200, { renewed: held, ...(job.stop ? { stop: true } : {}) })
       default:
         if (!held) return send(200, { finished: false })
+        const refusal = this.refuseJobFinish?.(job.id, body.report)
+        if (refusal) return refuse(409, 'conflict', refusal)
         this.jobFinishes.push({ job: job.id, outcome: body.outcome })
         if (body.outcome === 'update_prepare' && !job.stop) return send(200, { finished: false, prepared: true })
         if (body.outcome === 'update_resume' && !job.stop) {
@@ -570,6 +574,8 @@ export class FakeCloud {
       if (this.boardWritesUnavailable) return refuse(503, 'service_unavailable', 'Could not save board files.')
       const writes = body.files as { path: string; content: string | null; base_seq: number }[]
       if (!writes.every((w) => ours(w.path))) return refuse(400, 'bad_request', 'A path is not this project’s.')
+      const refusal = this.refuseBoardWrite?.(body.job, writes)
+      if (refusal) return refuse(409, 'conflict', refusal)
       const problems = writes.flatMap(w => w.content === null ? [] : this.previewProblems?.(w.path, w.content) ?? [])
       if (problems.length) {
         return send(400, { error: { code: 'bad_request', message: 'Cloud rejected Preview blocks', details: { problems } } })

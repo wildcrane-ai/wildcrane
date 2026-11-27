@@ -6,10 +6,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { BoardError } from '../io'
 import { tryLock } from '../lock'
-import { projectStateDir, stateRootOf } from '../machine/project'
+import { migrateProjectState, projectStateDir, stateRootOf } from '../machine/project'
 import { BOARD_FILE_LIMIT, isBoardPath, numberOfCard } from './board-files'
 import { linkedProject } from '../cloud/tasks'
-import { parseFrontmatter } from '../frontmatter'
+import { normalizeCardFrontmatter, parseFrontmatter, STATUSES } from '../frontmatter'
 import { migrateHistoricalArchive } from './studio-migration'
 
 export interface Version { content: string | null; seq: number }
@@ -130,7 +130,7 @@ export function captureConflict(board: string, project: string, files: ConflictF
 
 /** Shared by synchronization and explicit resolution, never held across an agent process. */
 export async function withSyncLock<T>(board: string, work: () => Promise<T>): Promise<T> {
-  const lock = path.join(projectStateDir(board), 'board-sync.lock')
+  const lock = path.join(migrateProjectState(board), 'board-sync.lock')
   const until = Date.now() + 60_000
   let release: (() => void) | undefined
   while (!(release = tryLock(lock))) {
@@ -162,8 +162,8 @@ function resolutionOf(record: ConflictRecord, value: unknown): { path: string; c
         || (fields.modules as unknown[]).some(v => typeof v !== 'string')
         || ['blocked_by', 'related'].some(key => (fields[key] as unknown[]).some(v => !Number.isSafeInteger(v) || Number(v) < 1))) refuse(record, `Invalid card metadata: ${f.path}`, 'invalid-usage')
       const meta = parseFrontmatter(f.content).meta
-      if (!meta?.title?.trim() || !['todo', 'ready', 'implementing'].includes(meta.status) || !['high', 'med', 'low'].includes(meta.priority)) refuse(record, `Invalid card metadata: ${f.path}`, 'invalid-usage')
-      if (meta.status === 'ready' && meta.questions.length) refuse(record, 'A ready card cannot have open questions.', 'invalid-usage')
+      if (!meta?.title?.trim() || !STATUSES.includes(meta.status) || !['high', 'med', 'low'].includes(meta.priority)) refuse(record, `Invalid card metadata: ${f.path}`, 'invalid-usage')
+      if (meta.status === 'planned' && meta.questions.length) refuse(record, 'A planned card cannot have open questions.', 'invalid-usage')
       const remote = parseFrontmatter(record.files.find(x => x.path === f.path)!.remote.content ?? '').meta
       for (const key of ['preview_approved', 'restored', 'archived', 'rejected'] as const) {
         const supplied = meta[key]
@@ -172,7 +172,10 @@ function resolutionOf(record: ConflictRecord, value: unknown): { path: string; c
       }
     }
   }
-  return record.files.filter(f => f.conflicted).map(f => files.find(v => v.path === f.path)!)
+  return record.files.filter(f => f.conflicted).map(({ path }) => {
+    const { content } = files.find(file => file.path === path)!
+    return { path, content: content !== null && numberOfCard(path) !== null ? normalizeCardFrontmatter(content) : content }
+  })
 }
 function updateFacts(board: string, r: ConflictRecord, remote: BoardFile[]): void {
   r.history ??= []

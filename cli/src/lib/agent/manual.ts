@@ -21,13 +21,11 @@ Print it, or run it
 
 export const HELP_AFTER = {
   /** Under `delivery`: what one is, which no verb of it says on its own. */
-  deliveries: (program: string): string => `
+  deliveries: (resumeCommand: string): string => `
 What a delivery is
-  A delivery freezes the approved requirements. The task session records the result with
-  \`delivery complete\` and archives the card.
-  The builder manages its branch, worktree, checks and merge. File studios deliver their
-  recorded outputs in the authorized directory. A successful run alone does not finish a delivery.
-  \`cancel\` ends it and preserves files. \`resume\` continues unfinished work.
+  A delivery freezes the approved requirements. A managed task saves implementation in its
+  workspace, then lands under the Studio's delivery instructions and runs \`task archive\`.
+  \`cancel\` ends it and preserves files. Use \`${resumeCommand}\` to continue unfinished work.
 
 `,
 }

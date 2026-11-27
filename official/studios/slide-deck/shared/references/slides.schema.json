@@ -30,13 +30,13 @@
         "copy": { "type": "array", "items": { "$ref": "#/$defs/text" } },
         "notes": { "type": "string" },
         "layout": { "$ref": "#/$defs/text" },
-        "assets": { "type": "array", "items": { "$ref": "#/$defs/text" } },
+        "assets": { "type": "array", "items": { "type": "string", "pattern": "^(?!/)[^:\\\\\\u0000-\\u001f]+$" } },
         "preview": {
           "type": "object",
           "additionalProperties": false,
           "required": ["src", "alt"],
           "properties": {
-            "src": { "type": "string", "pattern": "^\\.assets/[1-9][0-9]*/([^./\\\\][^/\\\\]*/)*[^./\\\\][^/\\\\]*\\.(png|jpe?g|webp|gif|html|tsx)$" },
+            "src": { "type": "string", "pattern": "^(?!/)[^:\\\\\\u0000-\\u001f]+\\.(png|jpe?g|webp|gif|html|tsx)$" },
             "alt": { "$ref": "#/$defs/text" }
           }
         }

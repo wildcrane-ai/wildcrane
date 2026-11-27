@@ -8,6 +8,7 @@
 // it is.
 
 import { parseFrontmatter, serializeFrontmatter } from './frontmatter.ts'
+import { unquote } from './yaml.ts'
 
 /** Which way a card left: archived (it shipped) or rejected (it was dropped). */
 export type Fate = 'completed' | 'rejected'
@@ -102,13 +103,10 @@ export function unstrikeSubtaskIn(text: string, id: number): string | null {
   return lines.join('\n')
 }
 
-// Edits the two list lines in place rather than re-serializing the frontmatter, so a card
-// the board never wrote keeps whatever else it has. Only the inline `[1, 2]` form the board
-// writes is matched.
-const REF_LIST = /^(blocked_by|related):\s*\[(.*)\]\s*$/
+const REF_LIST = /^(blocked_by|related):[ \t]*(?:\[(.*)\][ \t]*)?\r?$/
 
 /** `id` taken out of a card's `blocked_by`/`related`, and which of the two lost it. */
-export function dropRefsIn(text: string, id: number): { text: string; fields: string[] } {
+export function dropRefsIn(text: string, id: number, keepBlocker = false): { text: string; fields: string[] } {
   const lines = text.split('\n')
   const fields: string[] = []
   if (lines[0]?.trim() !== '---') return { text, fields }
@@ -117,11 +115,23 @@ export function dropRefsIn(text: string, id: number): { text: string; fields: st
   if (end >= lines.length) return { text, fields }
   for (let i = 1; i < end; i++) {
     const m = lines[i]!.match(REF_LIST)
-    if (!m) continue
-    const refs = m[2]!.split(',').map((s) => s.trim()).filter(Boolean)
-    const kept = refs.filter((s) => Number(s.replace(/^#/, '')) !== id)
+    if (!m || keepBlocker && m[1] === 'blocked_by') continue
+    const matches = (ref: string) => Number(unquote(ref.trim()).replace(/^#/, '')) === id
+    if (m[2] === undefined) {
+      for (let at = i + 1; at < end; at++) {
+        const item = /^\s*-\s+(.+)$/.exec(lines[at]!)
+        if (!item) break
+        if (!matches(item[1]!)) continue
+        lines.splice(at--, 1)
+        end--
+        if (!fields.includes(m[1]!)) fields.push(m[1]!)
+      }
+      continue
+    }
+    const refs = m[2].split(',').map((s) => s.trim()).filter(Boolean)
+    const kept = refs.filter(s => !matches(s))
     if (kept.length === refs.length) continue
-    lines[i] = `${m[1]}: [${kept.join(', ')}]`
+    lines[i] = lines[i]!.replace(/\[.*\]/, `[${kept.join(', ')}]`)
     fields.push(m[1]!)
   }
   return { text: fields.length ? lines.join('\n') : text, fields }

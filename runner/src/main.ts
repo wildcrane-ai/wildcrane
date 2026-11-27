@@ -13,6 +13,7 @@ import { settingsAction } from './settings'
 import { openSettings } from './settings-server'
 import { serveSettingsLink } from './settings-link'
 import { acquireMachine, RunnerAlreadyRunning } from './lock'
+import { errno, logRunner, startRunnerLogMaintenance } from './runner-log'
 
 const tell = (message: unknown) => process.send?.(message)
 const rejectDuplicate = () => {
@@ -22,15 +23,22 @@ const rejectDuplicate = () => {
 async function main(): Promise<void> {
   useRunnerHome()
   const kind = (['claude-code', 'codex', 'cursor', 'dsh', 'zcode', 'kimi'] as const).find((k) => k === process.env.WILDCRANE_RUNNER_KIND) ?? 'terminal'
+  const fields = { version: VERSION, source: process.env.WILDCRANE_RUNNER_KIND ?? kind }
+  startRunnerLogMaintenance()
+  logRunner('runner', 'starting', fields)
+  process.once('exit', exitCode => logRunner('runner', 'exited', { ...fields, exitCode }))
   let lock: Awaited<ReturnType<typeof acquireMachine>>
   try { lock = await acquireMachine(kind) }
   catch (error) {
-    if (error instanceof RunnerAlreadyRunning) return rejectDuplicate()
+    const duplicate = error instanceof RunnerAlreadyRunning
+    logRunner('runner', 'startup_failed', { ...fields, stage: 'lock', code: duplicate ? 'already_running' : errno(error) })
+    if (duplicate) return rejectDuplicate()
     throw error
   }
   if (!readSession()) {
     const failure = await signIn()
     if (failure) {
+      logRunner('runner', 'startup_failed', { ...fields, stage: 'signin', code: 'refused' })
       await lock()
       status(t.signInFailed(failure.detail))
       process.exit(EXIT_REFUSED)

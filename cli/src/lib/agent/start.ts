@@ -9,12 +9,13 @@
 // BEFORE the record is written, so a card another machine is holding — or a workspace this
 // machine cannot reach — refuses the run and leaves nothing behind (#398).
 
+import { deliveryPhase } from './env'
 import { randomUUID } from 'node:crypto'
 
 import { advancePhase } from './approve'
 import { spawnWatcher } from './launch'
 import { claimRunPictures, returnRunPictures } from './pictures'
-import { deliveryFor } from './deliveries'
+import { deliveryFor, pendingDeliveryRun } from './deliveries'
 import { readRuns } from './store'
 import { buildRun } from './prompts'
 import { NEEDS_CLOUD, NOT_DOWNLOADED, pinMissing, studiosReachable } from './cloud-studios'
@@ -29,12 +30,9 @@ export async function startRun(req: AgentRequest): Promise<{ run: RunRecord; spa
   const short = retiredStudioRun(req.action) ?? studioRefusal(req)
   if (short) return short
   const delivery = req.action === 'implement' ? deliveryFor(req) : undefined
-  if (delivery && req.session !== 'new') {
-    const previous = readRuns()
-      .filter((r) => r.deliveryId === delivery.deliveryId && r.action === 'implement')
-      .reverse()
-      .sort((a, b) => b.startedAt - a.startedAt)[0]
-    if (previous && !delivery.completions?.some((c) => c.sessionId === previous.sessionId || c.resumedSessions?.includes(previous.sessionId))) return startResume(previous.sessionId, { deliveryId: delivery.deliveryId, notes: req.notes })
+  if (delivery && req.session !== 'new' && deliveryPhase() !== 'land') {
+    const previous = pendingDeliveryRun(delivery, readRuns())
+    if (previous) return startResume(previous.sessionId, { deliveryId: delivery.deliveryId, notes: req.notes, exact: true })
   }
   // Approve moves the card on only once its run is cleared to start (#1790).
   return open(req, randomUUID())

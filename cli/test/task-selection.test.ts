@@ -122,6 +122,39 @@ it('resolves numeric references for every task entry point, including chat follo
   }
 })
 
+it('resumes a linked project task number through the Cloud resume route', async () => {
+  const normal = serve
+  serve = url => url.pathname === '/v1/tasks/B-1198/resume'
+    ? Response.json({ id: 'task_b', key: 'B-1198', status: 'queued' })
+    : normal(url)
+  const out = await run(['task', 'resume', '1198', '--dir', b])
+  assert.equal(out.code, 0)
+  assert.equal(out.value.key, 'B-1198')
+  assert.equal(out.value.status, 'queued')
+  assert.deepEqual(calls.map(({ method, url, body }) => [method, url.pathname, body]), [
+    ['GET', '/v1/projects/prj_b', null],
+    ['POST', '/v1/tasks/B-1198/resume', null],
+  ])
+
+  serve = () => Response.json({ error: { code: 'conflict', message: 'This task is already queued.' } }, { status: 409 })
+  const refused = await run(['task', 'resume', 'task_b'])
+  assert.notEqual(refused.code, 0)
+  assert.equal(refused.value.error.message, 'This task is already queued.')
+  assert.equal(calls.at(-1)!.url.pathname, '/v1/tasks/task_b/resume')
+})
+
+it('rejects the old public delivery resume command before opening the board', async () => {
+  const help = await run(['delivery', '--help'], false)
+  assert.match(help.stdout, /akb task resume <task>/)
+  assert.doesNotMatch(help.stdout, /^\s+resume\s/m)
+
+  const retired = await run(['delivery', 'resume', '1198', '--board', path.join(b, '.akb', 'kanban')])
+  assert.notEqual(retired.code, 0)
+  assert.match(retired.value.error.message, /unknown command 'resume'/)
+  assert.deepEqual(calls, [])
+  assert.deepEqual(fs.readdirSync(path.join(b, '.akb')), ['base.json'])
+})
+
 it('edits only the current Runner task locally, using the selected board and task identity', async () => {
   const board = path.join(a, '.akb', 'kanban')
   const record = path.join(board, '.sync', 'task_a.json')
@@ -610,6 +643,7 @@ it('reports account verification failure and cached identity without claiming si
 
 it('shows the readable card, current review, approved pins and chat together', async (t) => {
   const board = path.join(a, '.akb', 'kanban')
+  const assetFolder = path.join(fs.realpathSync(a), '.akb', 'state', 'assets', '12')
   const card = path.join(board, 'todo', '12-export', 'root.md')
   const chat = path.join(process.env.AI4KANBAN_HOME!, 'chats', 'task_a.jsonl')
   const manifest = path.join(root, 'previews.md')
@@ -645,6 +679,7 @@ it('shows the readable card, current review, approved pins and chat together', a
   assert.deepEqual(shown.value.review, review)
   assert.deepEqual(shown.value.card, { body, version: 8 })
   assert.equal(shown.value.local_context.card_file, card)
+  assert.equal(shown.value.local_context.asset_folder, assetFolder)
   assert.equal(shown.value.local_context.chat_file, chat)
   assert.equal(shown.value.local_context.approved_inputs_file, manifest)
   assert.match(shown.value.output, /Which format\?[\s\S]*## Review[\s\S]*design · ui-design · approved/)
@@ -652,7 +687,17 @@ it('shows the readable card, current review, approved pins and chat together', a
   assert.doesNotMatch(shown.value.output, /A private message|Frozen review text|Frozen inputs|\br[67]\b/)
   assert.equal(calls.length, 2)
 
-  const otherBoard = await run(['task', 'show', 'A-12', '--board', path.join(b, '.akb', 'kanban')])
+  const terminal = await run(['task', 'show', 'A-12', '--board', '.akb/kanban'], false)
+  assert.equal(terminal.code, 0, terminal.stderr)
+  assert.ok(terminal.stdout.split('\n').includes(`Asset folder: ${assetFolder}`))
+  assert.equal(fs.existsSync(assetFolder), false)
+
+  const otherArgs = ['task', 'show', 'A-12', '--board', '../b/.akb/kanban']
+  const otherBoard = await run(otherArgs)
   assert.equal(otherBoard.value.local_context.card_file, null)
+  assert.equal(otherBoard.value.local_context.asset_folder, null)
   assert.equal(otherBoard.value.local_context.approved_inputs_file, null)
+  const otherTerminal = await run(otherArgs, false)
+  assert.equal(otherTerminal.code, 0, otherTerminal.stderr)
+  assert.doesNotMatch(otherTerminal.stdout, /^Asset folder:/m)
 })

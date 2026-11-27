@@ -8,11 +8,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { projectStateDir } from '../../cli/src/lib/machine/project'
+import { ensureProjectState } from '../../cli/src/lib/machine/project'
 import { taskOfRemoval } from '../../cli/src/lib/cloud/task-operation'
 import { isBoardPath } from '../../cli/src/lib/shared/board-files.ts'
 import { busy, cacheRoot, markUnsent, unsent } from './cache'
 import { allowedProjects } from './folders'
+import { errno, logRunner } from './runner-log'
 import { keptBoard, pullChanges, pushBoard, readHead, type TaskFolder } from './task-folder'
 
 /** How often new folders, and writes that failed, are looked at again. */
@@ -44,7 +45,7 @@ function keptFolders(): TaskFolder[] {
 }
 
 interface Watched {
-  watcher: fs.FSWatcher
+  watchers: fs.FSWatcher[]
   timer?: ReturnType<typeof setTimeout>
   /** The timer waits out `BUSY_MS`, so a job's later changes join it rather than delay it. */
   spaced: boolean
@@ -67,8 +68,13 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
     if (closed) return
     if (busy(ws.cwd)) return void afterJob.add(ws.cwd)
     afterJob.delete(ws.cwd)
-    const read = await pullChanges(ws)
-    if (!read.ok && read.code) console.error(`runner: the board in ${ws.cwd} was not read: ${read.error}`)
+    try {
+      const read = await pullChanges(ws)
+      if (!read.ok && read.code) console.error(`runner: the board in ${ws.cwd} was not read: ${read.error}`)
+    } catch (error) {
+      logRunner('board', 'failed', { stage: 'pull', code: errno(error) })
+      console.error(`runner: the board in ${ws.cwd} was not read: ${error}`)
+    }
   }
 
   const send = async (ws: TaskFolder, paths?: string[]) => {
@@ -79,7 +85,7 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
 
   const flush = async (ws: TaskFolder) => {
     const held = watched.get(ws.cwd)
-    if (!held) return void (await send(ws))
+    if (!held) return
     clearTimeout(held.timer)
     held.timer = undefined
     if (held.sending) return
@@ -113,16 +119,17 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
   }
 
   const watch = (ws: TaskFolder) => {
-    let watcher: fs.FSWatcher
+    const watchers: fs.FSWatcher[] = []
     try {
-      const state = path.relative(ws.board, projectStateDir(ws.board)).split(path.sep).join('/')
-      const assets = ['assets'].map(dir => `${state}/${dir}/`)
-      watcher = fs.watch(path.dirname(ws.board), { recursive: true }, (_event, name) => {
-        const p = name && path.relative(ws.board, path.join(path.dirname(ws.board), String(name))).split(path.sep).join('/')
+      const state = ensureProjectState(ws.board)
+      const parent = path.dirname(ws.board)
+      const assets = path.relative(ws.board, path.join(state, 'assets')).split(path.sep).join('/')
+      const watchRoot = (root: string) => fs.watch(root, { recursive: true }, (_event, name) => {
+        const p = name && path.relative(ws.board, path.join(root, String(name))).split(path.sep).join('/')
         const held = watched.get(ws.cwd)
         if (closed || !p || !held) return
         if (!isBoardPath(p) && !/^(?:todo|\.archive|memory|assets|studios|triage|rules)(?:\/|$)/.test(p)
-          && !assets.some(root => p.startsWith(root))
+          && p !== assets && !p.startsWith(`${assets}/`)
           && !taskOfRemoval(p) && !/^\.sync\/[\w-]+\.json$/.test(p)) return
         if (p === 'todo/README.md') return
         held.paths.add(p)
@@ -132,15 +139,20 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
         held.spaced = job
         held.timer = setTimeout(() => void flush(ws), job ? Math.max(ms, held.sentAt + busyMs - Date.now()) : ms)
       })
-    } catch {
+      watchers.push(watchRoot(parent))
+      if (!state.startsWith(parent + path.sep)) watchers.push(watchRoot(state))
+    } catch (error) {
+      for (const watcher of watchers) watcher.close()
+      console.error(`runner: the board in ${ws.cwd} could not be watched: ${error}`)
       return false
     }
-    watcher.on('error', () => {
+    const close = () => {
       clearTimeout(watched.get(ws.cwd)?.timer)
-      watcher.close()
+      for (const watcher of watchers) watcher.close()
       watched.delete(ws.cwd)
-    })
-    watched.set(ws.cwd, { watcher, spaced: false, sentAt: 0, paths: new Set(), full: true, sending: false })
+    }
+    for (const watcher of watchers) watcher.on('error', close)
+    watched.set(ws.cwd, { watchers, spaced: false, sentAt: 0, paths: new Set(), full: true, sending: false })
     return true
   }
 
@@ -149,7 +161,7 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
     for (const ws of keptFolders()) {
       const fresh = !watched.has(ws.cwd) && watch(ws)
       const jobOver = watched.get(ws.cwd)?.spaced && !busy(ws.cwd)
-      if (fresh || jobOver || unsent(ws.cwd)) void flush(ws)
+      if (fresh || jobOver || (watched.has(ws.cwd) && unsent(ws.cwd))) void flush(ws)
       if (afterJob.has(ws.cwd) && !busy(ws.cwd)) void pull(ws)
     }
   }
@@ -179,7 +191,7 @@ export function watchBoards(machineId: string, ms: number, lookMs = LOOK_MS, pul
       due.clear()
       for (const held of watched.values()) {
         clearTimeout(held.timer)
-        held.watcher.close()
+        for (const watcher of held.watchers) watcher.close()
       }
       watched.clear()
     },

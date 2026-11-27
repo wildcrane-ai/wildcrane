@@ -50,8 +50,8 @@ CLI handler sources are linked in [the command inventory](coverage-akb.md).
 | `PATCH /v1/projects/{id}` | Update a project | — | [Project settings: name](../../web/src/pages/Settings.tsx) | No AKB; G02 | [route](../../cloud/src/v1/index.ts#L1028) |
 | `DELETE /v1/projects/{id}` | Delete a project | — | [Project settings: delete](../../web/src/pages/Settings.tsx) | No AKB; G02 | [route](../../cloud/src/v1/index.ts#L1030) |
 | `GET /v1/projects/{id}/board` | Read the project's board files | `board conflict resolve <id>` reads current versions | [Task board/card](../../web/src/pages/Board.tsx) | Transport; G07 covers missing user-facing reads | [route](../../cloud/src/v1/index.ts#L1031) |
-| `POST /v1/projects/{id}/board/archive-completions` | Reconcile completed archives after Runner sync | — | — | Runner session and synchronized archive versions required | [route](../../cloud/src/v1/index.ts) |
-| `POST /v1/projects/{id}/board/commits` | Write what a Runner changed on the board | `board conflict resolve <id> --expect <revision> --file <path>` | — | Saved conflict batches only; [contract](board-conflicts.md), current execution required | [route](../../cloud/src/v1/index.ts#L1032) |
+| `POST /v1/projects/{id}/board/archive-completions` | Reconcile completed archives after Runner sync | — | — | Normal archive receipts require synchronized card and asset versions. Managed Land uses its job finish report | [route](../../cloud/src/v1/index.ts) |
+| `POST /v1/projects/{id}/board/commits` | Write what a Runner changed on the board | `board conflict resolve <id> --expect <revision> --file <path>` | — | Managed archives require the current Land job and lease; [conflict contract](board-conflicts.md) | [route](../../cloud/src/v1/index.ts#L1032) |
 | `POST /v1/projects/{id}/import` | Import a local board's cards and files | — | — | API only: board import | [route](../../cloud/src/v1/index.ts#L1037) |
 | `GET /v1/projects/{id}/agents` | List a project's agents | `studio instructions <agent> (read)` | [Project settings: agents](../../web/src/pages/Settings.tsx) | Partial: instructions view; G04 | [route](../../cloud/src/v1/index.ts#L1042) |
 | `PUT /v1/projects/{id}/agents/{agent}` | Set an agent's schedule, or a board agent's rule | `studio instructions <agent> --text <text> or --file <path>` | [Project settings: rule and schedule](../../web/src/pages/Settings.tsx) | Partial: rule only, no schedule; G04 | [route](../../cloud/src/v1/index.ts#L1043) |
@@ -76,7 +76,7 @@ CLI handler sources are linked in [the command inventory](coverage-akb.md).
 | `POST /v1/tasks` | Create a task | `task create <request...> --studio <id> [--project <id>]; task create --title <title> (linked project)` | [New task; triage: build now](../../web/src/pages/NewGoal.tsx) | Partial: see creation parameters in G06 | [route](../../cloud/src/v1/index.ts#L1067) |
 | `GET /v1/tasks/{id}` | Get a task | `task show <task>` | [Task page](../../web/src/pages/CardPage.tsx) | Covered | [route](../../cloud/src/v1/index.ts#L1068) |
 | `PATCH /v1/tasks/{id}` | Update a task during review or an active chat | `task runtime <task> <runtime>` | — | Status, title and project updates are HTTP-only | [route](../../cloud/src/v1/index.ts#L1173) |
-| `POST /v1/tasks/{id}/archive` | Archive and complete an eligible task | `task archive <task>` | — | Cloud confirms the archived card and completed task | [route](../../cloud/src/v1/index.ts) |
+| `POST /v1/tasks/{id}/archive` | Archive and complete an eligible task | `task archive <task>` | — | Empty body, task write access and current review/version required. Active jobs are asked to stop | [route](../../cloud/src/v1/index.ts) |
 | `POST /v1/tasks/{id}/cancel` | Cancel a task | `task remove <task> [reason...] [--discard]` | [Task: remove](../../web/src/pages/CardPage.tsx) | Covered | [route](../../cloud/src/v1/index.ts#L1075) |
 | `POST /v1/tasks/{id}/stop` | Stop a running task | `task stop <task>` | [Task: stop execution](../../web/src/pages/CardPage.tsx) | Covered | [route](../../cloud/src/v1/index.ts#L1076) |
 | `POST /v1/tasks/{id}/restore` | Restore a removed or completed task without starting | `task restore <task>` | [Archive/removed task: restore removed or completed task](../../web/src/components/Restore.tsx) | Covered; restores without starting | [route](../../cloud/src/v1/index.ts#L1077) |
@@ -86,7 +86,7 @@ CLI handler sources are linked in [the command inventory](coverage-akb.md).
 | `GET /v1/tasks/{id}/handoff` | Retired handoff read | — | — | Retired: machine affinity removed | [route](../../cloud/src/v1/index.ts#L1081) |
 | `POST /v1/tasks/{id}/handoff` | Retired handoff write | — | — | Retired: machine affinity removed | [route](../../cloud/src/v1/index.ts#L1082) |
 | `POST /v1/tasks/{id}/execute` | Start work from the prepared review revision | — | [Task: Execute](../../web/src/pages/CardPage.tsx) | Atomic authorization of ready stages | [route](../../cloud/src/v1/index.ts) |
-| `POST /v1/tasks/{id}/resume` | Resume task, optionally choosing runtime | `task resume <task>` | [Task: resume](../../web/src/pages/CardPage.tsx) | Partial: no runtime parameter; G06 | [route](../../cloud/src/v1/index.ts#L1083) |
+| `POST /v1/tasks/{id}/resume` | Resume the saved Implement or Land phase, optionally choosing runtime | `task resume <task>` | [Task: resume](../../web/src/pages/CardPage.tsx) | Partial: no runtime parameter; G06 | [route](../../cloud/src/v1/index.ts#L1083) |
 | `GET /v1/tasks/{id}/studio` | Get a task's studio version | `studio file <studio> <path> (pinned files)` | [Task: Studio/Preview instructions](../../web/src/pages/CardPage.tsx) | Partial indirect read, no dedicated JSON view; G07 | [route](../../cloud/src/v1/index.ts#L1089) |
 | `GET /v1/tasks/{id}/card` | Read the task's card | `task show <task>; task update-questions <task> (baseline)` | [Task: card sheet](../../web/src/pages/CardPage.tsx) | Covered (show returns body) | [route](../../cloud/src/v1/index.ts#L1090) |
 | `GET /v1/tasks/{id}/subtasks` | Get a group root's subtasks | `— (task inspect reads local facts)` | [Task: subtasks](../../web/src/pages/CardPage.tsx) | No Cloud read command; G07 | [route](../../cloud/src/v1/index.ts#L1091) |
@@ -238,12 +238,12 @@ Service: Cloud Worker, consumed by [Runner API](../../runner/src/api.ts). These 
 | `GET /v1/runner/tasks` | Running/queued machine tasks | — | — | Plugin client transport; task list is workspace/project scoped | [runners.ts](../../cloud/src/runners.ts) |
 | `POST /v1/runner/reviews` | Dispatch archived-chat review job | — | — | Internal review dispatch | [runners.ts](../../cloud/src/runners.ts) |
 | `GET /v1/runner/agents` | machine/project; due scheduled agents | — | — | Internal scheduling | [runners.ts](../../cloud/src/runners.ts) |
-| `GET /v1/runner/jobs` | Read this machine's jobs | — | — | Internal queue | [runners.ts](../../cloud/src/runners.ts) |
+| `GET /v1/runner/jobs` | Read this machine's jobs | — | — | Protocol 33 only for phased jobs. Omits waiting Land while the project lease is held | [runners.ts](../../cloud/src/runners.ts) |
 | `POST /v1/runner/jobs` | Dispatch job or request periodic agent | — | — | Internal dispatch | [runners.ts](../../cloud/src/runners.ts) |
-| `GET /v1/runner/jobs/{job}` | Read job state/progress | `task chat <task> [--follow] (reply job only)` | Task/discussion chat; run log | Partial: no general job read/log command; G07 | [runners.ts](../../cloud/src/runners.ts) |
-| `POST /v1/runner/jobs/{job}/claim` | Claim with machineId | — | — | Internal lease | [runners.ts](../../cloud/src/runners.ts) |
-| `POST /v1/runner/jobs/{job}/renew` | Renew machineId and progress | `raw in-run commands (lease side effect)` | — | Internal lease, not user-facing coverage | [runners.ts](../../cloud/src/runners.ts) |
-| `POST /v1/runner/jobs/{job}/finish` | Outcome/report/usage/session/landing | — | — | Internal completion | [runners.ts](../../cloud/src/runners.ts) |
+| `GET /v1/runner/jobs/{job}` | Read job state/progress | `task chat <task> [--follow] (reply job only)` | Task/discussion chat; run log | Phased jobs include `flow.phase` and Land includes `flow.land_from`; G07 | [runners.ts](../../cloud/src/runners.ts) |
+| `POST /v1/runner/jobs/{job}/claim` | Claim with machineId | — | — | Claims the project Land lease atomically | [runners.ts](../../cloud/src/runners.ts) |
+| `POST /v1/runner/jobs/{job}/renew` | Renew machineId and progress | `raw in-run commands (lease side effect)` | — | Renews the current lease and returns a stop signal. Expired Land jobs are refused | [runners.ts](../../cloud/src/runners.ts) |
+| `POST /v1/runner/jobs/{job}/finish` | Outcome and report | — | — | Implement reports `landReady: { deliveryId? }`. Land reports `archive: { path, seq, assets_seq }` and optional `landing: { commit, branch }` | [runners.ts](../../cloud/src/runners.ts) |
 | `POST /v1/runner/jobs/{job}/approve` | Reserve/cancel reply approval | `task approve <task> (via local reply bridge)` | Task: approval after reply | Internal bridge; no direct job command | [runners.ts](../../cloud/src/runners.ts) |
 | `GET /v1/runner/jobs/{job}/stream` | WebSocket; machine for producer, after for reader | `task chat <task> --follow (reply only)` | Task/discussion: run log | Partial: reply follow only; G07 | [runners.ts](../../cloud/src/runners.ts) |
 | `PUT /v1/runner/jobs/{job}/images/{key}` | Upload reply image; machine; key is SHA-256 | — | — | Internal image producer | [runners.ts](../../cloud/src/runners.ts) |
@@ -290,11 +290,18 @@ Service: Cloud Worker. External site consumers; no current Web app callers, so t
 
 Service: Cloud Worker. Relays preserve upstream authentication; they are not extra business operations to add to AKB.
 
+Web builds use `VITE_API_URL` (default `https://api.wildcrane.ai`) for the auth relay, `/v1` HTTP,
+SSE and run log WebSockets. The Web Cookie origin is `https://app.wildcrane.ai`.
+With `x-wildcrane-session: cookie`, OTP verification and PKCE or refresh grants return
+`{ expires_at?, expires_in?, user? }` and set host-only `HttpOnly; Secure; SameSite=Lax` cookies.
+`wc_access` uses `/`; `wc_refresh` uses `/auth/v1`. Native clients use the original API domain.
+
 | Method and path | Purpose / access | AKB | UI entry | Coverage / classification | Source |
 | --- | --- | --- | --- | --- | --- |
 | `POST /auth/v1/otp` | Send sign-in code | — | Web/local sign-in | Authentication transport; local sign-in G17 | [auth-relay.ts](../../cloud/src/auth-relay.ts) |
 | `POST /auth/v1/verify` | Verify sign-in code | — | Web/local sign-in | Authentication transport | [auth-relay.ts](../../cloud/src/auth-relay.ts) |
 | `POST /auth/v1/token` | Exchange pkce or refresh_token grant | `account (refresh side effect)` | Web/local sign-in | Authentication transport | [auth-relay.ts](../../cloud/src/auth-relay.ts) |
+| `POST /auth/v1/logout` | Revoke the current Web session and clear both cookies (`204`) | — | Web sign-out | Authentication transport | [auth-relay.ts](../../cloud/src/auth-relay.ts) |
 | `GET /realtime/v1/websocket` | Realtime WebSocket upgrade; upstream private-topic authorization | — | — | Internal client transport | [realtime-relay.ts](../../cloud/src/realtime-relay.ts) |
 | `GET https://{hash}.{COMPONENT_HOST}/{path...}` | Serve immutable Preview Component bundle (empty/directory path uses index.html) | — | Task/shared Preview Component iframe | UI asset transport; G09 covers component/version reads | [components.ts](../../cloud/src/v1/components.ts) |
 | `HEAD https://{hash}.{COMPONENT_HOST}/{path...}` | Component asset headers | — | — | Asset transport | [components.ts](../../cloud/src/v1/components.ts) |

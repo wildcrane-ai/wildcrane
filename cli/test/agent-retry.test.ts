@@ -26,6 +26,10 @@ it('uses English for local retry notices and keeps explicit Runner localization'
   assert.equal(pauseLine('limit', true), '已达到自动重试次数上限。')
 })
 
+it('leaves a failed completed operation for manual continuation (W-1198)', () => {
+  assert.deepEqual(planRetry({ ...overload, code: 'completed_operation_failed' }, 1, undefined, undefined, true), { pause: 'manual' })
+})
+
 it('allows four retries after the original failure with shared backoff', () => {
   const now = 7_200_000
   for (let attempt = 1; attempt <= 4; attempt++) {
@@ -108,6 +112,14 @@ it('uses terminal Codex events and ignores tool errors and retry prose', () => {
   }
   send({ type: 'turn.completed' })
   assert.equal(renderer.executionFailure?.(), undefined)
+})
+
+it('pauses for exhausted provider quota and retries temporary throttling (#989)', () => {
+  const exhausted = { source: 'runtime' as const, summary: 'Antigravity quota is exhausted.' }
+  assert.deepEqual(planRetry(exhausted, 1), { pause: 'authorization' })
+  assert.deepEqual(planRetry({ ...exhausted, summary: 'HTTP 429', code: 'insufficient_quota' }, 1), { pause: 'authorization' })
+  const throttled = providerFailure({ status: 429, headers: { 'Retry-After': '2' } }, 'Too many requests')
+  assert.deepEqual(planRetry(throttled, 1, 0), { plan: { at: 2_000, of: 4, failure: throttled } })
 })
 
 it('classifies a confirmed Claude output validation failure regardless of its wording', () => {

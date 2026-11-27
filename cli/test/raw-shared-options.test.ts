@@ -48,7 +48,7 @@ describe('shared options before raw', () => {
     const { code, err } = await run(['--board', board, 'raw', 'update', '1', '--status', 'ready'])
     assert.equal(code, 0, err)
     const card = fs.readdirSync(path.join(board, 'todo')).find((f) => f.startsWith('1-'))!
-    assert.match(fs.readFileSync(path.join(board, 'todo', card), 'utf8'), /^status: ready$/m)
+    assert.match(fs.readFileSync(path.join(board, 'todo', card), 'utf8'), /^status: planned$/m)
   })
 
   it('reads --dir= and --json in any order', async () => {

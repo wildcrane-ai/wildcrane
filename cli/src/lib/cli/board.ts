@@ -1,4 +1,5 @@
 import { insideRun } from '../agent/env'
+import { executionOf } from '../cloud/execution'
 import { recordCards } from '../agent/created-cards'
 import { runAgent } from '../agent/project-agent'
 import { BOARD_MOVES, runLocalMove } from '../board/local'
@@ -10,6 +11,7 @@ import { KANBAN, REPO_ROOT } from '../paths'
 import { resolveBoard, useBoard } from '../board-cli'
 import { syncStudios } from '../agent/cloud-studios'
 import { LEVELS, STATUSES } from '../validate'
+import { normalizeCardStatus } from '../frontmatter'
 import {
   cardId,
   collect,
@@ -124,7 +126,7 @@ async function cloudCard(task: string | null, opts: Record<string, unknown>): Pr
     studio: typeof opts.studio === 'string' && opts.studio.trim() ? opts.studio.trim() : undefined,
     slug: typeof opts.slug === 'string' ? opts.slug : undefined,
     triage: sourceFile,
-    agent: runAgent() ?? undefined,
+    agent: runAgent() ?? (insideRun() || executionOf() ? 'agent' : undefined),
   }
   if (task) {
     const link = linkedProject(KANBAN, REPO_ROOT)
@@ -213,7 +215,7 @@ export function declareBoardMoves(program: Command, cli: BoardCliOptions, groups
     )
     .option('--title <title>', 'what the card is called')
     .option('--priority <level>', LEVELS.join(' | '), oneOf(LEVELS))
-    .option('--status <status>', STATUSES.join(' | '), oneOf(STATUSES))
+    .option('--status <status>', STATUSES.join(' | '), value => oneOf(STATUSES)(normalizeCardStatus(value)))
     .option('--blocked-by <ids>', 'ids of open cards this one waits on', collectList)
     .option('--related <ids>', 'ids of open cards this one relates to', collectList)
     .option('--add-blocked-by <ids>', 'append ids to blocked_by, keeping the ids already there', collectList)

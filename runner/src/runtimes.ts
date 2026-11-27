@@ -40,7 +40,6 @@ export interface Plan {
   renderer?: StreamRenderer
   /** The one turn, held over the child's pipes. The turn's end is the job's: the child is a
    *  server and is ended after it. */
-  background?: () => number | undefined
   converse?: (child: ChildProcess, event: (e: RunEvent) => void, restart?: boolean, prepareUntil?: number, signal?: AbortSignal, activity?: () => void, idleSignal?: AbortSignal) => Promise<TurnEnd>
   /** True for stderr lines the runtime prints on every run and that say nothing. */
   quiet(line: string): boolean
@@ -128,7 +127,6 @@ export function plan(runtime: Job['runtime'], prompt: string, cwd: string, resum
       ...base,
       managedProcess: client.managedProcess,
       idleRecovery: client.idleRecovery,
-      background: client.background,
       fallback: fallback && (() => adapt(fallback())),
       converse: (child, event, restart = true, prepareUntil, signal, activity, idleSignal) => client.turn({
         signal,

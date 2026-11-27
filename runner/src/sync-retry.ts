@@ -5,10 +5,44 @@ import { cloudLanguage } from '../../cli/src/lib/agent/language'
 export const syncBackoff = (attempt: number) => 1_000 * 2 ** (attempt - 1)
 
 export type SyncStep = 'authorize' | 'renew' | 'prepare' | 'studios' | 'chats' | `chat:${string}` | `decisions:${string}`
-  | `reply-image:${string}` | 'reply-history' | 'create' | 'create-sync' | 'review' | 'previews' | 'reconcile' | 'repair' | 'publish' | 'confirm' | 'finish'
+  | `reply-image:${string}` | 'reply-history' | 'init' | 'create' | 'create-sync' | 'review' | 'previews' | 'reconcile' | 'repair' | 'publish' | 'confirm' | 'finish'
 export type Sync = <T>(step: SyncStep, operation: () => Promise<Call<T>>) => Promise<Call<T>>
 
 export const syncStopped = { ok: false, code: 'stopped', error: 'Task preparation stopped.' } as const
+
+type SyncRefusal = Extract<Call<unknown>, { ok: false }>
+
+export const staleArchiveReceipt = ({ code, error }: SyncRefusal) => code === 'version_conflict'
+  || code === 'conflict' && error === 'The current card and attachment archive versions must be synchronized.'
+
+export const landLeaseLost = ({ code, error }: SyncRefusal) => code === 'conflict' && [
+  'The Land job no longer holds the project lease.', 'This job has ended or moved to another computer.',
+].includes(error)
+
+export const resumeArchive = (job: Job) => cloudLanguage(job) === 'zh'
+  ? 'Cloud 未能确认已保存的归档。请在保存交付的运行电脑上继续任务。'
+  : 'Cloud could not confirm the saved archive. Resume the task on the Runner computer that holds the delivery.'
+
+export function landArchiveRefusal(job: Job, failure: SyncRefusal): string {
+  const zh = cloudLanguage(job) === 'zh'
+  if (failure.code === 'conflict' && ['Land no longer has review authorization.', 'The current Land job must synchronize this archive.'].includes(failure.error)) {
+    return zh ? 'Land 的审核授权已变化。请确认当前审核后继续任务。'
+      : 'Land review authorization changed. Confirm the current review and resume the task.'
+  }
+  if (failure.code === 'board_content_conflict') {
+    return zh ? '归档的看板文件有冲突。请参照 akb guide resolve-conflict 解决后继续任务。'
+      : 'The archive has board content conflicts. Follow akb guide resolve-conflict, then resume the task.'
+  }
+  if (failure.failure?.code === 'land_archive_sync') {
+    return zh ? '无法核对本地归档。请检查这台运行电脑上的归档卡片和附件，然后继续任务。'
+      : 'The saved archive could not be verified. Check the archived card and attachments on this computer, then resume the task.'
+  }
+  if (failure.failure?.source === 'validation') return failure.failure.summary
+  if (['unauthenticated', 'machine_offline', 'quota_exceeded', 'storage_limit_reached', 'daily_write_budget_reached', 'bad_request'].includes(failure.code ?? '')) {
+    return syncRefusal(job, failure)
+  }
+  return resumeArchive(job)
+}
 
 export function syncRefusal(job: Job, failure: Extract<Call<unknown>, { ok: false }>): string {
   const zh = cloudLanguage(job) === 'zh'

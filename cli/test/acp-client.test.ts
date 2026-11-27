@@ -14,6 +14,7 @@ import { describe, it } from 'node:test'
 
 import { createAcpClient } from '../src/lib/agent/wire/acp.ts'
 import type { TurnEnd } from '../src/lib/agent/wire/client.ts'
+import { createIdleWatchdog, IDLE_MS } from '../src/lib/agent/idle.ts'
 import type { RunEvent } from '../src/lib/agent/wire/events.ts'
 
 interface Call {
@@ -28,6 +29,8 @@ async function turnAgainst(
   done: Record<string, unknown>,
   model?: string,
   resume?: { id: string; missing?: boolean; before?: number; after?: number },
+  onPrompt?: (update: (data: object) => void) => void,
+  evidence?: { activity(): void; event(event: RunEvent): void },
 ): Promise<{ end: TurnEnd; calls: Call[]; model?: string }> {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
@@ -54,6 +57,9 @@ async function turnAgainst(
       }
       const amount = msg.method === 'session/load' ? resume?.before : msg.method === 'session/prompt' ? resume?.after : undefined
       if (amount !== undefined) stdout.write(JSON.stringify({ method: 'session/update', params: { sessionId: resume?.id, update: { sessionUpdate: 'usage_update', cost: { amount, currency: 'USD' } } } }) + '\n')
+      if (msg.method === 'session/prompt') onPrompt?.(update => {
+        stdout.write(JSON.stringify({ method: 'session/update', params: { sessionId: 's-1', update } }) + '\n')
+      })
       stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: answers[msg.method] ?? {} })}\n`)
     }
   })
@@ -66,6 +72,7 @@ async function turnAgainst(
     cwd: '/tmp/project',
     log: () => {},
     gotResumeId: () => {},
+    ...evidence,
     gotModel: (id) => {
       named = id
     },
@@ -258,4 +265,29 @@ it('subtracts a loaded ACP cost baseline, preserving zero and unknown (#689)', a
   assert.equal((await turnAgainst({}, {}, undefined, { id: 's', after: 0.5 })).end.costUsd, 0.5)
   assert.equal((await turnAgainst({}, {}, undefined, { id: 's', after: 0.75 })).end.costUsd, 0.25)
   assert.equal((await turnAgainst(GROK_OPENED, GROK_DONE, undefined, { id: 's' })).end.costUsd, 0.00774486)
+})
+
+
+it('ACP advances the shared deadline for model deltas and new tool content only', async () => {
+  let now = 0
+  let expired = false
+  const watch = createIdleWatchdog(() => { expired = true }, { now: () => now })
+  const { end } = await turnAgainst({}, {}, undefined, undefined, update => {
+    update({ sessionUpdate: 'tool_call', toolCallId: '1', title: 'Run build', kind: 'execute', status: 'in_progress' })
+    now += 240_000
+    update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Reviewing the build' } })
+    now += 240_000
+    const output = { sessionUpdate: 'tool_call_update', toolCallId: '1', status: 'running',
+      content: [{ type: 'content', content: { type: 'text', text: 'Compiled target A' } }] }
+    update(output)
+    now += 240_000
+    watch.check()
+    assert.equal(expired, false)
+    update(output)
+    update({ sessionUpdate: 'usage_update', cost: { amount: 0, currency: 'USD' } })
+    now += IDLE_MS - 240_000
+    watch.check()
+    assert.equal(expired, true)
+  }, { activity: watch.touch, event: watch.event })
+  assert.equal(end.ok, true)
 })

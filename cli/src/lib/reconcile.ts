@@ -21,7 +21,7 @@ import path from 'node:path'
 
 import { warn, TODO, README } from './paths'
 import { TASKS_HEADING } from './readme'
-import { walkMd, walkDirs, idPrefix, locate } from './cards'
+import { walkMd, walkDirs, idPrefix, locate, pendingLandBlockers } from './cards'
 import { parseFrontmatter } from './frontmatter'
 
 // A README entry links a card as `[#id title](relpath)`. Grab the id and the path.
@@ -104,6 +104,7 @@ function readmeComplaints(fix: boolean): string[] {
 function crossRefComplaints(): string[] {
   const said: string[] = []
   const live = liveIds()
+  const pending = new Set(pendingLandBlockers().map(card => card.id))
   for (const file of walkMd(TODO)) {
     const base = path.basename(file)
     if (base === 'README.md') continue
@@ -113,7 +114,7 @@ function crossRefComplaints(): string[] {
     if (!meta) continue
     for (const field of ['blocked_by', 'related'] as const) {
       for (const ref of meta[field] || []) {
-        if (!live.has(ref)) {
+        if (!live.has(ref) && (field !== 'blocked_by' || !pending.has(ref))) {
           said.push(`#${ownerId} ${field} #${ref}, which is no longer on the board (archived/rejected?). Fix it with \`update ${ownerId}\`.`)
         }
       }

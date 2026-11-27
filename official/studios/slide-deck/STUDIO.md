@@ -61,9 +61,9 @@ Show the wireframes or final-look samples the task requests.
 - **Preview**: write wireframes to `storyboard.json` and samples to `samples.json` in the
   card's asset folder, showing only the requested results in the built-in Storyboard.
 
-  `<Storyboard src=".assets/<card id>/storyboard.json" label="<wireframes>" />`
+  `<Storyboard src="asset:storyboard.json" label="<wireframes>" />`
 
-  `<Storyboard src=".assets/<card id>/samples.json" label="<samples>" />`
+  `<Storyboard src="asset:samples.json" label="<samples>" />`
 
 - **Acceptance**: validate each Storyboard, then confirm it pages through, zooms and shows
   each slide's notes on the card; fix a failing preview in place.
@@ -79,7 +79,7 @@ recipe and any applicable approved wireframes and samples from Preview `deck-dra
   dependencies and no machine paths; show the finished `storyboard.json` in the built-in
   Storyboard and check each slide against its layout note and visual recipe.
 
-  `<Storyboard src=".assets/<card id>/storyboard.json" />`
+  `<Storyboard src="asset:storyboard.json" />`
 
 - **PowerPoint**: export only when the task requests it; render affected pages to
   `slides/<slide id>.png` at `size` and pack the complete deck with the Studio's
@@ -89,6 +89,6 @@ recipe and any applicable approved wireframes and samples from Preview `deck-dra
   refresh any affected cached `slides/<slide id>.png` before packing.
 - **Export preview**: show the requested PowerPoint as an Asset beside the slide preview.
 
-  `<Asset src=".assets/<card id>/<short-name>.pptx" label="<card title>" />`
+  `<Asset src="asset:<short-name>.pptx" label="<card title>" />`
 
 </Preview>

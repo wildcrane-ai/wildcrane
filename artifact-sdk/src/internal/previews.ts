@@ -1,7 +1,7 @@
 import type { Context } from '../index';
 import { delimitedOf, documentExtension, isHyperframe, isTileset, modelOf, textLang, TEXT_LIMIT, workbookExtension } from './asset-formats';
 import { documentPreviewKey, isDocumentPreview, OFFICE_TYPES, PDF } from './document';
-import { fileManifest, relativeFileReference, splitFileReference } from './file-references';
+import { fileManifest, fileNameOf, relativeFileReference, splitFileReference } from './file-references';
 import { manifestOf, mapReferences, referencesOf, type Manifest } from './manifest';
 import { hyperframeDocument } from './hyperframe-document';
 import { parseCues } from './format/captions';
@@ -9,6 +9,7 @@ import { parseReview } from './format/studio';
 import { schemaProblem } from './schema';
 import { parseShots, shotsProblem, storyboardShots, type Shot } from './format/compare';
 import type { CaptionFile, CompareSides, CompareSpec, ComponentSpec, Drawn, MockupView, SpriteFiles, TiledMapFiles } from './mockup-tag';
+import { assetRef, isAssetRef, isLegacyAssetRef, isTaskAssetRef, relativeAssetRef, taskAssetPath } from './task-assets';
 import { GLB, spriteSheet } from './references';
 import { parseSpriteSheet } from './format/spritesheet';
 import { imageSize, parseStoryboard, type StoryboardFrame, type StoryboardFrameView, type StoryboardView } from './storyboard';
@@ -17,8 +18,9 @@ export type ArtifactVersion = { version: number; content: unknown; file: { url: 
 export type Artifact = { id: string; type: string; name: string; latest_version: number | null; versions: ArtifactVersion[] };
 export type SharedComponent = { schema: unknown; url: string; references?: Manifest['references'] };
 export type Shared = { artifacts: Artifact[]; card: { assets: Record<string, { artifact: string; version?: number; error?: string }> } | null };
+export type FileCacheKey = { scope: string; artifactId: string; version: number };
 export type Services = {
-  readFile: (url: string) => Promise<Blob>;
+  readFile: (url: string, cacheKey?: FileCacheKey) => Promise<Blob>;
   saveVersion: (id: string, content: unknown) => Promise<{ version: number }>;
   errorCode: (error: unknown) => string;
   locale: Context['locale'];
@@ -45,6 +47,8 @@ export type Host = {
   saved: () => void;
   /** An artifact not yet in hand: still being read, or its read failed. */
   status?: (id: string) => "loading" | "failed" | undefined;
+  /** Permission-isolated cache scope for persistent local file caching. */
+  cacheScope?: string;
 };
 
 export { textLang } from './asset-formats';
@@ -61,53 +65,61 @@ export class Previews {
   }
 
   private blobs = new Map<string, Promise<Blob>>();
-  private blobOf = (file: NonNullable<ArtifactVersion['file']>): Promise<Blob> => {
-    let value = this.blobs.get(file.url);
+  private pageFiles = new PageFiles();
+  private blobOf(art: Artifact, version: ArtifactVersion): Promise<Blob> {
+    const file = version.file!;
+    const scope = this.host.cacheScope;
+    const key = scope ? JSON.stringify([art.id, version.version]) : file.url;
+    let value = this.blobs.get(key);
     if (!value) {
-      value = this.services.readFile(file.url).catch(error => { this.blobs.delete(file.url); throw error; });
-      this.blobs.set(file.url, value);
+      const cacheKey = scope ? { scope, artifactId: art.id, version: version.version } : undefined;
+      value = this.services.readFile(file.url, cacheKey).catch(error => { this.blobs.delete(key); throw error; });
+      this.blobs.set(key, value);
     }
     return value;
-  };
-  private async contextOf(art: Artifact, v: ArtifactVersion): Promise<Context> {
-    const file = v.file ? { data: await (await this.blobOf(v.file)).arrayBuffer(), contentType: v.file.content_type } : undefined;
-    return { artifact: { type: art.type, name: art.name, version: v.version, ...(file ? { file } : { content: v.content }) }, readOnly: !this.host.canSave, locale: this.services.locale, theme: 'light' };
   }
 
   private resource(art: Artifact, v: ArtifactVersion) {
-    let context: Promise<Context> | undefined;
-    const read = () => context ??= this.contextOf(art, v);
+    const blob = () => v.file
+      ? this.blobOf(art, v).then(value => value.type === v.file!.content_type ? value : value.slice(0, value.size, v.file!.content_type))
+      : Promise.resolve(new Blob([JSON.stringify(v.content, null, 2)], { type: 'application/json' }));
     return {
-      context: read,
+      context: async (): Promise<Context> => {
+        const file = v.file ? { data: await (await blob()).arrayBuffer(), contentType: v.file.content_type } : undefined;
+        return { artifact: { type: art.type, name: art.name, version: v.version, ...(file ? { file } : { content: v.content }) }, readOnly: !this.host.canSave, locale: this.services.locale, theme: 'light' };
+      },
       text: async (field: string) => {
-        const { artifact } = await read();
-        if (isObj(artifact.content) && typeof artifact.content[field] === 'string') return artifact.content[field] as string;
-        if (typeof artifact.content === 'string') return artifact.content;
-        return artifact.file ? new TextDecoder().decode(artifact.file.data) : null;
+        if (v.file) return (await blob()).text();
+        if (isObj(v.content) && typeof v.content[field] === 'string') return v.content[field] as string;
+        return typeof v.content === 'string' ? v.content : null;
       },
       json: async () => {
-        const { artifact } = await read();
-        if (artifact.file) return JSON.parse(new TextDecoder().decode(artifact.file.data)) as unknown;
-        return typeof artifact.content === 'string' ? JSON.parse(artifact.content) as unknown : artifact.content;
+        if (v.file) return JSON.parse(await (await blob()).text()) as unknown;
+        return typeof v.content === 'string' ? JSON.parse(v.content) as unknown : v.content;
       },
-      blob: async () => {
-        const { artifact } = await read();
-        if (!artifact.file) return new Blob([JSON.stringify(artifact.content, null, 2)], { type: 'application/json' });
-        return new Blob([artifact.file.data], { type: artifact.file.contentType });
-      },
+      blob,
     };
   }
+
   private textOf(v: ArtifactVersion, field: string) {
     const art = [...this.byId.values()].find(a => a.versions.includes(v))!;
     return this.resource(art, v).text(field);
   }
-  private fileOf(art: Artifact, v: ArtifactVersion, name = withExt(art.name, v.file?.content_type ?? 'application/json')) {
+  private fileOf(art: Artifact, v: ArtifactVersion, name = withExt(isTaskAssetRef(art.name) ? fileNameOf(art.name) : art.name, v.file?.content_type ?? 'application/json')) {
     return { name, load: async () => urlOf(await this.resource(art, v).blob()) };
   }
 
   protected relative(src: string, owner: string): string {
-    if (this.shared.card?.assets[src] || this.byId.has(src) || /^[a-z][\w+.-]*:/i.test(src)) return src;
-    return relativeFileReference(src, owner);
+    if (isAssetRef(src)) return '';
+    if (this.byId.has(src) || isLegacyAssetRef(src) || /^[a-z][\w+.-]*:/i.test(src)) return src;
+    if (isTaskAssetRef(owner)) {
+      const resolved = relativeAssetRef(src, owner);
+      if (!resolved) return '';
+      if (this.shared.card?.assets[resolved]) return resolved;
+      if (isLegacyAssetRef(owner)) return owner.split('/').slice(0, 2).join('/') + '/' + taskAssetPath(resolved);
+      return resolved;
+    }
+    return this.shared.card?.assets[src] ? src : relativeFileReference(src, owner);
   }
 
   /** The version shown: the one `card.assets` pins, else the latest. */
@@ -120,10 +132,27 @@ export class Previews {
     return art && v ? { art, version: v } : null;
   }
 
+  private pinOfSrc(src: string) {
+    const [source] = splitFileReference(src);
+    const assets = this.shared.card?.assets;
+    if (assets && Object.hasOwn(assets, src)) return assets[src];
+    if (!isAssetRef(source)) return undefined;
+    const file = taskAssetPath(source);
+    return file === null ? undefined : assets?.[assetRef(file)];
+  }
+
   /** The artifact a body path names, through `card.assets`. */
   refOfSrc(src: string): Ref | null {
-    const at = this.shared.card?.assets[src];
+    const at = this.pinOfSrc(src);
     return at ? this.ref(at.artifact, at.version) : this.ref(src);
+  }
+
+  attachmentOfSrc(src: string, image = false) {
+    const pin = this.pinOfSrc(src);
+    if (!pin || pin.error) return undefined;
+    const ref = this.ref(pin.artifact, pin.version);
+    if (!ref || (image && !ref.version.file?.content_type.startsWith('image/'))) return undefined;
+    return this.fileOf(ref.art, ref.version, fileNameOf(src));
   }
 
   /** The artifact ids the body reaches, so the rest can be listed after it. */
@@ -148,7 +177,7 @@ export class Previews {
   }
 
   missing(src: string, label?: string): MockupView {
-    return { src, error: this.services.copy.card.mockup.missing(label || src.split("/").pop()!) };
+    return { src, error: this.services.copy.card.mockup.missing(label || fileNameOf(src)) };
   }
 
   private absent(id: string | undefined, src: string, label?: string): MockupView {
@@ -169,10 +198,10 @@ export class Previews {
   /** What a body path draws as; `as` is the type its tag declares. */
   viewOfSrc(src: string, label?: string, as?: "studio"): MockupView {
     return this.once(`src:${src}:${as ?? ""}`, () => {
-      const why = this.shared.card?.assets[src]?.error;
-      if (why) return { src, error: this.services.copy.card.mockup.undrawn(label || src.split("/").pop()!, why) };
+      const why = this.pinOfSrc(src)?.error;
+      if (why) return { src, error: this.services.copy.card.mockup.undrawn(label || fileNameOf(src), why) };
       const ref = this.refOfSrc(src);
-      if (!ref) return this.absent(this.shared.card?.assets[src]?.artifact, src, label);
+      if (!ref) return this.absent(this.pinOfSrc(src)?.artifact, src, label);
       // Runner 0.6.28 stored a studio diagram as a plain file (#484).
       return this.viewOf(as && ref.art.type === "asset" ? { ...ref, art: { ...ref.art, type: as } } : ref, src);
     });
@@ -181,7 +210,7 @@ export class Previews {
   private overlays = new Map<string, () => Promise<string | null>>();
 
   videoOverlayOfSrc(src: string | undefined): (() => Promise<string | null>) | undefined {
-    if (!src || this.shared.card?.assets[src]?.error) return;
+    if (!src || this.pinOfSrc(src)?.error) return;
     const ref = this.refOfSrc(src);
     if (ref?.art.type !== 'html') return;
     let load = this.overlays.get(src);
@@ -198,16 +227,15 @@ export class Previews {
   }
 
   captionsOfSrc(src: string): CaptionFile {
-    const pin = this.shared.card?.assets[src];
+    const pin = this.pinOfSrc(src);
     if (pin?.error) return { src };
     const ref = this.refOfSrc(src);
     if (!ref?.version.file) return pin && this.host.status?.(pin.artifact) === 'loading' ? { src, loading: true } : { src };
     const { art, version } = ref;
-    const file = version.file!;
     return {
       src,
-      download: this.fileOf(art, version, splitFileReference(src)[0].split('/').pop()!),
-      load: () => this.blobOf(file).then(blob => blob.text()).then(parseCues).catch(() => []),
+      download: this.fileOf(art, version, fileNameOf(src)),
+      load: () => this.blobOf(art, version).then(blob => blob.text()).then(parseCues).catch(() => []),
     };
   }
 
@@ -330,26 +358,26 @@ export class Previews {
           const key = documentPreviewKey(art.id, v.version);
           const pin = this.shared.card?.assets[key];
           const native = mime === PDF || documentExtension(documentName ?? '') === ".pdf";
-          const pdf = native ? file : pin?.version && this.refOfSrc(key)?.version.file;
-          const name = (documentName ?? withExt(art.name, mime!)).split('/').pop()!;
-          return { src, document: { file: this.fileOf(art, v, name), load: pdf ? () => this.blobOf(pdf) : null } };
+          const pdf = native ? { art, version: v } : pin?.version ? this.refOfSrc(key) : null;
+          const name = fileNameOf(documentName ?? withExt(art.name, mime!));
+          return { src, document: { file: this.fileOf(art, v, name), load: pdf?.version.file ? () => this.blobOf(pdf.art, pdf.version) : null } };
         }
         const model = modelOf(src) ?? modelOf(art.name);
         if (file && (model || mime === GLB)) {
-          const name = (model?.name ?? withExt(art.name, GLB)).split("/").pop()!;
+          const name = fileNameOf(model?.name ?? withExt(art.name, GLB));
           const format = model?.format ?? "glb";
-          return { src, model: { file: this.fileOf(art, v, name), format, load: () => this.blobOf(file) } };
+          return { src, model: { file: this.fileOf(art, v, name), format, load: () => this.blobOf(art, v) } };
         }
         if (file && [src, art.name].some(workbookExtension)) {
-          return { src, workbook: { file: this.fileOf(art, v), load: () => this.blobOf(file) } };
+          return { src, workbook: { file: this.fileOf(art, v), load: () => this.blobOf(art, v) } };
         }
-        const delimited = delimitedOf(art.name) ?? delimitedOf(src.split("/").pop()!);
+        const delimited = delimitedOf(art.name) ?? delimitedOf(fileNameOf(src));
         if (file && delimited) {
           return { src, delimited: {
             file: this.fileOf(art, v, delimited.name),
             delimiter: delimited.delimiter,
             load: async () => {
-              const blob = await this.blobOf(file);
+              const blob = await this.blobOf(art, v);
               if (blob.size > 3 * TEXT_LIMIT + 3) return { text: null };
               const data = await blob.arrayBuffer();
               const [first, second] = new Uint8Array(data, 0, Math.min(2, data.byteLength));
@@ -493,7 +521,7 @@ export class Previews {
       await Promise.all(referencesOf(manifestOf("tiled"), text).map(async ({ src, types }) => {
         const ref = this.ref(this.relative(src, owner));
         if (!ref?.version.file) { out.problem ??= "missing"; return; }
-        const blob = await this.blobOf(ref.version.file);
+        const blob = await this.blobOf(ref.art, ref.version);
         if (!types.length) { out.images[src] = blob; return; }
         const tileset = await blob.text();
         out.tilesets[src] = tileset;
@@ -510,8 +538,8 @@ export class Previews {
     const sheet = parseSpriteSheet(await this.resource(art, v).json().catch(() => null));
     if (!sheet) return { sheet: null, image: null, name: "", problem: "invalid" };
     const ref = this.ref(this.relative(sheet.image, art.name));
-    const name = (ref?.art.name ?? sheet.image).split("/").pop()!;
-    if (ref?.version.file) return { sheet, image: await this.blobOf(ref.version.file), name };
+    const name = fileNameOf(ref?.art.name ?? sheet.image);
+    if (ref?.version.file) return { sheet, image: await this.blobOf(ref.art, ref.version), name };
     return { sheet, image: null, name, problem: /^(?:[a-z][\w+.-]*:|\/|#)/i.test(sheet.image) ? "remote" : "missing" };
   }
 
@@ -531,39 +559,48 @@ export class Previews {
 
   private async contents(files: Map<string, Ref>): Promise<Record<string, { data: ArrayBuffer; contentType: string }>> {
     const out: Record<string, { data: ArrayBuffer; contentType: string }> = {};
-    await Promise.all([...files].map(async ([src, ref]) => { out[src] = { data: await (await this.blobOf(ref.version.file!)).arrayBuffer(), contentType: ref.version.file!.content_type }; }));
+    await Promise.all([...files].map(async ([src, ref]) => { out[src] = { data: await (await this.blobOf(ref.art, ref.version)).arrayBuffer(), contentType: ref.version.file!.content_type }; }));
     return out;
   }
 
   private async withFiles(doc: string, art: Artifact, version: ArtifactVersion, localUrls = false): Promise<string> {
-    const pageReferences = async (files: Map<string, Ref>, parents: ReadonlySet<string>): Promise<PageReference[]> => {
-      return Promise.all([...files].filter(([, ref]) => !parents.has(ref.art.id)).map(async ([src, ref]) => {
-        const blob = await this.blobOf(ref.version.file!);
-        const manifest = fileManifest(ref.art.type, ref.art.name);
-        const fragment = src.match(/#.*$/)?.[0] ?? '';
-        if (manifest?.name !== 'css') return [src, blob, fragment];
+    if (!localUrls && typeof window === 'undefined') return doc;
 
-        const text = await blob.text();
-        const children = this.filesOf(manifest, text, ref.art, ref.version);
-        const references = await pageReferences(children, new Set([...parents, ref.art.id]));
-        let prefix = '__wildcrane_css_';
-        while (text.includes(prefix)) prefix += '_';
-        const tokens = new Map(references.map(([source], index) => [source, `${prefix}${index}_`]));
-        const css = mapReferences(manifest, text, source => tokens.get(source) ?? source) as string;
-        return [src, { css, references: references.map(([source, file, hash]) => [tokens.get(source)!, file, hash]) }, fragment];
-      }));
+    const pageReference = async (src: string, ref: Ref, parents: ReadonlySet<string>): Promise<PageReference> => {
+      const blob = await this.resource(ref.art, ref.version).blob();
+      const manifest = fileManifest(ref.art.type, ref.art.name);
+      const fragment = src.match(/#.*$/)?.[0] ?? '';
+      if (manifest?.name !== 'css') return [src, blob, fragment];
+
+      const text = await blob.text();
+      const children = this.filesOf(manifest, text, ref.art, ref.version);
+      const visited = new Set([...parents, ref.art.id]);
+      const references = await Promise.all(
+        [...children].filter(([, child]) => !visited.has(child.art.id))
+          .map(([source, child]) => pageReference(source, child, visited)),
+      );
+      let prefix = '__wildcrane_css_';
+      while (text.includes(prefix)) prefix += '_';
+      const tokens = new Map(references.map(([source], index) => [source, `${prefix}${index}_`]));
+      const css = mapReferences(manifest, text, source => tokens.get(source) ?? source) as string;
+      return [src, { css, references: references.map(([source, file, hash]) => [tokens.get(source)!, file, hash]) }, fragment];
     };
+
     const manifest = manifestOf(art.type);
-    const files = await pageReferences(this.filesOf(manifest, doc, art, version), new Set([art.id]));
+    const parents = new Set([art.id]);
+    const files = [...this.filesOf(manifest, doc, art, version)].filter(([, ref]) => !parents.has(ref.art.id));
+    if (!files.length) return doc;
     if (localUrls) {
+      const refs = await Promise.all(files.map(([src, ref]) => pageReference(src, ref, parents)));
       const url = (file: PageFile): string => file instanceof Blob ? urlOf(file) : urlOf(new Blob([
         file.references.reduce((css, [token, child, hash]) => css.replaceAll(token, url(child) + hash), file.css),
       ], { type: 'text/css' }));
-      const urls = new Map(files.map(([src, file, hash]) => [src, url(file) + hash]));
+      const urls = new Map(refs.map(([src, file, hash]) => [src, url(file) + hash]));
       return mapReferences(manifest, doc, src => urls.get(src) ?? src) as string;
     }
-    // Regular page previews create their URLs inside their opaque origin.
-    return files.length ? injectFiles(doc, files) : doc;
+
+    // Request linked files from the sandbox as it draws the page.
+    return this.pageFiles.inject(doc, manifest, files.map(([src, ref]) => [src, () => pageReference(src, ref, parents)]));
   }
 
   /** A document with the pictures it names swapped for blob URLs; one it cannot reach keeps its path. */
@@ -572,7 +609,7 @@ export class Previews {
     const files = this.filesOf(manifest, text, art, version);
     if (!files.size) return text;
     const urls = new Map<string, string>();
-    await Promise.all([...files].map(async ([src, ref]) => { urls.set(src, urlOf(await this.blobOf(ref.version.file!))); }));
+    await Promise.all([...files].map(async ([src, ref]) => { urls.set(src, urlOf(await this.blobOf(ref.art, ref.version))); }));
     return mapReferences(manifest, text, src => urls.get(src) ?? src) as string;
   }
 
@@ -581,11 +618,11 @@ export class Previews {
     const data = await this.resource(art, v).json();
     const parsed = parseStoryboard(data);
     const frame = async (f: StoryboardFrame, slide = false): Promise<StoryboardFrameView> => {
-      const ref = this.ref(this.relative(f.src, src));
+      const ref = this.ref(this.relative(f.src, art.name));
       const none: StoryboardFrameView = { src: f.src, alt: f.alt, href: null, ratio: null };
       if (!ref) return none;
       const file = this.fileOf(ref.art, ref.version);
-      if (ref.art.type !== "image" && !(slide && ref.art.type === "html")) return { ...none, view: this.arranged(this.relative(f.src, src), ["compare", "storyboard"]) };
+      if (ref.art.type !== "image" && !(slide && ref.art.type === "html")) return { ...none, view: this.arranged(this.relative(f.src, art.name), ["compare", "storyboard"]) };
       try {
         if (slide && ref.art.type === "html") {
           const text = await this.textOf(ref.version, "html");
@@ -613,50 +650,115 @@ function innerIds({ art, version }: Ref): string[] {
 
 const innerIdsOf = (ref: Ref | null) => (ref ? innerIds(ref) : []);
 
-const pages = new Map<string, PageReference[]>();
+type PageLoader = () => Promise<PageReference>;
+const pages = new Map<string, WeakRef<readonly PageLoader[]>>();
+const pageCleanup = new FinalizationRegistry<string>(token => pages.delete(token));
 
-/** The page's references swapped for blob URLs it makes itself from the files the review hands it. */
-function injectFiles(doc: string, files: PageReference[]): string {
-  if (typeof window === "undefined") return doc;
-  if (!pages.size) {
-    window.addEventListener("message", (event) => {
-      const token = (event.data as { wildcraneFiles?: unknown } | null)?.wildcraneFiles;
-      const held = typeof token === "string" ? pages.get(token) : undefined;
-      if (held) (event.source as Window | null)?.postMessage({ wildcraneFiles: token, files: held }, "*");
-    });
-  }
-  const token = Math.random().toString(36).slice(2) + Date.now().toString(36);
-  pages.set(token, files);
-  const script = `<script>(()=> {
-    const token = ${JSON.stringify(token)};
-    addEventListener("message", event => {
-      const data = event.data;
-      if (!data || data.wildcraneFiles !== token || !data.files) return;
-      const urls = new WeakMap();
-      const rewrite = (text, refs) => refs.reduce((value, [src, file, hash]) => value.split(src).join(fileUrl(file) + hash), text);
-      function fileUrl(file) {
-        if (!urls.has(file)) {
-          const blob = file instanceof Blob ? file : new Blob([rewrite(file.css, file.references)], {type: "text/css"});
-          urls.set(file, URL.createObjectURL(blob));
-        }
-        return urls.get(file);
-      }
-      const files = data.files.sort((a, b) => b[0].length - a[0].length);
-      const run = () => {
-        for (const element of document.querySelectorAll("*")) {
-          for (const attr of [...element.attributes]) {
-            const value = rewrite(attr.value, files);
-            if (value !== attr.value) element.setAttribute(attr.name, value);
+class PageFiles {
+  private loaders: PageLoader[][] = [];
+
+  inject(doc: string, manifest: Manifest | undefined, files: [string, PageLoader][]): string {
+    if (!pages.size) window.addEventListener('message', openPageFiles);
+    const token = crypto.randomUUID();
+    const prefix = `about:blank#akb-${token}-`;
+    const loaders = files.map(([, load]) => load);
+    this.loaders.push(loaders);
+    pages.set(token, new WeakRef(loaders));
+    pageCleanup.register(loaders, token);
+    const placeholders = new Map(files.map(([src], index) => [src, prefix + index + '_']));
+    doc = mapReferences(manifest, doc, src => placeholders.get(src) ?? src) as string;
+    const script = `<script>(() => {
+      const token = ${JSON.stringify(token)};
+      const prefix = ${JSON.stringify(prefix)};
+      const channel = new MessageChannel();
+      const requested = new Set();
+      const targets = new Map();
+      const collect = (node, text, apply, lazy, media) => {
+        for (const match of text.matchAll(new RegExp(prefix + "([0-9]+)_", "g"))) {
+          const id = Number(match[1]);
+          if (!targets.has(id)) targets.set(id, []);
+          targets.get(id).push(apply);
+          if (media) media.add(id);
+          if (!lazy) request(id);
+          else {
+            const ids = lazyNodes.get(node) || new Set();
+            ids.add(id);
+            lazyNodes.set(node, ids);
+            observer.observe(node);
           }
-          if (element.tagName === "STYLE") element.textContent = rewrite(element.textContent, files);
         }
       };
-      document.readyState === "loading" ? addEventListener("DOMContentLoaded", run) : run();
-    });
-    parent.postMessage({wildcraneFiles: token}, "*");
-  })()</script>`;
-  const head = /<head\b[^>]*>/i.exec(doc);
-  return head ? doc.slice(0, head.index + head[0].length) + script + doc.slice(head.index + head[0].length) : script + doc;
+      const request = id => {
+        if (requested.has(id)) return;
+        requested.add(id);
+        channel.port1.postMessage(id);
+      };
+      const lazyNodes = new WeakMap();
+      const observer = new IntersectionObserver(entries => {
+        for (const { target, isIntersecting } of entries) {
+          if (!isIntersecting) continue;
+          observer.unobserve(target);
+          lazyNodes.get(target)?.forEach(request);
+        }
+      }, { rootMargin: "100px" });
+      const fileUrl = file => URL.createObjectURL(file instanceof Blob ? file : new Blob([
+        file.references.reduce((css, [name, child, hash]) => css.replaceAll(name, fileUrl(child) + hash), file.css)
+      ], { type: "text/css" }));
+      const mediaSources = new Map();
+      channel.port1.onmessage = ({ data: { id, ref } }) => {
+        if (!targets.has(id)) return;
+        if (ref) {
+          const url = fileUrl(ref[1]) + ref[2];
+          for (const apply of targets.get(id)) apply(prefix + id + "_", url);
+        }
+        targets.delete(id);
+        for (const [media, pending] of mediaSources) {
+          if (!pending.delete(id) || pending.size) continue;
+          mediaSources.delete(media);
+          if (!media.hasAttribute("src")) media.load();
+        }
+      };
+      const connect = () => {
+        for (const node of document.querySelectorAll("*")) {
+          const lazyNode = node.matches("source") ? node.closest("picture")?.querySelector("img") : node;
+          const lazy = lazyNode?.getAttribute("loading") === "lazy";
+          const media = node.matches("audio > source, video > source") ? node.parentElement : null;
+          for (const { name, value } of [...node.attributes]) {
+            const pending = media && name === "src" ? mediaSources.get(media) ?? new Set() : null;
+            collect(lazyNode, value, (from, to) => {
+              const current = node.getAttribute(name);
+              if (current?.includes(from)) node.setAttribute(name, current.replaceAll(from, to));
+            }, lazy, pending);
+            if (pending?.size) mediaSources.set(media, pending);
+          }
+          if (node.tagName === "STYLE") {
+            collect(node, node.textContent, (from, to) => {
+              if (node.textContent.includes(from)) node.textContent = node.textContent.replaceAll(from, to);
+            }, false);
+          }
+        }
+        parent.postMessage({ wildcraneFiles: token }, "*", [channel.port2]);
+      };
+      document.readyState === "loading" ? addEventListener("DOMContentLoaded", connect, { once: true }) : connect();
+    })()</script>`;
+    const head = /<head\b[^>]*>/i.exec(doc);
+    const at = head ? head.index + head[0].length : 0;
+    return doc.slice(0, at) + script + doc.slice(at);
+  }
+}
+
+function openPageFiles(event: MessageEvent) {
+  const token = event.data?.wildcraneFiles;
+  const loaders = typeof token === 'string' ? pages.get(token)?.deref() : undefined;
+  const port = event.ports[0];
+  if (!loaders || !port || event.origin !== 'null') return;
+  port.onmessage = ({ data: id }) => {
+    if (!Number.isInteger(id) || !loaders[id]) return;
+    void loaders[id]!().then(
+      ref => port.postMessage({ id, ref }),
+      () => port.postMessage({ id, ref: null }),
+    );
+  };
 }
 
 const EXTS: Record<string, string> = {

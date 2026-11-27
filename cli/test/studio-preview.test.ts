@@ -65,7 +65,7 @@ it('freezes complete files and prints ungrouped Studio and attachment previews',
   assert.match(mismatch.stderr, /does not match the approved fingerprint/)
   assert.equal(fs.existsSync(path.join(root, 'invalid')), false)
   fs.writeFileSync(path.join(dir, source), 'After\n')
-  const graph = collect('<Studio src="review.json" />', path.join(dir, 'card.md'), { resolve: (src, owner) => { const file = path.resolve(path.dirname(owner), src); assert.ok(fs.existsSync(file)); return { key: file, file } }, read: file => fs.readFileSync(file, 'utf8'), retained: () => [] })
+  const graph = await collect('<Studio src="review.json" />', path.join(dir, 'card.md'), { resolve: (src, owner) => { const file = path.resolve(path.dirname(owner), src); assert.ok(fs.existsSync(file)); return { key: file, file } }, read: file => fs.readFileSync(file, 'utf8'), retained: () => [] })
   assert.equal(graph.at(-1)?.kind, 'studio')
   assert.ok(graph.every(n => !n.error && !n.problems.length))
   assert.ok(fs.existsSync(path.join(ASSETS, '1/studio-review/review.json')))

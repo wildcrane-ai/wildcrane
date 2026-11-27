@@ -12,7 +12,7 @@ import path from 'node:path'
 
 import { sweepVersions } from '../../cli/src/lib/agent/cloud-studios'
 import { readSession } from '../../cli/src/lib/cloud/session'
-import { SESSIONS_FILE, projectStateDir } from '../../cli/src/lib/machine/project'
+import { SESSIONS_FILE, hasLegacyProjectState, projectStateDir } from '../../cli/src/lib/machine/project'
 import * as api from './api'
 import { allowedProjects } from './folders'
 import { runnerHome } from './home'
@@ -104,7 +104,10 @@ export function busy(dir: string): boolean {
 function conflicted(dir: string): boolean {
   try { return pendingConflicts(path.join(dir, '.akb', 'kanban')).length > 0 } catch { return true }
 }
-export const kept = (dir: string) => busy(dir) || unsent(dir) || paused(dir) || conflicted(dir)
+function legacyState(dir: string): boolean {
+  try { return hasLegacyProjectState(path.join(akbDir(dir), 'kanban')) } catch { return true }
+}
+export const kept = (dir: string) => busy(dir) || unsent(dir) || legacyState(dir) || paused(dir) || conflicted(dir)
 
 /** Empty a linked folder's `.akb/`, its own files untouched; false when it is kept. */
 export function clearAkb(dir: string): boolean {

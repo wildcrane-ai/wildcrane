@@ -17,7 +17,7 @@ import { readRuns } from '../agent/sessions'
 import { cardsBeingCreated } from '../agent/store'
 import type { DeliveryLanding, DeliveryRecord } from '../agent/types'
 import { cardSources } from '../card-sources'
-import { idPrefix, isGroupFolder, isLegacyRecurring, subtaskLines } from '../cards'
+import { idPrefix, isGroupFolder, isLegacyRecurring, pendingLandBlockers, subtaskLines } from '../cards'
 import { TODO } from '../paths'
 import { parseFrontmatter } from '../frontmatter'
 import { todoSection } from '../shared/card-lines'
@@ -168,7 +168,7 @@ function collectCards(): { board: Card[]; every: Card[] } {
   }
   // The two arrays hold the same card objects, so annotating `every` covers the board cards
   // as well.
-  attachBlockers(every)
+  attachBlockers(every, pendingLandBlockers())
   // …and how far each card's creation got (#564), read off the live runs rather than the
   // file: a card is on the board before the run that called for it has finished writing it.
   const creating = cardsBeingCreated()

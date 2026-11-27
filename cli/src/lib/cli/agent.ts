@@ -1,3 +1,4 @@
+import { workspaceTask } from '../cloud/tasks'
 import { queryPreviews, externalGoalSession, cloudGoal, cloudGoalStudios } from '../../commands/goal-cloud'
 import { Option } from 'commander'
 
@@ -26,6 +27,7 @@ import { cmdComponents, cmdStudioComponents } from '../../commands/components'
 import { cmdGoal } from '../../commands/goal'
 import {
   type TaskLocation,
+  cloud,
   projectList,
   runnerList,
   taskApprove,
@@ -44,11 +46,10 @@ import {
 } from '../../commands/task'
 import { taskChatRead, taskChatFollow, validateChatOptions } from '../../commands/task-chat'
 import { cmdGuide } from '../../commands/guide'
-import { cmdStudioDiagram, cmdStudioInstructions, cmdStudioList, cmdStudioRule, cmdStudioPull, cmdStudioClone, cmdStudioPush, cmdStudioCreate, cmdStudioValidate } from '../../commands/studio'
+import { cmdStudioDashboardPublish, cmdStudioDiagram, cmdStudioInstructions, cmdStudioList, cmdStudioRule, cmdStudioPull, cmdStudioClone, cmdStudioPush, cmdStudioCreate, cmdStudioValidate } from '../../commands/studio'
 import {
   cmdAnswered,
   cmdCancel,
-  cmdCompleteDelivery,
   cmdReconcileDelivery,
   cmdReleaseDelivery,
   cmdResumeDelivery,
@@ -78,6 +79,9 @@ export type AgentCliOptions = AkbCliOptions
 
 const REVIEW_FLOW_HELP = `
 Review examples
+  --previews ui-design --review 'Approve the draft before delivery.'
+
+Legacy review flows
   --review 'UI design'                        One Preview approval
   --review 'UI design -> Prompts'             Approve in order
   --review 'UI design + API docs -> Prompts'  Both approvals unlock Prompts
@@ -190,7 +194,7 @@ function declareLocalRuns(program: Command, cli: AgentCliOptions, canonical?: { 
   declareDelivery(groups.delivery, cli, !!canonical)
 
   // What a delivery is belongs under the noun it is about, not on the root list.
-  groups.delivery.addHelpText('after', HELP_AFTER.deliveries(cli.program))
+  groups.delivery.addHelpText('after', HELP_AFTER.deliveries(canonical ? `${command} task resume <task>` : `${command} delivery resume <delivery>`))
 
   withShared((canonical?.studio ?? program).command('previews'))
     .allowExcessArguments()
@@ -287,7 +291,7 @@ function declareLocalRuns(program: Command, cli: AgentCliOptions, canonical?: { 
     .argument('<id-or-card>', 'studio id, or card number with --folder')
     .argument('[card]', 'the card whose asset folder gets studio.json')
     .option('--folder <folder>', 'read a local studio folder')
-    .summary('write the studio\'s diagram to .assets/<card>/studio.json and print the <Studio> tag that shows it')
+    .summary('write the studio\'s diagram to its task asset folder and print the <Studio> tag that shows it')
     .action(async function (this: Command, id: string, card: string) {
       await onBoard(this, cli, () => cmdStudioDiagram(id, this.opts().folder ? id : card, this.opts().folder))
     })
@@ -331,14 +335,15 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       'Use --title to allocate a number in Cloud and immediately write a card and its index entry to this board. ' +
       'Use --studio with a request. Card fields apply to --title and --project applies to a request. Edit the saved body separately.')
     .option('--project <id>', 'for a request: the project; default: this folder’s linked one')
-    .option('--review <flow>', 'set a review flow using Studio Preview names')
+    .option('--previews <ids>', 'select comma-separated Studio Preview IDs')
+    .option('--review <rule>', 'set when to ask for approval, or set a legacy review flow')
     .option('--review-file <path>', 'JSON review nodes with after dependencies; [] needs no extra review')
     .option('--preview-definitions-file <path>', 'propose a JSON list of task Preview definitions')
     .action(async function (this: Command, request: string[]) {
       const opts = this.opts()
       if (opts.title !== undefined) {
-        if (request.length || opts.project !== undefined || opts.review !== undefined || opts.reviewFile !== undefined || opts.previewDefinitionsFile !== undefined) {
-          die('Use --title with the local board, or pass a request with --project, --review, --review-file, and --preview-definitions-file.', 'bad-args')
+        if (request.length || opts.project !== undefined || opts.previews !== undefined || opts.review !== undefined || opts.reviewFile !== undefined || opts.previewDefinitionsFile !== undefined) {
+          die('Use --title with the local board, or pass a request with --project, --previews, --review, --review-file, and --preview-definitions-file.', 'bad-args')
         }
         return createBoardCard(this, cli)
       }
@@ -359,10 +364,14 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     })
   withShared(task.command('review'))
     .argument('<task>')
-    .summary('read the task review, set the plan or report a stage')
-    .option('--review <flow>', 'set a review flow using Studio Preview names')
+    .summary('read or update the task review, ask for approval, or report a stage')
+    .option('--previews <ids>', 'select comma-separated Studio Preview IDs')
+    .option('--add-previews <ids>', 'append comma-separated Preview IDs to the review plan')
+    .option('--review <rule>', 'set when to ask for approval, or set a legacy review flow')
     .addHelpText('after', REVIEW_FLOW_HELP)
     .option('--file <path>', 'set a JSON review plan')
+    .option('--request-approval <question>', 'ask a question to approve the synced Preview version')
+    .option('--preview <id>', 'the selected Preview to submit for approval')
     .option('--stage <id>', 'the node to report')
     .option('--status <status>', 'running or done')
     .option('--preview-definitions-file <path>', 'propose a JSON list of task Preview definitions')
@@ -423,7 +432,8 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     })
   withShared(task.command('resume'))
     .argument('<task>')
-    .summary('continue its stopped run')
+    .summary('resume a Cloud task')
+    .description('Resume a Cloud task using its task key, Cloud task ID, or number in the linked project. Returns the queued or running status.')
     .action(async function (this: Command, id: string) {
       await boardless(this, cli, (_, location) => taskResume(id, location))
     })
@@ -451,12 +461,13 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
   const goal = withShared(program.command('goal'))
     .argument('<move>', 'new, save, drop or start')
     .summary('save, drop and start goals of this conversation')
-    .description('Write a temporary draft, then goal new --title "…" --body-file <file> [--studio <id>] [--review <flow>]; update with goal save --id <goal> and any of --title, --body-file, --studio, --review. goal drop --id <goal> withdraws one; goal start --id <goal> turns it into a task. A `## Done when` list in the body is what counts as done. Studios are the ones `akb studio list` shows.')
+    .description('Write a temporary draft, then goal new --title "…" --body-file <file> [--studio <id>] [--previews <ids>] [--review <rule>]; update with goal save --id <goal> and any of --title, --body-file, --studio, --previews, --review. goal drop --id <goal> withdraws one; goal start --id <goal> turns it into a task. A `## Done when` list in the body is what counts as done. Studios are the ones `akb studio list` shows.')
     .option('--id <goal>', 'the goal to save, drop or start')
     .option('--title <title>', 'what the goal is called')
     .option('--body-file <path>', 'the outcome, then a `## Done when` list')
     .option('--studio <id>', 'the studio that does the work, from `akb studio list`')
-    .option('--review <flow>', 'save a review flow using Studio Preview names')
+    .option('--previews <ids>', 'select comma-separated Studio Preview IDs')
+    .option('--review <rule>', 'save when to ask for approval, or save a legacy review flow')
     .option('--preview-definitions-file <path>', 'save a JSON list of Goal Preview definitions')
     .option('--review-file <path>', 'JSON review nodes with after dependencies; [] needs no extra review')
     .addHelpText('after', REVIEW_FLOW_HELP)
@@ -760,6 +771,21 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
       await onBoard(this, cli, () => cmdStudioInstructions(agent, this.opts()))
     })
 
+  const dashboard = flowWord('dashboard').summary('manage a studio static dashboard')
+  dashboard
+    .command('publish')
+    .argument('<studio>', 'a studio id')
+    .argument('<dir>', 'folder containing index.html and static assets')
+    .option('--access <mode>', 'private or public')
+    .option('--name <name>', 'dashboard display name')
+    .option('--workspace <id>', 'target workspace id')
+    .summary('pack and publish a static dashboard for a studio')
+    .action(async function (this: Command, studioId: string, dir: string) {
+      const opts = this.opts<{ access?: string; name?: string; workspace?: string }>()
+      if (opts.workspace) await boardless(this, cli, () => cmdStudioDashboardPublish(studioId, dir, opts))
+      else await onBoard(this, cli, () => cmdStudioDashboardPublish(studioId, dir, opts))
+    })
+
   withShared(program.command('guide'))
     .argument('[topic]', 'one flow in full; left off, every flow is listed one line each')
     .summary('the flows the board works by, shipped with this command')
@@ -771,11 +797,13 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .action(async function (this: Command, ...vals: unknown[]) {
       const [topic] = positional(vals) as [string | undefined]
       const ctx = ctxOf(this, cli.program)
+      let found: ReturnType<typeof resolveBoard> | undefined
       try {
-        useBoard(resolveBoard('guide', { board: ctx.board, dir: ctx.dir, cwd: cli.cwd, installHint: cli.installHint }), ctx.dir !== null)
+        found = resolveBoard('guide', { board: ctx.board, dir: ctx.dir, cwd: cli.cwd, installHint: cli.installHint })
       } catch {
         // No board here, or a half-made one. The shipped text still reads.
       }
+      if (found) useBoard(found, ctx.dir !== null)
       await boardless(this, cli, (p) => cmdGuide(topic, p))
     })
 
@@ -810,6 +838,8 @@ function declareRunning(run: Command, cli: AgentCliOptions, canonical: boolean):
     .summary('what is running, and what ran lately')
     .description('A creation run with no card fails even if the agent exits with code 0. Failure reason, triage source and cost are kept. In JSON the run reports status: error and ok: false; the outer ok describes this query. A successful query exits with code 0.')
     .option('-c, --card <id>', 'only the runs on that card', cardId)
+    .option('--execution <job...>', 'only runs recorded for these Runner jobs')
+    .option('--conversation <id>', 'only runs with this agent conversation ID')
     .option('-a, --all', 'every run this board has kept, not just the last ten')
     .action(async function (this: Command) {
       await onBoard(this, cli, (p) => cmdRuns(this.opts(), p))
@@ -862,7 +892,7 @@ function declareRunning(run: Command, cli: AgentCliOptions, canonical: boolean):
   verb('resume')
     .argument('[id]', RUN_ID, String)
     .summary('continue a run from its saved work')
-    .description('Continue the saved session. Use --fresh to explicitly take over saved work when the original session is unavailable.')
+    .description('Resume the original session after confirming the previous execution stopped and its operation results are complete. Use --fresh to retry in a new session.')
     .option('-f, --follow', 'watch its log instead of returning')
     .option('--events', 'with --follow: print its structured events, one JSON object per line')
     .option('--fresh', 'explicitly take over saved work in a new session')
@@ -879,15 +909,6 @@ function declareRunning(run: Command, cli: AgentCliOptions, canonical: boolean):
  *  declared with the rest of them; these start nothing. */
 function declareDelivery(delivery: Command, cli: AgentCliOptions, canonical: boolean): void {
   const verb = (name: string, internal = false) => withShared(delivery.command(name, { hidden: canonical && internal }))
-
-  verb('complete')
-    .argument('<delivery>', DELIVERY)
-    .summary('record the current step result and finish its handoff')
-    .option('--commit <sha>', 'the full landed commit hash')
-    .option('--branch <name>', 'the target branch containing that commit')
-    .action(async function (this: Command, named: string) {
-      await onBoard(this, cli, () => cmdCompleteDelivery(named, this.opts()))
-    })
 
   verb('answered')
     .argument('<delivery>', DELIVERY)
@@ -914,14 +935,14 @@ function declareDelivery(delivery: Command, cli: AgentCliOptions, canonical: boo
     .summary('end it and hand the card back')
     .description(
       'Cancelling ends the delivery and preserves its files, branch and directory. To pause, stop its ' +
-        'run — the delivery stays, and `resume` carries it on.',
+        'run. The delivery and its saved work stay available.',
     )
     .action(async function (this: Command, ...vals: unknown[]) {
       const [named] = positional(vals) as [string]
       await onBoard(this, cli, () => cmdCancel(named))
     })
 
-  verb('resume')
+  if (!canonical) verb('resume')
     .argument('<delivery>', DELIVERY)
     .summary('carry one on that stopped short, from where it stopped')
     .description(
@@ -1020,8 +1041,8 @@ function declareAgent(program: Command, cli: AgentCliOptions): void {
     .summary('what runs the board, and how it is set up')
     .description(
       'A RUNTIME is the whole answer to what a run runs as — harness, provider, endpoint, key, model id, ' +
-        "reasoning and extra arguments. Every runtime's shape is YOURS, in the board's ui.config.json under " +
-        ".akb/boards/; its key is one line per runtime in docs/kanban/.env. git carries neither. A run never " +
+        "reasoning and extra arguments. Runtime settings are in ui.config.json in the board's state directory. " +
+        "Each runtime's key is one line in the board's .env. Git carries neither. A run never " +
         "reads the terminal's environment for any of it.",
     )
     .allowExcessArguments()

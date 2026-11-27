@@ -35,7 +35,7 @@ export function replyPrompt(input: NonNullable<Job['replyInput']>, turn: {
     const review = task.review ? compactReview(task.review) : ''
     const update = contextUpdate(previous, [
       chatGuide, taskCardBlock(task.card),
-      ...task.blocks.filter(([key]) => key === 'studio' || key === 'skills'),
+      ...task.blocks.filter(([key]) => key === 'studio' || key === 'studio-previews' || key === 'skills'),
       ['history', turn.historyFile ? 'Consult the chat history at `' + turn.historyFile + '` as needed.' : ''],
       reviewBlock(review, task.review, previous),
       ...task.blocks.filter(([key]) => key === 'setup' || key === 'config'),

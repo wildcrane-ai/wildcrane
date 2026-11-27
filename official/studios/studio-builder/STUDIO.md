@@ -2,7 +2,7 @@
 name: Studio builder
 names:
   zh: 搭建工作台
-description: Designs and publishes studios through reviewed drafts.
+description: Designs, updates, and publishes studios—including their Dashboards and UI—through reviewed drafts.
 summaries:
   zh: 先确认工作台的设计，再保存为你的工作台。
   en: Approve the studio's design, then it's saved as yours.
@@ -26,6 +26,14 @@ previews:
     description:
       en: Review the STUDIO.md definition and real changes.
       zh: 审阅工作台定义与实际改动差异。
+  dashboard:
+    icon: screen
+    title:
+      en: Dashboard
+      zh: 仪表盘设计
+    description:
+      en: Review internal Studio Dashboard layouts, interactions, and UI mockups.
+      zh: 审阅挂载在当前域名下的内部 Studio Dashboard 布局、交互及原型设计。
   files:
     icon: file
     title:
@@ -37,15 +45,13 @@ previews:
 ---
 
 A Studio is a workbench for one kind of work: a toolbox and optional Previews (drafts or
-finished results a person reviews for details and quality). A task delivers the Studio's result,
-calling tools, producing Previews, and submitting a Review Plan as needed. It delivers directly
-when no review is needed, and puts Previews that depend on earlier approval in later stages.
+finished results a person reviews for details and quality). A task uses the Studio's tools and follows its own Review Plan.
 
 - **Card**: name the target studio or say it is new, the requested outcome, and a draft folder under this card’s assets. Give a new studio a sample request for its trial.
-- **Research**: for a new Studio, recommend Market research when public evidence can inform an open choice about the audience, workflow, or outputs. In the review plan, make Studio depend on Market research when the design needs its findings, then use the approved decisions in the draft.
-- For a new Studio, find relevant Studios with `akb studio list` and read their definitions and
-  supporting files with `akb studio pull <id> <empty-folder>`. When a cloneable Studio covers much
-  of the request, use `akb studio clone <id> <draft-folder>` and adapt the draft as a new Studio.
+- **Research**: for a new Studio, recommend Market research when public evidence can inform an open choice about the audience, workflow, or outputs. If the Studio Preview depends on the findings, ask for approval before preparing it.
+- For a new Studio, find relevant examples with `akb studio list` and read them with
+  `akb studio pull <id> <empty-folder>` to learn how to write a good Studio. When a cloneable
+  Studio fits most of the request, use `akb studio clone <id> <draft-folder>` and adapt the draft.
 - **Writing**: before writing or revising studio instructions, read and follow `akb guide write-prompt`.
 - **Definition**: use the `STUDIO.md` template below and link longer instructions as needed. Define Previews only for outputs needing human judgment—each with a stable ID, `en`/`zh` YAML title and description, and a short block naming the output, review checks, and components.
 - **Preview display**: use `akb components` to choose components and formats, including download-only attachments. Use `akb components Set Storyboard` for usage. If `akb components` is unavailable, run `akb raw components --studio studio-builder --docs`.
@@ -53,9 +59,11 @@ when no review is needed, and puts Previews that depend on earlier approval in l
 - **Planning**: add `## Planning` only when tasks need splitting or review guidance (omit for simple Studios); never stuff many deliverables or Previews into one card:
   ```text
   ├─ Multi-deliverable / parallelizable ─▶ Group Task: Pilot ─(blocked_by)─▶ Subtasks in parallel
-  └─ Single coupled deliverable         ─▶ One card (deliver directly, or Review Plan: A -> B + C)
+  └─ Single coupled deliverable         ─▶ One card
   ```
-- **Existing studio**: start with `akb studio pull <id> <empty-folder>`, keep an unchanged baseline, and edit a copy in the draft folder, preserving supporting files unless the requested change affects them.
+  Use `--previews` to list each Preview ID once. Include `--review` only when the workflow requires approval before producing a later Preview, even if both drafts use the same ID. State the condition in one sentence. Ask one question at each approval point and wait for approval before continuing dependent work.
+- **Example** When the workflow requires an approved core idea before final copy, select `copy` once and set `--review` to “Ask for approval of the core idea before writing the final copy.” For a workflow that produces only final copy, use `--previews copy` and omit `--review`.
+- **Existing Studio definition**: start with `akb studio pull <id> <empty-folder>`, keep an unchanged baseline, and edit a copy in the draft folder, preserving supporting files unless the requested change affects them.
 - **Stale base**: pull a fresh version into an empty folder, merge both sets of changes, and update the draft and review together; ask only about semantic conflicts you cannot resolve.
 - **Icons**: follow references/icons.md for the Studio and optional Preview icons.
 - **Tools** Use scripts for standalone operations. Bundle reusable instructions and their resources as [Agent Skills](https://agentskills.io/specification) under `skills/`.
@@ -86,7 +94,7 @@ Describe required choices, optional defaults, and any local credential checks.
 
 ## Planning
 
-Omit for simple Studios. Split independent deliverables into a Group Task (pilot first, `blocked_by` to parallel subtasks), or keep one coupled deliverable on one card—deliver directly or use a Review Plan (`+` parallel, `->` after approval).
+Omit for simple Studios. Split independent deliverables into a Group Task (pilot first, `blocked_by` to parallel subtasks). For a single deliverable, use one task and describe any approvals needed before a later Preview.
 
 ## Work
 
@@ -106,15 +114,15 @@ Show the draft as an Asset; state what details and quality the reviewer should c
 
 ## Check it
 
-Run `akb studio validate <folder> --json`, fix each located diagnostic, and rerun before continuing; keep the source and publishing baseline unchanged by validation.
+For Studio definition changes, run `akb studio validate <folder> --json` and fix the reported issues.
 
 ## Try it
 
 Try only new studios.
 
 - **Sample**: use the card's sample request, or write a typical one and mark it as made up.
-- **Run**: after validation, follow the draft's work instructions and prepare only outputs needed by the sample request; save each result to `<board-state>/assets/<card id>/trial/<preview-id>.md` with its assets beside it.
-- **Approvals**: stop where the sample needs user confirmation; do not assume approval.
+- **Run**: after validation, follow the draft's work instructions and prepare only outputs needed by the sample request; save each result under `trial/<preview-id>.md` in the task's Asset folder, with its assets beside it.
+- **Approvals** Pause the trial when a later Preview requires approval of the current draft.
 - **Isolation**: create no cards and write no memory; use and note recommended answers instead of asking questions.
 - **Rerun**: after changes, rerun only affected outputs.
 
@@ -128,11 +136,11 @@ Separate feedback on preview form from sample content.
 
 ## Land
 
-Save the approved Studio files to the requested destination or a subdirectory of the folder
-bound to the project by default. Record the delivered path.
-
-Publish the approved draft using the [publication procedure](shared/PUBLISH.md). Confirm the save
-and record the Studio ID, saved version and request ID before completing delivery.
+- **Studio definition changes**: Save the approved files to the requested destination or the
+  appropriate subdirectory of the project's folder. Record the path. Follow the
+  [publication procedure](shared/PUBLISH.md) and record the Studio ID, saved version and request ID.
+- **Dashboard changes**: Build and publish the approved Dashboard using the
+  [Dashboard delivery guide](references/dashboard.md). Record the returned URL.
 
 ## Previews
 
@@ -147,6 +155,14 @@ Show a short Markdown brief with linked evidence, assumptions, and choices for t
 <Preview id="studio">
 
 Run `akb studio preview <card> --folder <draft> --base <baseline>` (or `--base empty` for a new Studio). Show its `<Studio>` tag and any trial results using their recommended components.
+
+</Preview>
+
+<Preview id="dashboard">
+
+Design or revise the internal Studio Dashboard (hosted under our domain) using
+[ui-mockup](skills/ui-mockup/SKILL.md).
+Recommended display: Asset for one screen; Set for several screens or states.
 
 </Preview>
 

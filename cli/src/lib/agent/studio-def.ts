@@ -83,12 +83,12 @@ function landSections(body: string, previews: PreviewBlock[]) {
     const start = heading.index
     const end = start + heading[0].length
     if (!/^ {0,3}##[ \t]+Land(?:[ \t]+#+)?[ \t]*$/.test(visible.slice(start, end))) return []
-    return [{
-      offset: start + heading[0].indexOf('#'),
-      empty: !visible.slice(end, headings[index + 1]?.index).replace(comments, '').trim(),
-    }]
+    const text = visible.slice(end, headings[index + 1]?.index).replace(comments, '').trim()
+    return [{ offset: start + heading[0].indexOf('#'), empty: !text, text }]
   })
 }
+
+export const studioLand = (rules: string): string => landSections(rules, [])[0]?.text ?? ''
 
 export function parseStudioFile(id: string, source: string, from: string, { requirePreviewCopy = false, requireLand = false } = {}): { def: StudioDef } | { problem: string; problems: SourceProblem[] } {
   const problems: SourceProblem[] = []

@@ -34,7 +34,7 @@ test('planning, edits and delivery share the bound instructions without role fil
     assert.doesNotMatch(prompt, /you, the .* agent|AGENT\.md|memory\/agents|memory\/studios|title: \{en:/)
     assert.match(prompt, /Prepare only the outputs requested/)
   }
-  assert.equal(studioFor('coding')!.previews.length, 7)
+  assert.equal(studioFor('coding')!.previews.length, 8)
   assert.match(String(cmdStudioFile('coding', 'scripts/render.mjs').text), /react-email/i)
 })
 test('refuses the removed role execution entry rather than substituting another agent', async () => {

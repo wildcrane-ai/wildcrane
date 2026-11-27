@@ -1,9 +1,12 @@
-import { insideRun, SAVED_PREVIEW_FILE_ENV } from '../lib/agent/env'
+import { recordDeliveryArchive } from '../lib/agent/delivery-archive'
+import { REVIEW_SYNC_ENV, syncPreviewForApproval } from '../lib/cloud/review-sync'
+import { deliveryPhase, insideRun, SAVED_PREVIEW_FILE_ENV } from '../lib/agent/env'
+import { runAgent } from '../lib/agent/project-agent'
 import { activeDelivery, endedDelivery } from '../lib/agent/deliveries'
 import { taskChatFile } from '../lib/agent/task-chats'
 import { REPLY_APPROVAL_ENV } from '../lib/cloud/reply-approval'
-import { previewDefinitionsSchema } from '../lib/shared/preview-definitions'
-import { parseReviewPlan, reviewAuthorization, type SavedPreviewInputs, type TaskReview } from '../lib/shared/review-plan'
+import { mergePreviewDefinitions, previewDefinitionsSchema } from '../lib/shared/preview-definitions'
+import { addPreviewsToPlan, isFlatReviewPlan, parseReviewPlan, reviewAuthorization, reviewPlanFromOptions, reviewPreviewIds, type SavedPreviewInputs, type TaskReview } from '../lib/shared/review-plan'
 // `akb task`, `workspace`, `project`, `runner` (#550): the signed-in account's WildCrane tasks, read
 // and changed from any chat.
 
@@ -24,11 +27,11 @@ import { withBoardLock } from '../lib/lock'
 import { readRemoval, writeRemoval, type TaskOperationResult } from '../lib/cloud/task-operation'
 import { assetsFile, legacyStudioRuleFile, projectConfigFile, studioConfigFile, studioName } from '../lib/shared/board-files'
 import { withSyncLock } from '../lib/shared/board-conflicts'
-import { cmdRemove } from './remove'
+import { cmdRemove, recoveredArchiveHandoff } from './remove'
 import { updateCardQuestions } from './card'
 import { BoardError, say } from '../lib/io'
 import { cloudError, cloudProblem, hasText, invalidResponse, isRecord, readCloudJson, requireResponse } from '../lib/cloud/response'
-import { die, projectRootOf, shellWord } from '../lib/paths'
+import { ASSETS, die, projectRootOf, shellWord } from '../lib/paths'
 import { parsePreviewBlocks } from '../lib/shared/preview-blocks'
 import { parseFrontmatter } from '../lib/frontmatter'
 import { readQuestionOps } from '../lib/questions'
@@ -172,7 +175,7 @@ function readableFile(file?: string): string | null {
 function taskFiles(task: Task, board: string | null, location: TaskLocation) {
   const local = board && runnerProject(board) === task.project ? localTaskRecord(board, task.id) : null
   const chat_file = /^task_[\w-]+$/.test(task.id) ? readableFile(taskChatFile(task.id)) : null
-  if (!local) return { card_file: null, chat_file, discussion_file: null, approved_inputs_file: null, delivery: null, config_files: [] }
+  if (!local) return { card_file: null, asset_folder: null, chat_file, discussion_file: null, approved_inputs_file: null, delivery: null, config_files: [] }
   useBoard({ root: projectRootOf(local.board), board: local.board, named: true }, false, true)
   const found = (fs.existsSync(path.join(local.board, 'todo')) && locate(local.number)) || locateArchived(local.number)
   const card_file = found ? readableFile(found.kind === 'group' ? path.join(found.target, 'root.md') : found.target) : null
@@ -184,6 +187,7 @@ function taskFiles(task: Task, board: string | null, location: TaskLocation) {
     .map(file => readableFile(path.join(local.board, file))).filter(file => file !== null)
   return {
     card_file,
+    asset_folder: path.join(ASSETS, String(local.number)),
     chat_file,
     discussion_file: readableFile(path.join(local.board, '.sync', `${local.task}.discussion`, 'discussion.md')),
     approved_inputs_file: current ? readableFile(process.env[SAVED_PREVIEW_FILE_ENV]) : null,
@@ -214,7 +218,7 @@ function approvedPreviewFiles(snapshot: Record<string, unknown> | null, id: stri
 
 function showReview(task: Task, card: string) {
   const review = task.review
-  const nodes = new Map(review?.plan?.map(node => [node.id, node]))
+  const nodes = new Map(Array.isArray(review?.plan) ? review.plan.map(node => [node.id, node]) : [])
   const stages = new Map(review?.stages.map(stage => [stage.id, stage]))
   if (review) {
     say('\n## Review')
@@ -222,15 +226,21 @@ function showReview(task: Task, card: string) {
       const node = nodes.get(stage.id)
       say(`- ${stage.id} · ${node?.previews.length ? node.previews.join(', ') + ' · ' : ''}${stage.status}${node?.after.length ? ' · after ' + node.after.join(', ') : ''}`)
     }
+    if (isFlatReviewPlan(review.plan)) {
+      if (review.plan.rule) say(review.plan.rule)
+      for (const approval of review.approvals ?? []) {
+        if ('question' in approval) say(`- ${approval.stage} · ${approval.preview} · version ${approval.revision} · ${approval.question}`)
+      }
+    }
     const authorization = reviewAuthorization(review)
     if (authorization.kind === 'plan') say('Planning only.')
-    if (authorization.kind === 'unreviewed' || authorization.kind === 'delivery') say('Delivery authorized.')
+    if (authorization.kind === 'unreviewed' || authorization.kind === 'delivery' || authorization.kind === 'flat') say('Delivery authorized.')
   }
 
   const inputs = task.preview_inputs
   const blocks = parsePreviewBlocks(card).blocks
   const previews = new Set([...blocks.map(block => block.id), ...Object.keys(inputs?.sections ?? {}),
-    ...Object.keys(review?.previews ?? {}), ...[...nodes.values()].flatMap(node => node.previews)])
+    ...Object.keys(review?.previews ?? {}), ...reviewPreviewIds(review?.plan)])
   if (!previews.size) return
   say('\n## Previews')
   for (const id of previews) {
@@ -276,6 +286,7 @@ export async function taskShow(id: string, location: TaskLocation = {}): Promise
   say(`${task.key}  ${task.title}`)
   say(`${task.status}${task.studio ? `  ${task.studio.name}` : ''}  ${taskUrl(task.key)}`)
   if (files.card_file || task.studio) say(`Card file: ${files.card_file ?? 'unavailable on this computer'}`)
+  if (files.asset_folder) say(`Asset folder: ${files.asset_folder}`)
   if (card) say(`\n${card.body.trim()}`)
   else if (task.studio) say('The card has not been generated yet.')
   const questions = parseFrontmatter(card?.body ?? '').meta?.questions ?? []
@@ -316,6 +327,7 @@ export interface TaskCreateOptions {
   project?: string
   studio?: string
   review?: string
+  previews?: string
   reviewFile?: string
   previewDefinitionsFile?: string
 }
@@ -323,20 +335,25 @@ export interface TaskCreateOptions {
 export async function taskCreate(request: string, opts: TaskCreateOptions, location: TaskLocation = {}): Promise<MoveResult> {
   const text = request.trim()
   if (!text) die('Say what the task is.', { kind: 'bad-args', exitCode: 2 })
-  if (opts.review !== undefined && opts.reviewFile !== undefined) die('Use either --review or --review-file.')
+  if (opts.reviewFile !== undefined && (opts.review !== undefined || opts.previews !== undefined)) die('Use --review-file or --review and --previews.')
   const line = text.split('\n')[0]!.trim()
   const title = line.length > 80 ? `${line.slice(0, 79)}…` : line
   const target = await project(opts.project, location)
   if (!opts.studio?.trim()) return refuse('Choose --studio from akb studio list.', 'no_studio')
+  const from = workspaceTask()
+  const agent = runAgent() ?? (insideRun() || executionOf() ? 'agent' : null)
   const body: Record<string, unknown> = {
     title,
     request: text,
     project: target,
     studio: cloudStudio(opts.studio),
     source: 'api',
+    ...(from || agent ? { source_context: { ...(from ? { task: from } : {}), ...(agent ? { agent } : {}) } } : {}),
     run: true,
   }
-  if (opts.review !== undefined) body.review_flow = opts.review
+  const flat = reviewPlanFromOptions(opts)
+  if (flat) body.review_plan = flat
+  else if (opts.review !== undefined) body.review_flow = opts.review
   if (opts.reviewFile !== undefined) body.review_plan = parseReviewPlan(JSON.parse(fs.readFileSync(opts.reviewFile, 'utf8')))
   if (opts.previewDefinitionsFile !== undefined) {
     body.preview_definitions = previewDefinitionsSchema.parse(JSON.parse(fs.readFileSync(opts.previewDefinitionsFile, 'utf8')))
@@ -359,7 +376,7 @@ async function act(id: string, route: string, body: unknown, done: (key: string,
   return value
 }
 
-export interface ReviewOptions { previewDefinitionsFile?: string; stage?: string; revision?: string; review?: string; file?: string; status?: string; reviseFrom?: string }
+export interface ReviewOptions { previewDefinitionsFile?: string; stage?: string; revision?: string; review?: string; previews?: string; addPreviews?: string; requestApproval?: string; preview?: string; file?: string; status?: string; reviseFrom?: string }
 
 function reviewRevision(value?: string): number {
   if (value === undefined || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) die('--revision must match the review you read.')
@@ -367,17 +384,37 @@ function reviewRevision(value?: string): number {
 }
 
 export async function taskReview(id: string, opts: ReviewOptions = {}, location: TaskLocation = {}): Promise<MoveResult> {
-  const count = [opts.review, opts.file, opts.status, opts.reviseFrom].filter(v => v !== undefined).length
-  if (count > 1 || opts.stage !== undefined && opts.status === undefined) die('Use one of --review, --file, --stage with --status, or --revise-from.')
+  const updatingPlan = opts.review !== undefined || opts.previews !== undefined
+  const addingPreviews = opts.addPreviews !== undefined
+  const count = [updatingPlan ? true : undefined, addingPreviews ? true : undefined, opts.file, opts.status, opts.reviseFrom, opts.requestApproval].filter(v => v !== undefined).length
+  if (count > 1 || opts.stage !== undefined && opts.status === undefined) die('Review operations cannot be combined.')
+  if ((opts.preview === undefined) !== (opts.requestApproval === undefined)) die('--request-approval and --preview are required together.')
   const ref = await taskRef(id, location)
   let task: Task
-  if (opts.previewDefinitionsFile !== undefined && (opts.status !== undefined || opts.reviseFrom !== undefined)) die('Preview definitions can only change with a review plan.')
+  if (opts.previewDefinitionsFile !== undefined && (opts.status !== undefined || opts.reviseFrom !== undefined || opts.requestApproval !== undefined)) die('Preview definitions can only change with a review plan.')
   if (!count && opts.previewDefinitionsFile === undefined) task = await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`)
   else {
     const review_revision = reviewRevision(opts.revision)
     let fields: Record<string, unknown>
-    if (opts.review !== undefined) {
-      fields = { operation: 'plan', review_flow: opts.review }
+    let existingDefinitions: TaskReview['preview_definitions']
+    if (updatingPlan) {
+      const previous = await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`)
+      if (previous.review?.revision !== review_revision) return refuse('Review changed. Read it again.', 'review_outdated')
+      const plan = reviewPlanFromOptions(opts, previous.review.plan)
+      fields = plan ? { operation: 'plan', review_plan: plan } : { operation: 'plan', review_flow: opts.review }
+    } else if (addingPreviews) {
+      const previewsToAdd = opts.addPreviews!.split(',').map(s => s.trim()).filter(Boolean)
+      if (!previewsToAdd.length) die('--add-previews requires at least one Preview ID.')
+      const previous = await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`)
+      if (previous.review?.revision !== review_revision) return refuse('Review changed. Read it again.', 'review_outdated')
+      fields = { operation: 'plan', review_plan: addPreviewsToPlan(previous.review?.plan, previewsToAdd) }
+      existingDefinitions = previous.review?.preview_definitions
+    } else if (opts.requestApproval !== undefined) {
+      if (process.env[REVIEW_SYNC_ENV]) {
+        const current = await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`)
+        await syncPreviewForApproval(current.id)
+      }
+      fields = { operation: 'request_approval', preview: opts.preview, question: opts.requestApproval }
     } else if (opts.file !== undefined) {
       fields = { operation: 'plan', review_plan: parseReviewPlan(JSON.parse(fs.readFileSync(opts.file, 'utf8'))) }
     } else if (opts.reviseFrom !== undefined) {
@@ -388,7 +425,10 @@ export async function taskReview(id: string, opts: ReviewOptions = {}, location:
       if (!opts.stage || !['running', 'done'].includes(opts.status!)) die('--stage and --status running|done are required.')
       fields = { operation: 'status', stage: opts.stage, status: opts.status }
     }
-    if (opts.previewDefinitionsFile !== undefined) fields.preview_definitions = previewDefinitionsSchema.parse(JSON.parse(fs.readFileSync(opts.previewDefinitionsFile, 'utf8')))
+    if (opts.previewDefinitionsFile !== undefined) {
+      const incoming = previewDefinitionsSchema.parse(JSON.parse(fs.readFileSync(opts.previewDefinitionsFile, 'utf8')))
+      fields.preview_definitions = addingPreviews ? mergePreviewDefinitions(existingDefinitions ?? [], incoming) : incoming
+    }
     task = await cloud<Task>('POST', `/v1/tasks/${enc(ref)}/review`, { ...fields, review_revision })
   }
   say(JSON.stringify(task.review, null, 2))
@@ -549,16 +589,25 @@ export async function taskArchive(asked: string, location: TaskLocation = {}): P
   const keyMatch = local && /^[a-z][a-z0-9]{0,9}-[1-9]\d{0,8}$/i.test(ref)
     ? await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`) : null
   if (local && (ref === local.task || /^\d+$/.test(ref) && Number(ref) === local.number || keyMatch && keyMatch.id === local.task)) {
+    if (deliveryPhase() === 'implement') return refuse('Archive this task during Land.', 'conflict')
+    const pendingLand = deliveryPhase() === 'land'
     const archive = await withSyncLock(local.board, async () => {
       useBoard({ board: local.board, root: projectRootOf(local.board), named: true }, false)
       return withCreationLock(() => withBoardLock(() => {
-        if (locate(local.number)) return { receipt: cmdRemove(local.number, 'completed', { archivingTask: true }) }
+        if (locate(local.number)) {
+          const receipt = cmdRemove(local.number, 'completed', { archivingTask: true, pendingLand })
+          recordDeliveryArchive(local.number)
+          return { receipt }
+        }
         const existing = locateArchived(local.number)
         if (!existing) return null
         const file = existing.kind === 'group' ? path.join(existing.target, 'root.md') : existing.target
         const { meta } = parseFrontmatter(fs.readFileSync(file, 'utf8'))
         if (!meta?.archived || meta.rejected) return refuse('This task is not eligible for archive.', 'conflict')
-        return { receipt: { archived_to: path.relative(local.board, existing.target) },
+        const receipt = activeDelivery(local.number) ? recoveredArchiveHandoff(local.number, undefined, pendingLand)
+          : { archived_to: path.relative(local.board, existing.target) }
+        recordDeliveryArchive(local.number)
+        return { receipt,
           existing: path.relative(local.board, file) }
       }))
     })
@@ -572,6 +621,7 @@ export async function taskArchive(asked: string, location: TaskLocation = {}): P
         if (receipt.code === 'version_conflict' || receipt.code === 'not_found') {
           return refuse(receipt.message ?? 'Cloud rejected the archive.', receipt.code)
         }
+        if (deliveryPhase() === 'land') return refuse(receipt.message ?? 'Cloud rejected the archive.', receipt.code ?? 'conflict')
         // An explicit retry rechecks the Cloud refusal after review or questions change.
       } else {
         const pending = receipt && receipt.status === 'pending' && receipt.code ? receipt : null
@@ -579,6 +629,28 @@ export async function taskArchive(asked: string, location: TaskLocation = {}): P
         return { ...archive.receipt, task: local.task, archive_status: 'pending_sync', ...(pending ? { sync: pending } : {}) }
       }
     }
+  }
+  if (!workspaceTask() && /^\d+$/.test(ref) && !linkedBoard(location)) {
+    const found = resolveBoard('archive', { board: location.board, dir: location.dir ?? null, cwd: location.cwd ?? process.cwd(), installHint: BOARD_LINK_HINT })
+    useBoard(found, !!location.dir)
+    return withCreationLock(() => withBoardLock(() => {
+      const number = Number(ref)
+      const archived = locateArchived(number)
+      if (archived && !locate(number)) {
+        const file = archived.kind === 'group' ? path.join(archived.target, 'root.md') : archived.target
+        const { meta } = parseFrontmatter(fs.readFileSync(file, 'utf8'))
+        if (!meta?.archived || meta.rejected) return refuse('This task is not eligible for archive.', 'conflict')
+        const receipt = activeDelivery(number) ? recoveredArchiveHandoff(number) : { archived_to: path.relative(found.root, archived.target) }
+        recordDeliveryArchive(number)
+        return { ...receipt, archive_status: 'archived' }
+      }
+      const result = cmdRemove(number, 'completed', { archivingTask: true })
+      recordDeliveryArchive(number)
+      return { ...result, archive_status: 'archived' }
+    }))
+  }
+  if (local && deliveryPhase() === 'land' && (ref === local.task || Number(ref) === local.number || keyMatch?.id === local.task)) {
+    return refuse('The task card is missing from the Land workspace.', 'not_found')
   }
   const result = await cloud<Task>('POST', `/v1/tasks/${enc(keyMatch?.id ??
     (local && /^\d+$/.test(ref) && Number(ref) === local.number ? local.task : await taskRef(ref, location)))}/archive`)

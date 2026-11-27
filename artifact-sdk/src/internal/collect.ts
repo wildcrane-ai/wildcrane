@@ -28,7 +28,7 @@ export interface CollectorHost {
   /** Throws why a path is refused or missing. */
   resolve: (src: string, owner: string) => { key: string; file: string | null } | null;
   /** The text a file's references are read from: a page as it will be drawn. */
-  read: (file: string) => string;
+  read: (file: string, kind: string) => string | Promise<string>;
   retained: (key: string, types: string[]) => Source[];
 }
 
@@ -39,15 +39,15 @@ const textKind = (ext: string, types: string[]) => types.find(t => { const m = m
 const kindAt = (src: string, types: string[]) => (extOf(src) === '.json' ? (types.includes('asset') ? 'asset' : types[0] ?? 'asset') : textKind(extOf(src), types));
 
 /** 依赖优先的可达节点。文件的问题记在该节点上，并传给引用它的节点；只有循环抛错。 */
-export function collect(body: string, card: string, host: CollectorHost): Collected[] {
+export function collect(body: string, card: string, host: CollectorHost): Promise<Collected[]> {
   return collectSources(bodyReferences(body), card, host);
 }
 
-export function collectSources(sources: Source[], card: string, host: CollectorHost): Collected[] {
+export async function collectSources(sources: Source[], card: string, host: CollectorHost): Promise<Collected[]> {
   const nodes = new Map<string, Collected>();
   const active = new Set<string>();
   const out: Collected[] = [];
-  const visit = (src: string, types: string[], owner: string, partial = false): { key: string | null; error?: string } => {
+  const visit = async (src: string, types: string[], owner: string, partial = false): Promise<{ key: string | null; error?: string }> => {
     const [path] = splitFileReference(src);
     let resolved: ReturnType<CollectorHost['resolve']>;
     try { resolved = host.resolve(path, owner); }
@@ -63,7 +63,7 @@ export function collectSources(sources: Source[], card: string, host: CollectorH
     if (!resolved) return { key: null };
     const { key, file } = resolved;
     if (active.has(key)) {
-      const error = `${owner}: ${src}: 资源依赖循环`;
+      const error = `${owner}: ${src}: circular asset dependency`;
       if (partial) return { key: null, error };
       throw new Error(error);
     }
@@ -79,8 +79,8 @@ export function collectSources(sources: Source[], card: string, host: CollectorH
     if (owner === card) node.aliases.add(src);
     nodes.set(key, node);
     active.add(key);
-    const child = (ref: Found | Source, from: string) => {
-      const found = visit(ref.src, ref.types, from, partial || (node.kind === 'studio' && (node.data as { version?: number })?.version === 2));
+    const child = async (ref: Found | Source, from: string) => {
+      const found = await visit(ref.src, ref.types, from, partial || (node.kind === 'studio' && (node.data as { version?: number })?.version === 2));
       if (found.key) node.dependencies.set(ref.src, found.key);
       else if (found.error) node.problems.push({ src: ref.src, ...('line' in ref ? { line: ref.line } : {}), ...('at' in ref ? { at: ref.at } : {}), message: found.error });
       if (!(node.kind === 'studio' && (node.data as { version?: number })?.version === 2)) node.error ??= found.error;
@@ -88,7 +88,7 @@ export function collectSources(sources: Source[], card: string, host: CollectorH
     if (file) {
       if (json) {
         try {
-          node.data = JSON.parse(host.read(file)) as unknown;
+          node.data = JSON.parse(await host.read(file, node.kind)) as unknown;
           const typed = typeOf(node.data, types);
           node.kind = typed.type ?? 'asset';
           if (typed.problem) node.problems.push({ src: file, message: `${typed.problem}: ${file}` });
@@ -97,19 +97,19 @@ export function collectSources(sources: Source[], card: string, host: CollectorH
         }
       } else {
         node.kind = textKind(extOf(file), types);
-        try { if (fileManifest(node.kind, file)?.references) node.data = host.read(file); }
+        try { if (fileManifest(node.kind, file)?.references) node.data = await host.read(file, node.kind); }
         catch (error) { node.problems.push({ src: file, message: why(error) }); }
       }
       node.error = node.problems[0]?.message;
-      if (!node.error) for (const ref of referencesOf(fileManifest(node.kind, file), node.data)) child(ref, file);
+      if (!node.error) for (const ref of referencesOf(fileManifest(node.kind, file), node.data)) await child(ref, file);
     } else {
-      for (const ref of host.retained(key, types)) child(ref, card);
+      for (const ref of host.retained(key, types)) await child(ref, card);
     }
     active.delete(key);
     out.push(node);
     return { key, error: node.error };
   };
-  for (const ref of sources) visit(ref.src, ref.types, card);
+  for (const ref of sources) await visit(ref.src, ref.types, card);
   const sorted: Collected[] = [];
   const done = new Set<string>();
   const order = (node: Collected) => {

@@ -1,3 +1,4 @@
+import { REVIEW_SYNC_ENV } from '../../cli/src/lib/cloud/review-sync'
 import { STUDIO_SNAPSHOT_ENV } from '../../cli/src/lib/agent/cloud-studios'
 // The akb the Runner carries (#2020), built beside it into `akb/` (scripts/build.mjs), or one
 // Cloud named (#171, akb-version.ts): run by path with this Node. An `akb` shim leads the PATH of
@@ -10,11 +11,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { SESSION_COST_ENV } from '../../cli/src/lib/agent/env'
+import { DELIVERY_PHASE_ENV, SESSION_COST_ENV } from '../../cli/src/lib/agent/env'
+import { PROXY_KEYS } from '../../cli/src/lib/agent/proxy'
 import { EXECUTION_RUNTIMES_ENV } from '../../cli/src/lib/agent/runtimes'
 import { LANGUAGE_ENV } from '../../cli/src/lib/agent/language'
 import { runnerHome } from './home'
-import { HOST_PROXY_ENV, hostProxy, proxyEnv } from './proxy'
+import { HOST_PROXY_ENV, hostProxy, proxyEnv, withLoopback } from './proxy'
 import { AKB_VERSION } from './protocol'
 
 export interface Akb {
@@ -73,11 +75,15 @@ export function shimDir(akb: Akb): string {
 /** 清除上游运行标记，并向子 CLI 传递 Cloud 语言代码；空值禁止本机回退。 */
 export function akbEnv(akb: Akb, board?: string, task?: string, language?: 'zh' | 'en' | null, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
-  const dropped = ['AI4KANBAN_PREVIEW_BRIDGE', 'AI4KANBAN_REPLY_APPROVAL', 'AI4KANBAN_BOARD', 'AI4KANBAN_TASK', 'AI4KANBAN_EXECUTION', 'AI4KANBAN_SCHEDULED_AGENTS', STUDIO_SNAPSHOT_ENV, LANGUAGE_ENV, SESSION_COST_ENV, EXECUTION_RUNTIMES_ENV]
+  const dropped = [DELIVERY_PHASE_ENV, REVIEW_SYNC_ENV, 'AI4KANBAN_PREVIEW_BRIDGE', 'AI4KANBAN_REPLY_APPROVAL', 'AI4KANBAN_BOARD', 'AI4KANBAN_TASK', 'AI4KANBAN_EXECUTION', 'AI4KANBAN_SCHEDULED_AGENTS', STUDIO_SNAPSHOT_ENV, LANGUAGE_ENV, SESSION_COST_ENV, EXECUTION_RUNTIMES_ENV]
   for (const [k, v] of Object.entries({ ...proxyEnv(), ...base })) if (!k.startsWith('KANBAN_') && !dropped.includes(k)) env[k] = v
   const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
   env[key] = [shimDir(akb), env[key]].filter(Boolean).join(path.delimiter)
-  if (Object.keys(proxyEnv()).some((k) => !/^no_proxy$/i.test(k)) && env.NODE_USE_ENV_PROXY === undefined) env.NODE_USE_ENV_PROXY = '1'
+  if (PROXY_KEYS.some(key => env[key])) {
+    env.NODE_USE_ENV_PROXY ??= '1'
+    env.NO_PROXY = withLoopback(env.NO_PROXY ?? env.no_proxy)
+    if (env.no_proxy !== undefined) env.no_proxy = withLoopback(env.no_proxy)
+  }
   env[HOST_PROXY_ENV] = JSON.stringify(hostProxy())
   env.AI4KANBAN_COMMAND = 'akb'
   if (board) env.AI4KANBAN_BOARD = board
@@ -98,8 +104,9 @@ const KEEP = 256 * 1024
 
 /** Older CLI packages can still be selected under the same Runner contract. */
 function compatibleArgs(akb: Akb, args: string[]): string[] {
-  if (akb.canonicalCommands) return args
   const [group, verb, ...rest] = args
+  if (group === 'delivery' && verb === 'resume') return ['raw', ...args]
+  if (akb.canonicalCommands) return args
   if (group === 'run' || group === 'delivery') return ['raw', ...args]
   if (group === 'task' && verb && ['refine', 'revise', 'resolve', 'implement'].includes(verb)) return ['raw', 'card', verb, ...rest]
   if (group === 'memory' && verb === 'describe-project') return ['raw', verb, ...rest]

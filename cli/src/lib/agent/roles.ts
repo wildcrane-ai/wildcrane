@@ -125,8 +125,7 @@ const PROPOSER: AgentRole = {
           prompt:
             `${SMALL_FIX} Do each one instead of proposing it: create it with ` +
             '`akb task create --title "<title>" --studio <studio> --source "#<finished card id>"`, its Scope and Todo ' +
-            'written per `akb guide writing`, then `akb task update <id> --status ready` so it waits only ' +
-            'for the user to approve the build.',
+            'written per `akb guide writing`, then record completed planning with `akb task update <id> --status planned`.',
         },
         { value: 'propose', label: 'Ask me first', cost: 'For balancing speed and quality' },
         {

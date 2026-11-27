@@ -147,23 +147,20 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
   const started = new Set<string>()
   const background = createBackgroundTasks()
   const subagents = new Set<string>()
-  const collabItems = new Set<string>()
-  const collab = (item: Json, done: boolean) => {
+  const collab = (item: Json) => {
     if (item.type !== 'collab_tool_call') return
-    const key = `${str(item.id)}:${done}`
-    if (collabItems.has(key)) return
-    collabItems.add(key)
     for (const [id, raw] of Object.entries(obj(item.agents_states))) {
       const state = obj(raw)
       const status = str(state.status)
       if (!['pending_init', 'running', 'completed', 'interrupted', 'errored', 'shutdown', 'not_found'].includes(status)) continue
       const previous = background.results().find(t => t.id === id)
-      if (['shutdown', 'not_found'].includes(status) && previous && previous.status !== 'running') continue
+      const running = status === 'pending_init' || status === 'running'
+      if ((running || ['shutdown', 'not_found'].includes(status)) && previous && previous.status !== 'running') continue
       if (!subagents.has(id)) {
         subagents.add(id)
         events.subagent(`agent:${id}`, str(item.prompt) || 'Agent')
       }
-      const running = status === 'pending_init' || status === 'running'
+      if (running) events.progressSnapshot(`agent:${id}`, str(state.message))
       const failed = !running && status !== 'completed'
       if (background.update(id, running ? 'running' : failed ? 'failed' : 'completed', str(state.message)) && !running) {
         events.toolResult(`agent:${id}`, failed ? 'failed' : 'completed', str(state.message))
@@ -209,15 +206,21 @@ export function createCodexStreamRenderer(carried = false): StreamRenderer {
         if (!threadId) threadId = str(ev.thread_id).trim() || undefined
         return ''
       case 'item.started':
-        collab(obj(ev.item), false)
+        collab(obj(ev.item))
         itemEvents(events, started, obj(ev.item), false)
         return renderStarted(obj(ev.item))
-      case 'item.updated':
-        if (obj(ev.item).type === 'todo_list') itemEvents(events, started, obj(ev.item), false)
+      case 'item.updated': {
+        const item = obj(ev.item)
+        collab(item)
+        if (item.type === 'todo_list') itemEvents(events, started, item, false)
+        if (item.type === 'command_execution' && started.has(str(item.id))) {
+          events.progressSnapshot(`command:${str(item.id)}`, str(item.aggregated_output))
+        }
         return ''
+      }
       case 'item.completed': {
         const item = obj(ev.item)
-        collab(item, true)
+        collab(item)
         // view_image is input to the tool, never an outward reply.
         if (item.type === 'mcp_tool_call' && !/view_image|read_image|open_image/.test(str(item.tool))) {
           const content = obj(item.result).content

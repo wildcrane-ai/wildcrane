@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
+import { once } from 'node:events'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
@@ -99,6 +100,45 @@ function component(host: 'claude-code' | 'codex' | 'dsh' | 'grok' | 'opencode' |
   })()
   return { child, answers, send, ready }
 }
+
+it('persists terminal and both plugin Runner lifecycles in the same log across restarts', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wildcrane-plugin-logs-'))
+  const cloud = new FakeCloud()
+  await cloud.start()
+  writeFakeSession(home)
+  const env = { WILDCRANE_HOME: home, AI4KANBAN_CLOUD_URL: `http://127.0.0.1:${cloud.port}` }
+  const file = path.join(home, 'logs/runner.log')
+  const seen = (source: string, event: string) => fs.existsSync(file) && fs.readFileSync(file, 'utf8').trim().split('\n')
+    .some(line => { const row = JSON.parse(line); return row.component === 'runner' && row.source === source && row.event === event })
+  try {
+    for (const host of ['terminal', 'codex', 'claude-code'] as const) {
+      const plugin = host === 'terminal' ? undefined : component(host, env.AI4KANBAN_CLOUD_URL, env)
+      const child = plugin?.child ?? spawn(process.execPath, [path.join(process.env.RUNNER_DIST!, 'launcher.mjs')], {
+        env: { ...process.env, ...env }, stdio: 'pipe',
+      })
+      const exited = once(child, 'exit')
+      try {
+        await until(() => seen(host, 'connected'), 10_000)
+        if (plugin) {
+          await plugin.ready
+          plugin.send(2, 'tools/list', {})
+          await until(() => plugin.answers.has(2))
+          assert.ok((plugin.answers.get(2)?.result as { tools: unknown[] })?.tools.length)
+        }
+      } finally {
+        if (plugin) child.stdin.end()
+        else child.kill('SIGTERM')
+        assert.equal((await exited)[0], 0)
+      }
+    }
+    for (const host of ['terminal', 'codex', 'claude-code']) {
+      for (const event of ['starting', 'connected', 'exited']) assert.ok(seen(host, event), `${host} ${event}`)
+    }
+  } finally {
+    await cloud.stop()
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
 
 describe('the host the Claude Code plugin runs in (#532)', () => {
   it('is ZCode only when ZCode set both plugin roots', () => {
@@ -481,12 +521,15 @@ describe('the plugin component', () => {
       assert.match(String(read.url), /discussions\/dsc_1$/)
       assert.equal(cloud.discussions.length, 1)
 
-      const goals = [{ title: '目标', outcome: '结果', acceptance: ['验收'], studio: 'wf_builtin_coding' }]
+      const review_plan = { rule: 'Approve the design before implementation.', previews: ['ui-design'] }
+      const goals = [{ title: '目标', outcome: '结果', acceptance: ['验收'], studio: 'wf_builtin_coding', review_plan }]
       const saved = await call('wildcrane_draft_save', { discussionId: 'dsc_1', expectedVersion: 1, goals })
       assert.equal(saved.saved, true)
       assert.equal(Object.hasOwn(saved, 'ideas'), false)
       assert.match(String((saved.goals as { url: string }[])[0].url), /discussions\/dsc_1$/)
       assert.deepEqual(cloud.draftBodies[0].goals, goals)
+      const reopened = await call('wildcrane_draft_read', { sessionId: 'sess-1' })
+      assert.deepEqual((reopened.goals as { review_plan: unknown }[])[0]?.review_plan, review_plan)
       const invalid = id++
       send(invalid, 'tools/call', { name: 'wildcrane_draft_save', arguments: { discussionId: 'dsc_1', expectedVersion: 2, ideas: goals } })
       await until(() => answers.has(invalid), 10_000)

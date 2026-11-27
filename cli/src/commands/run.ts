@@ -1,5 +1,4 @@
 import { nextDeliveryRun } from '../lib/agent/progress'
-import { completeDelivery } from '../lib/agent/complete'
 // Starting a run, and everything you do to one afterwards: watch it, list them, stop one,
 // continue one that stopped short.
 //
@@ -20,7 +19,7 @@ import {
 import { deliveryState } from '../lib/agent/pause'
 import { boardCommand } from '../lib/agent/command'
 import { insideRun, printFlow } from '../lib/agent/flow'
-import { SESSION_COST_ENV, TASK_REQUEST_ENV } from '../lib/agent/env'
+import { deliveryPhase, SESSION_COST_ENV, TASK_REQUEST_ENV } from '../lib/agent/env'
 import { taskChatsToReview } from '../lib/agent/memory-review'
 import { readLogTail, splitLog } from '../lib/agent/log'
 import { advancePhase, approvalRequest } from '../lib/agent/approve'
@@ -34,6 +33,7 @@ import {
   planningRun,
   reconcileCardDelivery,
   releaseCardDelivery,
+  resolveRun,
   resumeDelivery,
   resumeSessionId,
   stopRun,
@@ -57,6 +57,7 @@ import { say } from '../lib/io'
 import { pidAlive } from '../lib/lock'
 import { die, KANBAN } from '../lib/paths'
 import { REPLY_APPROVAL_ENV } from '../lib/cloud/reply-approval'
+import { executionOf, WRONG_TASK } from '../lib/cloud/execution'
 import { approveTask, runnerProject, workspaceTask } from '../lib/cloud/tasks'
 import { findCard } from '../lib/view/read'
 import { creationRefusal } from '../lib/view/rules'
@@ -133,7 +134,11 @@ export async function cmdStartRun(
   sayBeforeStart(req, program)
   sayIfHeld(req, program)
   const started = action === 'refine' ? await startRefinement(req) : await startRun(runnable)
-  if ('error' in started) die(started.error, { kind: 'run-refused', action })
+  if ('error' in started) die(started.error, {
+    kind: 'run-refused', action,
+    ...('reason' in started ? { reason: started.reason } : {}),
+    ...('args' in started ? { args: started.args } : {}),
+  })
   const { run, spawned } = started
   if (!spawned) die(`couldn't start a process for run ${run.sessionId}`, { kind: 'spawn-failed' })
   say(`${action} — run ${run.sessionId}${run.deliveryId ? ` in delivery ${run.deliveryId}` : ''}`)
@@ -154,6 +159,10 @@ async function approveInCloud(project: string, id: number): Promise<MoveResult> 
 // starts another — and nothing of this conversation is passed on: the refinement reads the
 // card, not the run that rewrote it.
 function queueRefine(inside: string, req: CommandRequest): MoveResult {
+  const run = peekRun(inside)
+  if (run?.cloudExecution && run.cardId !== null && req.id !== run.cardId) {
+    die(WRONG_TASK, { kind: 'run-refused', action: 'refine' })
+  }
   // A delivery holds its card here even against its own runs, which the hold usually lets
   // through: what is being written down is a session that starts AFTER this one, and the
   // delivery will still be in flight when it does.
@@ -311,19 +320,23 @@ function readRequest(
 
 /** Send one more turn into a run that stopped short: same agent, same conversation, same
  *  card — and the prompt is just "carry on". */
-export async function cmdResume(id: string | undefined, opts: { follow?: boolean; events?: boolean; requireSession?: boolean; fresh?: boolean }): Promise<MoveResult> {
-  const previous = await getRun(id ?? 'last')
-  const completed = previous?.deliveryId ? findDelivery(previous.deliveryId) : undefined
-  if (completed?.status === 'finished' && completed.completions?.some((receipt) => receipt.finished)) {
-    say(`delivery ${completed.deliveryId} is complete.`)
-    return { sessionId: previous!.sessionId, resumedFrom: previous!.resumedFrom, delivery: deliveryOutcome(completed.deliveryId) }
+export async function cmdResume(id: string | undefined, opts: { follow?: boolean; events?: boolean; fresh?: boolean }): Promise<MoveResult> {
+  const previous = resolveRun(id ?? 'last')
+  if (!('sessionId' in previous)) die(previous.error, { kind: 'run-refused', ...('reason' in previous ? { reason: previous.reason } : {}) })
+  const card = executionOf()?.card
+  const completed = previous.deliveryId ? findDelivery(previous.deliveryId) : undefined
+  if (card !== undefined && (previous.cardId !== card || completed && completed.cardId !== card)) {
+    die(WRONG_TASK, { kind: 'run-refused' })
   }
-  const opened = await startResume(id ?? 'last', opts.fresh ? { fresh: true } : opts.requireSession)
+  if (completed?.status === 'finished') {
+    say(`delivery ${completed.deliveryId} is complete.`)
+    return { sessionId: previous.sessionId, resumedFrom: previous.resumedFrom, delivery: deliveryOutcome(completed.deliveryId) }
+  }
+  const opened = await startResume(previous.sessionId, { fresh: opts.fresh, requireSession: !opts.fresh, exact: true })
   if ('error' in opened) die(opened.error, { kind: 'run-refused', ...('reason' in opened ? { reason: opened.reason } : {}) })
   const { run } = opened
   if (!opened.spawned) die(`couldn't start a process for run ${run.sessionId}`, { kind: 'spawn-failed' })
   const within = run.deliveryId ? ` in delivery ${run.deliveryId}` : ''
-  // A run with no session to pick up is started again rather than continued (#1321).
   say(run.resumedFrom ? `continuing ${short(run.resumedFrom)} — run ${run.sessionId}${within}` : `trying again — run ${run.sessionId}${within}`)
   if (opts.follow === true) return await followStarted(run.sessionId, 'akb', opts.events === true)
   return { sessionId: run.sessionId, resumedFrom: run.resumedFrom }
@@ -363,12 +376,14 @@ export async function cmdResumeDelivery(named: string): Promise<MoveResult> {
     kind: 'run-refused', reason: res.reason, args: res.args,
   })
   if (res.landed) return { deliveryId: res.deliveryId, landed: true, delivery: deliveryOutcome(res.deliveryId!) }
-  const delivery = findDelivery(res.deliveryId!)!
-  const started = await startRun({ action: 'implement', id: delivery.cardId ?? undefined,
-    deliveryId: delivery.deliveryId, title: delivery.title })
-  if ('error' in started) die(started.error, { kind: 'run-refused' })
+  const deliveryId = res.deliveryId!
+  const delivery = findDelivery(deliveryId)
+  if (!res.runId && !delivery) die('The named delivery is no longer active.', { kind: 'run-refused', reason: 'deliveryNone' })
+  const started = res.runId ? await startResume(res.runId, { deliveryId, exact: true })
+    : await startRun({ action: 'implement', id: delivery?.cardId ?? undefined, deliveryId, title: delivery?.title })
+  if ('error' in started) die(started.error, { kind: 'run-refused', reason: started.reason, args: started.args })
   if (!started.spawned) die('Could not start the resumed delivery.', { kind: 'spawn-failed' })
-  return { deliveryId: delivery.deliveryId, sessionId: started.run.sessionId }
+  return { deliveryId, sessionId: started.run.sessionId }
 }
 
 /** Say what a round of applied answers did to a delivery's requirements (#637).
@@ -480,10 +495,12 @@ export async function cmdSubWait(ids: string[], waitMs = WAIT_MS): Promise<MoveR
 // ---- reading ---------------------------------------------------------------
 
 /** What is running, and what ran lately. */
-export async function cmdRuns(opts: { card?: number; all?: boolean }, program = 'akb'): Promise<MoveResult> {
-  let runs = await listRuns()
+export async function cmdRuns(opts: { card?: number; all?: boolean; execution?: string[]; conversation?: string }, program = 'akb'): Promise<MoveResult> {
   const card = opts.card ?? null
-  if (card !== null) runs = runs.filter((r) => r.cardId === card)
+  const executions = opts.execution && new Set(opts.execution)
+  const runs = await listRuns(card === null && !executions && !opts.conversation ? undefined : r =>
+    (card === null || r.cardId === card) && (!opts.conversation || resumeSessionId(r) === opts.conversation) &&
+    (!executions || !!r.cloudExecution && executions.has(r.cloudExecution.job)))
   const live = runs.filter((r) => r.status === 'running')
   const shown = opts.all === true ? runs : [...live, ...runs.filter((r) => r.status !== 'running').slice(-10)]
   if (!shown.length) {
@@ -515,6 +532,8 @@ export async function cmdLog(
   const id = named ?? 'last'
   const view = await getRun(id, opts.full === true ? Infinity : undefined)
   if (!view) die(`no run here answers to "${id}"`, { kind: 'no-such-run', run: id })
+  const card = executionOf()?.card
+  if (card !== undefined && card !== view.cardId) die(WRONG_TASK, { kind: 'run-refused' })
   if (opts.follow === true) {
     say(runLine(view, program))
     const events = opts.events === true
@@ -557,6 +576,12 @@ export async function cmdLog(
 export async function followRun(sessionId: string, already = '', program = 'akb', events = false): Promise<MoveResult> {
   const first = await getRun(sessionId)
   if (!first) return {}
+  const execution = executionOf()
+  const card = execution?.card
+  if (card !== undefined && card !== first.cardId) die(WRONG_TASK, { kind: 'run-refused' })
+  const scoped = card !== undefined || !!first.cloudExecution && first.cardId !== null
+  const canAdvance = !scoped || !!execution && execution.job === first.cloudExecution?.job &&
+    execution.machine === first.cloudExecution.machine
   const seen = new Set<string>()
   let current: RunView = first
   let last: RunView = first
@@ -567,16 +592,17 @@ export async function followRun(sessionId: string, already = '', program = 'akb'
     seen.add(current.sessionId)
     printed = 0
     const deliveryId = first.deliveryId ?? last.deliveryId
-    let following = nextInFlow(first, current.sessionId, seen)
+    const ownedDelivery = !deliveryId || !scoped || findDelivery(deliveryId)?.cardId === first.cardId
+    let following = nextInFlow(first, current.sessionId, seen, scoped)
     if (!following && last.retry?.pending) {
       const resumed = await startResume(last.sessionId, { automatic: true })
       if ('run' in resumed) following = resumed.run
       else {
         last = await getRun(last.sessionId) ?? last
-        following = nextInFlow(first, current.sessionId, seen)
+        following = nextInFlow(first, current.sessionId, seen, scoped)
       }
     }
-    const next = following ?? (deliveryId ? await moveDelivery(deliveryId, idle) : undefined)
+    const next = following ?? (deliveryId && ownedDelivery && canAdvance ? await moveDelivery(deliveryId, idle) : undefined)
     if (next === undefined) break
     if (next === null) {
       await pause(follow.pollMs)
@@ -597,7 +623,7 @@ export async function followRun(sessionId: string, already = '', program = 'akb'
   say('')
   say(runLine(last, program))
   const deliveryId = first.deliveryId ?? last.deliveryId
-  const delivery = deliveryId ? deliveryOutcome(deliveryId) : undefined
+  const delivery = deliveryId ? deliveryOutcome(deliveryId, scoped ? first.cardId : undefined) : undefined
   if (delivery) say(`delivery ${delivery.id}: ${delivery.line}`)
   const failed =
     last.status !== 'done'
@@ -682,11 +708,13 @@ async function followOne(view: RunView, already: number, events: boolean): Promi
 
 // The next session of the same job: one the flow started after this one, or the resume
 // that took it over. Sub-runs belong to their parent and are not followed on their own.
-function nextInFlow(first: RunView, after: string, seen: Set<string>): RunView | undefined {
+function nextInFlow(first: RunView, after: string, seen: Set<string>, scoped: boolean): RunView | undefined {
   const runs = readRuns()
   const next = runs
     .filter((r) => !seen.has(r.sessionId) && r.action !== 'sub' && r.startedAt >= first.startedAt)
     .filter((r) => !first.deliveryId || !r.deliveryId || r.deliveryId === first.deliveryId)
+    .filter((r) => !scoped || r.cardId === first.cardId && r.cloudExecution?.job === first.cloudExecution?.job
+      && r.cloudExecution?.machine === first.cloudExecution?.machine)
     .filter((r) => r.resumedFrom === after || (!!first.flowId && r.flowId === first.flowId))
     .sort((a, b) => a.startedAt - b.startedAt)[0]
   return next ? { ...next } : undefined
@@ -701,7 +729,7 @@ async function moveDelivery(deliveryId: string, idle: Idle): Promise<RunView | n
   const delivery = findDelivery(deliveryId)
   if (!delivery || delivery.status !== 'active') return undefined
   const ask = nextDeliveryRun(deliveryId)
-  if (!ask) return undefined
+  if (!ask || deliveryPhase()) return undefined
   const started = await startRun(ask)
   return 'error' in started ? undefined : { ...started.run }
 }
@@ -709,9 +737,10 @@ async function moveDelivery(deliveryId: string, idle: Idle): Promise<RunView | n
 /** The delivery's outcome accompanies both successful and failed followed runs. */
 function deliveryOutcome(
   deliveryId: string,
+  card?: number | null,
 ): { id: string; status: DeliveryStatus; stage?: string; line: string; commit?: string; branch?: string; ending?: DeliveryEnding } | undefined {
   const delivery = findDelivery(deliveryId) ?? endedDelivery(deliveryId)
-  if (!delivery) return undefined
+  if (!delivery || card !== undefined && delivery.cardId !== card) return undefined
   if (delivery.status !== 'active') {
     const commit = delivery.status === 'finished' ? delivery.landing?.commit : undefined
     const line = commit ? `landed as ${commit.slice(0, 7)}` : delivery.status === 'finished' ? 'finished, nothing committed' : delivery.status
@@ -764,7 +793,7 @@ function runLine(r: RunView, program = 'akb', indent = ''): string {
   if (r.model) bits.push(r.model)
   if (r.costUsd !== undefined) bits.push(`$${r.costUsd.toFixed(4)}`)
   if (r.canResume) bits.push(`— continue it with \`${boardCommand()} run resume ${short(r.sessionId)}\``)
-  if (r.canRetry) bits.push(`— try it again with \`${boardCommand()} run resume ${short(r.sessionId)}\``)
+  if (r.canRetry) bits.push(`— try it again with \`${boardCommand()} run resume ${short(r.sessionId)} --fresh\``)
   const line = bits.join('  ')
   // The board's own last word rides on the row, not only in the log. `✓ done` beside a run
   // that left the board inconsistent reads as "nothing to see here", which is the one thing
@@ -801,16 +830,4 @@ function ago(ms: number): string {
 export async function cmdWatch(sessionId: string): Promise<number> {
   const { watchRun } = await import('../lib/agent/watch')
   return watchRun(sessionId)
-}
-
-export function cmdCompleteDelivery(id: string, options: { commit?: string; branch?: string }): MoveResult {
-  const result = completeDelivery(id, options)
-  say(`delivery ${result.deliveryId}: ${result.finished ? 'finished' : 'step recorded'}`)
-  const note = result.note as { what?: string; files?: string[] } | undefined
-  if (note?.what) say(note.what)
-  for (const file of note?.files ?? []) say(file)
-  for (const mention of (result.mentions ?? []) as { file: string; line: number; text: string }[]) {
-    say(`${mention.file}:${mention.line} ${mention.text}`)
-  }
-  return result
 }

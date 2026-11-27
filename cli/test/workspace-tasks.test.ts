@@ -8,11 +8,12 @@ import path from 'node:path'
 import { after, afterEach, beforeEach, describe, it } from 'node:test'
 
 import { runAgent } from '../src/lib/agent-cli.ts'
-import { RUN_ENV } from '../src/lib/agent/env.ts'
+import { DELIVERY_PHASE_ENV, RUN_ENV } from '../src/lib/agent/env.ts'
 import { withStore } from '../src/lib/agent/store.ts'
 import { TASK_ENV } from '../src/lib/cloud/tasks.ts'
 import { writeSession } from '../src/lib/cloud/session.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
+import { allCards } from '../src/lib/view/read.ts'
 import { forgetMachineState, move, refuses, restoreMachineHome } from './helpers/board.ts'
 
 const SUPABASE = 'https://project.supabase.co'
@@ -58,6 +59,7 @@ function serve(refuse?: { status: number; code: string; message: string }): void
 
 beforeEach(() => {
   delete process.env[RUN_ENV]
+  delete process.env[DELIVERY_PHASE_ENV]
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-workspace-home-'))
   process.env.AI4KANBAN_HOME = home
   process.env.AI4KANBAN_SUPABASE_URL = SUPABASE
@@ -224,16 +226,36 @@ describe('task archive', () => {
   })
 
   it('archives only the current matched Runner task locally', async () => {
+    const dependent = path.join(board, 'todo', '4-dependent.md')
+    fs.writeFileSync(dependent, '---\ntitle: Dependent\nblocked_by: [3]\n---\n')
     const first = await archive('WC-3')
     assert.equal(first.code, 0)
     assert.equal(first.value.task, 'task_src')
     assert.equal(first.value.archive_status, 'pending_sync')
     assert.match(fs.readFileSync(archived, 'utf8'), /^archived:/m)
     assert.equal(fs.existsSync(current), false)
+    assert.match(fs.readFileSync(dependent, 'utf8'), /^blocked_by: \[\]$/m)
     const repeated = await archive('3')
     assert.equal(repeated.code, 0)
     assert.equal(repeated.value.archive_status, 'pending_sync')
     assert.deepEqual(sent.map(({ method, route }) => [method, route]), [['GET', '/v1/tasks/WC-3']])
+  })
+
+  it('keeps a managed Land blocker through local archive and retry', async () => {
+    process.env[DELIVERY_PHASE_ENV] = 'land'
+    const dependent = path.join(board, 'todo', '4-dependent.md')
+    fs.writeFileSync(dependent, '---\ntitle: Dependent\nblocked_by: [3]\nrelated: [3]\n---\n')
+    const marker = path.join(board, '.sync', 'land-archives', 'task_src')
+    fs.mkdirSync(path.dirname(marker), { recursive: true })
+    fs.writeFileSync(marker, JSON.stringify({ job: 'land-job', number: 3 }))
+
+    assert.equal((await archive('3')).value.archive_status, 'pending_sync')
+    assert.equal((await archive('3')).value.archive_status, 'pending_sync')
+    assert.match(fs.readFileSync(dependent, 'utf8'), /^blocked_by: \[3\]$/m)
+    assert.match(fs.readFileSync(dependent, 'utf8'), /^related: \[\]$/m)
+    assert.deepEqual(allCards().find(card => card.id === 4)?.openBlockers, [{ id: 3, title: 'Current' }])
+    fs.rmSync(marker)
+    assert.deepEqual(allCards().find(card => card.id === 4)?.openBlockers, [])
   })
 
   it('reports the saved archive receipt only for the synchronized card version', async () => {

@@ -1,4 +1,5 @@
 import { IDLE_FAILURE } from '../idle'
+import { progressSnapshots, toolOutput } from './events'
 import { makeFailure, type ExecutionFailure } from '../retry'
 import { codexFailure, executionFailure } from './failures'
 import { bounded, CONVERSATION_MS } from '../../shared/conversation'
@@ -126,6 +127,7 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
   const offered = new Map<string, string>()
   const snapshot = (w: ManagedWork) => JSON.stringify([w.threadId, w.processId, w.status, w.exitCode, w.result])
   const childEvents = new Map<string, string>()
+  const freshOutput = progressSnapshots()
   const seenItems = new Set<string>()
   const completedTurns = new Set<string>()
   const historicalTurns = new Set<string>()
@@ -158,6 +160,9 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
     io.stdout.off('close', closed)
     io.stdin.off('error', inputFailed)
     if (settlement) flushMessages(work.work().some(w => !w.intentionalStop && !['running', 'unknown'].includes(w.status) && presented.get(w.id) !== snapshot(w)))
+    if (classified?.code === 'codex_ownership_unconfirmed') {
+      cleanup = { ...cleanup, status: 'unconfirmed', detail: classified.detail ?? classified.summary }
+    }
     cleanup.items = work.work().map(({ id, threadId, processId, status, disposition }) => ({ id, threadId, processId, status, disposition }))
     io.log(renderer.flush())
     const usage = ownUsage(total, baseline)
@@ -215,7 +220,9 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
   io.idleSignal?.addEventListener('abort', idle, { once: true })
   const childUpdates = () => {
     for (const w of work.entries.values()) {
-      if (w.kind !== 'agent' || childEvents.get(w.id) === w.status) continue
+      if (w.kind !== 'agent') continue
+      if (w.status === 'running' && freshOutput(w.id, toolOutput(w.result))) io.activity?.()
+      if (childEvents.get(w.id) === w.status) continue
       if (!childEvents.has(w.id)) io.event?.({ kind: 'tool_call', data: { toolCallId: w.id, title: 'Agent', kind: 'other', status: 'in_progress', subagent: true } })
       if (w.status !== 'running') io.event?.({ kind: 'tool_call_update', data: { toolCallId: w.id, status: w.status === 'completed' ? 'completed' : 'failed', result: w.result } })
       childEvents.set(w.id, w.status)
@@ -416,17 +423,32 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       armCleanup()
       if (source === threadId && obj(p.item).type !== 'agentMessage') item(obj(p.item), msg.method === 'item/completed', false)
     }
-    if (source !== threadId) {
+    const turnId = str(p.turnId) || str(obj(p.turn).id)
+    const main = source === threadId
+    const live = main ? !historicalTurns.has(turnId) && (!currentTurn || !turnId || currentTurn === turnId)
+      : work.entries.get(`agent:${source}`)?.status === 'running'
+    const delta = str(p.delta)
+    if (submitted && live && delta) {
+      if (['item/agentMessage/delta', 'item/plan/delta', 'item/reasoning/summaryTextDelta', 'item/reasoning/textDelta'].includes(msg.method ?? '')) {
+        if (main) {
+          if (msg.method?.startsWith('item/reasoning/')) thinking()
+          else recovered()
+        }
+        io.activity?.()
+      }
+      const terminal = terminalKey(source, str(p.itemId))
+      if (msg.method === 'item/commandExecution/outputDelta' && work.entries.get(terminal)?.status === 'running'
+        && freshOutput(terminal, toolOutput(delta))) io.activity?.()
+    }
+    if (!main) {
+      if (live && msg.method === 'item/completed') {
+        const item = obj(p.item)
+        if (freshOutput(`${source}:${str(item.id)}`, toolOutput(str(item.text) || str(item.aggregatedOutput)))) io.activity?.()
+      }
       if (msg.method === 'turn/completed') { work.observeTurn(source, obj(p.turn)); armCleanup() }
       childUpdates(); return
     }
-    const turnId = str(p.turnId) || str(obj(p.turn).id)
-    if (historicalTurns.has(turnId) || currentTurn && turnId && currentTurn !== turnId) return
-    if (submitted && ['item/agentMessage/delta', 'item/plan/delta', 'item/reasoning/summaryTextDelta', 'item/reasoning/textDelta'].includes(msg.method ?? '') && str(p.delta)) {
-      if (msg.method?.startsWith('item/reasoning/')) thinking()
-      else recovered()
-      io.activity?.()
-    }
+    if (!live) return
     if (msg.method === 'turn/started') { if (!submitted || completedTurns.has(turnId)) return; currentTurn = turnId; active = true; began(); return }
     if (submitted && msg.method === 'item/agentMessage/delta' && Date.now() - contentAt >= 1000) {
       began(); contentAt = Date.now(); io.event?.({ kind: 'phase', data: { phase: 'started', at: new Date().toISOString(), contentAt: new Date(contentAt).toISOString() } })
@@ -509,7 +531,6 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
           waiting = true
           io.event?.({ kind: 'log', data: { text: failure.summary } })
         }
-        io.activity?.()
         await delay(500, undefined, { signal: io.signal })
         preparingUntil = Date.now() + CONVERSATION_MS.prepare
       }

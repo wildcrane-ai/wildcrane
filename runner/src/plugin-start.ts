@@ -11,14 +11,23 @@ if (Number(process.versions.node.split('.')[0]) < 22) {
 }
 const { useRunnerHome } = await import('./home')
 const { pluginEntry } = await import('./launcher')
+const { VERSION } = await import('./protocol')
+const { errno, logRunner } = await import('./runner-log')
 
 /** The first Runner whose component knows each host; an older one would run it as Claude Code. */
 const FIRST: Record<string, string> = { kimi: '0.6.35', grok: '0.6.53', opencode: '0.6.55', antigravity: '0.6.107' }
 
 useRunnerHome()
-const entry = await pluginEntry(FIRST[process.argv[2] ?? ''])
-if (entry) await import(pathToFileURL(entry).href)
-else {
-  process.stderr.write('WildCrane could not download its Runner. Check the network, then restart.\n')
-  process.exit(1)
+const source = process.argv[2] ?? 'claude-code'
+try {
+  const entry = await pluginEntry(FIRST[source], source, VERSION)
+  if (entry) await import(pathToFileURL(entry).href)
+  else {
+    logRunner('launcher', 'startup_failed', { source, stage: 'plugin_entry', code: 'unavailable' })
+    process.stderr.write('WildCrane could not download its Runner. Check the network, then restart.\n')
+    process.exit(1)
+  }
+} catch (error) {
+  logRunner('launcher', 'startup_failed', { source, stage: 'plugin_entry', code: errno(error) })
+  throw error
 }

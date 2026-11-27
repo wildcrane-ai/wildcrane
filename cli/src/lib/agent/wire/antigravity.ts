@@ -3,7 +3,7 @@ import type { ContextWindow, TokenUsage } from '../types'
 import { makeFailure, type ExecutionFailure } from '../retry'
 import { priceUsd } from '../prices'
 import { translating } from '../language'
-import { createEventCollector, type ToolKind } from './events'
+import { createEventCollector, isPollingTool, type ToolKind } from './events'
 import { obj, str, num } from './json'
 import { createLineReader, frame, type StreamRenderer } from './stream'
 import { antigravityRecordedContextLimit, antigravityRecordedModels } from './antigravity-session'
@@ -163,8 +163,19 @@ export function createAntigravityRenderer(expectedSession?: string, cwd = proces
         let out = ''
         if (!calls.has(id)) {
           calls.add(id)
-          events.toolCall(id, name, KINDS[name] ?? 'other', target)
+          if (['invoke_subagent', 'browser_subagent'].includes(name)) events.subagent(id, target || name)
+          else events.toolCall(id, name, KINDS[name] ?? 'other', target)
           out = `\n⏺ ${name}${target ? ` ${target}` : ''}\n`
+        }
+        const output = str(tool.output)
+        if (isPollingTool(name)) {
+          const command = str(p.CommandId) || str(p.CommandID) || name
+          const commandOutput = /(?:^|\n)Command output:\s*([\s\S]*)/.exec(output)?.[1].trim()
+          const exit = /(?:^|\n)(Command exited with code -?\d+\.)/.exec(output)?.[1]
+          if (commandOutput) events.progressSnapshot(`command:${command}`, commandOutput)
+          if (exit) events.progressSnapshot(`exit:${command}`, exit)
+        } else if (!['DONE', 'ERROR', 'CANCELED', 'INTERRUPTED'].includes(str(step.state))) {
+          events.progressSnapshot(id, output)
         }
         const error = obj(tool.error)
         const reason = str(error.message) || str(error.type)
@@ -181,7 +192,7 @@ export function createAntigravityRenderer(expectedSession?: string, cwd = proces
               imageErrors.delete(file)
             }
           }
-          events.toolResult(id, failed ? 'failed' : 'completed', str(tool.output) || reason)
+          events.toolResult(id, failed ? 'failed' : 'completed', output || reason)
         }
         return out
       }

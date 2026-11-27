@@ -45,3 +45,21 @@ it('inspects saved facts without reaping runs, acquiring ownership or grading in
   assert.deepEqual(partial.unavailable, ['previews'])
   assert.equal(partial.findings[0]?.source, 'previews')
 })
+
+it('reports the selected board’s asset folder without creating it', async (t) => {
+  const board = path.join(root, '.akb', 'kanban')
+  fs.mkdirSync(path.join(board, 'todo'), { recursive: true })
+  fs.writeFileSync(path.join(board, 'config.md'), '# Configuration\n')
+  fs.writeFileSync(path.join(board, 'todo', '1-synced.md'), '---\ntitle: Synced card\n---\n')
+  const assetFolder = path.join(fs.realpathSync(root), '.akb', 'state', 'assets', '1')
+  stopCollecting()
+  const args = ['task', 'inspect', '1', '--board', '.akb/kanban']
+  const output: string[] = []
+  t.mock.method(process.stdout, 'write', (chunk: string) => { output.push(chunk); return true })
+  for (const flags of [[], ['--json']]) {
+    await run(root, [...args, ...flags])
+    assert.equal(JSON.parse(output.join('')).asset_folder, assetFolder)
+    output.length = 0
+  }
+  assert.equal(fs.existsSync(assetFolder), false)
+})

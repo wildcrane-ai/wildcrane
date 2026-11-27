@@ -329,10 +329,8 @@ export function cmdUpdate(id: number, flags: UpdateOptions): MoveResult {
     meta.previews = previewsFlag(flags.previews, flow)
     changes.push('previews')
   }
-  // A `ready` card has no open questions by definition (see STATUSES). Open questions
-  // mean the plan is not settled, so a `--status ready` with them pending lands as
-  // `todo`. This holds the invariant no matter who set the status.
-  if (meta.questions.length > 0 && meta.status === 'ready') {
+  // Open questions reopen planning.
+  if (meta.questions.length > 0 && meta.status === 'planned') {
     meta.status = 'todo'
     changes.push('status→todo (open questions)')
   }
@@ -395,8 +393,7 @@ export function updateCardQuestions(id: number, ops: QuestionOp[], compatibility
   const { changes } = done
   meta.questions = done.questions
   const open = meta.questions.length
-  // The same invariant cmdUpdate holds: a `ready` card has no open questions.
-  if (open > 0 && meta.status === 'ready') {
+  if (open > 0 && meta.status === 'planned') {
     meta.status = 'todo'
     changes.push('status→todo (open questions)')
   }

@@ -18,7 +18,7 @@ import { die, rel, ARCHIVE, TODO, MODULES_MD } from '../lib/paths'
 import { say } from '../lib/io'
 import { moduleNames } from '../lib/validate'
 import { parseFrontmatter } from '../lib/frontmatter'
-import { walkMd, walkDirs, idPrefix, boardCardIds, isLegacyRecurring } from '../lib/cards'
+import { walkMd, walkDirs, idPrefix, boardCardIds, isLegacyRecurring, pendingLandBlockers } from '../lib/cards'
 import { formatStamp, parseStamp } from '../lib/cadence'
 import { landedDeliveries } from '../lib/agent/deliveries'
 import { knownStudio } from '../lib/agent/studios'
@@ -108,7 +108,7 @@ function cmdStale(rows: Row[], all: Row[], scope: string, mod: string | null): M
     return { cards: [], module: mod, staleAfter: days }
   }
 
-  const open = new Set(all.map((r) => r.id))
+  const open = new Set([...all.map(r => r.id), ...pendingLandBlockers().map(c => c.id)])
   const stale = rows
     .filter(canGoStale)
     .map((r) => ({ row: r, age: ages.get(r.file) }))

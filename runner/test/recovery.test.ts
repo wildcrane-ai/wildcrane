@@ -3,8 +3,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { markEnv, runMark } from '../../cli/src/lib/agent/stop'
 import type { Flow, Job } from '../src/api'
-import { flowRunEvidence, runFlow, type FlowIo } from '../src/flow'
+import { confirmFlowStopped, flowRunEvidence, runFlow, stopFlowRuns, taskSessionMatches, type FlowIo } from '../src/flow'
 import { toWire } from '../src/jobs'
 import { checkpointEvent, checkpointRecovery, replayable, type Checkpoint } from '../src/recovery'
 import { replyPrompt } from '../src/reply-input'
@@ -129,6 +132,19 @@ function setupFakeFlow(fakePlan: Record<string, unknown>, taskOverrides: Partial
   return { ws, job, io, deps, logs, calls, board, cleanup }
 }
 
+test('a saved failed report without resume evidence remains unverified (W-1207)', async () => {
+  const ctx = setupFakeFlow({})
+  try {
+    ctx.io.flowRun = { id: 'original', card: 947, finished: true, retryPause: 'unsafe',
+      failure: { code: 'completed_operation_failed', source: 'runtime', summary: 'Background verification failed' } }
+    const end = await runFlow(ctx.job, ctx.ws, ctx.deps, ctx.io)
+    assert.equal(end.ok, false)
+    assert.equal(end.report?.failure?.safeToRetry, false)
+    assert.equal(end.report?.failure?.sessionAction, 'pause_unsafe')
+    assert.match(ctx.logs.join(''), /操作结果|operation results/i)
+  } finally { ctx.cleanup() }
+})
+
 test('W-947: resumable delivery on stale revise continues same delivery instead of replanning (#966)', async () => {
   const ctx = setupFakeFlow({
     reconcile: { kind: 'resumable', deliveryId: 'd947', sessionId: 's947', hasSession: true },
@@ -147,6 +163,35 @@ test('W-947: resumable delivery on stale revise continues same delivery instead 
     assert.ok(verbs.includes('raw delivery reconcile'))
     assert.ok(verbs.includes('raw delivery resume'))
     assert.ok(!verbs.includes('raw card revise'))
+  } finally { ctx.cleanup() }
+})
+
+test('an approval request pauses the active delivery and retains its session', async () => {
+  const plan = { rule: 'Approve the direction before drafting.', previews: ['copy'] }
+  const ctx = setupFakeFlow({
+    implement: { delivery: { id: 'd947', status: 'active' }, agentSession: 'copy-session' },
+  }, {
+    flow: { verb: 'implement', phase: 'implement', studio: 'coding', review_stages: [], review_revision: 1 },
+    taskReview: { plan, revision: 1, stages: [], approvals: [] },
+    reviewAtDispatch: true,
+  })
+  const read = ctx.deps.api.readTask
+  ctx.deps.api.readTask = async () => {
+    const result = await read()
+    if (!fs.existsSync(path.join(ctx.board, '.fake', 'runs.json'))) return result
+    return { ...result, value: { ...result.value, status: 'waiting_review', review: {
+      plan, revision: 2,
+      stages: [{ id: 'approval-2', status: 'ready', revision: 2, snapshot: null, preview: 'copy', job: ctx.job.id }],
+      approvals: [{ stage: 'approval-2', revision: 2, preview: 'copy', question: 'Approve the idea?' }],
+    } } }
+  }
+  try {
+    const end = await runFlow(ctx.job, ctx.ws, ctx.deps, ctx.io)
+    assert.ok(end.ok, !end.ok ? end.reason : '')
+    assert.equal(end.report.deliveryCompleted, false)
+    assert.equal(end.report.deliveryId, 'd947')
+    assert.equal(end.report.session, 'copy-session')
+    assert.ok(fs.existsSync(path.join(ctx.board, 'todo', '947-reconcile.md')))
   } finally { ctx.cleanup() }
 })
 
@@ -245,6 +290,47 @@ test('flowRunEvidence matches interrupted clarify planning runs by cloudExecutio
     assert.equal(evidence.stopped, true)
     assert.equal(evidence.run?.id, 'clarify-session')
     assert.equal(evidence.run?.finished, false)
+  } finally { ctx.cleanup() }
+})
+
+test('a legacy #1247 run under #1246 blocks exit proof without taking ownership of #1247’s real job', async () => {
+  const ctx = setupFakeFlow({}, { task: 'task_1246', number: 1246 })
+  ctx.ws.task = ctx.ws.cloudTask = 'task_1246'
+  ctx.ws.number = 1246
+  const file = path.join(ctx.board, '.fake', 'runs.json')
+  const execution = { job: ctx.job.id, machine: ctx.deps.machineId }
+  fs.writeFileSync(file, JSON.stringify([
+    { sessionId: 'own', cardId: 1246, action: 'clarify', status: 'done', resumeId: 'own-agent', cloudExecution: execution, costUsd: 1 },
+    { sessionId: 'stray', cardId: 1247, action: 'clarify', status: 'running', resumeId: 'other-agent', cloudExecution: execution, costUsd: 8 },
+    { sessionId: 'independent', cardId: 1247, action: 'clarify', status: 'running', cloudExecution: { ...execution, job: 'job-1247' } },
+  ]))
+  try {
+    assert.equal(await confirmFlowStopped(ctx.ws, ctx.job, ctx.deps), false)
+    assert.equal((await flowRunEvidence(ctx.ws, ctx.job, ctx.deps)).stopped, false)
+    assert.equal(await taskSessionMatches(ctx.ws, ctx.deps, 'other-agent'), false)
+    assert.equal(await stopFlowRuns(ctx.ws, ctx.job, ctx.deps), true)
+    assert.deepEqual(ctx.calls().filter(c => c.slice(0, 3).join(' ') === 'raw run stop').map(c => c[3]), ['stray'])
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).find((r: { sessionId: string }) => r.sessionId === 'independent').status, 'running')
+    if (process.platform !== 'win32') {
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+        env: markEnv(process.env, runMark('stray')), stdio: 'ignore',
+      })
+      const exited = once(child, 'exit')
+      try {
+        await once(child, 'spawn')
+        assert.equal(await confirmFlowStopped(ctx.ws, ctx.job, ctx.deps), false, 'the legacy stopped label does not prove exit')
+        assert.equal((await flowRunEvidence(ctx.ws, ctx.job, ctx.deps)).stopped, false)
+      } finally {
+        child.kill()
+        await exited
+      }
+    }
+    const verified = await flowRunEvidence(ctx.ws, ctx.job, ctx.deps)
+    assert.equal(verified.mismatched, true)
+    assert.equal(verified.stopped, true)
+    assert.equal(verified.run?.id, 'own')
+    assert.equal(verified.run?.agentSession, 'own-agent')
+    assert.deepEqual(verified.run?.priorSpend?.map(run => run.costUsd), [1])
   } finally { ctx.cleanup() }
 })
 

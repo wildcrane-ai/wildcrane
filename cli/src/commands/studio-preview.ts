@@ -62,8 +62,8 @@ export async function cmdStudioPreview(id: number, opts: { folder: string; base:
     fs.mkdirSync(path.dirname(destination), { recursive: true })
     if (fs.existsSync(destination)) { fs.renameSync(destination, backup); moved = true }
     fs.renameSync(staging, destination); fs.rmSync(backup, { recursive: true, force: true })
-    const tag = `<Studio src=".assets/${id}/studio-review/review.json" />`
-    const prefix = `.assets/${id}/studio-review/`
+    const tag = `<Studio src="asset:studio-review/review.json" />`
+    const prefix = 'asset:studio-review/'
     const attachments = review.files.filter(f => f.path !== 'STUDIO.md' && f.diff)
     const asset = (src: string, label: string) => `<Asset src="${prefix}${src}" label="${label.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}" />`
     const items = attachments.flatMap(f => [asset(f.diff!, f.path), ...(f.after ? [asset(f.after, f.path)] : [])]).join('\n\n')

@@ -20,8 +20,7 @@ import { SWEEP_MS, removeLegacy, sweepCache, sweepStudios } from './cache'
 import { pruneChats, reviewChats } from './chats'
 import { watchBoards, type BoardWatch } from './board-watch'
 import { answerHint } from './diff'
-import { answerOf, runAkb } from './akb'
-import { flowRunEvidence, stopLeftBehind } from './flow'
+import { flowRunEvidence, stopFlowRuns } from './flow'
 import { clearCheckpoint, readCheckpoint, recoverInterruptedJob, saveCheckpoint, stopReply, usesBoardRun } from './recovery'
 import { status, t } from './i18n'
 import { acquireMachine, RunnerAlreadyRunning, type Holder, type MachineLock } from './lock'
@@ -30,7 +29,8 @@ import { keepPresence, type Presence } from './presence'
 import { modelLists, refreshModels } from './runtimes'
 import { MODEL_REFRESH_MS } from './model-list'
 import { codexServer } from './codex-server'
-import { akbCardOf, openAgentFolder, openTaskFolder } from './task-folder'
+import { errno, logRunner } from './runner-log'
+import { openAgentFolder, openTaskFolder } from './task-folder'
 import { logSync } from './sync-debug'
 import { canKeepFlow, reclaimFlowWorkerAfterExit, retireSyncWorker, reclaimFlowWorkers, flowWorkerEntry, hasFlowWorker, launchFlowWorker, stopFlowWorker, watchFlowWorker } from './flow-worker'
 
@@ -78,6 +78,7 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
   let releaseRecord: (() => void) | undefined
   let releaseMachine: MachineLock | undefined
   let registration: api.Registration | null = null
+  const logFields = () => ({ version: registration?.version, source: process.env.WILDCRANE_RUNNER_KIND ?? options.kind })
   let connected = false
   let closed = false
   let ownsExecution = false
@@ -226,12 +227,15 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
     const answer = await register()
     if (closed) return
     if (!answer.ok) {
+      const retry = api.temporaryCloudFailure(answer)
+      logRunner('runner', retry ? 'reconnecting' : 'connection_refused',
+        { ...logFields(), stage: 'registration', code: answer.code ?? 'unreachable', status: answer.status })
       if (answer.code === 'runner_elsewhere') {
         const held = await api.readRunner()
         return finish({ reason: 'elsewhere', machine: (held.ok && held.value.runner?.machineName) || '?' })
       }
       if (answer.code === 'runner_outdated') return finish({ reason: 'outdated' })
-      if (!api.temporaryCloudFailure(answer)) return finish({ reason: 'refused', message: answer.error })
+      if (!retry) return finish({ reason: 'refused', message: answer.error })
       connected = false
       options.onReconnecting?.()
       status(t.reconnecting())
@@ -240,6 +244,7 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
     attempts = 0
     if (!connected) {
       connected = true
+      logRunner('runner', 'connected', { ...logFields(), stage: 'registration' })
       status(idle())
       options.onConnected?.()
       openLive()
@@ -291,7 +296,10 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
         void readJobs('reconnected')
         boards?.pullAll()
       },
-      onState: (state, reason) => console.info('reply-dispatch', { event: state, reason, at: new Date().toISOString() }),
+      onState: (state, reason) => {
+        logRunner('runner', state === 'joined' ? 'connected' : 'reconnecting', { ...logFields(), stage: 'realtime', code: reason })
+        console.info('reply-dispatch', { event: state, reason, at: new Date().toISOString() })
+      },
     })
   }
 
@@ -368,21 +376,25 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
           }
           if (original.state !== 'claimed' && original.state !== 'interrupted') continue
           const step = deps()
-          const failure = await stopLeftOn(original)
-          const checkpoint = readCheckpoint(job.id)
-          let stopped = !failure && await stopReply(job.id, step.stopMs)
+          let checkpoint = readCheckpoint(job.id)
+          let stopped = await stopReply(job.id, step.stopMs)
           if (!valid()) break
-          if (checkpoint && stopped && usesBoardRun(original, checkpoint) && checkpoint.started !== false && !checkpoint.completed) {
+          if (stopped && usesBoardRun(original, checkpoint ?? { pending: [] })) {
             const folder = original.projectDir ? folderFor(original) : null
-            if (folder && 'refused' in folder) continue
+            if (!folder || 'refused' in folder) continue
             const ws = original.agent && folder
               ? openAgentFolder(original, folder.cwd)
-              : openTaskFolder({ ...original, task: original.task ?? original.review?.tasks[0] }, folder?.cwd ?? null)
-            const evidence = await flowRunEvidence(ws, original, { ...step, akb: step.akb() }, job.id, checkpoint.flowRun)
-            checkpoint.flowRun = evidence.run
-            stopped = evidence.stopped
+              : openTaskFolder({ ...original, task: original.task ?? original.review?.tasks[0] }, folder.cwd)
+            const flowDeps = { ...step, akb: step.akb() }
+            stopped = await stopFlowRuns(ws, original, flowDeps)
+            if (stopped && checkpoint?.started !== false && !checkpoint?.completed) {
+              const evidence = await flowRunEvidence(ws, original, flowDeps, job.id, checkpoint?.flowRun)
+              if (checkpoint) checkpoint.flowRun = evidence.run
+              else if (evidence.run) checkpoint = { pending: [], started: true, flowRun: evidence.run }
+              stopped = evidence.stopped
+            }
           }
-          const recovered = await recoverInterruptedJob(registration.machineId, original, checkpoint, stopped, valid, failure)
+          const recovered = await recoverInterruptedJob(registration.machineId, original, checkpoint, stopped, valid)
           if (recovered?.resumed) attempted.delete(job.id)
           if (recovered?.resumed || stopped && recovered?.finished) readAgain = true
           continue
@@ -399,28 +411,6 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
         readAgain = false
         void readJobs()
       }
-    }
-  }
-
-  /** The board runs a flow job left on its card when the Runner was force-quit under it (#2120). */
-  const stopLeftOn = async (job: api.Job): Promise<string | undefined> => {
-    if (!job.review && (!job.flow || !job.task)) return
-    try {
-      const folder = job.projectDir ? folderFor(job) : null
-      if (folder && 'refused' in folder) return folder.refused
-      const ws = openTaskFolder({ ...job, task: job.task ?? job.review?.tasks[0] }, folder?.cwd ?? null)
-      const card = akbCardOf(ws)
-      if (card) {
-        if (job.flow && job.flow.verb !== 'discard') {
-          const reconciled = answerOf<{ kind?: string; deliveryId?: string }>(
-            await runAkb(deps().akb(), ['delivery', 'reconcile', String(card), '--json', '--board', ws.board], { cwd: ws.cwd, board: ws.board }),
-          )
-          if (reconciled?.kind === 'running' && reconciled.deliveryId) return
-        }
-        await stopLeftBehind(deps().akb(), ws, card, deps().stopMs)
-      }
-    } catch (e) {
-      return e instanceof Error ? e.message : String(e)
     }
   }
 
@@ -571,6 +561,7 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
     void tick()
   }).catch(error => {
     if (closed) return
+    logRunner('runner', 'startup_failed', { ...logFields(), stage: 'startup', code: error instanceof RunnerAlreadyRunning ? 'already_running' : errno(error) })
     void finish(error instanceof RunnerAlreadyRunning
       ? { reason: 'already-running' }
       : { reason: 'refused', message: error instanceof Error ? error.message : String(error) })

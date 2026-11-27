@@ -1,12 +1,18 @@
 // 组件清单（wildcrane.component.json）：内置与第三方组件用同一份声明说明内容引用了哪些文件、怎样算有效。
+import { cssDestinations, htmlDestinations } from './web-references';
+import { isAssetRef } from './task-assets';
 import builtins from '../builtin';
+import { markdownCodeRanges } from './markdown-code.ts';
+import { markdownDestinations, type TextDestination } from './markdown-destinations.ts';
 import { schemaProblem } from './schema';
 import { isReview, reviewProblem } from './format/studio';
+
+type TextReference = { text: string; list?: string } | { markdown: 'image' } | { web: 'html' | 'css' };
 
 /** Where content names another file. `json`: a `/`-path into JSON content, `*` matching every
  *  item; `text`: a regular expression, matched case-insensitively, whose first group is the
  *  reference, split by `list` when set. `types`: what a JSON file named there may be, first match wins. */
-export type Reference = ({ json: string } | { text: string; list?: string }) & { types?: string[] };
+export type Reference = ({ json: string } | TextReference) & { types?: string[] };
 
 export interface Manifest {
   name: string;
@@ -42,7 +48,7 @@ export function typeOf(data: unknown, types: string[]): { type: string | null; p
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
 /** A URL the page loads from elsewhere, or none at all. */
-const remote = (src: string) => !src || /^(?:[a-z][\w+.-]*:|\/|#)/i.test(src);
+const remote = (src: string) => !src || (!isAssetRef(src) && /^(?:[a-z][\w+.-]*:|\/|#)/i.test(src));
 
 function mapJson(node: unknown, keys: string[], at: string, visit: (src: string, at: string) => string): unknown {
   if (!keys.length) return typeof node === 'string' && node ? visit(node, at) : node;
@@ -58,19 +64,39 @@ function mapJson(node: unknown, keys: string[], at: string, visit: (src: string,
   return out;
 }
 
-function mapText(text: string, rule: { text: string; list?: string }, skipped: [number, number][], visit: (src: string, line: number) => string, includeRemote: boolean): string {
+function* regexDestinations(text: string, pattern: string, inCode?: (offset: number) => boolean): Generator<TextDestination> {
+  for (const match of text.matchAll(new RegExp(pattern, 'gid'))) {
+    if (inCode?.(match.index)) continue;
+    const span = match.indices?.[1];
+    if (span) yield { src: match[1]!, start: span[0], end: span[1], offset: span[0] };
+  }
+}
+
+function mapText(text: string, rule: TextReference, skipped: [number, number][], visit: (src: string, line: number) => string, includeRemote: boolean, markdown: boolean): string {
+  const code = markdown ? markdownCodeRanges(text) : undefined;
+  let range = code?.next().value;
+  const inCode = (offset: number) => {
+    while (range && offset >= range[1]) range = code?.next().value;
+    return !!range && offset >= range[0];
+  };
+  const destinations = 'text' in rule ? regexDestinations(text, rule.text, inCode)
+    : 'markdown' in rule ? markdownDestinations(text, true, inCode)
+    : rule.web === 'html' ? htmlDestinations(text) : cssDestinations(text);
+  const list = 'text' in rule ? rule.list : undefined;
   let out = '';
   let last = 0;
-  for (const m of text.matchAll(new RegExp(rule.text, 'gid'))) {
-    const span = m.indices?.[1];
-    if (!span || m[1] === undefined || skipped.some(([a, b]) => span[0] >= a && span[0] < b)) continue;
-    const line = text.slice(0, span[0]).split('\n').length;
-    const one = (src: string) => (remote(src) && !includeRemote ? src : visit(src, line));
-    const value = rule.list
-      ? m[1].split(rule.list).map(part => part.replace(/^(\s*)(\S+)/, (_, space: string, src: string) => space + one(src))).join(rule.list)
-      : one(m[1]);
-    out += text.slice(last, span[0]) + value;
-    last = span[1];
+  for (const destination of destinations) {
+    const { src, start, end } = destination;
+    if (skipped.some(([a, b]) => start >= a && start < b)) continue;
+    if (remote(src) && !includeRemote && !list) continue;
+    const line = text.slice(0, 'offset' in destination && typeof destination.offset === 'number' ? destination.offset : start).split('\n').length;
+    const one = (source: string) => (remote(source) && !includeRemote ? source : visit(source, line));
+    const value = list
+      ? src.split(list).map(part => part.replace(/^(\s*)(\S+)/, (_, space: string, source: string) => space + one(source))).join(list)
+      : one(src);
+    if (value === src) continue;
+    out += text.slice(last, start) + value;
+    last = end;
   }
   return out + text.slice(last);
 }
@@ -83,7 +109,7 @@ export function mapReferences(manifest: Manifest | undefined, content: unknown, 
     if ('json' in rule) {
       if (typeof content !== 'string') content = mapJson(content, rule.json.split('/').filter(Boolean), '', (src, at) => map(src, { src, types, text: false, at: at || '/' }));
     } else if (typeof content === 'string') {
-      content = mapText(content, rule, skipped(content), (src, line) => map(src, { src, types, text: true, line }), includeRemote);
+      content = mapText(content, rule, skipped(content), (src, line) => map(src, { src, types, text: true, line }), includeRemote, manifest?.name === 'markdown');
     }
   }
   return content;

@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
+import { createIdleWatchdog } from '../src/lib/agent/idle'
 import { createZcodeClient } from '../src/lib/agent/wire/zcode.ts'
 import { it } from 'node:test'
 import { createKimiStreamRenderer } from '../src/lib/agent/wire/kimi-stream.ts'
@@ -57,4 +58,42 @@ it('ZCode subtracts session fallback totals but leaves per-turn counts alone (#6
   const end = await createZcodeClient().turn({ stdout, stdin, cwd: '/tmp', resumeId: 'z', prompt: 'go', log: () => {}, gotModel: () => {}, gotResumeId: () => {} })
   assert.deepEqual(end.usage, { input: 25, cacheRead: 0, cacheCreation: 0, output: 5 })
   assert.equal(end.costUsd, undefined)
+})
+
+
+it('ZCode renews idle only for new model parts and tool output', async () => {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough()
+  let now = 0
+  let expired = false
+  const watch = createIdleWatchdog(() => { expired = true }, { now: () => now })
+  const send = (type: string, payload: object) => stdout.write(JSON.stringify({
+    method: 'session/event', params: { sessionId: 'z', type, payload },
+  }) + '\n')
+  stdin.on('data', chunk => {
+    for (const line of String(chunk).trim().split('\n')) {
+      const m = JSON.parse(line)
+      const result = m.method === 'session/create' ? { session: { sessionId: 'z' } } : {}
+      stdout.write(JSON.stringify({ id: m.id, result }) + '\n')
+      if (m.method !== 'session/send') continue
+      now = 240_000
+      const part = { partId: 'one', type: 'reasoning', text: 'Reviewing the logs' }
+      send('part.upserted', { part })
+      now += 240_000
+      send('tool.updated', { toolCallId: 'build', toolName: 'bash', kind: 'started' })
+      send('tool.updated', { toolCallId: 'build', kind: 'progress', output: 'Built one target' })
+      now += 240_000
+      watch.check()
+      assert.equal(expired, false)
+      send('part.upserted', { part })
+      send('tool.updated', { toolCallId: 'build', kind: 'progress', output: 'Built one target\nHeartbeat at 00:12' })
+      now += 60_000
+      watch.check()
+      assert.equal(expired, true)
+      send('turn.completed', { resultType: 'success', response: 'done' })
+    }
+  })
+  const end = await createZcodeClient().turn({ stdout, stdin, cwd: '/tmp', prompt: 'go', log: () => {},
+    gotModel: () => {}, gotResumeId: () => {}, event: watch.event, activity: watch.touch })
+  assert.equal(end.ok, true)
 })

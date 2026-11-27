@@ -206,19 +206,12 @@ export function boardPath(): string {
   return rel(KANBAN).split(path.sep).join('/')
 }
 
-/** Asset folders as shipped text spells them. They are machine state (#590), so each literal
- *  is swapped for the real folder — an agent told to write into a folder nothing reads draws
- *  nothing. The `src` a card writes is untouched: it is a name, and the board resolves it. */
-const ASSETS_PATH_IN_TEXT = 'docs/kanban/.assets'
-
 export const BOARD_STATE_IN_TEXT = '<board-state>'
 
 export function boardText(text: string): string {
   const posix = (p: string): string => rel(p).split(path.sep).join('/')
-  // Longest first, and each swap applied only to text the earlier ones left, so a state
-  // folder that itself spells `docs/kanban` is never rewritten again.
+  // Leave the substituted state path untouched.
   const swaps: [string, string][] = [
-    [ASSETS_PATH_IN_TEXT, posix(ASSETS)],
     [BOARD_STATE_IN_TEXT, posix(BOARD_STATE)],
     [BOARD_PATH_IN_TEXT, boardPath()],
   ]

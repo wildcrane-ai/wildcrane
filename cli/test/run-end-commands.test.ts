@@ -6,12 +6,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import net from 'node:net'
-import { completeDelivery } from '../src/lib/agent/complete.ts'
+import { taskArchive } from '../src/commands/task.ts'
 import { RUN_ENV } from '../src/lib/agent/env.ts'
 import { markEnv, runMark } from '../src/lib/agent/stop.ts'
 import { afterEach, beforeEach, it } from 'node:test'
 
-import { patch } from '../src/lib/agent/sessions.ts'
+import { openRun, patch } from '../src/lib/agent/sessions.ts'
 import { startRun } from '../src/lib/agent/start.ts'
 import { readRuns } from '../src/lib/agent/store.ts'
 import { watchRun } from '../src/lib/agent/watch.ts'
@@ -115,7 +115,7 @@ for (const background of [true, false]) it(`cleans a completed task with backgro
     const previous=process.env[RUN_ENV]
     try {
       process.env[RUN_ENV]=run.sessionId
-      assert.equal(completeDelivery(run.deliveryId!).finished,true)
+      assert.equal((await taskArchive('1', { cwd: root })).archive_status, 'archived')
     } finally {
       if(previous===undefined) delete process.env[RUN_ENV]
       else process.env[RUN_ENV]=previous
@@ -146,4 +146,51 @@ it('keeps managed connection identity and cleanup through later record updates (
   assert.equal(run.managedProcess, true)
   assert.equal(run.agentIdentity, 'connection-start')
   assert.deepEqual(run.cleanup, cleanup)
+})
+
+it('leaves a task synced before #1246 finishes for its own job (#1248)', async () => {
+  const todo = path.join(root, 'docs/kanban/todo')
+  const source = path.join(todo, '1246-own-task.md')
+  const other = path.join(todo, '1247-independent-task.md')
+  const card = (status: string) => `---\ntitle: Task\npriority: med\nstatus: ${status}\nquestions: []\n---\n\n## Todo\n\n- [ ] Build\n`
+  const marker = path.join(root, 'running')
+  const agent = path.join(root, 'agent.mjs')
+  fs.writeFileSync(agent, `
+    import fs from 'node:fs'
+    fs.writeFileSync(${JSON.stringify(marker)}, '')
+    const timer = setInterval(() => {
+      if (!fs.existsSync(${JSON.stringify(other)})) return
+      clearInterval(timer)
+      console.log(JSON.stringify({type: 'result', result: 'Still on #1246'}))
+    }, 10)
+  `)
+  fs.writeFileSync(uiConfigOf(root, 'docs', 'kanban'), JSON.stringify({
+    runtimes: [{ id: 'global', name: 'Global', harness: 'claude-code', settings: { command: `node ${agent}` } }],
+  }))
+  const execution = { job: '11111111-1111-4111-8111-111111111111', machine: '22222222-2222-4222-8222-222222222222', card: 1246 }
+  const previous = process.env.AI4KANBAN_EXECUTION
+  process.env.AI4KANBAN_EXECUTION = JSON.stringify(execution)
+  try {
+    for (const action of ['clarify', 'implement', 'edit', 'resolve', 'approve'] as const) {
+      fs.rmSync(marker, { force: true })
+      fs.rmSync(other, { force: true })
+      fs.writeFileSync(source, card(action === 'clarify' ? 'todo' : 'ready'))
+      const started = openRun({ action, id: 1246 }, 'Work on #1246', [])
+      if ('error' in started) throw Error(started.error)
+      patch(started.run.sessionId, run => { run.pid = process.pid })
+      const watching = watchRun(started.run.sessionId)
+      const until = Date.now() + 4_000
+      while (!fs.existsSync(marker) && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 10))
+      const syncedDuringRun = fs.existsSync(marker)
+      fs.writeFileSync(other, card('todo'))
+      assert.equal(await watching, 0, action)
+      assert.ok(syncedDuringRun, action)
+      assert.ok(!readRuns().some(run => run.cardId === 1247), action)
+    }
+    const refused = openRun({ action: 'clarify', id: 1247 }, '', [])
+    assert.ok('error' in refused && /different task/.test(refused.error))
+  } finally {
+    if (previous === undefined) delete process.env.AI4KANBAN_EXECUTION
+    else process.env.AI4KANBAN_EXECUTION = previous
+  }
 })

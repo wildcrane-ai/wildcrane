@@ -15,8 +15,9 @@ task's core intent.
 
 Do not push, publish or deploy.
 
-Once a task meets its Studio's delivery conditions, follow `akb guide archive` to record
-delivery completion before ending the run.
+For a managed Implement phase, save the checked work in the delivery workspace for Land.
+In Land, verify the saved results and follow the Studio's delivery conditions. Follow
+`akb guide archive` once delivery is verified. A local task handles delivery and archive in one run.
 
 - **Verification**: run required and minimal representative checks, reuse valid results, distinguish defects from environment or tool limits, stop retries that add no evidence, and finish when acceptance is proven.
 - **Authorization**: carry approval for necessary in-scope operations across tools and stages without asking again.

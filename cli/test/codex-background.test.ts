@@ -479,6 +479,7 @@ it('delivers mixed completed batches without marking an unoffered result as pres
   finish(s, 'Remaining batch failed; diagnostic saved')
   const end = await s.end
   assert.equal(end.ok, false)
+  assert.equal(end.failure?.code, 'completed_operation_failed')
   assert.match(end.error!, /RESULT_11:/)
   assert.equal(end.result, 'Remaining batch failed; diagnostic saved')
   assert.equal(s.calls.filter(c => c.method === 'turn/start').length, 3)
@@ -521,4 +522,29 @@ it('batches complete identifiers at the snapshot limit', () => {
   assert.ok(first.length > 0 && first.length < work.length)
   assert.ok(Buffer.byteLength(JSON.stringify(first)) < 16 * 1024)
   assert.equal(first[0], work[0])
+})
+
+it('recognizes output from owned Codex commands and subagents while ignoring terminal polls', async () => {
+  let progress = 0
+  const client = createCodexClient()
+  const s = server(method => method === 'thread/start' ? { thread: { id: 'main' } } : {}, undefined, undefined, {
+    ...client, turn: io => client.turn({ ...io, activity: () => { progress++ } }),
+  })
+  await tick()
+  s.notify('turn/started', { threadId: 'main', turn: { id: 't1' } })
+  const command = { threadId: 'main', turnId: 't1', itemId: 'command' }
+  s.notify('item/started', { ...command, item: { type: 'commandExecution', id: 'command', status: 'inProgress' } })
+  s.notify('item/commandExecution/terminalInteraction', { ...command, stdin: '' })
+  s.notify('item/commandExecution/outputDelta', { ...command, delta: 'Heartbeat at 00:01' })
+  s.notify('item/commandExecution/outputDelta', { ...command, turnId: 'old', delta: 'Historical output' })
+  assert.equal(progress, 0)
+  s.notify('item/commandExecution/outputDelta', { ...command, delta: 'Compiled target A' })
+  s.notify('item/commandExecution/outputDelta', { ...command, delta: 'Compiled target A' })
+  assert.equal(progress, 1)
+  s.item({ id: 'spawn', type: 'subAgentActivity', kind: 'started', agentThreadId: 'child' })
+  s.notify('item/agentMessage/delta', { threadId: 'child', turnId: 'c1', delta: 'Inspected the compiled target.' })
+  s.notify('item/agentMessage/delta', { threadId: 'unrelated', turnId: 'z1', delta: 'Unrelated work.' })
+  assert.equal(progress, 2)
+  s.stdout.destroy()
+  await s.end
 })

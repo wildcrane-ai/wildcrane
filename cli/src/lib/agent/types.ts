@@ -36,7 +36,7 @@ export type AgentAction =
    *  approval, and planning makes those previews. */
   | 'approve'
   /** Retired (#1203) with the sessions they were: a planning pass now writes and closes the
-   *  card itself, nothing gates a ready card, and nothing answers for the user. They stay
+   *  card itself, nothing gates a planned card, and nothing answers for the user. They stay
    *  here so the runs already recorded still read back as what they were. */
   | 'writing'
   | 'gate'
@@ -327,6 +327,7 @@ export interface RunRecord {
   cloudExecution?: import('../cloud/execution').CloudExecution
   studioPin?: import('./cloud-studios').StudioPin
   pendingWrites?: boolean
+  lastProgressAt?: number
   submitted?: boolean
   cardId: number | null
   /** Cards this run created through `akb raw create`, held until it closes so an overlapping
@@ -462,8 +463,8 @@ export type DeliveryEnding =
 
 /** Why a build ended with its delivery still active. The task page shows the first sentence. */
 export const NOT_COMPLETED = 'The delivery has not recorded completion.'
-export const notCompletedWhy = (deliveryId: string, command = 'akb'): string =>
-  `${NOT_COMPLETED} Finish its unchecked todos, then run ${command} delivery complete ${deliveryId}, with --commit <sha> --branch <name> in a git project.`
+export const notCompletedWhy = (cardId: number | null, command = 'akb'): string =>
+  cardId === null ? NOT_COMPLETED : `${NOT_COMPLETED} Finish the delivery and run ${command} task archive ${cardId}.`
 
 /** One step a delivery entered, as history. Resuming never trusts it — a stored position
  *  goes stale in exactly the crash it exists for — so it is read, not acted on. */
@@ -744,12 +745,9 @@ export interface RefineAsk {
  *  fresh on every read (how long it took, whether it can be resumed). */
 export interface RunView extends RunRecord {
   durationMs?: number
-  /** This run ended before finishing — it failed, was cut off or was stopped — and can be
-   *  picked up: we know the id to continue by, and the agent that ran it is still the one
-   *  the board runs. */
+  /** The previous execution stopped, its operation results are complete, and its original session can be resumed. */
   canResume?: boolean
-  /** This run failed or was cut off with no session to pick up (#1321), and its ask can be
-   *  started again from the record. Never set beside `canResume`. */
+  /** The saved request can be retried in a new session with `run resume --fresh`. */
   canRetry?: boolean
   /** The card this run names has left the board since — landed, archived or rejected (#673,
    *  #809). Set only on a run that stopped short, where it says the work the run was left

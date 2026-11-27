@@ -10,6 +10,7 @@ import { PLANNER, agentMemoryDir, memoryFile } from '../memory'
 import { die, rel, ARCHIVE, MEMORY, PROJECT_MD, REPO_ROOT } from '../paths'
 import { studioRefusal } from './start'
 import type { Meta, MoveResult } from '../types'
+import { deliveryPhase } from './env'
 import { boardCommand } from './command'
 import { activeDelivery, deliveryFor, withStudio } from './deliveries'
 import { field, metaLine, numbered } from './facts'
@@ -376,16 +377,23 @@ function buildFlow(req: AgentRequest, program: string): Flow {
       if (settled) facts.push(...notesField(card))
       facts.push(...stepsField(card))
       if (card.meta.questions.length) facts.push(...questionsField(card.meta))
+      const phase = deliveryPhase()
+      if (phase === 'land') {
+        close.push(
+          'Follow the current Studio Land instructions. Verify existing results before applying pending changes.',
+          `Record the outcome and verification, then run ${self} task archive ${req.id}.`,
+        )
+        break
+      }
       close.push(
         ...committingClose(delivery),
         ...(settled
           ? ['honour the notes above as requirements — they are decisions already settled on this card, and nothing here reopens them']
           : []),
         'tick each box in ## Todo as you finish it — they are the record of what was built',
-        `record the delivered outcome and verification on the task — \`akb guide archive\``,
-        delivery
-          ? `${self} delivery complete ${delivery.deliveryId} — finish your step and follow its handoff; software steps in a git project supply --commit <full-sha> --branch <target>`
-          : `${self} task archive ${req.id} — once every box is ticked and the card's goal is met`,
+        phase === 'implement'
+          ? 'Save and verify the implementation in the delivery workspace. Commit Git changes there. Leave merge, application and archive to Land.'
+          : `Record the outcome and verification, then run ${self} task archive ${req.id}.`,
       )
       if (card.meta.questions.length) {
         next.push(
@@ -398,7 +406,7 @@ function buildFlow(req: AgentRequest, program: string): Flow {
       facts.push(...stepsField(card!), ...questionsField(card!.meta))
       close.push(
         'settle and write the card as `akb guide refine` says',
-        `${self} task update ${req.id} --status ready — once the card validates`,
+        `${self} task update ${req.id} --status planned — once planning is complete and the card validates`,
       )
       break
     }
@@ -420,7 +428,7 @@ function buildFlow(req: AgentRequest, program: string): Flow {
       break
     }
     case 'approve': {
-      close.push(`${self} task update ${req.id} --status ready — once the card validates`)
+      close.push(`${self} task update ${req.id} --status planned — once planning is complete and the card validates`)
       break
     }
     case 'edit': {

@@ -8,11 +8,8 @@
 // Where a shape here overlaps one the writing side uses, this is the one that travels: the
 // writers read a card's `Meta` (../types.ts), readers read a `Card`.
 
-/** The stage a card rests in, saved on the card so it survives a restart. In order: `todo`
- *  (raw), `ready` (plan concrete, no open questions, someone could start now),
- *  `implementing`. Archiving and rejecting take the card off the board, so neither is a
- *  status. */
-export type CardStatus = 'todo' | 'ready' | 'implementing'
+/** The planning and implementation state saved on an open card. */
+export type CardStatus = 'todo' | 'planned' | 'implementing'
 
 /** How many options a question lets the user tick. */
 export type QuestionMode = 'single' | 'multi'

@@ -1,4 +1,6 @@
 // Card tags, file types and references. This module runs in Node and the browser.
+import { markdownDestinations } from './markdown-destinations.ts';
+
 export const previewComponents = {
   asset: { name: 'Asset' },
   compare: { name: 'Compare', summary: 'Compare two Assets' },
@@ -51,7 +53,7 @@ export function captionsPath(captions: Captions | undefined, label: string | nul
 }
 
 function isCaptionPath(value: unknown): value is string {
-  return typeof value === 'string' && !/^(?:[a-z][\w+.-]*:|\s|[/\\])|[?#\\]/i.test(value) && /\.(?:srt|vtt)$/i.test(value);
+  return typeof value === 'string' && (value.startsWith('asset:') || !/^(?:[a-z][\w+.-]*:|\s|[/\\])/i.test(value)) && !/[?#\\]/.test(value) && /\.(?:srt|vtt)$/i.test(value);
 }
 
 export function parseCaptions(raw: string | undefined, variants: Variant[]): Captions | undefined {
@@ -70,7 +72,7 @@ export function parseCaptions(raw: string | undefined, variants: Variant[]): Cap
 export type Overlay = string | Record<string, string>;
 
 function isOverlayPath(value: unknown): value is string {
-  return typeof value === 'string' && !/^(?:[a-z][\w+.-]*:|[/\\#])/i.test(value) && /\.html?(?:[?#].*)?$/i.test(value);
+  return typeof value === 'string' && (value.startsWith('asset:') || !/^(?:[a-z][\w+.-]*:|[/\\#])/i.test(value)) && /\.html?(?:[?#].*)?$/i.test(value);
 }
 
 export function parseOverlay(raw: string | undefined): Overlay | undefined {
@@ -90,7 +92,8 @@ export function overlayPath(overlay: Overlay | undefined, label: string | null) 
 }
 
 function visibleBody(body: string): string {
-  const lines = body.replace(/<!--[^]*?-->/g, '').split(/\r?\n/);
+  const newlines = (text: string) => text.replace(/[^\n]/g, '');
+  const lines = body.replace(/<!--[^]*?-->/g, newlines).split(/\r?\n/);
   let fence = '';
   let inTag = false;
   const visible: string[] = [];
@@ -106,7 +109,7 @@ function visibleBody(body: string): string {
     if (kept && TAG_START.test(line)) inTag = true;
     if (line.includes('/>')) inTag = false;
   }
-  return visible.join('\n').replace(/(`+)[^]*?\1/g, '');
+  return visible.join('\n').replace(/(`+)[^]*?\1/g, newlines);
 }
 
 const TAG = new RegExp(`<(${sourceTags})\\b([^<>]*?)\\/>`, 'g');
@@ -119,39 +122,43 @@ function* componentTags(text: string) {
     for (const match of block[0].matchAll(TAG)) {
       const attrs: Record<string, string> = {};
       for (const p of match[2]!.matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) attrs[p[1]!] = (p[2] ?? p[3])!;
-      yield { name: match[1]!, attrs };
+      yield { name: match[1]!, attrs, offset: block.index + match.index };
     }
   }
 }
 
 export const bodyComponentTags = (body: string) => componentTags(visibleBody(body));
 
-export function bodyReferences(body: string): Source[] {
+export function bodyReferences(body: string, located?: (src: string, line: number) => void): Source[] {
   const text = visibleBody(body);
   const out: Source[] = [];
-  for (const { name, attrs: a } of componentTags(text)) {
+  const add = (src: string, types: string[], offset: number) => {
+    out.push({ src, types });
+    located?.(src, text.slice(0, offset).split('\n').length);
+  };
+  for (const { name, attrs: a, offset } of componentTags(text)) {
     if (name === compare.name) {
       if (!a.a || !a.b) continue;
-      for (const k of ['a', 'b', 'shots']) if (a[k]) out.push({ src: a[k]!, types: ARRANGED });
+      for (const k of ['a', 'b', 'shots']) if (a[k]) add(a[k]!, ARRANGED, offset);
     } else if (a.src) {
-      out.push({ src: a.src, types: name === storyboard.name ? STORYBOARD : name === studio.name ? STUDIO : name === asset.name ? ASSET : [] });
+      add(a.src, name === storyboard.name ? STORYBOARD : name === studio.name ? STUDIO : name === asset.name ? ASSET : [], offset);
       if (a.variants) {
         try {
           const v: unknown = JSON.parse(a.variants);
-          if (isObject(v)) for (const src of Object.values(v)) if (typeof src === 'string' && src) out.push({ src, types: name === asset.name ? ASSET : [] });
+          if (isObject(v)) for (const src of Object.values(v)) if (typeof src === 'string' && src) add(src, name === asset.name ? ASSET : [], offset);
         } catch { /* 无效 variants 沿用普通 src。 */ }
       }
       if (name === asset.name || name === 'Mockup') {
         const overlay = parseOverlay(a.overlay);
-        if (typeof overlay === 'string') out.push({ src: overlay, types: [] });
-        else if (overlay) for (const src of Object.values(overlay)) out.push({ src, types: [] });
+        if (typeof overlay === 'string') add(overlay, [], offset);
+        else if (overlay) for (const src of Object.values(overlay)) add(src, [], offset);
         const captions = parseCaptions(a.captions, variantsOf(a.variants, a.src));
-        if (typeof captions === 'string') out.push({ src: captions, types: ['asset'] });
-        else if (captions) for (const src of Object.values(captions)) out.push({ src, types: ['asset'] });
+        if (typeof captions === 'string') add(captions, ['asset'], offset);
+        else if (captions) for (const src of Object.values(captions)) add(src, ['asset'], offset);
       }
     }
   }
-  for (const m of text.replace(TAG, '').matchAll(/\]\(\s*<?([^\s)>]+)>?(?:\s+["'][^]*?["'])?\s*\)/g)) out.push({ src: m[1]!, types: [] });
+  for (const { src, offset } of markdownDestinations(text.replace(TAG, tag => tag.replace(/[^\n]/g, ' ')))) add(src, [], offset);
   return out;
 }
 export const bodySources = (body: string): string[] => [...new Set(bodyReferences(body).map(r => r.src))];

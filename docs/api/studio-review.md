@@ -5,7 +5,7 @@ akb studio preview 819 --folder ./draft --base ./baseline
 ```
 
 - **Inputs**: a card, complete draft and unchanged baseline. Existing Studios need matching `{id, version}` in both `version.json` files; new Studios use `--base empty` without a version file.
-- **Output**: frozen files and real unified diffs under `.assets/<card>/studio-review/`. The command prints a `<Studio>` tag plus attachment tags; JSON output includes `file` (absolute snapshot path), `tag` and `files` (attachment Markdown).
+- **Output**: frozen files and real unified diffs under `studio-review/` in the directory printed by `akb task show <id>` as `Asset folder`. The command prints a `<Studio>` tag plus attachment tags; JSON output includes `file` (absolute snapshot path), `tag` and `files` (attachment Markdown).
 - **Review**: put `tag` in the studio Preview and nonempty `files` in the files Preview. Attachments include changes anywhere in the draft, including skills and custom directories. They pair full source with its diff under one label; three or more changed files use `<Set>`. Deleted files retain their diff.
 - **Trials**: use ordinary Preview Components in the studio Preview. No result manifest or Agent assignment is required.
 - **Failure**: invalid definitions report `studio-problems`; missing cards report `no-such-card`; invalid baselines or files report `bad-args`. Failed generation preserves the last snapshot.
@@ -17,7 +17,7 @@ Creation, feedback, approval and completion use the existing task flow.
 ## Frozen source
 
 ```html
-<Studio src=".assets/819/studio-review/review.json" />
+<Studio src="asset:studio-review/review.json" />
 ```
 
 The existing version 2 snapshot holds publication evidence, not a tab or role configuration:

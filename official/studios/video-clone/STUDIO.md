@@ -86,4 +86,4 @@ any required final review and publish only when requested.
 
 ## Files
 
-Files live in `<board-state>/assets/<card id>/`, linked from the card as `.assets/<card id>/...`; the template goes elsewhere only when the card names a folder for it. When the card names a video outside that folder, copy it in first; with no video, or none of the user's content to fill it, ask for it.
+Save files in the task's Asset folder and use `asset:<file>` in the card. Save the template in the folder named on the card when supplied. When the card names a video outside that folder, copy it in first; with no video, or none of the user's content to fill it, ask for it.

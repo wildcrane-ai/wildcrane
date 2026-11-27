@@ -1,11 +1,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileManifest, relativeFileReference, splitFileReference } from '../../artifact-sdk/src/internal/file-references'
+import { assetRef, decodeFilePath, isAssetRef, isTaskAssetRef, relativeAssetRef, taskAssetPath } from '../../artifact-sdk/src/internal/task-assets'
+import { fileManifest, fileNameOf, relativeFileReference, splitFileReference } from '../../artifact-sdk/src/internal/file-references'
 import { mapReferences, referencesOf, typeOf } from '../../artifact-sdk/src/internal/manifest'
 import { bodyReferences, isObject, kindOf } from '../../artifact-sdk/src/internal/references'
 import { parsePreviewBlocks } from '../../cli/src/lib/shared/preview-blocks'
 import { makeFailure } from '../../cli/src/lib/agent/retry'
-import type { SavedPreviewInputs, TaskReview } from '../../cli/src/lib/shared/review-plan'
+import { isFlatReviewPlan, type SavedPreviewInputs, type TaskReview } from '../../cli/src/lib/shared/review-plan'
 import type { Assets, Call } from './api'
 import { syncStopped } from './sync-retry'
 import { cardAssetsDir, localMaterials, pullMaterials, readAsset, type TaskFolder } from './task-folder'
@@ -15,7 +16,7 @@ const artifactId = /^art_[a-z0-9]+$/i
 const object = (value: unknown) => isObject(value) ? value : {}
 const own = (record: Record<string, unknown>, key: string) => Object.hasOwn(record, key) ? record[key] : undefined
 
-function sourceOf(pins: Record<string, unknown>, source: string, owner?: string): string {
+function sourceOf(pins: Record<string, unknown>, source: string, id: number | undefined, owner?: string): string {
   const [ref] = splitFileReference(source)
   if (artifactId.test(ref)) {
     const pin = object(own(pins, ref))
@@ -26,10 +27,11 @@ function sourceOf(pins: Record<string, unknown>, source: string, owner?: string)
     const first = names[0]
     return first && names.every(key => object(pins[key]).version === object(pins[first]).version) ? first : ref
   }
-  let name = ref
-  try { name = decodeURIComponent(ref) } catch { /* Keep literal file names. */ }
-  const local = owner && !name.startsWith('.assets/') ? relativeFileReference(name, owner) : name
-  return [local, path.posix.normalize(local), source].find(key => Object.hasOwn(pins, key)) ?? local
+  const name = decodeFilePath(ref)
+  const local = !owner || isTaskAssetRef(ref) ? ref : isTaskAssetRef(owner) ? relativeAssetRef(ref, owner) ?? '' : relativeFileReference(name, owner)
+  const taskFile = taskAssetPath(local, id)
+  const alias = taskFile === null ? undefined : Object.keys(pins).find(key => taskAssetPath(key, id) === taskFile)
+  return [local, path.posix.normalize(local), source].find(key => Object.hasOwn(pins, key)) ?? alias ?? local
 }
 
 export async function stageSavedPreviews(
@@ -64,9 +66,9 @@ export async function stageSavedPreviews(
       }
       if (error || status === 'pending' || status === 'failed' || typeof artifact !== 'string' || !artifactId.test(artifact)
         || typeof version !== 'number' || !Number.isSafeInteger(version) || version < 1) {
-        const missingEvidence = review.plan?.length && types.length && !local
+        const missingEvidence = Array.isArray(review.plan) && review.plan.length && types.length && !local
           && (error || status === 'pending' || status === 'failed' || !artifact)
-        if (conflicting.has(source) || missingEvidence) return invalid(`${title} · ${source}`)
+        if (conflicting.has(identity(source)) || missingEvidence) return invalid(`${title} · ${source}`)
         return saved(typeof error === 'string' ? error : artifact ? 'Missing approved asset version.' : 'Missing asset record.')
       }
 
@@ -77,14 +79,14 @@ export async function stageSavedPreviews(
       const matches = local && localPin?.version === version
       const issue = ws.materialIssues?.[source]
       const bytes = matches ? { ok: true as const, value: fs.readFileSync(local.file) }
-        : issue && !conflicting.has(source) ? { ok: false as const, error: issue, code: undefined }
+        : issue && !conflicting.has(identity(source)) ? { ok: false as const, error: issue, code: undefined }
         : await readAsset(artifact, version, kind === 'html' ? 'html' : undefined)
       if (!bytes.ok) {
         if (['unauthenticated', 'forbidden', 'unauthorized', 'permission_denied'].includes(bytes.code ?? '')) return bytes
-        if (conflicting.has(source)) return invalid(`${title} · ${source} (version ${version}): ${bytes.error}`)
+        if (conflicting.has(identity(source))) return invalid(`${title} · ${source} (version ${version}): ${bytes.error}`)
         return saved(bytes.error)
       }
-      const basename = path.posix.basename(splitFileReference(source)[0]).replace(/[^\w. -]/g, '_')
+      const basename = fileNameOf(source).replace(/[^\w. -]/g, '_')
       const name = extension ? basename : basename + (({ html: '.html', storyboard: '.json', spritesheet: '.json', studio: '.json' } as Record<string, string>)[kind] ?? '')
       const copy = path.join(folder, `${files.size + 1}-${name.replace(/\.tsx$/i, kind === 'html' ? '.html' : '.tsx')}`)
       const entry = { file: matches ? local.file : copy, note: '' }
@@ -102,9 +104,9 @@ export async function stageSavedPreviews(
       }
       const manifest = kind === 'asset' ? knownManifest : fileManifest(kind, source)
       const refs = referencesOf(manifest, data).filter(({ src }) => !remote.test(src))
-      const children = new Map(refs.map(({ src, types }) => [src, { source: sourceOf(pins, src, source), types }]))
+      const children = new Map(refs.map(({ src, types }) => [src, { source: sourceOf(pins, src, ws.number ?? undefined, source), types }]))
       if (Array.isArray(dependencies)) for (const dep of dependencies) {
-        if (typeof dep === 'string' && !children.has(dep)) children.set(dep, { source: sourceOf(pins, dep), types: [] })
+        if (typeof dep === 'string' && !children.has(dep)) children.set(dep, { source: sourceOf(pins, dep, ws.number ?? undefined), types: [] })
       }
       const targets = new Map<string, string>()
       for (const [ref, child] of children) {
@@ -144,9 +146,9 @@ export async function stageSavedPreviews(
       if (typeof source === 'string' && !refs.some(ref => ref.src === source)) refs.push({ src: source, types: [] })
     }
     for (const { src, types } of refs) {
-      if (remote.test(src)) continue
-      const source = sourceOf(pins, src)
-      if (!types.length && !src.startsWith('.assets/') && !artifactId.test(src)
+      if (remote.test(src) && !isAssetRef(src)) continue
+      const source = sourceOf(pins, src, ws.number ?? undefined)
+      if (!types.length && !isTaskAssetRef(src) && !artifactId.test(src)
         && !Object.hasOwn(pins, source)) continue
       const result = await stage(source, types)
       if (!result.ok) return result
@@ -155,9 +157,13 @@ export async function stageSavedPreviews(
     return { ok: true as const, value: `## ${title}\n\n${body}${attachments.length ? '\n\nPinned files:\n' + attachments.join('\n') : ''}` }
   }
 
-  if (review.plan?.length) {
+  const flat = isFlatReviewPlan(review.plan)
+  const plan = Array.isArray(review.plan) ? review.plan : []
+  const nodes = flat ? review.stages.flatMap(stage => stage.preview && stage.status === 'approved'
+    ? [{ id: stage.id, previews: [stage.preview] }] : []) : plan
+  if (nodes.length) {
     const stages = new Map(review.stages.map(stage => [stage.id, stage]))
-    for (const node of review.plan) {
+    for (const node of nodes) {
       const stage = stages.get(node.id)
       if (!stage || !['approved', 'done'].includes(stage.status)) return invalid(node.id)
       const snapshot = stage.snapshot
@@ -182,24 +188,33 @@ export async function stageSavedPreviews(
         add(`${title} · ${id}`, saved, { ...legacyPins, ...pins }, section.sources)
       }
     }
-  } else if (inputs) {
+  }
+  if ((!nodes.length || flat) && inputs) {
     if (inputs.body) {
       const body = parsePreviewBlocks(inputs.body).blocks.reduceRight((text, block) =>
         text.slice(0, block.start) + text.slice(block.end), inputs.body).trim()
       if (body) add('Task', body, inputs.assets, [])
     }
     for (const [id, section] of Object.entries(inputs.sections)) {
-      add(id, section.body, inputs.assets, section.sources)
+      add(flat && nodes.some(node => node.previews.includes(id)) ? `${id} · current draft` : id, section.body, inputs.assets, section.sources)
     }
   }
   const selected = new Map<string, Assets[string]>()
+  const firstPins = new Map<string, Assets[string]>()
   const conflicting = new Set<string>()
+  const identity = (source: string) => {
+    const file = taskAssetPath(source, ws.number ?? undefined)
+    return file === null ? source : assetRef(file)
+  }
   for (const { pins } of sections) {
     for (const [source, value] of Object.entries(pins)) {
       const pin = object(value)
-      const previous = selected.get(source)
-      if (previous && (previous.artifact !== pin.artifact || previous.version !== pin.version)) conflicting.add(source)
-      if (!previous && typeof pin.artifact === 'string') selected.set(source, pin as unknown as Assets[string])
+      const key = identity(source)
+      const previous = firstPins.get(key)
+      if (previous && (previous.artifact !== pin.artifact || previous.version !== pin.version)) conflicting.add(key)
+      if (typeof pin.artifact !== 'string') continue
+      if (!previous) firstPins.set(key, pin as unknown as Assets[string])
+      if (!selected.has(source)) selected.set(source, pin as unknown as Assets[string])
     }
   }
   const pulled = await pullMaterials(ws, Object.fromEntries(selected), stopped)
@@ -216,10 +231,10 @@ export async function stageSavedPreviews(
   const local = ws.number && cardAssetsDir(ws, ws.number)
   if (local && fs.existsSync(local)) {
     for (const file of fs.readdirSync(local, { recursive: true, withFileTypes: true })) {
-      if (file.isFile()) sources.add(`.assets/${ws.number}/${path.relative(local, path.join(file.parentPath, file.name)).split(path.sep).join('/')}`)
+      if (file.isFile()) sources.add(assetRef(path.relative(local, path.join(file.parentPath, file.name)).split(path.sep).join('/')))
     }
   }
-  const supplemental = [...sources].filter(source => !selected.has(source)).flatMap(source => {
+  const supplemental = [...sources].filter(source => !firstPins.has(identity(source))).flatMap(source => {
     const local = material(source)
     const problem = ws.materialIssues?.[source]
     return local || problem ? [`- ${JSON.stringify(source)} · ${local ? `local file: ${JSON.stringify(local.file)}` : 'unavailable'}${problem ? ` · ${problem}` : ''}`] : []

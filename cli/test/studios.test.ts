@@ -172,7 +172,7 @@ it('packs all built-ins on the same format and exposes only ID and output instru
   const definition = checkStudioFiles(builder.files, true)
   assert.ok(definition.ok)
   const previews = definition.def.previews
-  assert.deepEqual(previews.map(p => p.id), ['market-research', 'studio', 'files'])
+  assert.deepEqual(previews.map(p => p.id), ['market-research', 'studio', 'dashboard', 'files'])
   assert.deepEqual(previews[0]?.title, { en: 'Market research', zh: '市场调研' })
   const direct = parseReviewFlow('Studio', previews)
   assert.equal(direct[0]?.id, 'studio')

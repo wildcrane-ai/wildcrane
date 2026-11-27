@@ -30,3 +30,16 @@ export function effectivePreviewCatalog<S extends { id: string }, D extends { id
 ): (S | D)[] {
   return [...studio, ...taskOnlyPreviews(studio, definitions)]
 }
+
+/** Merge incoming Preview definitions by id, keeping untouched existing definitions. */
+export function mergePreviewDefinitions(
+  existing: readonly PreviewDefinition[],
+  incoming: readonly PreviewDefinition[],
+): PreviewDefinition[] {
+  const byId = new Map(incoming.map(definition => [definition.id, definition]))
+  const seen = new Set(existing.map(definition => definition.id))
+  return [
+    ...existing.map(definition => byId.get(definition.id) ?? definition),
+    ...incoming.filter(definition => !seen.has(definition.id)),
+  ]
+}

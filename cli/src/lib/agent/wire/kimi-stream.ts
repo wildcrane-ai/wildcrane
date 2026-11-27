@@ -107,7 +107,8 @@ export function createKimiStreamRenderer(cwd: string, resumeId?: string): Stream
     if (!row) return `${line}\n`
     switch (row.role) {
       case 'assistant': {
-        events.progress()
+        const thought = str(row.reasoning_content)
+        if (thought) events.progressSnapshot('reasoning', thought)
         const said = str(row.content).trim()
         // The last thing the agent said is the run's result. The UI leads with it and folds
         // the events away.

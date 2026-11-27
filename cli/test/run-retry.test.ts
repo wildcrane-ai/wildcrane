@@ -1,6 +1,3 @@
-// A failed run with no session to pick up is started again (#1321), and a run whose connector
-// this build cannot resume carries on in a new session.
-
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -8,13 +5,14 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { IDLE_FAILURE } from '../src/lib/agent/idle.ts'
-import { cmdRuns } from '../src/commands/run.ts'
+import { retryRecord } from '../src/lib/agent/retry.ts'
+import { cmdLog, cmdResume, cmdRuns } from '../src/commands/run.ts'
 import { startCollecting, stopCollecting } from '../src/lib/io.ts'
 import { listRuns, openResume, readSpec } from '../src/lib/agent/sessions.ts'
 import { logPathOf, readStore, withStore } from '../src/lib/agent/store.ts'
 import type { DeliveryRecord, RunRecord, RunView } from '../src/lib/agent/types.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
-import { forgetMachineState, restoreMachineHome } from './helpers/board.ts'
+import { forgetMachineState, restoreMachineHome, uiConfigOf } from './helpers/board.ts'
 
 let root = ''
 let home = ''
@@ -99,16 +97,95 @@ describe('requiring the original conversation', () => {
   })
 
   it('resumes the recorded Codex conversation in the same delivery', async () => {
+    const cwd = path.join(root, 'saved-work')
+    fs.mkdirSync(cwd)
+    const output = path.join(cwd, 'result.txt')
+    fs.writeFileSync(output, 'saved once')
+    fs.writeFileSync(uiConfigOf(root, 'docs', 'kanban'), JSON.stringify({
+      runtimes: [
+        { id: 'global', name: 'Global', harness: 'codex', settings: {} },
+        { id: 'original', name: 'Original', harness: 'codex', settings: {} },
+      ],
+    }))
     delivery('build111', { sessions: ['build'] })
-    run({ sessionId: 'build', action: 'implement', deliveryId: 'build111', resumeId: 'old-thread' })
+    run({ sessionId: 'build', action: 'implement', deliveryId: 'build111', resumeId: 'old-thread', runtime: 'original', cwd })
+    assert.equal((await view('build')).canResume, true)
     const res = await openResume('build', true)
     assert.ok(!('error' in res), 'error' in res ? res.error : '')
     assert.equal(res.run.resumeId, 'old-thread')
     assert.equal(res.run.resumedFrom, 'build')
     assert.equal(res.run.deliveryId, 'build111')
+    assert.equal(res.run.runtime, 'original')
+    assert.equal(res.run.cwd, cwd)
+    assert.equal(res.spec.plan.cwd, cwd)
     assert.match(res.spec.prompt ?? '', /Check the current state.*Do not repeat an operation/)
     assert.ok(res.spec.prompt?.endsWith('Continue delivery build111.'))
     assert.equal(res.spec.plan.resumeId, 'old-thread')
+    assert.equal(fs.readFileSync(output, 'utf8'), 'saved once')
+    assert.equal(fs.readFileSync(logPathOf('build'), 'utf8'), 'ran\n')
+  })
+})
+
+describe('command-line recovery checks', () => {
+  for (const [name, evidence] of [
+    ['pending operation results', { pendingWrites: true }],
+    ['unconfirmed cleanup', { cleanup: { status: 'unconfirmed', execution: 'old', kept: ['background'] } }],
+  ] satisfies [string, Partial<RunRecord>][]) {
+    it(`preserves the run and saved work with ${name}`, async () => {
+      const output = path.join(root, 'result.txt')
+      fs.writeFileSync(output, 'saved once')
+      delivery('build111', { sessions: ['build'] })
+      const failure = { source: 'runner', summary: 'Interrupted operation' } as const
+      const pending = { at: 0, of: 4, failure, sessionAction: 'resume' } as const
+      run({ sessionId: 'build', action: 'implement', deliveryId: 'build111', resumeId: 'old-thread',
+        retry: { ...pending, pending, attempt: 1, since: 0, reason: failure.summary }, ...evidence })
+      const before = structuredClone(readStore())
+      const sink = startCollecting()
+      try {
+        const listed = await cmdRuns({ all: true })
+        const logged = await cmdLog('build', {})
+        for (const row of [(listed.runs as RunView[])[0]!, logged.run as RunView]) {
+          assert.equal(row.canResume, false)
+          assert.equal(row.canRetry, undefined)
+        }
+      } finally {
+        stopCollecting()
+      }
+      assert.doesNotMatch(sink.out.join('\n'), /run resume/)
+      const diagnostic = /The operation results could not be confirmed complete/
+      await assert.rejects(cmdResume('build', {}), diagnostic)
+      await assert.rejects(cmdResume('build', { fresh: true }), diagnostic)
+      const web = await openResume('build', true)
+      assert.ok('error' in web)
+      assert.match(web.error, diagnostic)
+      assert.deepEqual(readStore(), before)
+      assert.equal(fs.readFileSync(logPathOf('build'), 'utf8'), 'ran\n')
+      assert.equal(fs.readFileSync(output, 'utf8'), 'saved once')
+    })
+  }
+
+  it('pins the selected run and rechecks evidence written before launch', async () => {
+    run({ sessionId: 'original', resumeId: 'old-thread' })
+    assert.equal((await view('original')).canResume, true)
+    const starting = cmdResume(undefined, {})
+    withStore((store) => { store.runs[0]!.pendingWrites = true })
+    run({ sessionId: 'newer', resumeId: 'another-thread' })
+    await assert.rejects(starting, /The operation results could not be confirmed complete/)
+    assert.deepEqual(readStore().runs.map(r => r.sessionId), ['original', 'newer'])
+  })
+
+  it('requires an explicit fresh retry when the saved session is known missing', async () => {
+    const failure = { source: 'runtime', code: 'session_not_found', summary: 'Session not found' } as const
+    run({ sessionId: 'missing', resumeId: 'old-thread', failure,
+      retryHistory: [retryRecord(failure, 1, { connector: 'codex', name: null, model: null }, 'pause_unsafe')] })
+    const before = await view('missing')
+    assert.equal(before.canResume, false)
+    assert.equal(before.canRetry, true)
+    await assert.rejects(cmdResume('missing', {}), /The original session is unavailable/)
+    assert.equal(readStore().runs[0]?.sessionId, 'missing')
+    const retried = await openResume('missing', { fresh: true })
+    assert.ok(!('error' in retried))
+    assert.equal(retried.run.resumedFrom, undefined)
   })
 })
 
@@ -121,13 +198,26 @@ it('requires a native idle stop receipt and an exited managed connection before 
   run({ sessionId: 'live-connection', managedProcess: true, resumeId: 'thread', agentPid: process.pid,
     cleanup: { ...cleanup, kept: [], idleStop }, retry: { ...pending, pending, attempt: 1, since: 0, reason: pending.failure.summary } })
 
-  for (const id of ['no-native-receipt', 'live-connection']) {
+  for (const [id, diagnostic] of [
+    ['no-native-receipt', /The operation results could not be confirmed complete/],
+    ['live-connection', /The previous execution could not be confirmed stopped/],
+  ] as const) {
+    assert.equal((await view(id)).canResume, false)
+    await assert.rejects(cmdResume(id, {}), diagnostic)
+    assert.ok(readStore().runs.find(record => record.sessionId === id)?.retry?.pending)
     assert.ok('error' in await openResume(id, { automatic: true }))
     const previous = readStore().runs.find(record => record.sessionId === id)!
     assert.equal(previous.retryPause, 'unsafe')
     assert.equal(previous.retry?.pending, undefined)
   }
   assert.equal(readStore().runs.length, 2)
+
+  run({ sessionId: 'confirmed', managedProcess: true, resumeId: 'thread', failure: IDLE_FAILURE,
+    cleanup: { ...cleanup, kept: [], idleStop } })
+  assert.equal((await view('confirmed')).canResume, true)
+  const resumed = await openResume('confirmed', true)
+  assert.ok(!('error' in resumed))
+  assert.equal(resumed.run.resumeId, 'thread')
 })
 
 describe('Retry is offered', () => {
@@ -160,8 +250,8 @@ describe('Retry is offered', () => {
   })
 })
 
-describe('akb raw run list', () => {
-  it('names the same command for a retry as for a resume, in other words', async () => {
+describe('akb run list', () => {
+  it('names the explicit fresh option for retries', async () => {
     run({ sessionId: 'quiet-0000' })
     run({ sessionId: 'started-00', harness: 'claude-code' })
     const sink = startCollecting()
@@ -171,8 +261,8 @@ describe('akb raw run list', () => {
       stopCollecting()
     }
     const said = sink.out.join('\n')
-    assert.match(said, /try it again with `akb [^`]* run resume quiet-00/)
-    assert.match(said, /continue it with `akb [^`]* run resume started-/)
+    assert.match(said, /try it again with `akb [^`]* run resume quiet-00 --fresh`/)
+    assert.match(said, /continue it with `akb [^`]* run resume started-`/)
   })
 })
 
@@ -261,10 +351,10 @@ describe('a run whose connector this build no longer ships', () => {
   const lost = (over: Partial<RunRecord> = {}): RunRecord =>
     run({ sessionId: 'lost', action: 'implement', harness: 'retired-cli', resumeId: 'their-id', agent: 'builder', ...over })
 
-  it('still offers Resume, where its ask can be said again', async () => {
+  it('offers an explicit retry using the saved request', async () => {
     lost()
     run({ sessionId: 'revise', action: 'edit', harness: 'retired-cli', resumeId: 'their-id' })
-    assert.deepEqual([(await view('lost')).canResume, (await view('lost')).canRetry], [true, undefined])
+    assert.deepEqual([(await view('lost')).canResume, (await view('lost')).canRetry], [false, true])
     assert.equal((await view('revise')).canResume, false)
     const res = await openResume('revise', { fresh: true })
     assert.ok(!('error' in res))

@@ -9,8 +9,8 @@
 
 ## Pages
 
-- **Pages**: write each slide as `pages/<slide id>.html` or `.tsx`, laid out at `size` and
-  referenced by `preview`; pages are the only source of text and look, never copied elsewhere.
+- **Pages**: write each slide as `pages/<slide id>.html` or `.tsx` at `size`. In the outline,
+  use paths relative to the storyboard JSON in `preview.src` and `assets`. Keep slide text and design in the pages.
 - **Assets**: load fonts and images from the asset folder, never from system fonts or the
   network, so the preview and the export match.
 - **Consistency**: slides of one type share a stylesheet or component, with the same layout,

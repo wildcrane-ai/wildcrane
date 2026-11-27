@@ -9,7 +9,7 @@ export interface CardQuestion {
   position: number
 }
 
-/** On review when it waits on the user: `ready`, `implementing`, or an open question; the first
+/** On review when it waits on the user: `planned`, `implementing`, or an open question; the first
  *  open one with options is what the review asks, as `runner/src/flow.ts` does. Null when a
  *  refine comes first. */
 export function reviewOf(meta: Meta): true | CardQuestion | null {
@@ -17,5 +17,5 @@ export function reviewOf(meta: Meta): true | CardQuestion | null {
   for (const [i, q] of questions.entries()) {
     if (q.options?.length) return { question: q.text, options: q.options.slice(0, 8), position: i + 1 }
   }
-  return questions.length || meta.status === 'ready' || meta.status === 'implementing' ? true : null
+  return questions.length || meta.status === 'planned' || meta.status === 'implementing' ? true : null
 }

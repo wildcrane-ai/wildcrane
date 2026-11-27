@@ -32,7 +32,7 @@ akb task chat <task> <message...>
 akb task archive <task>
 akb task remove <task> [reason...]
 akb task restore <task>
-akb task resume <task>
+akb task resume <task> [--json]
 akb task stop <task>
 akb task comment <task> <text...>
 akb workspace list
@@ -75,7 +75,9 @@ akb runner list [--workspace <id>]
 `queued` 表示等待执行，`running` 表示正在执行，均不表示正文已经生成；`failed` 同时显示失败原因。
 使用 `akb task show <task>` 回读状态和正文，在任务页审阅生成结果；后续创建失败从原任务查看原因。
 
-`akb task resume <task>` 恢复可继续的已停止或失败任务；历史创建未提交且尚无卡片的任务也从原任务继续准备卡片。
+`akb task resume <task> [--json]` 与网页的 Resume 按钮使用同一 Cloud 接口，恢复可继续的已停止或失败任务。
+例如在关联项目中运行 `akb task resume 1198`。Cloud 受理后返回 `queued` 或 `running`，拒绝时显示原因并以非零状态退出。
+历史创建未提交且尚无卡片的任务也从原任务继续准备卡片。
 保留编号与聊天，不批量自动启动历史任务。已有有效卡片的任务继续当前流程，不重复创建卡片。
 
 创建前的参数、项目、权限与连接错误沿用下表；空请求为用法错误。
@@ -191,7 +193,6 @@ akb guide discuss-goal
 ```sh
 akb delivery complete <id> [--commit <sha> --branch <name>] --json
 akb delivery cancel <id> --json
-akb delivery resume <id> --json
 ```
 
 `id` 接受卡片或交付编号。软件步骤提供已合入的完整 40 或 64 位提交号和目标分支，两项必须同时提供。
@@ -202,7 +203,7 @@ Builder 自行创建分支和 worktree、处理冲突、检查并合入，登记
 同一运行重复登记相同结果返回原结果。结果不同、参数错误、运行不拥有当前步骤或成果不齐时非零退出，交付保留供恢复。
 成功退出的运行仍须完成登记。归档中断后可重试同一结果。
 
-`cancel` 停止运行并结束交付，保留磁盘成果。`resume` 返回交付与运行编号，继续原会话或从既有成果恢复。
+`cancel` 停止运行并结束交付，保留磁盘成果。使用 `akb task resume <task>` 恢复 Cloud 任务，Runner 会接续原有交付。
 交付外仍可使用 `akb task archive <task>` 手动归档。`delivery conflict`、`delivery blocked` 和 `delivery discard` 已移除。
 
 工作台只存于云端（#409）：`akb studio list` 列出当前工作区可用的工作台，各版本缓存在本机 `studios/`；`akb studio validate <文件夹>` 检查一个工作台文件夹，`akb studio file <studio> <path>` 读取工作台文件，`akb studio preview <card> --folder <draft> --base <baseline>` 冻结待审阅版本。

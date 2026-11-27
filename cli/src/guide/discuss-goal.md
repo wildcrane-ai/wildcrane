@@ -6,8 +6,8 @@ Research how the requested outcome can be achieved before defining a Goal. Expla
 - **Goals**: save independent deliverables separately. Update existing goals rather than duplicate them.
 - **Studio**: choose the fitting installed Studio, preferring the user's choice; honor its rules' scope.
 - **Select Previews**: follow "Preview selection" in `akb guide board`, defining a custom Preview with `--preview-definitions-file` when needed.
-- **Review** independent Previews in parallel by default. Use Studio or custom Preview names, e.g. `--review 'Tech choices + UI design'`. Add `->` when the next group needs the previous group's approvals. Verify the saved plan.
-- **Review state**: pass `--review ''` for no extra approval, leave the plan undecided while a decision is missing, and omit the option when keeping a saved plan.
+- **Review**: choose the Preview IDs with `--previews` and write one sentence with `--review` saying when to ask for approval. Verify the saved plan.
+- **Review state**: use an empty review rule for no extra approval. Omit both options to preserve a saved plan or leave it undecided.
 - **Decisions**: ask only about choices the user must make, and recommend an option.
 - **Save**: in a web discussion, use `akb goal` in the current session, including on retry. Say the goal is ready to save when the reply ends. If the command still fails, say it was not saved.
 - **Start**: the user starts each Goal from the page; its effective review arrangement governs output approval. Confirm changes to task-specific Preview definitions before making the affected output.
@@ -40,4 +40,4 @@ Pass a JSON array with `--preview-definitions-file`. Use a stable ID, English an
 }]
 ```
 
-Use the title in a Flow such as `--review 'UI design -> Accessibility report'` when preparation requires an earlier approval.
+List each Preview ID once, even if the rule calls for several approval questions about it.

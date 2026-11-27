@@ -7,7 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { activeDelivery, heldByDelivery } from '../lib/agent/deliveries'
+import { heldByDelivery } from '../lib/agent/deliveries'
 import { cardCreation, creationOf, readRuns, runIsLive, withStore } from '../lib/agent/store'
 import { runnerProject, workspaceTask } from '../lib/cloud/tasks'
 import { insideRun } from '../lib/agent/env'
@@ -129,8 +129,8 @@ function stampLeaving(cards: { id: number; file: string }[], rejection: Rejectio
 }
 
 export interface RemoveOptions {
-  completing?: string
   archivingTask?: boolean
+  pendingLand?: boolean
   /** This removal is the board closing a group root under its last subtask (#299). The
    *  root's own enclosing group is not chased any further, and no memory note is asked
    *  for: each subtask wrote its own shipped line as it left, and the root's would only
@@ -163,13 +163,7 @@ export function cmdRemove(id: number, metric: Metric, options: RemoveOptions = {
 
 function removeCard(id: number, metric: Metric, options: RemoveOptions): MoveResult {
   if (!Number.isInteger(id)) die('need a numeric task id')
-  // A card with a delivery in flight doesn't leave the board under it — except at the hands
-  // of the delivery itself, whose last step is archiving the card it just built.
-  const delivery = activeDelivery(id)
-  if (metric === 'completed' && delivery && options.completing !== delivery.deliveryId) {
-    die(`Finish this step with delivery complete ${delivery.deliveryId}.`, { kind: 'card-held' })
-  }
-  const held = heldByDelivery(id)
+  const held = metric === 'completed' ? undefined : heldByDelivery(id)
   if (held) die(held, { kind: 'card-held' })
   const creating = options.cleanupDiscarded ? null : creationRefusal(id, cardCreation(id, options.discard === true), metric === 'completed' ? 'archive' : 'reject', metric === 'rejected' && options.discard === true)
   if (creating) die(creating, { kind: 'card-being-created' })
@@ -199,7 +193,7 @@ function removeCard(id: number, metric: Metric, options: RemoveOptions): MoveRes
       const meta = parseFrontmatter(fs.readFileSync(card.file, 'utf8')).meta
       if (!meta || meta.rejected) die(`#${card.id} is not eligible for archive.`, { kind: 'conflict' })
       if (meta.questions.length) die(`Resolve the open questions on #${card.id} before archiving.`, { kind: 'conflict' })
-      if (card.id !== id && (activeDelivery(card.id) || creationRefusal(card.id, cardCreation(card.id), 'archive', false))) {
+      if (card.id !== id && creationRefusal(card.id, cardCreation(card.id), 'archive', false)) {
         die(`Finish the active work on #${card.id} before archiving.`, { kind: 'card-held' })
       }
     }
@@ -248,10 +242,7 @@ function removeCard(id: number, metric: Metric, options: RemoveOptions): MoveRes
     if (markSubtask(groupRoot, id, action)) marked = action
     else warn(`#${id} isn't listed in ${rel(groupRoot)} ## Todo — nothing to ${action === 'tick' ? 'tick off' : 'strike out'}.`)
   }
-  // The card is off the board now, so every blocked_by/related pointing at it is stale.
-  // Runs after the move/delete, so the card's own frontmatter is already out of `todo/`.
-  // A card that waited on it gets its revise from Cloud, as the push lands (#169).
-  const unlinked = [...new Set(leftIds.flatMap((gone) => dropCrossRefs(gone)))]
+  const unlinked = [...new Set(leftIds.flatMap(gone => dropCrossRefs(gone, options.pendingLand && gone === id)))]
   if (!options.cleanupDiscarded) {
     countBoardEvent(metric === 'completed' ? 'cards_completed' : 'cards_rejected')
     if (metric === 'completed') {
@@ -399,7 +390,7 @@ export function cleanupDiscardedCards(sessionId: string): number[] {
   })
 }
 
-export function recoveredArchiveHandoff(id: number, source?: Found): MoveResult {
+export function recoveredArchiveHandoff(id: number, source?: Found, pendingLand = false): MoveResult {
   const found = locateArchived(id)
   if (!found) throw new Error(`No archived card #${id} was found.`)
   const file = found.kind === 'group' ? path.join(found.target, 'root.md') : found.target
@@ -408,7 +399,7 @@ export function recoveredArchiveHandoff(id: number, source?: Found): MoveResult 
   const root = source?.kind === 'file' ? enclosingGroupRoot(source.target) : null
   if (root) markSubtask(root, id, 'tick')
   const groupClose = root ? closeGroup(root) : null
-  const unlinked = dropCrossRefs(id)
+  const unlinked = dropCrossRefs(id, pendingLand)
   const mentions = findMentions([id])
   return { id, action: 'archived', archived_to: rel(found.target), unlinked, group_close: groupClose,
     note: printHandoff([id], meta, mentions),

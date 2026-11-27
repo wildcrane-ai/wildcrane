@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const argv = process.argv.slice(2)
-fs.appendFileSync(process.env.FAKE_AKB_LOG, `${JSON.stringify(argv)}\n`)
+if (process.env.FAKE_AKB_LOG) fs.appendFileSync(process.env.FAKE_AKB_LOG, `${JSON.stringify(argv)}\n`)
 const cut = argv.indexOf('--')
 // `raw <group> …` (#551) dispatches below by the group, as `memory review|prune` by its old name.
 const local = argv[0] === 'raw' && !['init', 'create'].includes(argv[1])
@@ -46,8 +46,17 @@ const fail = (message) => {
   console.error(`akb: ${message}`)
   process.exit(1)
 }
+const savePlanningPreview = async (file, { asset, gate }) => {
+  fs.appendFileSync(file, `\n<Preview id="ui-design">\n\n<Asset src="${asset}" />\n\n</Preview>\n`)
+  while (gate && !fs.existsSync(gate)) await new Promise(resolve => setTimeout(resolve, 20))
+}
 
 const [a, b, c] = words
+const phase = process.env.AI4KANBAN_DELIVERY_PHASE
+const archive = file => {
+  if (phase === 'land') fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('questions:', 'archived: 2026-11-26\nquestions:'))
+  fs.renameSync(file, path.join(board, '.archive', path.basename(file)))
+}
 const capturedFiles = directory => Object.fromEntries(fs.readdirSync(directory, { withFileTypes: true, recursive: true })
   .filter(file => file.isFile()).map(file => {
     const target = path.join(file.parentPath, file.name)
@@ -73,9 +82,15 @@ if (a === 'raw' && b === 'init') {
     console.log(JSON.stringify({ ok: false, error: { kind: 'id-taken', message: `#${id} is already a card here` } }))
     process.exit(1)
   }
+  const interrupt = plan.create?.interrupt
+  if (interrupt === 'before' && !read('create-interrupted.json', false)) {
+    write('create-interrupted.json', true)
+    process.kill(process.pid, 'SIGKILL')
+  }
   const body = flag('--body-file') ? fs.readFileSync(flag('--body-file'), 'utf8') : ''
   const studio = flag('--studio') ? `studio: ${flag('--studio')}\n` : ''
   fs.writeFileSync(path.join(board, 'todo', `${id}-${(flag('--slug') ?? flag('--title')).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'task'}.md`), `---\ntitle: ${flag('--title')}\n${studio}questions: []\n---\n\n${body}`)
+  if (interrupt === 'after') process.kill(process.pid, 'SIGKILL')
   console.log(JSON.stringify({ ok: true, id }))
 } else if (a === 'card') {
   const how = plan[b] ?? {}
@@ -87,11 +102,12 @@ if (a === 'raw' && b === 'init') {
     write(`runtime-${id}.json`, JSON.parse(process.env.AI4KANBAN_EXECUTION_RUNTIMES).default)
   }
   const runs = read('runs.json', [])
+  const cloudExecution = JSON.parse(process.env.AI4KANBAN_EXECUTION ?? 'null')
   if (runs.some((r) => r.cardId === id && r.status === 'running')) fail(`#${id} is already being worked on`)
   if (how.missingFork && words.includes('--fork')) {
     const sessionId = `run-${b}-${runs.length + 1}`
     const reason = `no rollout found for thread id ${flag('--session')}`
-    runs.push({ sessionId, cardId: id, action: b, status: 'error', failure: { code: 'codex_fork_source_missing', level: 3, source: 'harness', reason } })
+    runs.push({ sessionId, cardId: id, action: b, status: 'error', cloudExecution, failure: { code: 'codex_fork_source_missing', level: 3, source: 'harness', reason } })
     write('runs.json', runs)
     console.log(JSON.stringify({ ok: false, error: { kind: 'run-failed', message: reason, lastSessionId: sessionId } }))
     process.exit(1)
@@ -128,16 +144,26 @@ if (a === 'raw' && b === 'init') {
     fs.writeFileSync(path.join(board, 'triage', 'proposed.md'), `---\nsource_id: derived-1\ntitle: ${how.propose}\n${how.studio === '' ? '' : `studio: ${how.studio ?? 'coding'}\n`}collected_at: 2026-10-26 09:00\nimported_at: 2026-10-26 09:00\n---\n\nWhy ${how.propose}.\n`)
   }
   // A build's last word is its review's, a later run than the one that started it.
-  const last = b === 'implement' ? `run-review-${runs.length + 2}` : sessionId
+  const last = !phase && b === 'implement' && how.delivery?.status !== 'active'
+    ? `run-review-${runs.length + 2}` : sessionId
   const spent = { startedAt: Date.now(), ...how.spent }
+  if (how.end) {
+    runs.push({ sessionId, cardId: id, action: b, ...spent, endedAt: Date.now(), resumeId: how.agentSession,
+      cloudExecution: JSON.parse(process.env.AI4KANBAN_EXECUTION), ...how.end })
+    write('runs.json', runs)
+    if (how.planning) await savePlanningPreview(file, how.planning)
+    else if (how.end.status === 'interrupted') process.kill(process.pid, 'SIGKILL')
+    console.log(JSON.stringify({ ok: false, error: { kind: 'run-failed', sessionId, message: how.end.failure?.summary ?? 'The run was interrupted.' } }))
+    process.exit(1)
+  }
   if (how.hang) {
-    runs.push({ sessionId, cardId: id, action: b, status: 'running', ...spent })
+    runs.push({ sessionId, cardId: id, action: b, status: 'running', cloudExecution, ...spent })
     write('runs.json', runs)
     setInterval(() => console.log('still working'), 50)
     await new Promise(() => {})
   }
   if (how.gates?.length) {
-    runs.push({ sessionId, cardId: id, action: b, status: 'running', ...spent })
+    runs.push({ sessionId, cardId: id, action: b, status: 'running', cloudExecution, ...spent })
     write('runs.json', runs)
   }
   for (const gate of how.gates ?? []) {
@@ -150,7 +176,8 @@ if (a === 'raw' && b === 'init') {
   if (how.gates?.length) runs.pop()
   const evidence = how.trackExecution && { action: b, status: 'done', deliveryId: how.delivery?.id, resumeId: how.agentSession,
     cloudExecution: JSON.parse(process.env.AI4KANBAN_EXECUTION), pendingWrites: false }
-  runs.push({ sessionId, cardId: id, result: how.result, ...spent, ...evidence }, ...(last !== sessionId ? [{ sessionId: last, cardId: id, result: how.landed ?? 'Landed it.', ...spent }] : []))
+  runs.push({ sessionId, cardId: id, status: 'done', cloudExecution, result: how.result, ...spent, ...evidence },
+    ...(last !== sessionId ? [{ sessionId: last, cardId: id, status: 'done', cloudExecution, result: how.landed ?? 'Landed it.', ...spent }] : []))
   write('runs.json', runs)
   if (how.reject) {
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('questions:', 'rejected: true\nquestions:'))
@@ -165,7 +192,7 @@ if (a === 'raw' && b === 'init') {
     ? how.delivery
     : { id: 'd1', status: how.question ? 'active' : 'finished', ...how.delivery }
   if (delivery?.status === 'finished') {
-    fs.renameSync(file, path.join(board, '.archive', path.basename(file)))
+    archive(file)
     write(`delivery-${id}.json`, delivery)
   }
   console.log(JSON.stringify({ ok: true, status: 'done', result: how.result, lastSessionId: last, ...(how.agentSession ? { agentSession: how.agentSession } : {}),
@@ -218,15 +245,31 @@ if (a === 'raw' && b === 'init') {
     console.log(JSON.stringify({ ok: false, error: { kind: 'run-refused', message: 'the original conversation cannot be resumed', reason: 'runNoSession' } }))
     process.exit(1)
   }
+  if (b === 'resume' && how.planning) {
+    const { session, asset, local, content } = how.planning
+    if (previous.resumeId !== session || fs.readFileSync(path.join(board, local), 'utf8') !== content) fail('saved planning progress changed')
+    const result = 'Submitted the saved UI design.'
+    const sessionId = `resumed-${c}`
+    await savePlanningPreview(cardOf(previous.cardId), how.planning)
+    runs.push({ ...previous, sessionId, status: 'done', cloudExecution: JSON.parse(process.env.AI4KANBAN_EXECUTION), startedAt: Date.now(), result })
+    write('runs.json', runs)
+    console.log(JSON.stringify({ ok: true, sessionId, status: 'done', result, agentSession: previous.resumeId }))
+    process.exit(0)
+  }
+  for (const [file, content] of Object.entries(how.keep ?? {})) {
+    if (fs.readFileSync(path.join(board, file), 'utf8') !== content) fail('saved work changed')
+  }
   const sessionId = b === 'resume' ? `resumed-${c}` : c
   if (b === 'resume') {
     runs.splice(runs.indexOf(previous), 1)
-    runs.push({ ...previous, ...how.spent, sessionId, resumedFrom: c, status: 'done', startedAt: Date.now(), result: 'Continued it.' })
+    runs.push({ ...previous, ...how.spent, sessionId, resumedFrom: c, status: 'done', startedAt: Date.now(),
+      cloudExecution: JSON.parse(process.env.AI4KANBAN_EXECUTION), ...(how.keep ? { retryHistory: undefined } : {}), result: 'Continued it.' })
     write('runs.json', runs)
   }
   if (words.includes('--events')) console.log(JSON.stringify({ kind: 'message', data: { text: 'Continued the original conversation.' } }))
   const file = cardOf(previous.cardId)
-  if (file && file.includes(`${path.sep}todo${path.sep}`)) fs.renameSync(file, path.join(board, '.archive', path.basename(file)))
+  if (file && file.includes(`${path.sep}todo${path.sep}`)) archive(file)
+  if (phase === 'land') write('land-resume.json', { session: previous.resumeId, diagnostic: process.env.AI4KANBAN_SYNC_DIAGNOSTIC })
   console.log(JSON.stringify({ ok: true, sessionId, status: 'done', result: 'Continued it.', agentSession: previous.resumeId,
     delivery: { id: how.deliveryId ?? previous.deliveryId, status: 'finished', commit: 'abc123', branch: 'main' } }))
 } else if (a === 'delivery' && b === 'cancel') {
@@ -242,7 +285,7 @@ if (a === 'raw' && b === 'init') {
     run.status = 'stopped'
     const chain = plan[run.action]?.chain ?? 0
     if (runs.filter((r) => r.action === run.action).length <= chain) {
-      runs.push({ sessionId: `run-${run.action}-${runs.length + 1}`, cardId: run.cardId, action: run.action, status: 'running', startedAt: Date.now() })
+      runs.push({ sessionId: `run-${run.action}-${runs.length + 1}`, cardId: run.cardId, action: run.action, cloudExecution: run.cloudExecution, status: 'running', startedAt: Date.now() })
     }
     write('runs.json', runs)
   }
@@ -314,9 +357,17 @@ if (a === 'raw' && b === 'init') {
   write('runs.json', runs)
   console.log(JSON.stringify({ ok: true, status: 'done', result: `${name} done.` }))
 } else if (a === 'run' && b === 'list') {
+  if (plan.strictBoard && (!fs.existsSync(path.join(board, 'config.md')) || !fs.existsSync(path.join(board, 'todo')))) {
+    console.log(JSON.stringify({ ok: false, error: { kind: 'no-board', message: `${board} is not a board` } }))
+    process.exit(1)
+  }
   const card = Number(flag('--card'))
+  const start = words.indexOf('--execution')
+  const executions = start < 0 ? null : words.slice(start + 1).filter((_, i, args) => !args.slice(0, i + 1).some(a => a.startsWith('--')))
   const all = read('runs.json', [])
-  console.log(JSON.stringify({ ok: true, runs: flag('--card') ? all.filter((r) => r.cardId === card) : all }))
+  console.log(JSON.stringify({ ok: true, runs: all.filter(r => (!card || r.cardId === card) &&
+    (!flag('--conversation') || r.resumeId === flag('--conversation') || r.sessionId === flag('--conversation')) &&
+    (!executions || executions.includes(r.cloudExecution?.job))) }))
 } else {
   fail(`the fake has no ${words.join(' ')}`)
 }

@@ -1,4 +1,4 @@
-import { executionOf, type CloudExecution } from '../cloud/execution'
+import { executionOf, WRONG_TASK, type CloudExecution } from '../cloud/execution'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -358,48 +358,57 @@ function cardOnBoard(cardId: number): boolean | undefined {
  *  the board keeps its checkout at all (#720). */
 export const isResumable = (delivery: DeliveryRecord): boolean => !resumeRefusal(delivery)
 
-/** Preserve delivery progress. Continuing an active delivery requires a verified Cloud
- *  execution; a running agent keeps ownership. */
-export function resumeRecord(id: string, execution?: CloudExecution): { ok: true; delivery: DeliveryRecord } | ({ ok: false } & RunRefusal) {
-  const found = namedDelivery(id) ?? endedDelivery(id)
-  if (!found) return { ok: false, ...unknownDelivery(id) }
-  const file = found.cardId === null ? null : cardFile(found.cardId)
+export function pendingDeliveryRun(delivery: DeliveryRecord, runs: RunRecord[]): RunRecord | undefined {
+  const latest = runs.filter(r => r.deliveryId === delivery.deliveryId && r.action === 'implement')
+    .reverse().sort((a, b) => b.startedAt - a.startedAt)[0]
+  if (latest && !delivery.completions?.some(c => c.sessionId === latest.sessionId || c.resumedSessions?.includes(latest.sessionId))) return latest
+}
+
+export function resumableDelivery(store: Store, id: string): DeliveryRecord | RunRefusal {
+  const live = store.deliveries.find(d => d.deliveryId === id)
+  const audit = live ? null : wholeAudit(auditPath(id))
+  const row = live ?? (audit && auditRow(audit))
+  if (!row) return unknownDelivery(id)
+  const file = row.cardId === null ? null : cardFile(row.cardId)
   const restored = file && parseFrontmatter(fs.readFileSync(file, 'utf8')).meta?.restored
-  if (restored && Date.parse(restored) > found.startedAt) return { ok: false, ...unknownDelivery(id) }
-  if (found.status === 'finished') return { ok: true, delivery: found }
-  const refused = resumeRefusal(found)
-  if (refused && (found.scheduled || found.status !== 'active')) return { ok: false, ...refused }
-  const out = withStore<{ ok: true; delivery: DeliveryRecord } | ({ ok: false } & RunRefusal)>((store) => {
-    const audit = wholeAudit(auditPath(found.deliveryId))
-    const live = store.deliveries.find((d) => d.deliveryId === found.deliveryId)
-    const row = live?.status === 'active' ? live : (audit && auditRow(audit)) ?? live
-    if (!row) return { ok: false, ...unknownDelivery(id) }
-    const again = resumeRefusal(row, store)
-    if (again && row.scheduled && row.status !== 'finished') return { ok: false, ...again }
-    if (row.status === 'active') {
-      if (store.runs.some((r) => r.deliveryId === row.deliveryId && runIsLive(r))) {
-        return { ok: false, ...refusal('deliveryRunGoing', 'the delivery still has a running agent; stop it before continuing') }
-      }
-    } else if (again) return { ok: false, ...again }
+  if (restored && Date.parse(restored) > row.startedAt) return unknownDelivery(id)
+  if (row.status === 'finished') return row
+  const refused = resumeRefusal(row, store)
+  if (refused) return refused
+  if (store.runs.some(r => r.deliveryId === id && runIsLive(r))) {
+    return refusal('deliveryRunGoing', 'the delivery still has a running agent; stop it before continuing')
+  }
+  return row
+}
+
+export function activateDelivery(store: Store, row: DeliveryRecord, at: number, execution?: CloudExecution): DeliveryRecord {
+  const resumed: DeliveryRecord = {
+    ...row,
+    cloudExecution: execution ?? row.cloudExecution,
+    status: 'active',
+    endedAt: undefined,
+    steps: [...row.steps, { step: 'resume', at }],
+  }
+  const seat = store.deliveries.findIndex(d => d.deliveryId === row.deliveryId)
+  if (seat >= 0) store.deliveries[seat] = resumed
+  else store.deliveries.push(resumed)
+  return resumed
+}
+
+export function resumeRecord(id: string, execution?: CloudExecution): { ok: true; delivery: DeliveryRecord; runId?: string } | ({ ok: false } & RunRefusal) {
+  const found = namedDelivery(id)
+  if (!found) return { ok: false, ...unknownDelivery(id) }
+  if (execution?.card !== undefined && execution.card !== found.cardId) return { ok: false, ...refusal('deliveryTakenOver', WRONG_TASK) }
+  return withStore(store => {
+    const row = resumableDelivery(store, found.deliveryId)
+    if ('error' in row) return { ok: false, ...(row.reason === 'deliveryNotFound' ? unknownDelivery(id) : row) }
     if (row.status === 'finished') return { ok: true, delivery: row }
-    const at = Date.now()
-    const resumed: DeliveryRecord = {
-      ...row,
-      cloudExecution: execution ?? executionOf() ?? row.cloudExecution,
-      status: 'active',
-      endedAt: undefined,
-      steps: [...row.steps, { step: 'resume', at }],
-      // The process that was walking it through the queue died with the delivery, so the
-      // slot it claimed is nobody's — the same rule a recovered delivery follows (#638).
-      landing: row.landing,
-    }
-    const seat = store.deliveries.findIndex((d) => d.deliveryId === row.deliveryId)
-    if (seat >= 0) store.deliveries[seat] = resumed
-    else store.deliveries.push(resumed)
+    const previous = pendingDeliveryRun(row, store.runs)
+    if (previous) return { ok: true, delivery: row, runId: previous.sessionId }
+    const resumed = activateDelivery(store, row, Date.now(), execution)
     writeAudit(resumed, store.runs)
     return { ok: true, delivery: resumed }
   })
-  return out
 }
 
 export function carryOnFrom(_deliveryId: string): DeliveryCarryOn {
@@ -540,7 +549,8 @@ export function joinDelivery(
       rules: deliveryRules(),
       studio: frozenStudio(cardId === null ? run.studio ?? '' : cardStudioId(cardId)),
       targetBranch: start?.targetBranch,
-
+      branch: start?.branch,
+      worktree: start?.worktree,
     }
     store.deliveries.push(delivery)
   } else if (step === 'implement' && delivery.review?.stopped) {
@@ -568,7 +578,7 @@ export function adoptDirectCard(sessionId: string, cardId: number): boolean {
     // Where the card rests when the job ends without archiving it. `raw create` writes every
     // card at `todo` and the caller takes this one straight to `implementing`; nothing plans
     // it, so a cancel or a discard hands back a settled card rather than one to refine.
-    const idle = 'ready'
+    const idle = 'planned'
     run.cardId = cardId
     run.priorStatus = idle
     if (!delivery) return true

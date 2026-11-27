@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { studioName } from '../shared/board-files'
-import { reviewAuthorization, type TaskReview } from '../shared/review-plan'
+import { isFlatReviewPlan, isWaitingReview, reviewAuthorization, type TaskReview } from '../shared/review-plan'
 
 export type SentContext = Record<string, string>
 export type ContextBlock = [key: string, text: string, cleared?: string, identity?: string]
@@ -31,20 +31,36 @@ export function studioEntry(id: string, name: string, version: number, action: s
 }
 
 export function compactReview(review: TaskReview, assigned?: readonly string[]): string {
+  if (isFlatReviewPlan(review.plan)) {
+    const pending = (review.approvals ?? []).filter(approval => 'preview' in approval)
+    return [
+      'Review r' + review.revision + ' · flat plan',
+      'Selected Previews: ' + (review.plan.previews.join(', ') || 'none'),
+      'Review rule: ' + (review.plan.rule || 'No extra approval.'),
+      ...(pending.length ? ['Pending approvals:', ...pending.map(({ preview, stage, revision, question }) =>
+        `- ${preview} · ${stage} · r${revision}: ${question}`)] : []),
+    ].map(line => line.replace(/[\r\n]+/g, ' ')).join('\n')
+  }
   const authorization = reviewAuthorization(review, assigned)
   if (authorization.kind === 'changed') return 'Review r' + review.revision + ' · authorization changed. Read the task again.'
-  if (!review.stages.length) return 'Review · ' + (review.plan === null ? 'planning only' : 'no extra review')
-  const starts = new Map(review.approvals?.map(action => [action.stage, action.starts]))
+  const custom = review.preview_definitions?.length
+    ? '\nCustom Previews: ' + review.preview_definitions.map(d => d.id).join(', ')
+    : ''
+  if (!review.stages.length) return 'Review · ' + (review.plan === null ? 'planning only' : 'no extra review') + custom
+  const nodePreviews = new Map((review.plan ?? []).map(node => [node.id, node.previews]))
+  const starts = new Map(review.approvals?.map(action => [action.stage, 'starts' in action ? action.starts : []]))
   const unlocked = new Set(authorization.kind === 'stages' ? authorization.nodes.map(node => node.id) : [])
   const stages = review.stages.map(stage => {
     const next = starts.get(stage.id)
-    const status = stage.status === 'ready'
-      ? next?.length ? 'ready for approval and start ' + next.join(', ') : 'ready for approval'
+    const previews = nodePreviews.get(stage.id)
+    const previewNote = previews?.length ? ` (previews: ${previews.join(', ')})` : ''
+    const status = isWaitingReview(stage.status)
+      ? next?.length ? 'waiting for approval to start ' + next.join(', ') : 'waiting for approval'
       : stage.status === 'available' ? unlocked.has(stage.id) ? 'available to start' : 'not dispatched'
       : stage.status === 'running' && assigned && !unlocked.has(stage.id) ? 'running outside this dispatch' : stage.status
-    return stage.id + ' ' + status
+    return stage.id + previewNote + ' ' + status
   })
-  return ['Review r' + review.revision, ...stages].join(' · ')
+  return ['Review r' + review.revision, ...stages].join(' · ') + custom
 }
 
 export const configurationBlock = (text: string): ContextBlock => ['config', text, 'Studio configuration cleared.']

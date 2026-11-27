@@ -1,4 +1,5 @@
-import { cmdRemove } from '../src/commands/remove.ts'
+import { prepareDelivery } from '../src/lib/agent/commit-mode.ts'
+import { taskArchive } from '../src/commands/task.ts'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -7,20 +8,16 @@ import { execFileSync } from 'node:child_process'
 import { afterEach, beforeEach, it } from 'node:test'
 import { buildAkbProgram } from '../src/lib/cli/akb.ts'
 import { buildBoardProgram } from '../src/lib/cli/board.ts'
-import { cmdLog, cmdResume, cmdResumeDelivery } from '../src/commands/run.ts'
-import { completeDelivery } from '../src/lib/agent/complete.ts'
+import { cmdLog, cmdResume } from '../src/commands/run.ts'
 import { activeDelivery, findDelivery, joinDelivery, settleOrphanedDeliveries } from '../src/lib/agent/deliveries.ts'
-import { RUN_ENV } from '../src/lib/agent/env.ts'
-import { deliveryStep, nextDeliveryRun } from '../src/lib/agent/progress.ts'
-import { ruleFor } from '../src/lib/agent/rules.ts'
-import { agentForRun } from '../src/lib/agent/runner.ts'
-import { buildPrompt } from '../src/lib/agent/prompts.ts'
-import { closeRun, cancelDelivery, openRun, reconcileCardDelivery } from '../src/lib/agent/sessions.ts'
+import { DELIVERY_PHASE_ENV, RUN_ENV } from '../src/lib/agent/env.ts'
+import { nextDeliveryRun } from '../src/lib/agent/progress.ts'
+import { closeRun, cancelDelivery, openResume, openRun, reconcileCardDelivery } from '../src/lib/agent/sessions.ts'
 import { logPathOf, readAction, withStore } from '../src/lib/agent/store.ts'
 import type { RunRecord } from '../src/lib/agent/types.ts'
 import { BoardError } from '../src/lib/io.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
-import { move, refuses, run } from './helpers/board.ts'
+import { move, run } from './helpers/board.ts'
 
 let root: string
 let card: string
@@ -86,59 +83,56 @@ it('returns the original delivery blocker even when the followed run exited succ
   assert.equal(delivery.status, 'active')
   assert.deepEqual(delivery.ending, { kind: 'blocked', reason })
 })
-it('requires ownership and paired full software results', async () => {
-  patch((d) => { d.base = sha })
-  for (const result of [{}, { commit: sha }, { branch: 'main' }, { commit: 'abc', branch: 'main' }]) {
-    assert.throws(() => completeDelivery(deliveryId, result))
-  }
-  process.env[RUN_ENV] = 'stranger'
-  assert.throws(() => completeDelivery(deliveryId, { commit: sha, branch: 'main' }), /own/)
-  process.env[RUN_ENV] = 'first'
-  assert.throws(() => cmdRemove(1, 'completed'), /delivery complete/)
+it('keeps a non-Git implementation and its baseline separate from the project', () => {
+  process.env[DELIVERY_PHASE_ENV] = 'implement'
+  try {
+    fs.writeFileSync(path.join(root, 'article.md'), 'Original')
+    const made = prepareDelivery(1)
+    assert.ok('start' in made)
+    const work = path.join(root, made.start.worktree!)
+    fs.writeFileSync(path.join(work, 'article.md'), 'Draft')
+    assert.equal(fs.readFileSync(path.join(work, '../base/article.md'), 'utf8'), 'Original')
+    assert.equal(fs.readFileSync(path.join(root, 'article.md'), 'utf8'), 'Original')
+  } finally { delete process.env[DELIVERY_PHASE_ENV] }
 })
-it('lets the builder finish without a commit outside git', () => {
+
+it('archives an active non-Git delivery and returns the same archive on retry', async () => {
   assert.equal(findDelivery(deliveryId)?.base, undefined)
-  assert.equal(completeDelivery(deliveryId).finished, true)
+  const result = await taskArchive('1', { cwd: root })
+  assert.equal(result.archive_status, 'archived')
   assert.equal(fs.existsSync(card), false)
+  assert.equal(findDelivery(deliveryId)?.status, 'finished')
   assert.equal(findDelivery(deliveryId)?.landing, undefined)
-})
-it('archives once and returns the same handoff on repeated completion', async () => {
-  const result = completeDelivery('1', { commit: sha, branch: 'main' })
-  assert.equal(result.finished, true)
-  assert.ok(result.note)
-  assert.equal(fs.existsSync(card), false)
-  assert.deepEqual(completeDelivery(deliveryId, { commit: sha, branch: 'main' }), result)
-  assert.throws(() => completeDelivery(deliveryId, { commit: 'b'.repeat(40), branch: 'main' }), /different/)
-  assert.equal(findDelivery(deliveryId)?.landing?.commit, sha)
+  assert.equal((await taskArchive('1', { cwd: root })).archived_to, result.archived_to)
   const resumed = await cmdResume('first', {})
   assert.equal((resumed.delivery as { id: string }).id, deliveryId)
-  assert.equal(withStore((store) => store.runs.length), 1)
-  withStore(store => { store.deliveries = [] })
-  const recovered = await cmdResumeDelivery('1')
-  assert.deepEqual(recovered.delivery, {
-    id: deliveryId, status: 'finished', line: 'landed as aaaaaaa', commit: sha, branch: 'main',
-  })
-  fs.renameSync(path.join(path.dirname(card), '../.archive', path.basename(card)), card)
-  const restored = new Date(Date.now() + 1000).toISOString()
-  fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replace('questions:', `restored: "${restored}"\nquestions:`))
-  await assert.rejects(cmdResumeDelivery('1'), /no delivery here answers to "1"/)
 })
-it('records explicit completion with open questions', async () => {
+
+it('does not return a completed delivery for a different task on resume (#1248)', async () => {
+  await taskArchive('1', { cwd: root })
+  const execution = { job: '11111111-1111-4111-8111-111111111111', machine: '22222222-2222-4222-8222-222222222222' }
+  try {
+    process.env.AI4KANBAN_EXECUTION = JSON.stringify({ ...execution, card: 2 })
+    await assert.rejects(cmdResume('first', {}), /belongs to a different task/)
+    process.env.AI4KANBAN_EXECUTION = JSON.stringify({ ...execution, card: 1 })
+    const own = await cmdResume('first', {})
+    assert.equal((own.delivery as { id: string }).id, deliveryId)
+    patch(d => { d.cardId = 2 })
+    await assert.rejects(cmdResume('first', {}), /belongs to a different task/)
+    const resumed = await openResume('first')
+    assert.match('error' in resumed ? resumed.error : '', /belongs to a different task/)
+  } finally {
+    delete process.env.AI4KANBAN_EXECUTION
+  }
+})
+
+it('refuses to archive a delivery with open questions', async () => {
   await move(root, ['update-questions', '1', '--append', 'Grant deployment access?',
     '--recommended-option', 'Grant this account access', '--option', 'Use another account'])
-  assert.equal(completeDelivery(deliveryId, { commit: sha, branch: 'main' }).finished, true)
+  await assert.rejects(() => taskArchive('1', { cwd: root }), /open questions/)
+  assert.equal(findDelivery(deliveryId)?.status, 'active')
 })
-it('completes the ordinary task once without a Studio land role', async () => {
-  assert.equal(agentForRun({ action: 'implement', id: 1 }), undefined)
-  assert.equal(completeDelivery(deliveryId, { commit: sha, branch: 'main' }).finished, true)
-  await closeRun('first', { status: 'done' })
-  assert.equal(nextDeliveryRun(deliveryId), undefined)
-})
-it('records explicit completion without Todo or Output prerequisites', () => {
-  patch((d) => { d.studio!.needsArtifact = true })
-  fs.appendFileSync(card, '\n- [ ] Verify output\n- [x] Output: `missing/article.md`\n')
-  assert.equal(completeDelivery(deliveryId).finished, true)
-})
+
 it('retains old Git context and leaves directories intact on cancel', async () => {
   const tree = path.join(root, '.akb/worktrees/1/legacy')
   fs.mkdirSync(tree, { recursive: true })
@@ -155,7 +149,6 @@ it('retains old Git context and leaves directories intact on cancel', async () =
 })
 it('keeps questions open and supersedes changed approved requirements', async () => {
   patch((d) => { d.answers = [{ outcome: 'changed', why: 'New requirement', at: Date.now() }] })
-  assert.throws(() => completeDelivery(deliveryId, { commit: sha, branch: 'main' }), /superseded/)
   await closeRun('first', { status: 'done' })
   const next = nextDeliveryRun(deliveryId)
   assert.equal(next?.id, 1)
@@ -220,19 +213,16 @@ it('delivers through the CLI after agent-owned conflict repair, checks and a new
   const candidate = fs.readFileSync(card, 'utf8').replace('<!-- agent -->', '## Worth noting after implementation\n\n- Preserved both edits.\n\n<!-- agent -->')
   assert.match(candidate, /Worth noting after implementation/)
   fs.writeFileSync(card, candidate)
-  const complete = ['delivery', 'complete', deliveryId, '--commit', commit, '--branch', 'main', '--json']
-  const handoff = await run(root, complete)
+  const complete = ['task', 'archive', '1', '--json']
+  await run(root, complete)
   await closeRun('git-resumed', { status: 'interrupted' })
   const archived = path.join(path.dirname(card), '../.archive', path.basename(card))
   const saved = fs.readFileSync(archived, 'utf8')
   assert.match(saved, /Preserved both edits/)
   const reconciled = await reconcileCardDelivery(1)
   assert.deepEqual(reconciled, { kind: 'completed', deliveryId, sessionId: 'git-resumed', commit, branch: 'main' })
-  assert.deepEqual(await run(root, ['raw', ...complete]), handoff)
-  assert.throws(() => completeDelivery(deliveryId, { commit: base, branch: 'other' }),
-    new RegExp(`Recorded: ${commit} on main\\. Reported: ${base} on other`))
+  assert.equal((await taskArchive('1', { cwd: root })).archived_to, path.relative(root, archived))
   assert.equal(git('rev-parse', 'main'), commit)
-  assert.equal(findDelivery(deliveryId)?.completions?.length, 1)
   assert.equal(fs.readFileSync(archived, 'utf8'), saved)
   assert.equal(fs.readFileSync(path.join(root, 'parallel.txt'), 'utf8'), 'another target update')
   assert.equal(fs.existsSync(tree), true)
@@ -247,7 +237,7 @@ it('recovers an archive interrupted after the card moved and repairs its index',
     if (String(from) === card) throw new Error('Interrupted after archive move')
   }
   try {
-    assert.throws(() => completeDelivery(deliveryId, { commit: sha, branch: 'main' }), /Interrupted/)
+    await assert.rejects(() => taskArchive('1', { cwd: root }), /Interrupted/)
   } finally { fs.renameSync = rename }
   assert.equal(fs.existsSync(card), false)
   assert.equal(findDelivery(deliveryId)?.status, 'active')
@@ -255,12 +245,11 @@ it('recovers an archive interrupted after the card moved and repairs its index',
   assert.equal(findDelivery(deliveryId)?.status, 'active')
   assert.equal(open('after-archive'), deliveryId)
   process.env[RUN_ENV] = 'after-archive'
-  assert.throws(() => completeDelivery(deliveryId, { commit: sha, branch: 'other' }),
-    new RegExp(`Recorded: ${sha} on main\\. Reported: ${sha} on other`))
-  const result = completeDelivery(deliveryId, { commit: sha, branch: 'main' })
-  assert.equal(result.finished, true)
+  const result = await taskArchive('1', { cwd: root })
+  assert.equal(result.archive_status, 'archived')
+  assert.equal(findDelivery(deliveryId)?.status, 'finished')
   assert.doesNotMatch(fs.readFileSync(index, 'utf8'), /1-deliver-it/)
-  assert.deepEqual(completeDelivery(deliveryId, { commit: sha, branch: 'main' }), result)
+  assert.equal((await taskArchive('1', { cwd: root })).archived_to, result.archived_to)
 })
 
 it('recovers a non-Git delivery from its local log when its live index is lost', async () => {
@@ -274,7 +263,7 @@ it('recovers a non-Git delivery from its local log when its live index is lost',
 
 it('rejects retired Git commands and keeps leaf arguments strict', async () => {
   for (const args of [
-    ['delivery', 'conflict', '1'], ['raw', 'delivery', 'blocked', '1', 'why'],
+    ['delivery', 'complete', '1'], ['raw', 'delivery', 'complete', '1'], ['delivery', 'conflict', '1'], ['raw', 'delivery', 'blocked', '1', 'why'],
     ['raw', 'delivery', 'discard', '1', '--yes'], ['studio', 'worktree', 'coding', 'on'],
   ]) {
     const program = args[0] === 'raw'
@@ -282,19 +271,16 @@ it('rejects retired Git commands and keeps leaf arguments strict', async () => {
       : buildAkbProgram({ program: 'akb', cwd: root, installHint: '' })
     await assert.rejects(() => program.parseAsync(args[0] === 'raw' ? args.slice(1) : args, { from: 'user' }), { code: 'commander.unknownCommand' })
   }
-  await assert.rejects(() => run(root, ['raw', 'delivery', 'complete', '1', 'extra']), /too many arguments/)
   await assert.rejects(() => run(root, ['studio', 'list', '--unexpected']), /unknown option/)
 })
 
-it('replays the durable completion receipt when a legacy writer drops live receipt fields', () => {
-  const result = completeDelivery(deliveryId, { commit: sha, branch: 'main' })
-  patch((d) => { delete d.completions })
-  assert.deepEqual(completeDelivery(deliveryId, { commit: sha, branch: 'main' }), result)
-  assert.equal(findDelivery(deliveryId)?.completions?.length, 1)
-})
-
-it('refuses a late completion against a restored card', () => {
-  fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replace('status: todo', `status: todo\nrestored: ${new Date(Date.now() + 1000).toISOString()}`))
-  assert.throws(() => completeDelivery(deliveryId, { commit: sha, branch: 'main' }), /predates task restoration/)
-  assert.ok(fs.existsSync(card))
+it('reads a legacy landing receipt from the archived delivery', async () => {
+  patch(d => {
+    d.completions = [{ sessionId: 'first', step: 0, at: Date.now(), commit: sha, branch: 'main', finished: true }]
+    d.status = 'finished'
+  })
+  await closeRun('first', { status: 'done' })
+  assert.deepEqual(await reconcileCardDelivery(1), {
+    kind: 'completed', deliveryId, sessionId: 'first', commit: sha, branch: 'main',
+  })
 })

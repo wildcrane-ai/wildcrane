@@ -173,7 +173,7 @@ describe("slide-deck's storyboard script", () => {
   const deck = 'slide-deck/shared'
   const slidesExample = agentFile(`${deck}/references/slides.example.json`)
   const slidesSchema = JSON.parse(agentFile(`${deck}/references/slides.schema.json`))
-  const files: Record<string, Uint8Array> = { 'pages/cover.html': new Uint8Array([60]), 'pages/results.tsx': new Uint8Array([60]) }
+  const files: Record<string, Uint8Array> = { 'pages/cover.html': new Uint8Array([60]), 'pages/results.tsx': new Uint8Array([60]), 'logo.svg': new Uint8Array([60]) }
   const { codes } = runner(deck, 969, files)
   const slideCodes = (change: (data: any) => void) => codes(edit(change, slidesExample))
 
@@ -282,24 +282,25 @@ A requirement.
   it('leaves the JSON contract to the agent: a broken script still validates', async () => {
     fs.writeFileSync(path.join(ASSETS, '1', 'storyboard.json'), edit((d) => { delete d.shots[0].voiceover }).replaceAll('.assets/963/', '.assets/1/'))
     fs.writeFileSync(path.join(ASSETS, '1', 's1.png'), png(1280))
-    assert.deepEqual(validateSpec(file, card(tag), 1), [])
+    assert.deepEqual(await validateSpec(file, card(tag), 1), [])
     assert.equal((await move(root, ['validate', '1'])).valid, true)
   })
 
-  it('names the storyboard file and path of a frame the card cannot reach (#458)', () => {
-    const errors = validateSpec(file, card(tag), 1)
-    assert.deepEqual(errors.map((e) => e.rule), ['preview-file'])
+  it('names the storyboard file and path of a frame the card cannot reach (#458)', async () => {
+    fs.writeFileSync(path.join(ASSETS, '1', 'storyboard.json'), edit(d => { d.shots[0].frames[0].src = '.assets/963/s1.png' }))
+    const errors = await validateSpec(file, card(tag), 1)
+    assert.deepEqual(errors.map((e) => [e.rule, e.line]), [['preview-file', 20]])
     assert.match(errors[0]!.message, /^\/shots\/0\/frames\/0\/src: \.assets\/963\/s1\.png: outside this card's files/)
   })
 
-  it('refuses a marker whose file is not in the card folder', () => {
+  it('refuses a marker whose file is not in the card folder', async () => {
     fs.rmSync(path.join(ASSETS, '1', 'storyboard.json'))
-    assert.deepEqual(validateSpec(file, card(tag), 1).map((e) => e.rule), ['storyboard-src'])
+    assert.deepEqual((await validateSpec(file, card(tag), 1)).map((e) => e.rule), ['storyboard-src'])
   })
 
-  it('refuses a marker naming another card or sharing its paragraph', () => {
-    assert.deepEqual(validateSpec(file, card('<Storyboard src=".assets/2/storyboard.json" />'), 1).map((e) => e.rule), ['storyboard-src'])
-    assert.ok(validateSpec(file, card(`${tag}\nprose`), 1).some((e) => e.rule === 'storyboard-block'))
+  it('refuses a marker naming another card or sharing its paragraph', async () => {
+    assert.deepEqual((await validateSpec(file, card('<Storyboard src=".assets/2/storyboard.json" />'), 1)).map((e) => e.rule), ['storyboard-src'])
+    assert.ok((await validateSpec(file, card(`${tag}\nprose`), 1)).some((e) => e.rule === 'storyboard-block'))
   })
 
   it('finds a marker only where it stands alone, outside a fence', () => {
@@ -312,23 +313,23 @@ A requirement.
     assert.deepEqual(storyboardMarkers(body), [{ src: '.assets/963/storyboard.json', line: 1 }])
   })
 
-  it('checks a <Studio> tag: its file, its shape and its paragraph (#451)', () => {
+  it('checks a <Studio> tag: its file, its shape and its paragraph (#451)', async () => {
     const wf = '<Studio src=".assets/1/studio.json" label="Notes" />'
-    assert.deepEqual(validateSpec(file, card(wf), 1).map((e) => e.rule), ['studio-src'])
+    assert.deepEqual((await validateSpec(file, card(wf), 1)).map((e) => e.rule), ['studio-src'])
     fs.writeFileSync(path.join(ASSETS, '1', 'studio.json'), '{"rounds": [[]], "land": [], "scheduled": []}')
-    assert.deepEqual(validateSpec(file, card(wf), 1).map((e) => e.rule), ['preview-file'])
+    assert.deepEqual((await validateSpec(file, card(wf), 1)).map((e) => e.rule), ['preview-file'])
     fs.writeFileSync(path.join(ASSETS, '1', 'studio.json'), JSON.stringify({ version: 1, rounds: [[{ agent: 'writer', title: { en: 'Copy' } }]], land: [], scheduled: [] }))
-    assert.deepEqual(validateSpec(file, card(wf), 1), [])
-    assert.ok(validateSpec(file, card(`${wf}\nprose`), 1).some((e) => e.rule === 'studio-block'))
+    assert.deepEqual(await validateSpec(file, card(wf), 1), [])
+    assert.ok((await validateSpec(file, card(`${wf}\nprose`), 1)).some((e) => e.rule === 'studio-block'))
     const dir = path.join(ASSETS, '1', 'studio-review')
     fs.mkdirSync(dir)
     fs.renameSync(path.join(ASSETS, '1', 'studio.json'), path.join(dir, 'review.json'))
-    assert.deepEqual(validateSpec(file, card('<Studio src=".assets/1/studio-review/review.json" />'), 1), [])
-    assert.deepEqual(validateSpec(file, card('<Studio src=".assets/1/../2/studio-review/review.json" />'), 1).map((e) => e.rule), ['studio-src'])
+    assert.deepEqual(await validateSpec(file, card('<Studio src=".assets/1/studio-review/review.json" />'), 1), [])
+    assert.deepEqual((await validateSpec(file, card('<Studio src=".assets/1/../2/studio-review/review.json" />'), 1)).map((e) => e.rule), ['studio-src'])
   })
 
-  it('leaves a card without a marker to the old rules', () => {
+  it('leaves a card without a marker to the old rules', async () => {
     fs.rmSync(path.join(ASSETS, '1'), { recursive: true })
-    assert.deepEqual(validateSpec(file, card('`<Storyboard src=".assets/1/storyboard.json" />`'), 1), [])
+    assert.deepEqual(await validateSpec(file, card('`<Storyboard src=".assets/1/storyboard.json" />`'), 1), [])
   })
 })

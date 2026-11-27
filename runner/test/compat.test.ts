@@ -145,8 +145,40 @@ describe('the akb the Runner carries (#171)', () => {
     ))
   })
 
+  it('creates a Git implementation checkout and archives a verified merge through the bundled CLI', async () => {
+    if (!fs.existsSync(path.join(board, 'config.md'))) {
+      ok(await onBoard(['raw', 'init']))
+      ok(await onBoard(['raw', 'agent', 'use', 'claude-code']))
+    }
+    const git = (cwd: string, ...args: string[]) => {
+      const result = spawnSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8' })
+      assert.equal(result.status, 0, result.stderr)
+      return result.stdout.trim()
+    }
+    const base = git(project, 'rev-parse', 'HEAD')
+    ok(await onBoard(['raw', 'create', '--title', 'Managed build', '--studio', 'coding', '--id', '12', '--json']))
+    const ran = await runAkb(akb, ['raw', 'card', 'implement', '12', '--board', board, ...follow], {
+      cwd: project, board, env: { AI4KANBAN_DELIVERY_PHASE: 'implement' },
+    })
+    ok(ran)
+    const id = answerOf<{ delivery?: { id: string } }>(ran)?.delivery?.id
+    assert.ok(id)
+    const deliveryFile = path.join(board, 'deliveries', `${id}.json`)
+    const saved = JSON.parse(fs.readFileSync(deliveryFile, 'utf8'))
+    const work = path.join(project, saved.worktree)
+    assert.equal(git(work, 'rev-parse', 'HEAD'), base)
+    assert.equal(git(project, 'rev-parse', 'HEAD'), base)
+    fs.writeFileSync(path.join(work, 'managed.txt'), 'Saved implementation')
+    git(work, 'add', 'managed.txt')
+    git(work, 'commit', '-m', 'Implement')
+    assert.equal(fs.existsSync(path.join(project, 'managed.txt')), false)
+    git(project, 'merge', '--ff-only', saved.branch)
+    ok(await onBoard(['task', 'archive', '12', '--json']))
+    assert.equal(JSON.parse(fs.readFileSync(deliveryFile, 'utf8')).landing.commit, git(project, 'rev-parse', 'HEAD'))
+  })
+
   it('takes every other verb a job sends', async () => {
-    refused(await onBoard(['raw', 'delivery', 'resume', 'gone', '--json']), /no delivery/)
+    refused(await runAkb({ ...akb, canonicalCommands: true }, ['delivery', 'resume', 'gone', '--json'], { cwd: project, board }), /no delivery/)
     refused(await onBoard(['raw', 'delivery', 'cancel', 'gone', '--json']), /no delivery/)
     refused(await onBoard(['raw', 'agent', 'run', 'coding', 'nobody', ...follow]), /Studio roles no longer run on their own/)
   })

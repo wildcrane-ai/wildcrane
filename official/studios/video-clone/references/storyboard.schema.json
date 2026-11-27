@@ -50,7 +50,7 @@
             "additionalProperties": false,
             "required": ["src", "alt"],
             "properties": {
-              "src": { "type": "string", "pattern": "^\\.assets/[1-9][0-9]*/[^./\\\\][^/\\\\]*\\.(png|jpe?g|webp|gif)$" },
+              "src": { "type": "string", "pattern": "^(?!/)[^:\\\\\\u0000-\\u001f]+\\.(png|jpe?g|webp|gif)$" },
               "alt": { "$ref": "#/$defs/text" }
             }
           }

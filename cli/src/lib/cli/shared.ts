@@ -114,7 +114,7 @@ export async function runProgram(program: Command, argv: string[], name: string)
     return 0
   } catch (err) {
     if (err instanceof CommandExit) return err.exitCode
-    if (err instanceof CommanderError) return commanderExit(err, name, json)
+    if (err instanceof CommanderError) return commanderExit(err, name, json, program.args[0])
     // A move that refused after `runAction` closed its box: report it plainly. One that
     // refused inside the box reported through the same function with the prose attached.
     return report(err, { program: name, json })
@@ -129,13 +129,13 @@ export async function runProgram(program: Command, argv: string[], name: string)
 // other refusal is, with its Commander code as the `kind` so a caller reading `--json` can
 // tell an unknown option from a missing argument.
 //
-// A word that used to be a command carries one sentence more: Commander only looks for a
-// near miss among the words beside it, and every one of these is still here a level down.
-function commanderExit(err: CommanderError, program: string, json: boolean): number {
+// Only a renamed top-level command gets a migration hint.
+function commanderExit(err: CommanderError, program: string, json: boolean, rootWord?: string): number {
   if (err.exitCode === 0 || err.code === 'commander.help') return 0
   const kind = err.code.replace(/^commander\./, '')
   const message = err.message.replace(/^error: /, '')
-  const moved = movedTo(unknownWord(message), program)
+  const word = unknownWord(message)
+  const moved = word === rootWord ? movedTo(word, program) : ''
   return report(new BoardError(moved || message, { kind }), { program, json })
 }
 

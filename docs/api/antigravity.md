@@ -27,7 +27,7 @@ no image flags or permission exceptions are added. Image tool errors stay in the
 turn succeeds once every required attachment has been read successfully by its full path.
 Unrecovered required images and permission denials fail even with a final `SUCCESS`.
 Without explicit image targets, unresolved image read errors remain failures. Verified with agy 1.5.9; see
-[image input verification](../qa/runner/antigravity-images/case.md).
+[image input verification](https://github.com/wildcrane-ai/wildcrane-private/blob/9da7017f75e01fa23fe89caf774be24e7821b2f0/docs/qa/runner/antigravity-images/case.md).
 
 ## Model and effort
 
@@ -40,7 +40,7 @@ Save the independent effort in `settings.reasoning`: `low`, `medium`, `high`, `x
 - **Protocol**: tested with agy 1.5.6 and 1.5.7; [headless NDJSON](https://antigravity.google/docs/cli/headless/) is parsed independently of Gemini CLI.
 - **Permissions**: unattended runs use `--dangerously-skip-permissions`, subject to the CLI's deny rules. Denied actions fail even when agy exits zero with `SUCCESS`.
 - **Context**: resume uses only `--conversation <id>`. The local `.gemini/antigravity-cli/conversations/<id>.db` must exist; a mismatched returned ID fails without replacing the known ID. No latest-session fallback.
-- **Early-crash resume**: agy 1.5.9 persists its conversation before `init`. WildCrane saves that ID immediately and resumes it even before the first response completes. The original request accompanies recovery because `init` can precede saving the first user message; recovery verifies existing results before acting. An interruption without a recorded ID fails explicitly; a missing local conversation never opens a replacement. See [verification](../qa/runner/antigravity-early-recovery/case.md).
+- **Early-crash resume**: agy 1.5.9 persists its conversation before `init`. WildCrane saves that ID immediately and resumes it even before the first response completes. The original request accompanies recovery because `init` can precede saving the first user message; recovery verifies existing results before acting. An interruption without a recorded ID fails explicitly; a missing local conversation never opens a replacement. See [verification](https://github.com/wildcrane-ai/wildcrane-private/blob/83c06d2bd6dcb2a00fb8145528a9145fea9c0264/docs/qa/runner/antigravity-early-recovery/case.md).
 - **Usage**: result counters cover the conversation. The first resumed prompt uses its own completed-step counts; subsequent results subtract previous cumulative counts.
 - **Cost**: shared `costUsd()` sums unique completed response and checkpoint steps from this process, including failed attempts. `costIncomplete()` marks missing usage or prices. Conversation result totals are never priced. Known Gemini IDs (including effort suffixes) use [global standard API rates](https://cloud.google.com/model-garden/pricing), with published promotional expiry dates fixed at run start. Output already includes thinking; cache reads are separate from fresh input. This is an API-equivalent estimate, not subscription quota, AI credits or an actual bill. Unknown/default-unreported models and runs without priced steps have no amount; no alias prices are inferred. Discussions and tasks use the existing report and display.
 - **Context window**: the shared `context()` reading uses the latest completed `agent_response` prompt (fresh input plus cache reads, excluding output and cumulative result counters; checkpoint usage does not replace it) and reads that generation’s effective window limit from the local `.gemini/antigravity-cli/conversations/<id>.db` `gen_metadata` record (verified on agy 1.5.12 for default and explicit models). Model aliases never borrow another provider’s window; missing, unreadable or incomplete local session metadata degrades silently with no context ring.
@@ -71,4 +71,4 @@ Source changes retain display names; saved models, CLI defaults and manual IDs r
 The visible runtime settings panel reloads every 10 seconds. File readers, read-only CLI
 commands and ACP discovery (`initialize`, `session/new`) never submit a generation prompt.
 Antigravity 1.5.9 was verified with its signed-in `agy models` list and saved selections;
-see [regression evidence](../qa/runner/agent-model-recovery/case.md).
+see [regression evidence](https://github.com/wildcrane-ai/wildcrane-private/blob/2f2879f8d62ce1faf6362ae6a36f76f2f18a9de3/docs/qa/runner/agent-model-recovery/case.md).

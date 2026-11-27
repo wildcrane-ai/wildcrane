@@ -8,13 +8,22 @@ import { pathToFileURL } from 'node:url'
 import { test } from 'node:test'
 
 const cli = process.cwd()
-const shipped = path.resolve(cli, '../official/studios/coding/scripts/check-mockup.mjs')
+const studios = path.resolve(cli, '../official/studios')
+const skill = 'skills/ui-mockup'
+const checker = 'scripts/check-mockup.mjs'
+const coding = path.join(studios, 'coding', skill)
+const builder = path.join(studios, 'studio-builder', skill)
+const shipped = path.join(coding, checker)
 
 test('the standalone checker freezes the current preview renderer and dependency lock', async () => {
   const generator = pathToFileURL(path.join(cli, 'scripts/build-mockup-check.mjs')).href
   const { buildMockupCheck } = await import(generator)
   const hash = (text: string) => createHash('sha256').update(text).digest('hex')
-  assert.equal(hash(fs.readFileSync(shipped, 'utf8')), hash(await buildMockupCheck()), 'regenerate the shipped checker')
+  const generated = hash(await buildMockupCheck())
+  for (const dir of [coding, builder]) {
+    assert.equal(hash(fs.readFileSync(path.join(dir, checker), 'utf8')), generated, `regenerate and sync ${dir}`)
+  }
+  assert.deepEqual(fs.readFileSync(path.join(coding, 'SKILL.md')), fs.readFileSync(path.join(builder, 'SKILL.md')))
 })
 
 test('failed isolated installation fails the check and removes its environment', () => {

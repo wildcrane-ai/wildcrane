@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { forgetFileMemos, memoByFiles } from '../file-memo'
+import { normalizeCardStatus } from '../frontmatter'
 import { pidAlive, withLock } from '../lock'
 import { die, SESSIONS, SESSIONS_DIR, SESSIONS_LOCK } from '../paths'
 import { insideRun } from './env'
@@ -130,6 +131,7 @@ function parseStore(): Store {
       studioPin: typeof entry.studioPin?.studio === 'string' && Number.isSafeInteger(entry.studioPin.version)
         && entry.studioPin.version > 0 ? entry.studioPin : undefined,
       pendingWrites: entry.pendingWrites === true || undefined,
+      lastProgressAt: typeof entry.lastProgressAt === 'number' && Number.isFinite(entry.lastProgressAt) ? entry.lastProgressAt : undefined,
       submitted: entry.submitted === true || undefined,
       cardId: typeof entry.cardId === 'number' ? entry.cardId : null,
       createdCardIds: Array.isArray(entry.createdCardIds)
@@ -196,7 +198,7 @@ function parseStore(): Store {
         && [entry.formatRepair.cardIds, entry.formatRepair.changedIds, entry.formatRepair.existingIds].every((ids) => Array.isArray(ids) && ids.every(Number.isInteger))
         ? entry.formatRepair : undefined,
       retry: readRetry(entry.retry, !!executionOf(entry.cloudExecution ?? null)),
-      priorStatus: typeof entry.priorStatus === 'string' ? entry.priorStatus : undefined,
+      priorStatus: typeof entry.priorStatus === 'string' ? normalizeCardStatus(entry.priorStatus) : undefined,
       // The pictures the create sheet handed this run (#517), as paths in its own folder.
       pictures: readPictures(entry.pictures),
       stopping: entry.stopping === true ? true : undefined,
@@ -370,7 +372,7 @@ export function readDeliveryRow(raw: unknown): DeliveryRecord | null {
     // What each round of answers concluded (#637). A delivery from before this has none,
     // and a round nothing judged is a round the board will not guess at.
     answers: readAnswers(entry.answers),
-    priorStatus: typeof entry.priorStatus === 'string' && entry.priorStatus ? entry.priorStatus : undefined,
+    priorStatus: typeof entry.priorStatus === 'string' && entry.priorStatus ? normalizeCardStatus(entry.priorStatus) : undefined,
     commitMode:
       entry.commitMode === 'auto' || entry.commitMode === 'manual' || entry.commitMode === 'files'
         ? entry.commitMode

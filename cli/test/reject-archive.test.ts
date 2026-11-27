@@ -149,11 +149,11 @@ describe('a rejected card in the archive', () => {
     assert.equal(leftBoardOnLanding(81), true)
   })
 
-  it('validates with the mark, and only as true', () => {
+  it('validates with the mark, and only as true', async () => {
     const marked = cardText(80).replace('questions: []', 'rejected: true\nquestions: []')
-    const rules = (text: string) => validateSpec('80-an-idea.md', text).map((e) => e.rule)
-    assert.equal(rules(marked).includes('rejected'), false)
-    assert.equal(rules(marked.replace('rejected: true', 'rejected: no')).includes('rejected'), true)
+    const rules = async (text: string) => (await validateSpec('80-an-idea.md', text)).map((e) => e.rule)
+    assert.equal((await rules(marked)).includes('rejected'), false)
+    assert.equal((await rules(marked.replace('rejected: true', 'rejected: no'))).includes('rejected'), true)
   })
 })
 
@@ -199,9 +199,9 @@ describe('raw reject --reason', () => {
     const text = fs.readFileSync(fileOf(id), 'utf8')
     assert.match(text, /^rejected_reason: /m)
     // Validation knows the field on a rejected card, and refuses it anywhere else.
-    const flagged = (t: string) => validateSpec(fileOf(id), t).filter((e) => e.rule === 'rejected_reason' || e.rule === 'frontmatter')
-    assert.deepEqual(flagged(text), [])
-    assert.equal(flagged(text.replace('rejected: true\n', '')).length, 1)
+    const flagged = async (t: string) => (await validateSpec(fileOf(id), t)).filter((e) => e.rule === 'rejected_reason' || e.rule === 'frontmatter')
+    assert.deepEqual(await flagged(text), [])
+    assert.equal((await flagged(text.replace('rejected: true\n', ''))).length, 1)
     assert.equal(archived(id)?.rejected_reason, WHY)
     // The list carries no reason — only the opened card does.
     assert.equal('rejectedReason' in readArchive().cards[0]!, false)
@@ -248,8 +248,8 @@ describe('who rejected it, and when (#1497)', () => {
     assert.match(text, /^rejected_by: user$/m)
     const at = Date.parse(text.match(/^rejected_at: (.+)$/m)![1]!.replace(/^['"]|['"]$/g, ''))
     assert.ok(at >= before - 1000 && at <= Date.now())
-    assert.deepEqual(validateSpec(fileOf(id), text).filter((e) => e.rule.startsWith('rejected')), [])
-    assert.equal(validateSpec(fileOf(id), text.replace('rejected: true\n', '')).filter((e) => e.rule.startsWith('rejected')).length, 3)
+    assert.deepEqual((await validateSpec(fileOf(id), text)).filter((e) => e.rule.startsWith('rejected')), [])
+    assert.equal((await validateSpec(fileOf(id), text.replace('rejected: true\n', ''))).filter((e) => e.rule.startsWith('rejected')).length, 3)
   })
 
   it('stamps a rejection made inside a run as the agent', async () => {

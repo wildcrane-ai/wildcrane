@@ -10,7 +10,7 @@ import { previewCatalog } from '../lib/shared/studio-files'
 import { makeFailure } from '../lib/agent/retry'
 import { insideRun } from '../lib/agent/env'
 import { patch } from '../lib/agent/sessions'
-import { say } from '../lib/io'
+import { say, warn } from '../lib/io'
 import { die, KANBAN } from '../lib/paths'
 import { formatContractErrors, snapshotSpecs, validateSpec } from '../lib/spec-contract'
 import type { MoveResult } from '../lib/types'
@@ -54,7 +54,8 @@ export async function cmdValidate(id?: number): Promise<MoveResult> {
     const batch = await Promise.all(tasks.slice(i, i + 8).map(async ([number, task]) => [number, await readCardStudio(task)] as const))
     for (const [number, context] of batch) contexts.set(number, context)
   }
-  const errors = cards.flatMap(([file, card]) => validateSpec(file, card.text, card.id, contexts.get(card.id)))
+  const errors = []
+  for (const [file, card] of cards) errors.push(...await validateSpec(file, card.text, card.id, contexts.get(card.id), warn))
   const reason = errors.length ? formatContractErrors(errors) : undefined
   const session = insideRun()
   if (session) patch(session, run => {

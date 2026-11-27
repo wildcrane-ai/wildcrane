@@ -23,6 +23,22 @@ interface Entry {
   path: string
   size: number
   sha256?: string
+  url?: string
+}
+
+interface WebsitePage {
+  path: string
+  title: string
+  role: string
+  previewUrl?: string | null
+}
+
+interface WebsiteMeta {
+  scope: 'page' | 'site'
+  useCase: string
+  primaryAction: string
+  entry: string
+  pages: WebsitePage[]
 }
 
 interface TemplateMeta {
@@ -32,7 +48,10 @@ interface TemplateMeta {
   description: string
   tags: string[]
   access: 'free' | 'pro'
+  revision?: string
+  pageUrl?: string
   previews: Entry[]
+  website?: WebsiteMeta
 }
 
 function usage(problem: string, line: string): never {
@@ -97,12 +116,13 @@ function entries(value: unknown): value is Entry[] {
   return Array.isArray(value) && value.every(entry => isRecord(entry) && hasText(entry.path)
     && !/[\\:\0]/.test(entry.path) && entry.path.split('/').every(part => !!part && part !== '.' && part !== '..')
     && typeof entry.size === 'number' && Number.isSafeInteger(entry.size) && entry.size >= 0
-    && (entry.sha256 === undefined || typeof entry.sha256 === 'string' && /^[a-f0-9]{64}$/.test(entry.sha256)))
+    && (entry.sha256 === undefined || typeof entry.sha256 === 'string' && /^[a-f0-9]{64}$/.test(entry.sha256))
+    && (entry.url === undefined || hasText(entry.url)))
 }
 
 async function downloadEntries(name: string, kind: 'previews' | 'evidence', files: Entry[], to: string, fallback?: string): Promise<string[]> {
   if (!SLUG.test(name)) throw cloudError(invalidResponse('a valid template name'))
-  const fetched: { out: string; bytes: Buffer }[] = []
+  const fetched: { out: string; bytes: Buffer; url?: string }[] = []
   const names = new Set<string>()
   const expected = 'a matching template download'
   for (const file of files) {
@@ -116,12 +136,12 @@ async function downloadEntries(name: string, kind: 'previews' | 'evidence', file
       return refuse(CORRUPT, fallback, invalidResponse(expected))
     })
     if (file.sha256 && createHash('sha256').update(bytes).digest('hex') !== file.sha256) refuse(CORRUPT, fallback, invalidResponse(expected))
-    fetched.push({ out, bytes })
+    fetched.push({ out, bytes, url: file.url })
   }
   if (fetched.length) fs.mkdirSync(to, { recursive: true })
-  return fetched.map(({ out, bytes }) => {
+  return fetched.map(({ out, bytes, url }) => {
     fs.writeFileSync(out, bytes)
-    say(out)
+    say(url ? `${out} (${url})` : out)
     return out
   })
 }
@@ -160,9 +180,13 @@ export async function templateSearch(
   const { templates } = await asJson<{ templates: TemplateMeta[] }>(await ask(`?${query}`, {}, WITHOUT))
   if (templates.length === 0) say('No template matches.')
   for (const t of templates) {
-    say(`${t.name} — ${t.title} [${t.access}]`)
+    const scope = t.website?.scope
+    const details = [t.access, scope, t.revision ? `rev ${t.revision}` : undefined].filter(Boolean).join(', ')
+    say(`${t.name} — ${t.title} [${details}]`)
     say(`  ${t.summary}`)
-    say(`  tags: ${t.tags.join(', ') || '-'} · previews: ${t.previews.map((p) => p.path).join(', ') || '-'}`)
+    if (t.pageUrl) say(`  page: ${t.pageUrl}`)
+    const previewList = t.previews.map((p) => (p.url ? `${p.path} (${p.url})` : p.path)).join(', ') || '-'
+    say(`  tags: ${t.tags.join(', ') || '-'} · previews: ${previewList}`)
     for (const l of t.description.split('\n')) say(`  ${l}`)
   }
   return { templates }
@@ -173,10 +197,29 @@ export async function templateSearch(
 export async function templatePreview(name: string, opts: { to?: string }, program: string): Promise<MoveResult> {
   if (!opts.to) usage('Missing --to.', `${program} template preview <name> --to <dir>`)
   const at = encodeURIComponent(name)
-  const { previews } = requireResponse(await asJson<{ previews: Entry[] }>(await ask(`/${at}/previews`, {}, WITHOUT)),
-    'the template preview list', value => entries(value.previews))
+  const { previews, revision, pageUrl } = requireResponse(
+    await asJson<{ previews: Entry[]; revision?: string; pageUrl?: string }>(await ask(`/${at}/previews`, {}, WITHOUT)),
+    'the template preview list',
+    value => entries(value.previews)
+      && (value.revision === undefined || hasText(value.revision))
+      && (value.pageUrl === undefined || hasText(value.pageUrl)),
+  )
   if (previews.length === 0) say('This template has no preview.')
-  return { name, previews: await downloadEntries(name, 'previews', previews, opts.to, WITHOUT) }
+  const written = await downloadEntries(name, 'previews', previews, opts.to, WITHOUT)
+  if (pageUrl) say(`page: ${pageUrl}`)
+  return {
+    name,
+    ...(revision !== undefined && { revision }),
+    ...(pageUrl !== undefined && { pageUrl }),
+    previews: written,
+    files: previews.map((p, i) => ({
+      path: p.path,
+      file: written[i]!,
+      size: p.size,
+      ...(p.sha256 !== undefined && { sha256: p.sha256 }),
+      ...(p.url !== undefined && { url: p.url }),
+    })),
+  }
 }
 
 /** `akb template get <name> --to <dir>` — every file, checked against the catalog's
@@ -185,8 +228,21 @@ export async function templateGet(name: string, opts: { to?: string }, program: 
   if (!opts.to) usage('Missing --to.', `${program} template get <name> --to <dir>`)
   const to = opts.to
   const at = encodeURIComponent(name)
-  const { template } = requireResponse(await asJson<{ template: { files: Entry[] } }>(await ask(`/${at}`, {}, WITHOUT)),
-    'the template file list', value => isRecord(value.template) && entries(value.template.files))
+  const { template } = requireResponse(
+    await asJson<{
+      template: {
+        title?: string
+        revision?: string
+        pageUrl?: string
+        previews?: Entry[]
+        files: Entry[]
+      }
+    }>(await ask(`/${at}`, {}, WITHOUT)),
+    'the template file list',
+    value => isRecord(value.template)
+      && entries(value.template.files)
+      && (value.template.previews === undefined || entries(value.template.previews)),
+  )
   const fetched: { out: string; bytes: Buffer }[] = []
   for (const f of template.files) {
     const out = path.resolve(to, f.path)
@@ -210,7 +266,19 @@ export async function templateGet(name: string, opts: { to?: string }, program: 
     fs.writeFileSync(f.out, f.bytes)
   }
   say(`Fetched ${name}: ${fetched.length} files into ${to}`)
-  return { name, to, files: template.files.map((f) => f.path) }
+  if (template.pageUrl) say(`page: ${template.pageUrl}`)
+  for (const p of template.previews ?? []) {
+    if (p.url) say(`preview: ${p.path} (${p.url})`)
+  }
+  return {
+    name,
+    to,
+    files: template.files.map((f) => f.path),
+    ...(template.title !== undefined && { title: template.title }),
+    ...(template.revision !== undefined && { revision: template.revision }),
+    ...(template.pageUrl !== undefined && { pageUrl: template.pageUrl }),
+    ...(template.previews !== undefined && { previews: template.previews }),
+  }
 }
 
 const route = (p: string) => p.split('/').map(encodeURIComponent).join('/')

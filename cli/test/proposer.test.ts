@@ -247,7 +247,7 @@ describe('the flow', () => {
     assert.doesNotMatch(await printed(), /Your settings on this board|settings below/)
     writeConfig((cfg) => void (cfg.specAgents = { proposer: { 'small-fixes': 'auto' } }))
     const auto = await printed()
-    assert.match(auto, /Your settings on this board:\n- A small fix .*--status ready/)
+    assert.match(auto, /Your settings on this board:\n- A small fix .*--status planned/)
     assert.doesNotMatch(auto, /--related/)
   })
 

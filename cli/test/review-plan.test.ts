@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
-import { parseReviewFlow, parseReviewPlan, readReviewPlan, validateReviewPreviews, reviewLayers, reviewBoundary, reviewAuthorization, reviewAllows, type TaskReview } from '../src/lib/shared/review-plan'
+import { addPreviewsToPlan, parseReviewFlow, parseReviewPlan, readReviewPlan, validateReviewPreviews, reviewLayers, reviewBoundary, reviewAuthorization, reviewAllows, taskReviewBoundary, type TaskReview } from '../src/lib/shared/review-plan'
+import { mergePreviewDefinitions, type PreviewDefinition } from '../src/lib/shared/preview-definitions'
+import { compactReview } from '../src/lib/agent/runtime-context'
 
 it('validates forward references and parallel joins without using array order', () => {
   const plan = parseReviewPlan([{id:'c',after:['a','b']},{id:'b'},{id:'a'}])!
@@ -115,4 +117,79 @@ it('uses the Studio instructions for adopted Preview IDs while keeping other tas
   const prompt = reviewBoundary(review, undefined, [{ id: 'market-research' }])
   assert.doesNotMatch(prompt, /market-research|Old instructions|Allowed Preview Components: Asset/)
   assert.match(prompt, /<Preview id="custom">\nTask instructions\.\nAllowed Preview Components: Set\./)
+})
+
+it('appends Previews to flat, legacy, and empty plans without dropping existing stages or definitions', () => {
+  assert.deepEqual(
+    addPreviewsToPlan({ rule: 'Ask before landing.', previews: ['ui-design'] }, ['api-docs', 'ui-design']),
+    { rule: 'Ask before landing.', previews: ['ui-design', 'api-docs'] },
+  )
+  assert.deepEqual(
+    addPreviewsToPlan(null, ['api-docs']),
+    [{ id: 'api-docs', after: [], previews: ['api-docs'] }, { id: 'delivery-handoff', after: ['api-docs'], previews: [] }],
+  )
+  const legacy = parseReviewPlan([
+    { id: 'api-docs', after: [], previews: ['api-docs'] },
+    { id: 'delivery-handoff', after: ['api-docs'], previews: [] },
+  ])!
+  assert.deepEqual(
+    addPreviewsToPlan(legacy, ['api-docs', 'schema']),
+    [
+      { id: 'api-docs', after: [], previews: ['api-docs'] },
+      { id: 'schema', after: [], previews: ['schema'] },
+      { id: 'delivery-handoff', after: ['api-docs', 'schema'], previews: [] },
+    ],
+  )
+  const existing: PreviewDefinition[] = [
+    { id: 'a', title: { en: 'A', zh: '甲' }, instructions: 'Keep A.' },
+    { id: 'b', title: { en: 'B', zh: '乙' }, instructions: 'Old B.' },
+  ]
+  const merged = mergePreviewDefinitions(existing, [
+    { id: 'b', title: { en: 'B2', zh: '乙2' }, instructions: 'New B.' },
+    { id: 'c', title: { en: 'C', zh: '丙' }, instructions: 'Add C.' },
+  ])
+  assert.deepEqual(merged.map(d => [d.id, d.instructions]), [['a', 'Keep A.'], ['b', 'New B.'], ['c', 'Add C.']])
+})
+
+it('includes stage preview mappings and custom Preview IDs in compactReview', () => {
+  const review: TaskReview = {
+    revision: 4,
+    plan: [
+      { id: 'api-docs', after: [], previews: ['api-docs'] },
+      { id: 'delivery-handoff', after: ['api-docs'], previews: [] },
+    ],
+    stages: [
+      { id: 'api-docs', status: 'approved', revision: 3, snapshot: {} },
+      { id: 'delivery-handoff', status: 'available', revision: 4, snapshot: null },
+    ],
+    preview_definitions: [{ id: 'custom-check', title: { en: 'Check', zh: '检查' }, instructions: 'Run check.' }],
+  }
+  assert.equal(
+    compactReview(review),
+    'Review r4 · api-docs (previews: api-docs) approved · delivery-handoff available to start\nCustom Previews: custom-check',
+  )
+})
+
+it('keeps flat review rules visible in Card Chat while background work waits for approval', () => {
+  const review: TaskReview = {
+    revision: 8,
+    plan: { previews: ['api-docs', 'ui-design'], rule: 'Ask for approval when\na public interface signature changes.' },
+    stages: [
+      { id: 'approval-6', revision: 6, preview: 'api-docs', status: 'approved', snapshot: {} },
+      { id: 'approval-7', revision: 7, preview: 'ui-design', status: 'waiting_review', snapshot: {} },
+    ],
+    approvals: [{ preview: 'ui-design', stage: 'approval-7', revision: 7, question: '这个界面稿可以确认吗？' }],
+  }
+  assert.equal(compactReview(review), [
+    'Review r8 · flat plan',
+    'Selected Previews: api-docs, ui-design',
+    'Review rule: Ask for approval when a public interface signature changes.',
+    'Pending approvals:',
+    '- ui-design · approval-7 · r7: 这个界面稿可以确认吗？',
+  ].join('\n'))
+  assert.equal(compactReview({
+    revision: 0, plan: { previews: [], rule: '' }, stages: [],
+  }), 'Review r0 · flat plan\nSelected Previews: none\nReview rule: No extra approval.')
+  assert.match(taskReviewBoundary(review), /Wait for an explicit decision/)
+  assert.equal(reviewAllows(reviewAuthorization(review), 'implement'), false)
 })

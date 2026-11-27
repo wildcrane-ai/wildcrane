@@ -7,16 +7,17 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 
-import { openResume, openRun, patch, readSpec, resumeDelivery } from '../src/lib/agent/sessions.ts'
-import { endDelivery } from '../src/lib/agent/deliveries.ts'
+import { openResume, openRun, patch, readSpec } from '../src/lib/agent/sessions.ts'
+import { endDelivery, syncAudit } from '../src/lib/agent/deliveries.ts'
 import { startRun } from '../src/lib/agent/start.ts'
 import { approvalRequest } from '../src/lib/agent/approve.ts'
-import { cmdStartRun } from '../src/commands/run.ts'
-import { startCollecting, stopCollecting } from '../src/lib/io.ts'
+import { cmdResumeDelivery, cmdStartRun } from '../src/commands/run.ts'
+import { BoardError, startCollecting, stopCollecting } from '../src/lib/io.ts'
 import { readStore, withStore } from '../src/lib/agent/store.ts'
 import { watchRun } from '../src/lib/agent/watch.ts'
 import type { RunRecord, RunStatus } from '../src/lib/agent/types.ts'
-import { setBoardRoot } from '../src/lib/paths.ts'
+import { cardFile } from '../src/lib/cards.ts'
+import { DELIVERIES, setBoardRoot } from '../src/lib/paths.ts'
 import { forgetMachineState, move, uiConfigOf } from './helpers/board.ts'
 
 let root = ''
@@ -89,12 +90,86 @@ describe('交付的构建会话续接（#368）', () => {
     }
     const old = build()
     endDelivery(old.deliveryId!, 'failed')
-    const resumed = await resumeDelivery(old.deliveryId!)
-    assert.equal(resumed.ok, true, resumed.error)
-    const started = await startRun({ action: 'implement', id: 1 })
-    if ('error' in started) throw new Error(started.error)
-    assert.equal(started.run.resumeId, old.sessionId)
-    assert.equal(started.run.resumedFrom, old.sessionId)
+    // The CLI test bundle cannot spawn a watcher, so inspect the run it prepared.
+    await assert.rejects(cmdResumeDelivery(old.deliveryId!), { kind: 'spawn-failed' })
+    const { runs: [run], deliveries: [delivery] } = readStore()
+    assert.equal(run?.resumeId, old.sessionId)
+    assert.equal(run?.resumedFrom, old.sessionId)
+    assert.equal(run?.deliveryId, old.deliveryId)
+    assert.equal(run?.runtime, old.runtime)
+    assert.equal(run?.cwd, old.cwd)
+    assert.equal(delivery?.status, 'active')
+    assert.equal(delivery?.endedAt, undefined)
+    assert.deepEqual(delivery?.sessions, [old.sessionId, run?.sessionId])
+    assert.deepEqual(delivery?.steps.map(s => s.step), ['implement', 'resume'])
+    assert.match(fs.readFileSync(cardFile(1)!, 'utf8'), /^status: implementing$/m)
+    const audit = JSON.parse(fs.readFileSync(path.join(DELIVERIES, `${old.deliveryId}.json`), 'utf8'))
+    assert.deepEqual(audit.sessions.map((s: RunRecord) => s.sessionId), [old.sessionId, run?.sessionId])
+  })
+
+  for (const [name, evidence, diagnostic] of [
+    ['pending operation results', { pendingWrites: true }, /The operation results could not be confirmed complete/],
+    ['unconfirmed cleanup', { cleanup: { status: 'unconfirmed', execution: 'original', kept: ['background'] } }, /The operation results could not be confirmed complete/],
+    ['a live original process', { managedProcess: true, agentPid: process.pid }, /The previous execution could not be confirmed stopped/],
+    ['a missing original session', { failure: { source: 'runtime', code: 'session_not_found', summary: 'Session not found' } }, /The original session is unavailable/],
+  ] satisfies [string, Partial<RunRecord>, RegExp][]) {
+    for (const command of ['task implement', 'delivery resume'] as const) {
+      it(`${command} preserves the delivery and all saved work with ${name}`, async () => {
+        const old = build('error')
+        patch(old.sessionId, run => Object.assign(run, evidence))
+        if (command === 'delivery resume') endDelivery(old.deliveryId!, 'failed')
+        syncAudit(old.deliveryId!)
+        const output = path.join(old.cwd!, 'saved.txt')
+        fs.writeFileSync(output, 'saved work')
+        const files = [cardFile(1)!, old.logPath, path.join(DELIVERIES, `${old.deliveryId}.json`), output]
+        const saved = () => ({ store: readStore(), files: files.map(file => fs.readFileSync(file, 'utf8')), spec: readSpec(old.sessionId) })
+        const before = saved()
+        const resumed = command === 'delivery resume' ? cmdResumeDelivery(old.deliveryId!) : cmdStartRun('implement', [1, ['Keep the work']], {})
+        await assert.rejects(resumed, (error: unknown) => {
+          assert.ok(error instanceof BoardError)
+          assert.equal(error.kind, 'run-refused')
+          assert.equal(error.details.reason, 'runNoSession')
+          assert.match(error.message, diagnostic)
+          return true
+        })
+        assert.deepEqual(saved(), before)
+      })
+    }
+  }
+
+  it('rechecks recovery evidence under the delivery write lock', async () => {
+    const old = build()
+    const started = cmdStartRun('implement', [1], {})
+    patch(old.sessionId, run => { run.pendingWrites = true })
+    const before = readStore()
+    await assert.rejects(started, /The operation results could not be confirmed complete/)
+    assert.deepEqual(readStore(), before)
+  })
+
+  it('preserves a build still recorded as running until its stop is recorded', async () => {
+    const old = build('running')
+    patch(old.sessionId, run => { run.startedAt = 1; run.endedAt = undefined })
+    const before = readStore()
+    await assert.rejects(cmdResumeDelivery(old.deliveryId!), /that run is still going/)
+    await assert.rejects(cmdStartRun('implement', [1], {}), /that run is still going/)
+    assert.deepEqual(readStore(), before)
+    assert.equal(fs.readFileSync(old.logPath, 'utf8'), '旧构建日志\n')
+    assert.ok(readSpec(old.sessionId))
+  })
+
+  it('continues the remaining delivery steps when the last build has a completion receipt', async () => {
+    const old = build('done')
+    withStore(store => {
+      store.deliveries[0]!.completions = [{ sessionId: 'completion', resumedSessions: [old.sessionId], step: 1, at: Date.now(), finished: false }]
+    })
+    await assert.rejects(cmdResumeDelivery(old.deliveryId!), { kind: 'spawn-failed' })
+    const { runs, deliveries } = readStore()
+    assert.equal(deliveries.length, 1)
+    assert.equal(runs.length, 2)
+    const next = runs.find(run => run.sessionId !== old.sessionId)
+    assert.ok(next)
+    assert.equal(next.deliveryId, old.deliveryId)
+    assert.equal(next.resumedFrom, undefined)
   })
 
   it('已完成但尚未落地的构建继续原会话', async () => {
@@ -110,7 +185,8 @@ describe('交付的构建会话续接（#368）', () => {
     const opened = await openResume(old.sessionId, { deliveryId: old.deliveryId!, notes: '保留已完成的修改' })
     if ('error' in opened) throw new Error(opened.error)
     const prompt = readSpec(opened.run.sessionId)!.prompt
-    assert.equal(prompt, `Continue delivery ${old.deliveryId}. The delivery has not recorded completion. Finish its unchecked todos, then run ${boardCommand()} delivery complete ${old.deliveryId}, with --commit <sha> --branch <name> in a git project.\n\n保留已完成的修改`)
+    assert.match(prompt, /Check the current state.*Do not repeat an operation/)
+    assert.ok(prompt.endsWith(`Continue delivery ${old.deliveryId}. The delivery has not recorded completion. Finish the delivery and run ${boardCommand()} task archive ${old.cardId}.\n\n保留已完成的修改`))
   })
 
   it('缺失真实会话 ID 时在原交付目录接续', async () => {

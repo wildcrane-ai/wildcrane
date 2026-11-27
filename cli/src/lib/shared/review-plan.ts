@@ -9,11 +9,76 @@ export const reviewNodeSchema = z.object({
   kind: z.literal('work').optional(),
 }).strict()
 export type ReviewNode = z.infer<typeof reviewNodeSchema>
-export type ReviewPlan = ReviewNode[] | null
-export type ReviewStatus = 'blocked' | 'available' | 'running' | 'ready' | 'approved' | 'done'
-export interface ReviewStage { id: string; status: ReviewStatus; revision: number; snapshot: Record<string, unknown> | null }
+const flatReviewPlanSchema = z.object({
+  rule: z.string().trim().max(20_000),
+  previews: z.array(id).max(50).transform(ids => [...new Set(ids)]),
+}).strict()
+export type FlatReviewPlan = z.infer<typeof flatReviewPlanSchema>
+export type ReviewPlan = FlatReviewPlan | ReviewNode[] | null
+
+export function isFlatReviewPlan(plan: ReviewPlan | undefined): plan is FlatReviewPlan {
+  return plan != null && !Array.isArray(plan)
+}
+
+export function reviewPlanFromOptions(opts: { review?: string; previews?: string }, previous?: ReviewPlan): FlatReviewPlan | undefined {
+  if (opts.previews === undefined && !(opts.review !== undefined && isFlatReviewPlan(previous))) return
+  const held = isFlatReviewPlan(previous) ? previous : { rule: '', previews: [] }
+  return flatReviewPlanSchema.parse({
+    rule: opts.review ?? held.rule,
+    previews: opts.previews === undefined ? held.previews : opts.previews.trim() ? opts.previews.split(',') : [],
+  })
+}
+
+/** Append Preview IDs to an existing Flat or Legacy review plan without resetting existing stages. */
+export function addPreviewsToPlan(previous: ReviewPlan | undefined, previews: readonly string[]): ReviewPlan {
+  const toAdd = [...new Set(previews.map(id => id.trim()).filter(Boolean))]
+  if (isFlatReviewPlan(previous)) {
+    return flatReviewPlanSchema.parse({ rule: previous.rule, previews: [...previous.previews, ...toAdd] })
+  }
+  if (!previous?.length) {
+    if (!toAdd.length) return []
+    const handoffId = toAdd.includes(HANDOFF) ? HANDOFF_WITH_COLLISION : HANDOFF
+    return legacyReviewPlanSchema.parse([
+      ...toAdd.map(id => ({ id, after: [], previews: [id] })),
+      { id: handoffId, after: toAdd, previews: [] },
+    ])
+  }
+  const existingPreviews = new Set(reviewPreviewIds(previous))
+  const missing = toAdd.filter(id => !existingPreviews.has(id))
+  if (!missing.length) return previous
+  const usedIds = new Set(previous.map(node => node.id))
+  const addedNodes: ReviewNode[] = missing.map(previewId => {
+    let nodeId = previewId
+    let suffix = 2
+    while (usedIds.has(nodeId)) nodeId = `${previewId}-${suffix++}`
+    usedIds.add(nodeId)
+    return { id: nodeId, after: [], previews: [previewId] }
+  })
+  const prerequisites = new Set(previous.flatMap(node => node.after))
+  const handoffIndex = previous.findIndex(node =>
+    (node.id === HANDOFF || node.id === HANDOFF_WITH_COLLISION) &&
+    node.kind !== 'work' && !node.previews.length && !prerequisites.has(node.id))
+  if (handoffIndex === -1) return legacyReviewPlanSchema.parse([...previous, ...addedNodes])
+  const handoff = previous[handoffIndex]!
+  const updatedHandoff: ReviewNode = { ...handoff, after: [...handoff.after, ...addedNodes.map(node => node.id)] }
+  return legacyReviewPlanSchema.parse([
+    ...previous.slice(0, handoffIndex),
+    ...addedNodes,
+    updatedHandoff,
+    ...previous.slice(handoffIndex + 1),
+  ])
+}
+export type ReviewStatus = 'blocked' | 'available' | 'running' | 'waiting_review' | 'approved' | 'done' | 'changes_requested' | 'superseded'
+export interface ReviewStage { id: string; status: ReviewStatus | 'ready'; revision: number; snapshot: Record<string, unknown> | null; preview?: string; job?: string }
+
+/** Read stages in older responses and saved Runner state during an upgrade. */
+export function isWaitingReview(status: ReviewStage['status']): boolean {
+  return status === 'waiting_review' || status === 'ready'
+}
 export type PreviewUnavailable = 'not_generated' | 'waiting'
-export interface ReviewApproval { stage: string; revision: number; starts: string[] }
+export interface LegacyReviewApproval { stage: string; revision: number; starts: string[] }
+export interface PendingApproval { stage: string; revision: number; preview: string; question: string }
+export type ReviewApproval = LegacyReviewApproval | PendingApproval
 export interface TaskReview {
   revision: number
   plan: ReviewPlan
@@ -30,7 +95,7 @@ export interface SavedPreviewInputs {
 }
 
 export function reviewPreviewIds(plan: ReviewPlan | undefined): string[] {
-  return [...new Set((plan ?? []).flatMap(node => node.previews))]
+  return isFlatReviewPlan(plan) ? plan.previews : [...new Set((plan ?? []).flatMap(node => node.previews))]
 }
 
 export function reviewLayers(plan: ReviewNode[]): ReviewNode[][] {
@@ -54,10 +119,13 @@ export function reviewLayers(plan: ReviewNode[]): ReviewNode[][] {
   return layers
 }
 
-export const reviewPlanSchema = z.array(reviewNodeSchema).max(50).superRefine((nodes, ctx) => {
+const legacyReviewPlanSchema = z.array(reviewNodeSchema).max(50).superRefine((nodes, ctx) => {
   try { reviewLayers(nodes) } catch (e) { ctx.addIssue({ code: 'custom', message: (e as Error).message }) }
-}).nullable()
+})
+export const reviewPlanSchema = z.union([flatReviewPlanSchema, legacyReviewPlanSchema]).nullable()
 
+export function parseReviewPlan(value: unknown[]): ReviewNode[]
+export function parseReviewPlan(value: unknown): ReviewPlan
 export function parseReviewPlan(value: unknown): ReviewPlan {
   return reviewPlanSchema.parse(value)
 }
@@ -75,12 +143,17 @@ function reviewNames(catalog: readonly ReviewPreview[]) {
 
 function previewError(message: string, names: ReturnType<typeof reviewNames>) {
   const available = names.map(({ labels, id }) => `${labels.join(' / ')} (${id})`).join(', ') || 'none'
-  return new Error(`${message} Available Previews: ${available}. Use a listed name in a flow or its ID in a JSON plan. Define custom Previews before using them. A Preview is a draft or result for review. Keep task context in the card body.`)
+  return new Error(`${message} Available Previews: ${available}. Use a listed Preview ID or its name in a legacy flow. Define custom Previews before using them. A Preview is a draft or result for review. Keep task context in the card body.`)
 }
 
 export function validateReviewPreviews(plan: ReviewPlan, catalog?: readonly ReviewPreview[], { saved = false } = {}): ReviewPlan {
-  const prerequisites = new Set((plan ?? []).flatMap(node => node.after))
   const ids = new Set(catalog?.map(p => p.id))
+  if (isFlatReviewPlan(plan)) {
+    const unknown = plan.previews.find(preview => !ids.has(preview))
+    if (unknown) throw previewError(`Preview ${unknown} is not defined.`, reviewNames(catalog ?? []))
+    return plan
+  }
+  const prerequisites = new Set((plan ?? []).flatMap(node => node.after))
   for (const node of plan ?? []) {
     if (node.previews.length) {
       if (!catalog) throw new Error('Preview outputs are unavailable; update Runner and try again.')
@@ -122,11 +195,12 @@ export function parseReviewFlow(flow: string, catalog?: readonly ReviewPreview[]
   }
   // Preserve the saved Flow shape. The terminal handoff completes with its prerequisites.
   nodes.push({ id: seen.has(HANDOFF) ? HANDOFF_WITH_COLLISION : HANDOFF, after, previews: [] })
-  return parseReviewPlan(nodes)!
+  return legacyReviewPlanSchema.parse(nodes)
 }
 
 /** Projects stored plans onto the current contract, including plans saved with legacy titles. */
 export function readReviewPlan(plan: ReviewPlan | undefined): ReviewPlan {
+  if (isFlatReviewPlan(plan)) return plan
   return plan?.map(({ id, after, previews, kind }) => ({ id, after, previews, ...(kind && { kind }) })) ?? null
 }
 
@@ -135,6 +209,7 @@ export function reviewEdgeNeedsApproval(from: ReviewNode, to: ReviewNode): boole
 }
 
 export function reviewDependencies(plan?: ReviewPlan): ReviewNode[] {
+  if (isFlatReviewPlan(plan)) return []
   const nodes = new Map((plan ?? []).map(node => [node.id, node]))
   const linked = new Set<string>()
   const points = (plan ?? []).map(node => {
@@ -151,10 +226,15 @@ export function reviewDependencies(plan?: ReviewPlan): ReviewNode[] {
 }
 
 type ReviewAuthorization =
-  | { kind: 'plan' | 'unreviewed' | 'delivery' | 'changed' | 'waiting' }
+  | { kind: 'plan' | 'unreviewed' | 'delivery' | 'changed' | 'waiting'
+  }
+  | { kind: 'flat'; plan: FlatReviewPlan }
   | { kind: 'stages'; nodes: ReviewNode[] }
 
 export function reviewAuthorization(review: TaskReview, assigned?: readonly string[], dispatchRevision?: number): ReviewAuthorization {
+  if (isFlatReviewPlan(review.plan)) {
+    return review.stages.some(stage => isWaitingReview(stage.status)) ? { kind: 'waiting' } : { kind: 'flat', plan: review.plan }
+  }
   const states = new Map(review.stages.map(stage => [stage.id, stage]))
   const nodes = (review.plan ?? []).filter(node => {
     const stage = states.get(node.id)
@@ -176,11 +256,11 @@ export function reviewAuthorization(review: TaskReview, assigned?: readonly stri
 
 export function reviewAllows(authorization: ReviewAuthorization, action: 'refine' | 'implement'): boolean {
   return action === 'refine'
-    ? authorization.kind === 'plan' || authorization.kind === 'stages'
-    : authorization.kind === 'unreviewed' || authorization.kind === 'delivery'
+    ? authorization.kind === 'plan' || authorization.kind === 'stages' || authorization.kind === 'flat'
+    : authorization.kind === 'unreviewed' || authorization.kind === 'delivery' || authorization.kind === 'flat'
 }
 
-function reviewInstruction(authorization: ReviewAuthorization): string {
+function reviewInstruction(authorization: ReviewAuthorization, review: TaskReview): string {
   switch (authorization.kind) {
     case 'plan': return 'Planning only. Submit a review plan. Work only on dispatched stages.'
     case 'unreviewed': return 'No extra review. Complete the authorized work and Studio delivery checks.'
@@ -188,9 +268,21 @@ function reviewInstruction(authorization: ReviewAuthorization): string {
       'Work only on these unlocked stages: ' + authorization.nodes.map(node => node.id).join(', '),
       ...authorization.nodes.map(node => `- ${node.id}: ${node.previews.length ? node.previews.join(', ') : 'no Preview'}`),
     ].join('\n')
+    case 'flat': return [
+      'Selected Previews: ' + (authorization.plan.previews.join(', ') || 'none'),
+      'Review rule: ' + (authorization.plan.rule || 'No extra approval.'),
+      ...(authorization.plan.rule ? [
+        'At each approval point, save the current Preview and assets. Read akb task review <task>, then run akb task review <task> --request-approval <question> --preview <id> --revision <n>.',
+        'End this run after submitting an approval. On continuation, read the task review and the latest decision before continuing or revising the draft.',
+      ] : []),
+      ...review.stages.filter(stage => stage.preview && (stage.status === 'approved' || stage.status === 'changes_requested'))
+        .map(stage => `- ${stage.preview} · ${stage.id} · ${stage.status === 'approved' ? 'approved' : 'changes requested'}`),
+    ].join('\n')
     case 'delivery': return 'Stages complete. Follow Studio delivery checks.'
     case 'changed': return 'Review authorization changed. Read the task again.'
-    case 'waiting': return 'Wait for review. Do not execute locked stages.'
+    case 'waiting': return isFlatReviewPlan(review.plan)
+      ? 'An approval question is pending. Read akb task review <task> before making any requested changes. Wait for an explicit decision before continuing work.'
+      : 'Wait for review. Do not execute locked stages.'
   }
 }
 
@@ -198,8 +290,8 @@ const reviewWriteRules = 'Read akb task review before reporting running/done wit
 
 export function taskReviewBoundary(review: TaskReview, assigned?: readonly string[]): string {
   return [
-    reviewInstruction(reviewAuthorization(review, assigned)),
-    reviewWriteRules,
+    reviewInstruction(reviewAuthorization(review, assigned), review),
+    ...(isFlatReviewPlan(review.plan) ? [] : [reviewWriteRules]),
   ].join('\n')
 }
 
@@ -210,12 +302,12 @@ export function reviewBoundary(review: TaskReview, assigned?: readonly string[],
     authorization.kind !== 'stages' || !assigned || authorization.nodes.some(node => node.previews.includes(p.id)))
   return [
     'Task review: ' + JSON.stringify(state),
-    reviewInstruction(authorization),
+    reviewInstruction(authorization, review),
     ...definitions.map(p => [
       `<Preview id="${p.id}">`, p.instructions,
       ...(p.components ? [`Allowed Preview Components: ${p.components.join(', ') || 'none'}.`] : []),
       '</Preview>',
     ].join('\n')),
-    reviewWriteRules,
+    ...(isFlatReviewPlan(review.plan) ? [] : [reviewWriteRules]),
   ].join('\n')
 }

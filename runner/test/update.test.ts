@@ -12,17 +12,17 @@ import { akbHome, bundledAkb } from '../src/akb'
 import { akbVersionDir, currentAkb, followAkb, readAkbState, sweepAkb } from '../src/akb-version'
 import { hold, IDLE_MS } from '../src/cache'
 import { runnerHome, useRunnerHome } from '../src/home'
+import { lockPath } from '../src/lock'
 import { acceptAlphaUpdates, saveAlphaUpdates } from '../src/preferences'
 import { launch, pluginEntry, provenNewer, readState } from '../src/launcher'
-import { AKB_CONTRACT } from '../src/protocol'
-import { compare, extract, satisfies, versionDir, versionsDir } from '../src/update'
+import { AKB_CONTRACT, EXIT_ALREADY_RUNNING } from '../src/protocol'
+import { compare, extract, installPackage, satisfies, setTestRegistry, versionDir, versionsDir } from '../src/update'
 
 // The launcher against a stand-in registry and Cloud. Each fake Runner version records that it
 // ran, then connects, crashes or hangs.
 
 const CONNECTS = `process.send({ type: 'started' }); process.send({ type: 'connected' }, () => process.exit(0))`
 const CRASHES = `process.send({ type: 'started' }, () => process.exit(1))`
-const HANGS = `process.send({ type: 'started' }); setInterval(() => {}, 1000)`
 const RECORD = `require('fs').appendFileSync(require('path').join(process.env.WILDCRANE_HOME, 'ran'), process.env.WILDCRANE_RUNNER_VERSION + '\\n');`
 
 /** One npm tarball holding `package/dist/runner.mjs`. */
@@ -49,6 +49,7 @@ const runnerScript = (behaviour: string) => `import { createRequire } from 'node
 
 interface Published {
   script: string
+  raw?: boolean
   /** Carries the plugins' component. */
   plugin?: boolean
   node?: string
@@ -70,15 +71,27 @@ let target: string | null = null
 let alphaTarget: string | null = null
 let rollback = 0
 let onDownload = () => {}
+let onVersionCheck = () => {}
 let restartable = true
 let registryUp = true
 let server: http.Server
 let own: { version: string; entry: string }
+const registryKeys = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+const registryKeyId = 'npm-test-key-1'
+const registrySpkiBase64 = (registryKeys.publicKey.export({ type: 'spki', format: 'der' }) as Buffer).toString('base64')
+const signDist = (name: string, version: string, integrity: string) => [{
+  keyid: registryKeyId,
+  sig: crypto.sign('sha256', Buffer.from(`${name}@${version}:${integrity}`), registryKeys.privateKey).toString('base64'),
+}]
 
 before(async () => {
   server = http.createServer((req, res) => {
     const url = new URL(req.url!, 'http://x')
+    if (url.pathname === '/-/npm/v1/keys') {
+      return void res.end(JSON.stringify({ keys: [{ keyid: registryKeyId, key: registrySpkiBase64, expires: null }] }))
+    }
     if (url.pathname === '/v1/runner/version') {
+      onVersionCheck()
       const alpha = url.searchParams.get('alpha') === 'true' && alphaTarget !== null
       return void res.end(JSON.stringify({ version: alpha ? alphaTarget : target, restartable, alpha, rollback }))
     }
@@ -96,8 +109,9 @@ before(async () => {
       if (akbTgz) return void res.end(tar)
       akbAsked++
       const { port } = server.address() as AddressInfo
+      const integrity = `sha512-${crypto.createHash('sha512').update(pkg.corrupt ? Buffer.from('other') : tar).digest('base64')}`
       return void res.end(JSON.stringify({
-        dist: { tarball: `http://127.0.0.1:${port}/akb-tarballs/${version}.tgz`, integrity: `sha512-${crypto.createHash('sha512').update(pkg.corrupt ? Buffer.from('other') : tar).digest('base64')}` },
+        dist: { tarball: `http://127.0.0.1:${port}/akb-tarballs/${version}.tgz`, integrity, signatures: signDist('wildcrane', version, integrity) },
       }))
     }
     const meta = /^\/wildcrane-runner\/(.+)$/.exec(url.pathname)
@@ -105,26 +119,29 @@ before(async () => {
     const version = decodeURIComponent((meta ?? tgz)?.[1] ?? '')
     const pkg = published[version]
     if (!pkg) return void res.writeHead(404).end()
-    const tar = tarball({ 'package/package.json': '{}', 'package/dist/runner.mjs': runnerScript(pkg.script), ...(pkg.plugin ? { 'package/dist/plugin.mjs': '' } : {}) })
+    const tar = tarball({ 'package/package.json': '{}', 'package/dist/runner.mjs': pkg.raw ? pkg.script : runnerScript(pkg.script), ...(pkg.plugin ? { 'package/dist/plugin.mjs': '' } : {}) })
     if (tgz) { onDownload(); return void res.end(tar) }
     const integrity = `sha512-${crypto.createHash('sha512').update(pkg.corrupt ? Buffer.from('other') : tar).digest('base64')}`
     const { port } = server.address() as AddressInfo
     res.end(JSON.stringify({
       engines: pkg.node ? { node: pkg.node } : undefined,
-      dist: { tarball: `http://127.0.0.1:${port}/tarballs/${version}.tgz`, integrity },
+      dist: { tarball: `http://127.0.0.1:${port}/tarballs/${version}.tgz`, integrity, signatures: signDist('wildcrane-runner', version, integrity) },
     }))
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const { port } = server.address() as AddressInfo
   process.env.AI4KANBAN_CLOUD_URL = `http://127.0.0.1:${port}`
-  process.env.npm_config_registry = `http://127.0.0.1:${port}`
-  process.env.WILDCRANE_CONNECT_MS = '300'
+  setTestRegistry(`http://127.0.0.1:${port}`)
   process.env.WILDCRANE_UPDATE_MS = '25'
 })
 
-after(() => new Promise<void>((resolve) => server.close(() => resolve())))
+after(() => {
+  setTestRegistry(null)
+  return new Promise<void>((resolve) => server.close(() => resolve()))
+})
 
 beforeEach(() => {
+  process.env.WILDCRANE_CONNECT_MS = '300'
   useRunnerHome()
   fs.rmSync(runnerHome(), { recursive: true, force: true })
   fs.mkdirSync(runnerHome(), { recursive: true })
@@ -140,9 +157,11 @@ beforeEach(() => {
   alphaTarget = null
   rollback = 0
   onDownload = () => {}
+  onVersionCheck = () => {}
 })
 
 const ran = () => fs.readFileSync(path.join(runnerHome(), 'ran'), 'utf8').trim().split('\n')
+const savedState = () => JSON.parse(fs.readFileSync(path.join(versionsDir(), 'state.json'), 'utf8'))
 
 describe('the launcher', () => {
   it('makes the connected version available to the shim callback', async () => {
@@ -190,8 +209,8 @@ describe('the launcher', () => {
             onMessage: m => { if (m.type === 'connected') target = ++connections === 1 ? '1.1.0' : '1.2.0' },
           }), 0)
           assert.deepEqual(ran(), ['1.0.0', '1.1.0', '1.2.0', '1.1.0'])
-          assert.deepEqual(readState().good, ['1.1.0'])
-          assert.deepEqual(readState().bad, ['1.2.0'])
+          assert.equal(readState().verified, '1.1.0')
+          assert.equal(readState().retry?.version, '1.2.0')
           assert.equal(fs.readFileSync(path.join(runnerHome(), 'task'), 'utf8'), 'task ran')
         } finally {
           process.chdir(original)
@@ -211,19 +230,7 @@ describe('the launcher', () => {
     target = '1.1.0'
     assert.equal(await launch(own), 0)
     assert.deepEqual(ran(), ['1.1.0'])
-    assert.deepEqual(readState().bad, [])
-  })
-
-  it('does not blacklist a version when the process could not be spawned', async () => {
-    target = '1.1.0'; published['1.1.0'] = { script: CONNECTS }
-    const node = process.execPath
-    try {
-      process.execPath = path.join(runnerHome(), 'missing-node')
-      assert.equal(await launch(own), 1)
-      assert.deepEqual(readState().bad, [])
-    } finally { process.execPath = node }
-    assert.equal(await launch(own), 0)
-    assert.deepEqual(ran(), ['1.1.0'])
+    assert.equal(readState().retry, undefined)
   })
 
   it('Alpha defaults off, persists opt-in and follows subsequent Alphas, with default fallback', async () => {
@@ -287,7 +294,7 @@ describe('the launcher', () => {
     target = '1.1.0'
     assert.equal(await launch(own), 0)
     assert.deepEqual(ran(), ['1.1.0'])
-    assert.deepEqual(readState().good, ['1.1.0'])
+    assert.equal(readState().verified, '1.1.0')
     assert.ok(fs.existsSync(path.join(versionDir('1.1.0'), 'dist', 'runner.mjs')))
   })
 
@@ -325,10 +332,10 @@ describe('the launcher', () => {
     assert.deepEqual(ran(), ['1.0.0', '1.1.0'])
   })
 
-  it('在线下载失败时保持原进程，网络恢复后更新；新版崩溃回退', async () => {
+  it('下载失败时继续运行，恢复后升级，崩溃回退并在冷却后自动重试', { timeout: 10_000 }, async (test) => {
+    const healthy = path.join(runnerHome(), 'healthy')
     fs.writeFileSync(own.entry, runnerScript(`
       process.send({ type: 'started' }); process.send({ type: 'connected' });
-      if (require('fs').existsSync(require('path').join(process.env.WILDCRANE_HOME, 'saved'))) process.exit(0);
       process.on('message', (m) => {
         if (m.type === 'update') {
           require('fs').writeFileSync(require('path').join(process.env.WILDCRANE_HOME, 'saved'), 'yes');
@@ -336,17 +343,81 @@ describe('the launcher', () => {
         }
       });
     `))
-    published['1.1.0'] = { script: CRASHES }
+    published['1.1.0'] = { script: `
+      if (!require('fs').existsSync(${JSON.stringify(healthy)})) { ${CRASHES} }
+      else { ${CONNECTS} }
+    ` }
     registryUp = false
-    const going = launch(own)
+    const stop = new AbortController()
+    let resumed = false
+    const going = launch(own, {
+      signal: stop.signal,
+      onMessage: m => {
+        if (m.type !== 'connected') return
+        const retry = readState().retry
+        if (!retry || resumed) return
+        resumed = true
+        fs.writeFileSync(healthy, '')
+        let polls = 0
+        onVersionCheck = () => {
+          if (++polls !== 4) return
+          assert.deepEqual(ran(), ['1.0.0', '1.1.0', '1.0.0'])
+          test.mock.method(Date, 'now', () => retry.after)
+        }
+      },
+    })
     setTimeout(() => { target = '1.1.0' }, 50)
-    setTimeout(() => {
-      assert.deepEqual(ran(), ['1.0.0'])
-      registryUp = true
-    }, 200)
+    setTimeout(() => { registryUp = true }, 200)
+    test.after(() => stop.abort())
     assert.equal(await going, 0)
-    assert.deepEqual(ran(), ['1.0.0', '1.1.0', '1.0.0'])
-    assert.deepEqual(readState().bad, ['1.1.0'])
+    assert.ok(resumed)
+    assert.deepEqual(ran(), ['1.0.0', '1.1.0', '1.0.0', '1.1.0'])
+    assert.equal(readState().retry, undefined)
+  })
+
+  it('keeps the running owner through competing plugin starts and then updates', { timeout: 15_000 }, async () => {
+    process.env.WILDCRANE_CONNECT_MS = '2000'
+    const socket = JSON.stringify(lockPath())
+    fs.writeFileSync(own.entry, runnerScript(`
+      const server = require('net').createServer(peer => peer.end());
+      server.listen(${socket}, () => process.send({ type: 'connected' }));
+      process.on('message', ({ type }) => {
+        if (type === 'update') server.close(() => process.exit(12));
+      });
+      process.on('SIGTERM', () => server.close(() => process.exit(0)));
+    `))
+    let connected!: () => void
+    const online = new Promise<void>(resolve => { connected = resolve })
+    const stop = new AbortController()
+    const running = launch(own, { signal: stop.signal, onMessage: m => { if (m.type === 'connected') connected() } })
+    try {
+      await online
+      const before = savedState()
+      restartable = false
+      target = '1.1.0'
+      published[target] = { script: fs.readFileSync(path.join(process.env.RUNNER_DIST!, 'runner.mjs'), 'utf8'), raw: true }
+      assert.equal(await launch(own, { kind: 'codex', quiet: true }), EXIT_ALREADY_RUNNING)
+      target = '1.2.0'
+      published[target] = { script: `
+        const peer = require('net').connect(${socket});
+        peer.on('connect', () => {
+          process.send({ type: 'waiting' });
+          setInterval(() => {}, 1000);
+        });
+        peer.on('error', () => { ${CONNECTS} });
+      ` }
+      assert.equal(await launch(own, { kind: 'claude-code', quiet: true }), EXIT_ALREADY_RUNNING)
+      assert.deepEqual(savedState(), before)
+      assert.deepEqual(ran(), ['1.0.0', '1.2.0'])
+
+      restartable = true
+      assert.equal(await running, 0)
+      assert.deepEqual(ran(), ['1.0.0', '1.2.0', '1.2.0'])
+      assert.equal(readState().verified, target)
+    } finally {
+      stop.abort()
+      await running
+    }
   })
 
   it('removes the versions folder from before bin/ once a version there connects (#2147)', async () => {
@@ -361,34 +432,51 @@ describe('the launcher', () => {
     assert.ok(versionDir('1.1.0').startsWith(path.join(runnerHome(), 'bin', 'runner')))
   })
 
-  it('falls back to the version before when the new one crashes, and never tries it again', async () => {
-    published['1.1.0'] = { script: CRASHES }
+  it('rolls back after a crash, skips the target during cooldown and retries the same version', async (test) => {
     target = '1.1.0'
-    assert.equal(await launch(own), 0)
-    assert.deepEqual(ran(), ['1.1.0', '1.0.0'])
-    assert.deepEqual(readState().bad, ['1.1.0'])
-    assert.equal(await launch(own), 0)
-    assert.deepEqual(ran(), ['1.1.0', '1.0.0', '1.0.0'])
-  })
-
-  it('keeps a new version while temporary registration failures are actively retried', async () => {
-    target = '1.1.0'
+    const healthy = path.join(runnerHome(), 'healthy')
     published[target] = { script: `
-      process.send({type:'started'});
-      const progress=setInterval(()=>process.send({type:'reconnecting'}),50);
-      setTimeout(()=>{clearInterval(progress);${CONNECTS}},650);
+      if (!require('fs').existsSync(${JSON.stringify(healthy)})) { ${CRASHES} }
+      else { ${CONNECTS} }
     ` }
     assert.equal(await launch(own), 0)
-    assert.deepEqual(ran(), ['1.1.0'])
-    assert.ok(readState().good.includes('1.1.0'))
-    assert.ok(!readState().bad.includes('1.1.0'))
+    assert.deepEqual(ran(), ['1.1.0', '1.0.0'])
+    assert.equal(readState().verified, '1.0.0')
+    const retry = readState().retry!
+    assert.equal(retry.version, target)
+    assert.ok(retry.after > Date.now())
+
+    fs.writeFileSync(healthy, '')
+    assert.equal(await launch(own), 0)
+    assert.deepEqual(ran(), ['1.1.0', '1.0.0', '1.0.0'])
+    test.mock.method(Date, 'now', () => retry.after)
+    assert.equal(await launch(own), 0)
+    assert.deepEqual(ran(), ['1.1.0', '1.0.0', '1.0.0', '1.1.0'])
+    assert.equal(readState().verified, target)
+    assert.equal(readState().retry, undefined)
+
+    const lines = fs.readFileSync(path.join(runnerHome(), 'logs/runner.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    assert.deepEqual(lines.slice(0, 8).map(({ event, version }) => [event, version]), [
+      ['update_ready', '1.1.0'], ['starting', '1.1.0'], ['exited', '1.1.0'], ['startup_failed', '1.1.0'],
+      ['rollback', '1.0.0'], ['starting', '1.0.0'], ['connected', '1.0.0'], ['exited', '1.0.0'],
+    ])
+    assert.equal(lines[3].code, 'crashed')
   })
 
-  it('falls back when the new one never connects', async () => {
-    published['1.1.0'] = { script: HANGS }
+  it('times out even while the trial is reconnecting and can immediately try a different target', async () => {
     target = '1.1.0'
+    published[target] = { script: `
+      const trying = setInterval(() => process.send({type:'reconnecting'}), 25);
+      process.on('SIGTERM', () => { clearInterval(trying); process.exit(0) });
+    ` }
     assert.equal(await launch(own), 0)
     assert.deepEqual(ran(), ['1.1.0', '1.0.0'])
+    assert.equal(readState().retry?.version, target)
+    target = '1.2.0'
+    published[target] = { script: CONNECTS }
+    assert.equal(await launch(own), 0)
+    assert.deepEqual(ran(), ['1.1.0', '1.0.0', '1.2.0'])
+    assert.equal(readState().verified, target)
   })
 
   it('discards a download whose sha512 does not match', async () => {
@@ -413,14 +501,14 @@ describe('the launcher', () => {
     assert.deepEqual(ran(), ['1.0.0'])
   })
 
-  it('keeps the two newest versions that connected', async () => {
+  it('keeps the most recently connected version', async () => {
     for (const version of ['1.1.0', '1.2.0', '1.3.0']) {
       published[version] = { script: CONNECTS }
       target = version
       await launch(own)
     }
-    assert.deepEqual(readState().good, ['1.3.0', '1.2.0'])
-    assert.deepEqual(fs.readdirSync(versionsDir()).filter((f) => f !== 'state.json').sort(), ['1.2.0', '1.3.0'])
+    assert.equal(readState().verified, '1.3.0')
+    assert.deepEqual(fs.readdirSync(versionsDir()).filter((f) => f !== 'state.json').sort(), ['1.3.0'])
   })
 
   it('keeps a Runner version while a detached job holds it (#693)', async () => {
@@ -459,6 +547,25 @@ describe("the plugins' component (#529)", () => {
     assert.equal(await pluginEntry(), path.join(versionDir('1.2.0'), 'dist', 'plugin.mjs'))
   })
 
+  it('loads the updated launcher and retries an unchanged Cloud target blocked by an old install', async () => {
+    const old = '1.0.0'
+    target = '1.1.0'
+    for (const version of [old, target]) {
+      const dir = path.join(versionDir(version), 'dist')
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, 'plugin.mjs'), '')
+      fs.writeFileSync(path.join(dir, 'runner.mjs'), runnerScript(CONNECTS))
+    }
+    fs.writeFileSync(path.join(versionsDir(), 'state.json'), JSON.stringify({ good: [old, '0.9.0'], bad: [target] }))
+    const bundled = '1.2.0'
+    published[bundled] = { script: CRASHES, plugin: true }
+    const plugin = await pluginEntry(undefined, 'codex', bundled)
+    assert.equal(plugin, path.join(versionDir(bundled), 'dist', 'plugin.mjs'))
+    assert.equal(await launch({ version: bundled, entry: path.join(path.dirname(plugin!), 'runner.mjs') }), 0)
+    assert.deepEqual(ran(), [target])
+    assert.deepEqual(savedState(), { verified: target, rollbackAt: { [target]: 0 } })
+  })
+
   it("skips a Runner older than the host's first and downloads one that knows it (#533)", async () => {
     fs.mkdirSync(path.join(versionDir('1.1.0'), 'dist'), { recursive: true })
     fs.writeFileSync(path.join(versionDir('1.1.0'), 'dist', 'plugin.mjs'), '')
@@ -479,7 +586,7 @@ describe("the plugins' component (#529)", () => {
     const entry = path.join(versionDir('1.0.0'), 'dist', 'runner.mjs')
     fs.writeFileSync(entry, runnerScript(CONNECTS))
     await launch({ version: '1.0.0', entry })
-    assert.deepEqual(readState().good, ['1.0.0'])
+    assert.equal(readState().verified, '1.0.0')
   })
 })
 
@@ -643,5 +750,22 @@ describe('reading a release', () => {
     const into = fs.mkdtempSync(path.join(os.tmpdir(), 'extract-'))
     const tar = zlib.gunzipSync(tarball({ 'package/../../evil.txt': 'x' }))
     assert.throws(() => extract(tar, into), /refusing/)
+  })
+
+  it('rejects untrusted npm_config_registry and missing dist.signatures', async () => {
+    const prevReg = process.env.npm_config_registry
+    try {
+      setTestRegistry(null)
+      process.env.npm_config_registry = 'http://evil-mirror.example'
+      const badReg = await installPackage({ name: 'wildcrane-runner', dirOf: versionDir, entryOf: (d) => path.join(d, 'dist', 'runner.mjs') }, '9.9.9')
+      assert.equal(badReg.ok, false)
+      assert.equal(badReg.why, 'integrity')
+      assert.match(badReg.detail, /untrusted npm_config_registry/)
+    } finally {
+      if (prevReg === undefined) delete process.env.npm_config_registry
+      else process.env.npm_config_registry = prevReg
+      const { port } = server.address() as AddressInfo
+      setTestRegistry(`http://127.0.0.1:${port}`)
+    }
   })
 })

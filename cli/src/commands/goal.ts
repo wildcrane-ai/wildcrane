@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import { effectivePreviewCatalog, previewDefinitionsSchema, type PreviewDefinition } from '../lib/shared/preview-definitions'
-import { parseReviewFlow, parseReviewPlan, readReviewPlan, validateReviewPreviews, type ReviewPlan } from '../lib/shared/review-plan'
+import { parseReviewFlow, parseReviewPlan, readReviewPlan, reviewPlanFromOptions, validateReviewPreviews, type ReviewPlan } from '../lib/shared/review-plan'
 
 import { type Goal } from '../lib/shared/goal'
 import { goalDraftPath, readGoalDraft, writeGoalDraft } from '../lib/goal-draft'
@@ -15,6 +15,7 @@ export interface GoalOptions {
   bodyFile?: string
   studio?: string
   review?: string
+  previews?: string
   reviewFile?: string
   previewDefinitionsFile?: string
 }
@@ -166,8 +167,10 @@ function goalCatalog(held: GoalsFile, studio: string, definitions: PreviewDefini
 
 function goalReview(held: GoalsFile, studio: string, opts: GoalOptions, previous: ReviewPlan, definitions: PreviewDefinition[]): ReviewPlan {
   const catalog = goalCatalog(held, studio, definitions)
+  if (opts.reviewFile !== undefined && (opts.review !== undefined || opts.previews !== undefined)) die('Use --review-file or --review and --previews.')
+  const flat = reviewPlanFromOptions(opts, previous)
+  if (flat) return validateReviewPreviews(flat, catalog)
   if (opts.review !== undefined) {
-    if (opts.reviewFile !== undefined) die('Use either --review or --review-file.')
     return parseReviewFlow(opts.review, catalog)
   }
   const value = opts.reviewFile === undefined ? readReviewPlan(previous) : JSON.parse(fs.readFileSync(opts.reviewFile, 'utf8'))

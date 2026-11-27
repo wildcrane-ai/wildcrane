@@ -1,12 +1,13 @@
+import { deliveryPhase } from './env'
 import { idleStopConfirmed } from './wire/codex-background-types'
 import { connectionStopped, stopConnection } from './connection-process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { agentRecovery, isSessionMissingFailure, pauseLine, recoveryPrompt, RETRY_FILE_ENV } from './retry'
+import { agentRecovery, isSessionMissingFailure, pauseLine, recoveryPrompt, RETRY_FILE_ENV, resumeBlocked, retryContinuePrompt } from './retry'
 import { workspaceTask } from '../cloud/tasks'
 import { activeStudioPin, missingStudioVersion, readStudioSession, readVersion } from './cloud-studios'
-import { executionHeld, executionOf } from '../cloud/execution'
+import { executionHeld, executionOf, WRONG_TASK, type CloudExecution } from '../cloud/execution'
 
 import { boardCardIds, cardFile, locate, locateArchived } from '../cards'
 import { parseFrontmatter } from '../frontmatter'
@@ -22,12 +23,15 @@ import { INDEX_LOCK, REPO_ROOT, SESSIONS_DIR } from '../paths'
 import {
   activeDelivery,
   activeIn,
+  activateDelivery,
   cardAudits,
   carryOnFrom,
   endDelivery,
   findDelivery,
   joinDelivery,
   namedDelivery,
+  pendingDeliveryRun,
+  resumableDelivery,
   resumeRecord,
   resumeRefusal,
   settleDelivery,
@@ -42,12 +46,12 @@ import { reportsSessionTotal } from './own-cost'
 import { durationLine, pruneLogs, readLogTail, splitLog } from './log'
 import { adoptsSessionId, harnessLabel, onOwnEndpoint, planFork, planResume, planRun, resumesUnder, shipsHarness, type RunPlan } from './resolve'
 import { moveRunPictures } from './pictures'
-import { buildRun, compactTaskPrompt, restartPrompt, restartable, resumePrompt } from './prompts'
+import { buildRun, compactTaskPrompt, restartPrompt, resumePrompt } from './prompts'
 import { agentForRun } from './runner'
 import { killMarked, killTreeOnWindows, killUnderOnWindows, probeProcesses, processesStopped, runMark } from './stop'
 import { readRuntimes, runRuntimeById } from './runtimes'
 import { dropReflected, stampMemoryPrune, stampMemoryReview, stampProjectDescription } from './settings'
-import { creationOf, eventsPathOf, logPathOf, noteRefineTried, readRuns, runIsLive, withRuns, withStore } from './store'
+import { creationOf, eventsPathOf, logPathOf, noteRefineTried, readRuns, readStore, runIsLive, withRuns, withStore, type Store } from './store'
 import { withCreationLock } from './creation-lock'
 import { creationRefusal } from '../view/rules'
 import { holdsCard, isRetired, refusal, retiredStudioRun } from './types'
@@ -161,13 +165,13 @@ const asksPathOf = (sessionId: string): string => path.join(SESSIONS_DIR, `${ses
 
 // ---- what is still alive ---------------------------------------------------
 
-function reap(runs: RunRecord[], reaped: RunRecord[] = [], restore: RunRecord[] = []): boolean {
+function reap(runs: RunRecord[], reaped: RunRecord[] = [], restore: RunRecord[] = [], matches?: (run: RunRecord) => boolean): boolean {
   let changed = false
   const now = Date.now()
   for (const r of runs) {
     // `runIsLive` gives a run with no pid yet its PENDING_MS — the command that started it
     // hasn't spawned the watcher. Past that, nothing is ever going to report on it.
-    if (r.status !== 'running' || runIsLive(r)) continue
+    if (r.status !== 'running' || matches && !matches(r) || runIsLive(r)) continue
     r.status = r.stopping ? 'stopped' : 'interrupted'
     r.code = null
     if (r.status === 'stopped' && r.retry) delete r.retry.pending
@@ -249,6 +253,9 @@ export function claimCard(run: RunRecord): CardClaim | undefined {
 
 async function restoreCardStatus(run: RunRecord): Promise<void> {
   if (run.cardId === null || !RUN_STATUS[run.action]) return
+  if (run.cloudExecution && (run.cloudExecution.card !== undefined && run.cloudExecution.card !== run.cardId ||
+      readRuns().some(other => other.sessionId !== run.sessionId && other.cardId === run.cardId &&
+        holdsCard(other.action) && runIsLive(other)))) return
   // A delivery still in flight is still building this card — its run ended, not the
   // job — so the stage stays where the delivery put it until the delivery itself ends.
   if (run.deliveryId && activeDelivery(run.cardId)?.deliveryId === run.deliveryId) return
@@ -262,7 +269,7 @@ async function releaseCard(delivery: DeliveryRecord): Promise<void> {
   if (delivery.cardId === null) return
   const card = cardNow(delivery.cardId)
   if (card?.status !== 'implementing') return
-  await setCardStatus(delivery.cardId, card.questions > 0 ? 'todo' : delivery.priorStatus ?? 'ready')
+  await setCardStatus(delivery.cardId, card.questions > 0 ? 'todo' : delivery.priorStatus ?? 'planned')
 }
 
 // The pruner's own stamp (#514), written at the close rather than by the agent mid-flow:
@@ -352,9 +359,43 @@ const neverStarted = (r: RunRecord): boolean => r.unspawned === true || !!r.erro
  *  that never named its session. */
 const lacksSession = (r: RunRecord): boolean => neverStarted(r) || !resumeIdOf(r)
 
-/** A run whose connector this build cannot resume still carries on (#1321) — in a new
- *  session, so only where its ask can be said again. */
-const carriesOn = (r: RunRecord): boolean => resumesUnder(r.harness) || restartable(r)
+function runRecoveryEvidence(run: RunRecord, session: string | undefined, failure = run.failure) {
+  const root = run.agentPid ? { pid: run.agentPid, since: run.agentStartedAt ?? run.startedAt, identity: run.agentIdentity } : undefined
+  const stopped = run.status !== 'running' && (run.managedProcess
+    ? connectionStopped(root)
+    : processesStopped(runMark(run.sessionId, run.agentStartedAt ?? run.startedAt), root))
+  return {
+    stopped,
+    session,
+    unconfirmedCleanup: run.pendingWrites || run.cleanup?.status === 'unconfirmed'
+      || run.managedProcess && failure?.code === 'idle_timeout' && !idleStopConfirmed(run.cleanup, session),
+  }
+}
+
+function manualRecoveryEvidence(run: RunRecord) {
+  const failure = run.failure ?? run.retry?.pending?.failure
+  const missingSession = isSessionMissingFailure(failure)
+  const session = missingSession ? undefined : resumeSessionId(run)
+  const evidence = runRecoveryEvidence(run, session, failure)
+  // A missing session can itself account for an unsafe pause.
+  const lastRetry = run.retryHistory?.at(-1)
+  const unsafePause = lastRetry?.sessionAction === 'pause_unsafe' && !(missingSession && isSessionMissingFailure(lastRetry))
+  return { ...evidence, unconfirmedCleanup: evidence.unconfirmedCleanup || unsafePause }
+}
+
+type ManualResume = 'session' | 'fresh'
+
+function manualResumeRefusal(run: RunRecord, evidence: ReturnType<typeof manualRecoveryEvidence>, mode: ManualResume): RunRefusal | undefined {
+  if (mode === 'fresh' && evidence.stopped && !evidence.unconfirmedCleanup) return
+  const diagnostic = resumeBlocked(evidence)
+  if (diagnostic) return refusal('runNoSession', diagnostic)
+  if (run.runtime && runRuntimeById(run.runtime)?.harness !== run.harness) {
+    return refusal('runNoSession', `The original runtime "${run.runtime}" is unavailable.`)
+  }
+  if (run.cwd && !fs.existsSync(run.cwd)) {
+    return refusal('runNoSession', 'The original working directory is unavailable.')
+  }
+}
 
 // The actions that name no card.
 const CARDLESS = new Set<AgentAction>(['prune-memory', 'review-memory', 'review-dismissals', 'describe-project'])
@@ -395,15 +436,14 @@ function toView(r: RunRecord, gone?: ReadonlySet<number>, refusals?: Map<string,
   const cardOffBoard = r.status !== 'done' && r.cardId !== null && !!gone?.has(r.cardId)
   // A sub-run is started again by its parent, never on its own (#1421).
   const open = r.action !== 'sub' && !retiredStudioRun(r.action) && canPickUp(r) && !endedDeliveryRefusal(r, refusals)
-  const session = !lacksSession(r)
+  const evidence = open ? manualRecoveryEvidence(r) : undefined
+  const canResume = !!evidence && !manualResumeRefusal(r, evidence, 'session')
   return {
     ...r,
     durationMs: r.status !== 'running' && r.endedAt ? r.endedAt - r.startedAt : undefined,
-    // The Resume offer, and everything it needs to be honest: the run stopped short, there is
-    // a session to continue, and its delivery, if it ended, can still be carried on.
-    canResume: open && session && carriesOn(r),
-    // And Retry where there is none (#1321): a failure, never a stop, on a card still here.
-    canRetry: (open && !session && r.status !== 'stopped' && !cardOffBoard && !!retryAsk(r)) || undefined,
+    canResume,
+    canRetry: (!canResume && evidence && !manualResumeRefusal(r, evidence, 'fresh')
+      && r.status !== 'stopped' && !cardOffBoard && !!retryAsk(r)) || undefined,
     cardOffBoard: cardOffBoard || undefined,
   }
 }
@@ -442,12 +482,12 @@ function goneCards(runs: RunRecord[]): ReadonlySet<number> {
 /** Every run the board knows about, oldest first. Reaping happens here, which is why this
  *  writes: a run whose watcher died has to stop reading as live for everyone, not just for
  *  whoever noticed. */
-export async function listRuns(): Promise<RunView[]> {
+export async function listRuns(matches?: (run: RunRecord) => boolean): Promise<RunView[]> {
   const reaped: RunRecord[] = []
   const restore: RunRecord[] = []
   const runs = withRuns((all) => {
-    reap(all, reaped, restore)
-    return all.map((r) => ({ ...r }))
+    reap(all, reaped, restore, matches)
+    return (matches ? all.filter(matches) : all).map((r) => ({ ...r }))
   })
   // Both outside the record's lock. The card's stage first, then the delivery: a run reaped
   // here ended out of everyone's sight, so this is where its delivery is told — and its
@@ -457,11 +497,12 @@ export async function listRuns(): Promise<RunView[]> {
   // A sub-run whose parent is gone has nobody to report to (#1421).
   for (const sub of runs) {
     if (sub.action !== 'sub' || sub.status !== 'running' || !sub.parentId) continue
-    if (!runs.some((r) => r.sessionId === sub.parentId && r.status === 'running')) await stopRun(sub.sessionId)
+    if (!(matches ? peekRun(sub.parentId)?.status === 'running'
+      : runs.some((r) => r.sessionId === sub.parentId && r.status === 'running'))) await stopRun(sub.sessionId)
   }
   // And the deliveries no row is left of at all, which reaping cannot reach: it reads the
   // record, and these are the ones the record lost.
-  if (Date.now() - scannedOrphansAt >= ORPHAN_SCAN_MS) {
+  if (!matches && Date.now() - scannedOrphansAt >= ORPHAN_SCAN_MS) {
     scannedOrphansAt = Date.now()
     await recoverOrphanedDeliveries()
   }
@@ -499,6 +540,11 @@ export function findRun(runs: RunRecord[], id: string): RunRecord | undefined | 
   if (hits.length === 1) return hits[0]
   // More than one — null says "ambiguous", which is a different answer from "no such run".
   return hits.length > 1 ? null : undefined
+}
+
+export function resolveRun(id: string, runs = readRuns(), exact = false): RunRecord | RunRefusal {
+  const found = exact ? runs.find((r) => r.sessionId === id) : findRun(runs, id)
+  return found ?? (found === null ? ambiguousRun(id) : unknownRun(id))
 }
 
 /** One run with its log read from the file, or null when no run answers to that id. */
@@ -613,6 +659,11 @@ export function openRun(
   if (retired) return retired
   if (req.deliveryId && findDelivery(req.deliveryId)?.scheduled) return retiredStudioRun('scheduled')!
   const cardId = Number.isInteger(req.id) ? (req.id as number) : null
+  const execution = executionOf()
+  if (execution?.card !== undefined && execution.card !== cardId) return refusal('runContinued', WRONG_TASK)
+  if (req.deliveryId && execution?.card !== undefined && findDelivery(req.deliveryId)?.cardId !== cardId) {
+    return refusal('runContinued', WRONG_TASK)
+  }
   // The runtime this one run was asked for (#518). Refused here rather than resolved away:
   // a pin nothing answers to would quietly run **Global default**, and a run on another
   // model than the one picked is the worst way to answer a pick.
@@ -650,6 +701,11 @@ export function openRun(
   }
   // A sub-run works in its parent's folder, inside its parent's delivery and flow (#1421).
   const parent = req.action === 'sub' && req.parentId ? peekRun(req.parentId) : undefined
+  if (req.action === 'implement' && (deliveryPhase() === 'land' || deliveryPhase() === 'implement' && joining)) {
+    if (!joining?.worktree || deliveryCwd(joining) === REPO_ROOT) {
+      return refusal('deliveryNone', 'The saved delivery workspace is unavailable.')
+    }
+  }
   const cwd = parent?.cwd ?? deliveryCwd(start ?? joining ?? {})
   const plan = said
     ? { ...said.plan(cwd, sessionId), note: null }
@@ -666,7 +722,7 @@ export function openRun(
   if (pin && !readVersion(pin.studio, pin.version)) return refusal('studioOffline', missingStudioVersion(pin))
   const record: RunRecord = {
     sessionId,
-    cloudExecution: executionOf(),
+    cloudExecution: execution,
     studioPin: pin ?? undefined,
     cardId,
     action: req.action,
@@ -852,21 +908,55 @@ interface FreshStart {
   retry?: boolean
 }
 
-export interface ResumeOptions { deliveryId?: string; notes?: string; fresh?: boolean; automatic?: boolean }
+export interface ResumeOptions {
+  deliveryId?: string
+  notes?: string
+  fresh?: boolean
+  automatic?: boolean
+  requireSession?: boolean
+  exact?: boolean
+}
+
+function deliveryForResume(store: Store, id: string, run: RunRecord): DeliveryRecord | RunRefusal {
+  const delivery = resumableDelivery(store, id)
+  if ('error' in delivery) {
+    if (delivery.reason === 'deliveryNotFound' || delivery.reason === 'deliveryCancelled') {
+      return refusal('runContinued', delivery.error, delivery.args)
+    }
+    return delivery
+  }
+  if (delivery.status === 'finished' || run.cardId !== delivery.cardId || pendingDeliveryRun(delivery, store.runs)?.sessionId !== run.sessionId) {
+    return refusal('runContinued', 'The delivery changed. Check its latest record before resuming.', { id })
+  }
+  return delivery
+}
 
 export async function openResume(id: string, options?: boolean | ResumeOptions): Promise<{ run: RunRecord; spec: RunSpec } | RunRefusal> {
-  const build = typeof options === 'object' && options.deliveryId ? { deliveryId: options.deliveryId, notes: options.notes } : undefined
-  const forced = typeof options === 'object' && options.fresh
-  const requireSession = options === true
+  const opts = typeof options === 'object' ? options : undefined
+  const build = opts?.deliveryId
+  const forced = opts?.fresh === true
+  const requireSession = !forced && (!!build || options === true || opts?.requireSession === true)
+  const manual = requireSession ? 'session' : forced ? 'fresh' : undefined
+  const strictBuild = requireSession ? build : undefined
+  const store = strictBuild ? readStore() : undefined
   const restore: RunRecord[] = []
-  const runs = withRuns((all) => {
+  // A refused delivery resume must leave its run and files intact.
+  const runs = store?.runs ?? withRuns((all) => {
     reap(all, [], restore)
     return all.map((r) => ({ ...r }))
   })
   for (const run of restore) await restoreCardStatus(run)
-  const prev = findRun(runs, id)
-  if (prev === null) return ambiguousRun(id)
-  if (!prev) return unknownRun(id)
+  const prev = resolveRun(id, runs, opts?.exact)
+  if (!('sessionId' in prev)) return prev
+  const execution = executionOf()
+  const delivery = prev.deliveryId ? findDelivery(prev.deliveryId) : undefined
+  if (execution?.card !== undefined && (execution.card !== prev.cardId || delivery && delivery.cardId !== execution.card)) {
+    return refusal('runContinued', WRONG_TASK)
+  }
+  if (opts?.automatic && prev.cardId !== null && prev.cloudExecution &&
+      (prev.cloudExecution.job !== execution?.job || prev.cloudExecution.machine !== execution?.machine)) {
+    return refusal('runContinued', 'The original Runner job owns the automatic retry.')
+  }
   const pin = prev.studioPin
   if (pin && !readVersion(pin.studio, pin.version)) return refusal('studioOffline', missingStudioVersion(pin))
   if (prev.status === 'running') return refusal('runGoing', 'that run is still going')
@@ -875,38 +965,39 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   if (prev.action === 'sub') {
     return refusal('subRunResume', 'a sub-run cannot be continued on its own — the run that started it starts it again')
   }
-  // 构建已结束但尚未进入落地时，继续原会话核对进度。
-  const delivery = build ? findDelivery(build.deliveryId) : undefined
-  if (build && (prev.action !== 'implement' || prev.deliveryId !== build.deliveryId || delivery?.status !== 'active')) {
-    return refusal('deliveryTakenOver', 'The original build belongs to a different delivery. Check the delivery before resuming.', { id: build.deliveryId })
+  if (build && (prev.action !== 'implement' || prev.deliveryId !== build || (!strictBuild && findDelivery(build)?.status !== 'active'))) {
+    return refusal('deliveryTakenOver', 'The original build belongs to a different delivery. Check the delivery before resuming.', { id: build })
   }
-  const ended = endedDeliveryRefusal(prev)
-  if (ended) return ended
-  const automatic = typeof options === 'object' && options.automatic === true
-  const pending = !forced && prev.status !== 'stopped' && (automatic || !process.env[RETRY_FILE_ENV])
+  const resuming = strictBuild && store ? deliveryForResume(store, strictBuild, prev) : undefined
+  if (resuming && 'error' in resuming) return resuming
+  if (!strictBuild) {
+    const ended = endedDeliveryRefusal(prev)
+    if (ended) return ended
+  }
+  const automatic = opts?.automatic === true
+  const pending = !manual && prev.status !== 'stopped' && (automatic || !process.env[RETRY_FILE_ENV])
     ? prev.retry?.pending : undefined
   if (automatic && !pending) return refusal('runContinued', 'The automatic retry is no longer pending.')
   const resetReplay = pending?.sessionAction === 'reset_replay'
-  const session = forced || resetReplay ? undefined : resumeSessionId(prev)
-  if (pending || requireSession) {
-    const root = prev.agentPid ? { pid: prev.agentPid, since: prev.agentStartedAt ?? prev.startedAt, identity: prev.agentIdentity } : undefined
-    const stopped = prev.managedProcess ? connectionStopped(root) : processesStopped(runMark(prev.sessionId, prev.agentStartedAt), root)
-    const recovery = agentRecovery({
-      stopped, session, replayable: !requireSession && (neverStarted(prev) || resetReplay),
-      unconfirmedCleanup: prev.pendingWrites || prev.cleanup?.status === 'unconfirmed'
-        || prev.managedProcess && (pending?.failure ?? prev.failure)?.code === 'idle_timeout' && !idleStopConfirmed(prev.cleanup, session),
-    })
-    if (recovery === 'unsafe') {
-      if (pending) return retryRefusal(prev, 'unsafe')
-      return refusal('runNoSession', 'The original session cannot be safely resumed.')
+  let session = forced || resetReplay ? undefined : resumeSessionId(prev)
+  if (manual) {
+    const evidence = manualRecoveryEvidence(prev)
+    const blocked = manualResumeRefusal(prev, evidence, manual)
+    if (blocked) return blocked
+    session = requireSession ? evidence.session : undefined
+    if (!await executionHeld(executionOf())) return refusal('runContinued', pauseLine('authorization'))
+  } else if (pending) {
+    const evidence = runRecoveryEvidence(prev, session, pending.failure)
+    const replayable = pending.failure.code !== 'idle_timeout' && (neverStarted(prev) || resetReplay)
+    if (agentRecovery({ ...evidence, replayable }) === 'unsafe') {
+      return retryRefusal(prev, 'unsafe')
     }
-    if (pending) await new Promise(resolve => setTimeout(resolve, Math.max(0, pending.at - Date.now())))
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, pending.at - Date.now())))
     if (!await executionHeld(executionOf())) return retryRefusal(prev, 'authorization')
   }
   // Resumed where the run it continues worked: a delivery's own worktree, or the project
   // itself.
-  const resuming = prev.deliveryId ? findDelivery(prev.deliveryId) : undefined
-  const cwd = deliveryCwd(resuming ?? {})
+  const cwd = requireSession && prev.cwd ? prev.cwd : deliveryCwd(resuming ?? delivery ?? {})
   const sessionId = randomUUID()
   let plan: RunPlan | null
   let fresh: FreshStart | undefined
@@ -932,15 +1023,15 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
 
   // Read before the resumed run joins the delivery, which clears its stop.
   const buildResume = prev.action === 'implement' && prev.deliveryId ? resumePrompt(prev.deliveryId, prev.action, prev.cardId ?? undefined) : undefined
-  const opened = await resumeHeld(prev, plan, sessionId, resuming, fresh, !!pending)
+  const opened = await resumeHeld(prev, plan, sessionId, fresh, !!pending, manual, strictBuild)
   if ('error' in opened) return opened
   if (!opened.spec.prompt && buildResume) opened.spec.prompt = buildResume
-  if (build?.notes?.trim()) opened.spec.prompt = [opened.spec.prompt || resumePrompt(prev.deliveryId, prev.action, prev.cardId ?? undefined), build.notes].join('\n\n')
-  if (session && requireSession && !pending) {
+  if (build && opts?.notes?.trim()) opened.spec.prompt = [opened.spec.prompt || resumePrompt(prev.deliveryId, prev.action, prev.cardId ?? undefined), opts.notes].join('\n\n')
+  if (requireSession) {
     const cardId = prev.cardId ?? undefined
     const prompt = opened.spec.prompt || (compactTaskPrompt({ action: prev.action, id: cardId })
       ? resumePrompt(prev.deliveryId, prev.action, cardId) : '')
-    opened.spec.prompt = [recoveryPrompt, prompt].filter(Boolean).join('\n\n')
+    opened.spec.prompt = [prev.failure ? retryContinuePrompt(prev.failure) : recoveryPrompt, prompt].filter(Boolean).join('\n\n')
   }
   if (build || buildResume || pending || requireSession) writeSpec(opened.spec)
   return opened
@@ -977,9 +1068,10 @@ async function resumeHeld(
   prev: RunRecord,
   plan: RunPlan,
   sessionId: string,
-  resuming: DeliveryRecord | undefined,
   fresh?: FreshStart,
   automatic = false,
+  manual?: ManualResume,
+  strictBuild?: string,
 ): Promise<{ run: RunRecord; spec: RunSpec } | RunRefusal> {
   const retry = fresh?.retry === true
   const record: RunRecord = {
@@ -1003,7 +1095,7 @@ async function resumeHeld(
     // This build, not the one the run being continued went on: a resume is a fresh spawn,
     // and the version that answers for its output is the one doing the spawning.
     version: SKILL_VERSION,
-    cwd: deliveryCwd(resuming ?? {}),
+    cwd: plan.cwd,
     argv: plan.argv,
     ...(retry
       ? {}
@@ -1025,10 +1117,26 @@ async function resumeHeld(
     // delivery it continues rather than opening another.
     flowId: prev.flowId,
   }
-  const out = withCreationLock(() => withStore<{ run: RunRecord } | RunRefusal>((store) => {
+  const out = withCreationLock(() => withStore<{ run: RunRecord; previous: RunRecord } | RunRefusal>((store) => {
     const all = store.runs
     const latest = all.find((r) => r.sessionId === prev.sessionId)
     if (!latest) return refusal('runContinued', 'that run has already been continued')
+    const resuming = strictBuild ? deliveryForResume(store, strictBuild, latest) : undefined
+    if (resuming && 'error' in resuming) return resuming
+    if (manual) {
+      if (!strictBuild) {
+        const ended = endedDeliveryRefusal(latest)
+        if (ended) return ended
+      }
+      const evidence = manualRecoveryEvidence(latest)
+      const blocked = manualResumeRefusal(latest, evidence, manual)
+      if (blocked) return blocked
+      if (manual === 'session' && (evidence.session !== plan.resumeId || latest.harness !== plan.harness
+        || !!latest.runtime && latest.runtime !== plan.runtime || !!latest.cwd && latest.cwd !== plan.cwd
+        || latest.deliveryId !== prev.deliveryId)) {
+        return refusal('runContinued', 'The original run changed. Check its latest record before resuming.')
+      }
+    }
     if (automatic && (latest.stopping || latest.status === 'stopped' || !latest.retry?.pending)) {
       return refusal('runContinued', 'The automatic retry is no longer pending.')
     }
@@ -1041,10 +1149,11 @@ async function resumeHeld(
     const locked = lockedBy(all, prev.action, prev.cardId, prev.discard)
     if (locked) return locked
     all.push(record)
-    const delivery = store.deliveries.find((d) => d.deliveryId === prev.deliveryId && d.status === 'active')
+    const delivery = resuming ? activateDelivery(store, resuming, record.startedAt, record.cloudExecution)
+      : store.deliveries.find((d) => d.deliveryId === prev.deliveryId && d.status === 'active')
     if (delivery) {
       delivery.sessions.push(record.sessionId)
-      delivery.steps.push({ step: 'resume', at: record.startedAt })
+      if (!resuming) delivery.steps.push({ step: 'resume', at: record.startedAt })
       record.deliveryId = delivery.deliveryId
       // Under the delivery's own group, which is where the run it continues belongs —
       // including one recorded before the group followed the delivery (#417).
@@ -1052,10 +1161,11 @@ async function resumeHeld(
     }
     const at = all.findIndex((r) => r.sessionId === prev.sessionId)
     if (at >= 0) all.splice(at, 1)
-    return { run: record }
+    return { run: record, previous: latest }
   }))
   if ('error' in out) return out
-  if (record.deliveryId) syncAudit(record.deliveryId)
+  if (record.deliveryId) syncAudit(record.deliveryId, strictBuild ? out.previous : undefined)
+  if (strictBuild && record.cardId !== null) await setCardStatus(record.cardId, 'implementing')
   // The asks the run being taken over collected come with it. It never got as far as
   // starting them — that is why it is being resumed — and the flow asked once.
   const inherited = readAsks(prev.sessionId)
@@ -1236,13 +1346,16 @@ const unknownRun = (id: string): RunRefusal => refusal('runNotFound', `no run he
 const ambiguousRun = (id: string): RunRefusal =>
   refusal('runAmbiguous', `"${id}" matches more than one run — give more of the id`, { id })
 
-export async function stopRun(id: string): Promise<StartResult> {
+export async function stopRun(id: string, execution: CloudExecution | null | undefined = executionOf()): Promise<StartResult> {
   const restore: RunRecord[] = []
   const out = withRuns((runs) => {
     reap(runs, [], restore)
     const run = findRun(runs, id)
     if (run === null) return { ok: false, ...ambiguousRun(id) }
     if (!run) return { ok: false, ...unknownRun(id) }
+    if (execution && (run.cloudExecution?.job !== execution.job || run.cloudExecution.machine !== execution.machine)) {
+      return { ok: false, ...refusal('runContinued', 'This run belongs to a different Runner job.') }
+    }
     if (run.status !== 'running') return { ok: true, sessionId: run.sessionId }
     run.stopping = true
     return { ok: true, sessionId: run.sessionId, pid: run.pid, live: true }
@@ -1274,6 +1387,8 @@ export async function cancelDelivery(id: string): Promise<{ ok: boolean; deliver
   if (!id.trim()) return { ok: false, ...refusal('deliveryUnnamed', 'name the delivery to cancel', { action: 'cancel' }) }
   const delivery = namedDelivery(id)
   if (!delivery) return { ok: false, ...unknownDelivery(id) }
+  const card = executionOf()?.card
+  if (card !== undefined && card !== delivery.cardId) return { ok: false, ...refusal('deliveryTakenOver', WRONG_TASK) }
   if (delivery.status === 'finished') return { ok: true, deliveryId: delivery.deliveryId }
   withStore((store) => {
     const row = store.deliveries.find((d) => d.deliveryId === delivery.deliveryId)
@@ -1283,9 +1398,10 @@ export async function cancelDelivery(id: string): Promise<{ ok: boolean; deliver
   })
   endDelivery(delivery.deliveryId, 'cancelled')
   // A delivery that has ended must not still be writing files.
-  const live = readRuns().find((r) => r.status === 'running' && r.deliveryId === delivery.deliveryId && r.action !== 'sub')
+  const live = readRuns().find((r) => r.status === 'running' && r.cardId === delivery.cardId &&
+    r.deliveryId === delivery.deliveryId && r.action !== 'sub')
   if (live) {
-    const stopped = await stopRun(live.sessionId)
+    const stopped = await stopRun(live.sessionId, null)
     if (!stopped.ok) return { ...stopped, deliveryId: delivery.deliveryId }
   }
   // Whether or not there was one to stop: nothing is building this card now.
@@ -1312,10 +1428,19 @@ export const liveSubRuns = (parentId: string): RunRecord[] =>
   readRuns().filter((r) => r.parentId === parentId && runIsLive(r))
 
 /** Stop a run's sub-runs and wait them out, before the run's own close (#1421). */
-export async function stopSubRuns(parentId: string): Promise<void> {
+export async function stopSubRuns(parentId: string): Promise<boolean> {
   const live = liveSubRuns(parentId)
   for (const run of live) await stopRun(run.sessionId)
-  await Promise.all(live.map((run) => runIsDown(run.sessionId)))
+  const stopped = await Promise.all(live.map(async run => {
+    await runIsDown(run.sessionId)
+    const saved = peekRun(run.sessionId) ?? run
+    const root = saved.agentPid ? { pid: saved.agentPid, since: saved.agentStartedAt ?? saved.startedAt, identity: saved.agentIdentity } : undefined
+    if (runIsLive(saved)) return false
+    return saved.managedProcess
+      ? saved.cleanup?.status !== 'unconfirmed' && connectionStopped(root)
+      : !root || processesStopped(runMark(saved.sessionId, root.since), root)
+  }))
+  return stopped.every(Boolean) && liveSubRuns(parentId).length === 0
 }
 
 async function runIsDown(sessionId: string): Promise<void> {
@@ -1469,6 +1594,7 @@ export async function releaseCardDelivery(cardId: number): Promise<
   { ok: true; released: boolean; deliveryId?: string } | { ok: false; error: string; deliveryId?: string }
 > {
   const execution = executionOf()
+  if (execution?.card !== undefined && execution.card !== cardId) return { ok: false, error: WRONG_TASK }
   if (execution && !(await executionHeld(execution))) {
     return { ok: false, error: 'Could not confirm Cloud authorization to release the delivery lock.' }
   }
@@ -1514,14 +1640,15 @@ export async function releaseCardDelivery(cardId: number): Promise<
 
 export async function resumeDelivery(
   id: string,
-): Promise<{ ok: boolean; deliveryId?: string; landed?: boolean; carryOn?: DeliveryCarryOn } & Partial<RunRefusal>> {
+): Promise<{ ok: boolean; deliveryId?: string; runId?: string; landed?: boolean; carryOn?: DeliveryCarryOn } & Partial<RunRefusal>> {
   if (!id.trim()) return { ok: false, ...refusal('deliveryUnnamed', 'name the delivery to carry on', { action: 'resume' }) }
   const execution = executionOf()
-  if (execution && !await executionHeld(execution)) return { ok: false, error: 'Could not confirm permission to resume this delivery. Try again later.' }
+  if (execution && !await executionHeld(execution)) return { ok: false, ...refusal('runContinued', 'Could not confirm permission to resume this delivery. Try again later.') }
   const put = resumeRecord(id, execution)
   if (!put.ok) return put
   const delivery = put.delivery
   if (delivery.status === 'finished') return { ok: true, deliveryId: delivery.deliveryId, landed: true }
+  if (put.runId) return { ok: true, deliveryId: delivery.deliveryId, runId: put.runId }
   const carryOn = carryOnFrom(delivery.deliveryId)
   // The card is this delivery's again, and a delivery in flight rests at `implementing`.
   if (delivery.cardId !== null) await setCardStatus(delivery.cardId, 'implementing')

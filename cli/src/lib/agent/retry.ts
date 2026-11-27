@@ -5,7 +5,7 @@ import { withLock } from '../lock'
 export type RetrySource = 'runtime' | 'runner' | 'sync' | 'validation'
 export type RetryState = 'waiting' | 'retrying' | 'recovered' | 'paused'
 export type SessionAction = 'resume' | 'reset_replay' | 'pause_unsafe'
-export type PauseReason = 'limit' | 'wait_too_long' | 'unsafe' | 'authorization' | 'stopped'
+export type PauseReason = 'limit' | 'wait_too_long' | 'unsafe' | 'authorization' | 'stopped' | 'manual'
 
 export interface RetryRuntime {
   connector: string
@@ -174,17 +174,25 @@ export function isSessionMissingFailure(failure: ExecutionFailure | undefined): 
   return isSessionMissingText(failure.summary) || isSessionMissingText(failure.detail)
 }
 
-export function agentRecovery(evidence: {
+type RecoveryEvidence = {
   stopped: boolean
   completed?: boolean
   session?: string | null
   replayable?: boolean
   unconfirmedCleanup?: boolean
-}): Recovery {
+}
+
+export function resumeBlocked({ stopped, session, unconfirmedCleanup }: RecoveryEvidence, zh = false): string | undefined {
+  if (!stopped) return zh ? '无法确认原执行已退出。' : 'The previous execution could not be confirmed stopped.'
+  if (unconfirmedCleanup) return zh ? '无法确认操作结果已收齐。' : 'The operation results could not be confirmed complete.'
+  if (!session) return zh ? '无法接回原会话。' : 'The original session is unavailable.'
+}
+
+export function agentRecovery(evidence: RecoveryEvidence): Recovery {
   if (!evidence.stopped) return 'unsafe'
   if (evidence.completed) return 'report'
   if (evidence.unconfirmedCleanup) return 'unsafe'
-  if (evidence.session) return 'resume'
+  if (!resumeBlocked(evidence)) return 'resume'
   return evidence.replayable ? 'replay' : 'unsafe'
 }
 
@@ -219,9 +227,9 @@ export function planRetry(
 ): { plan: RetryPlan } | { pause: RetryPause } {
   if (!Number.isSafeInteger(attempt) || attempt < 1) return { pause: 'unsafe' }
   const of = MAX_RETRY_ATTEMPTS
-  if (failure.code === 'completed_operation_failed') return { pause: 'unsafe' }
-  if (['provider_refused', 'executable_missing', 'execution_blocked', 'unauthenticated'].includes(failure.code ?? '')
-    || failure.source === 'runtime' && /\b(?:401 unauthorized|please (?:log in|login|sign in)|authentication failed|permission denied|(?:credits|quota) (?:exhausted|exceeded)|invalid model selection)\b/i.test(failure.summary)) {
+  if (failure.code === 'completed_operation_failed') return { pause: task ? 'manual' : 'unsafe' }
+  if (['provider_refused', 'executable_missing', 'execution_blocked', 'unauthenticated', 'quota_exhausted', 'insufficient_quota'].includes(failure.code ?? '')
+    || failure.source === 'runtime' && /\b(?:401 unauthorized|please (?:log in|login|sign in)|authentication failed|permission denied|(?:credits?|quota) (?:is |has been )?(?:exhausted|exceeded)|invalid model selection)\b/i.test(failure.summary)) {
     return { pause: 'authorization' }
   }
   if (attempt > of) return { pause: 'limit' }
@@ -310,7 +318,7 @@ export function readRetryHistory(raw: unknown): RetryRecord[] | undefined {
 export function readRetryPause(raw: unknown): RetryPause | undefined {
   if (raw === 'wait-too-long') return 'wait_too_long'
   if (raw === 'needs-review') return 'limit'
-  if (raw === 'limit' || raw === 'wait_too_long' || raw === 'unsafe' || raw === 'authorization' || raw === 'stopped') return raw
+  if (raw === 'limit' || raw === 'wait_too_long' || raw === 'unsafe' || raw === 'authorization' || raw === 'stopped' || raw === 'manual') return raw
   return undefined
 }
 
@@ -332,6 +340,7 @@ export function pauseLine(pause: RetryPause, zh = false): string {
     case 'unsafe': return zh ? '无法确认可以安全续跑，请先核对已有进度和操作结果。' : 'Check saved progress and operation results before resuming safely.'
     case 'authorization': return zh ? '无法确认续跑授权，已暂停。' : 'Paused because authorization to resume could not be confirmed.'
     case 'stopped': return zh ? '执行已停止。' : 'Execution stopped.'
+    case 'manual': return zh ? '请核对失败的操作后继续执行。' : 'Check the failed operation, then resume.'
   }
 }
 

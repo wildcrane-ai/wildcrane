@@ -38,7 +38,7 @@ Runner synchronization implies that a local command exposes the Cloud operation'
 | `akb task archive <task>` | archive an eligible task | — | Current Runner task: local archive; otherwise POST /v1/tasks/{id}/archive | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task remove <task> [reason...] [--discard]` | remove a task; bring it back with task restore | `--discard` | Current local task via Runner sync, otherwise POST /v1/tasks/{id}/cancel | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task restore <task>` | restore a removed or completed task without starting it | — | POST /v1/tasks/{id}/restore; removed or completed task, no execution replay | [task.ts](../../cli/src/commands/task.ts) |
-| `akb task resume <task>` | continue its stopped run | — | POST /v1/tasks/{id}/resume; no runtime selector; G06 | [task.ts](../../cli/src/commands/task.ts) |
+| `akb task resume <task>` | resume a Cloud task | `--json` | POST /v1/tasks/{id}/resume, shared with the web Resume action. Accepts a key, Cloud task ID or linked-project number. Returns queued or running, or a nonzero exit on refusal. G06 | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task runtime <task> <runtime>` | set the runtime for later task execution | `--json` | PATCH /v1/tasks/{id}; accepts a name or `rt_…` ID. Ambiguous names require an ID. A successful receipt confirms the saved runtime and any effective runtime details. | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task stop <task>` | stop its current run | — | POST /v1/tasks/{id}/stop; execution only | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task comment <task> <text...>` | comment on a task | — | POST /v1/tasks/{id}/comments; text, session required | [task.ts](../../cli/src/commands/task.ts) |
@@ -93,8 +93,7 @@ the archived card and the completed task. A successful `--json` result includes
 `task` (the canonical task ID) and `archive_status` (`pending_sync` or `archived`).
 Retrying a confirmed archive returns the confirmed result.
 
-Land completes delivery before archive. The command checks task state and
-card versions. It exits nonzero with the reason on refusal, for example when
+Land applies and verifies the Studio deliverable, then archives. The Runner sends the card and attachment versions for Cloud to confirm under the current Land lease. Explicit Cloud archive checks permissions, review, questions and versions, then requests stop for running work. It exits nonzero with the reason on refusal, for example when
 creation failed, review is pending, or another operation changed the card.
 
 Example: `akb task archive W-42 --json`
@@ -126,10 +125,8 @@ Example: `akb task archive W-42 --json`
 | `akb raw card approve <id>` | Approve the task review | `--preview <agent>`; `--preview-stage <id>`; `--preview-version <n>`; `--definition-revision <revision>`; `-p, --print`; `-f, --follow`; `--events` | Cloud-linked card: POST /v1/tasks/{id}/decisions; local flow otherwise; preview flags refused | [flows.ts](../../cli/src/lib/agent/flows.ts) |
 | `akb task revise <id> <what...>` | change the card to say something else | `-p, --print` | Local revision run; no direct API counterpart | [flows.ts](../../cli/src/lib/agent/flows.ts) |
 | `akb delivery` | Command group / help | — | Help/command group only; no operation | [agent.ts](../../cli/src/lib/cli/agent.ts) |
-| `akb delivery complete <delivery>` | record the current step result and finish its handoff | `--commit <sha>`; `--branch <name>` | Local receipt/handoff; software commit and branch paired; Runner reports Cloud completion separately | [run.ts](../../cli/src/commands/run.ts) |
 | `akb delivery answered <delivery>` | say what a round of applied answers did to its requirements | `--unchanged <why>`; `--changed <why>` | Local requirements conclusion; exactly one of --changed/--unchanged | [run.ts](../../cli/src/commands/run.ts) |
 | `akb delivery cancel <delivery>` | end it and hand the card back | — | Local delivery cancel, files retained; not Cloud discard | [run.ts](../../cli/src/commands/run.ts) |
-| `akb delivery resume <delivery>` | carry one on that stopped short, from where it stopped | — | Local saved delivery/run continuation; not Cloud task resume | [run.ts](../../cli/src/commands/run.ts) |
 | `akb run` | Command group / help | — | Help/command group only; no operation | [agent.ts](../../cli/src/lib/cli/agent.ts) |
 | `akb run list` | what is running, and what ran lately | `-c, --card <id>`; `-a, --all` | Local run/session records; no general Cloud job listing | [run.ts](../../cli/src/commands/run.ts) |
 | `akb run start [prompt...]` | start a sub-run of the run you are inside, and return its id | `--runtime <id>`; `--file <path>` | Local child run; requires parent run; no direct API | [run.ts](../../cli/src/commands/run.ts) |

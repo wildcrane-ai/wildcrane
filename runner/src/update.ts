@@ -13,6 +13,7 @@ import zlib from 'node:zlib'
 import { runnerHome } from './home'
 
 export const PACKAGE = 'wildcrane-runner'
+export const OFFICIAL_REGISTRY = 'https://registry.npmjs.org'
 const TIMEOUT_MS = 60_000
 
 export const versionsDir = () => path.join(runnerHome(), 'bin', 'runner')
@@ -32,7 +33,65 @@ const RUNNER: Package = { name: PACKAGE, dirOf: versionDir, entryOf }
 
 export type Install = { ok: true; dir: string } | { ok: false; why: 'unreachable' | 'integrity' | 'node'; detail: string }
 
-const registry = () => (process.env.npm_config_registry || 'https://registry.npmjs.org').replace(/\/+$/, '')
+interface RegistryKey {
+  keyid: string
+  key: string
+  expires: string | null
+}
+
+let testRegistryOverride: string | null = null
+let cachedKeys: { source: string; keys: Map<string, crypto.KeyObject> } | null = null
+
+/** Test-only override for registry URL; resets cached signing keys. */
+export function setTestRegistry(url: string | null): void {
+  testRegistryOverride = url ? url.replace(/\/+$/, '') : null
+  cachedKeys = null
+}
+
+function resolveRegistry(): { ok: true; url: string } | { ok: false; detail: string } {
+  if (testRegistryOverride) return { ok: true, url: testRegistryOverride }
+  const configured = process.env.npm_config_registry?.trim().replace(/\/+$/, '')
+  if (configured && configured !== OFFICIAL_REGISTRY) {
+    return { ok: false, detail: `untrusted npm_config_registry: ${configured}` }
+  }
+  return { ok: true, url: OFFICIAL_REGISTRY }
+}
+
+async function registryKeys(registryUrl: string): Promise<Map<string, crypto.KeyObject>> {
+  if (cachedKeys?.source === registryUrl) return cachedKeys.keys
+  const answer = await fetch(`${registryUrl}/-/npm/v1/keys`, { signal: AbortSignal.timeout(TIMEOUT_MS) })
+  if (!answer.ok) throw new Error(`keys answered ${answer.status}`)
+  const body = (await answer.json()) as { keys?: RegistryKey[] }
+  const keys = new Map<string, crypto.KeyObject>()
+  for (const entry of body.keys ?? []) {
+    if (!entry.keyid || !entry.key) continue
+    if (entry.expires && Date.parse(entry.expires) <= Date.now()) continue
+    keys.set(entry.keyid, crypto.createPublicKey({ key: Buffer.from(entry.key, 'base64'), format: 'der', type: 'spki' }))
+  }
+  cachedKeys = { source: registryUrl, keys }
+  return keys
+}
+
+async function verifySignature(
+  registryUrl: string,
+  pkgName: string,
+  version: string,
+  integrity: string,
+  signatures: Array<{ keyid?: string; sig?: string }> | undefined,
+): Promise<boolean> {
+  if (!Array.isArray(signatures) || signatures.length === 0) return false
+  const keys = await registryKeys(registryUrl)
+  const payload = Buffer.from(`${pkgName}@${version}:${integrity}`)
+  for (const entry of signatures) {
+    if (!entry.keyid || !entry.sig) continue
+    const key = keys.get(entry.keyid)
+    if (!key) continue
+    try {
+      if (crypto.verify('sha256', payload, key, Buffer.from(entry.sig, 'base64'))) return true
+    } catch {}
+  }
+  return false
+}
 
 export const install = (version: string, nodeVersion?: string) => installPackage(RUNNER, version, nodeVersion)
 
@@ -41,15 +100,22 @@ export async function installPackage(pkg: Package, version: string, nodeVersion 
   const dir = pkg.dirOf(version)
   if (fs.existsSync(pkg.entryOf(dir))) return { ok: true, dir }
 
-  let meta: { dist?: { tarball?: string; integrity?: string }; engines?: { node?: string } }
+  const reg = resolveRegistry()
+  if (!reg.ok) return { ok: false, why: 'integrity', detail: reg.detail }
+  const registryUrl = reg.url
+
+  let meta: { dist?: { tarball?: string; integrity?: string; signatures?: Array<{ keyid?: string; sig?: string }> }; engines?: { node?: string } }
   let tarball: Buffer
   try {
-    const answer = await fetch(`${registry()}/${pkg.name}/${encodeURIComponent(version)}`, { signal: AbortSignal.timeout(TIMEOUT_MS) })
+    const answer = await fetch(`${registryUrl}/${pkg.name}/${encodeURIComponent(version)}`, { signal: AbortSignal.timeout(TIMEOUT_MS) })
     if (!answer.ok) return { ok: false, why: 'unreachable', detail: `registry answered ${answer.status}` }
     meta = (await answer.json()) as typeof meta
     const range = meta.engines?.node
     if (range && !satisfies(nodeVersion, range)) return { ok: false, why: 'node', detail: range }
     if (!meta.dist?.tarball) return { ok: false, why: 'unreachable', detail: 'no tarball' }
+    if (!testRegistryOverride && !meta.dist.tarball.startsWith(`${OFFICIAL_REGISTRY}/`)) {
+      return { ok: false, why: 'integrity', detail: 'tarball outside official registry' }
+    }
     const download = await fetch(meta.dist.tarball, { signal: AbortSignal.timeout(TIMEOUT_MS) })
     if (!download.ok) return { ok: false, why: 'unreachable', detail: `download answered ${download.status}` }
     tarball = Buffer.from(await download.arrayBuffer())
@@ -60,6 +126,13 @@ export async function installPackage(pkg: Package, version: string, nodeVersion 
   const expected = /^sha512-(.+)$/.exec(meta.dist.integrity ?? '')?.[1]
   const actual = crypto.createHash('sha512').update(tarball).digest('base64')
   if (!expected || expected !== actual) return { ok: false, why: 'integrity', detail: 'sha512 mismatch' }
+
+  try {
+    const signed = await verifySignature(registryUrl, pkg.name, version, meta.dist.integrity!, meta.dist.signatures)
+    if (!signed) return { ok: false, why: 'integrity', detail: 'dist.signatures verification failed' }
+  } catch (e) {
+    return { ok: false, why: 'unreachable', detail: e instanceof Error ? e.message : String(e) }
+  }
 
   const staging = `${dir}.${process.pid}.tmp`
   try {

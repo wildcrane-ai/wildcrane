@@ -11,8 +11,10 @@ wildcrane-runner
 ```
 
 首次启动会打开浏览器登录。独立 Runner 与插件内的 Runner 每分钟检查云端指定版本，
-下载成功后自动保存交接并替换 Runner，独立执行中的任务继续运行。下载失败继续使用当前版本，
-新版无法启动则自动回退。已有 Runner 需要先手动更新一次，才能获得自动更新能力。
+下载成功后自动保存交接并替换 Runner，恢复任务和对话，独立执行中的任务继续运行。
+新版启动失败或两分钟内未连上云端时，自动退回刚才运行的版本，五分钟后可重试同一版本。
+旧安装需更新一次启动器。终端安装使用 `npm install -g wildcrane-runner@latest`，插件安装使用
+宿主的插件更新入口。重启旧 Runner 所在的终端或插件会话后，启动器会自动迁移旧版本记录。
 
 更新交接的作业保留 7 天，期间断网会等待重连。已完成的结果直接回写；操作结果不明或
 连接器无法提供恢复依据时，任务会提示检查后续跑，避免重复执行。
@@ -42,6 +44,12 @@ Codex 由 Runner 管理原生 App Server，任务直接连接；Runner 更新或
   once a day the Runner removes a project unused for 7 days or no longer in your account — its
   whole `cache/<project>/`, or only a linked folder's `.akb/` — unless a job runs there, a
   delivery is paused there, or its last sync failed.
+- **Diagnostics**: Terminal, Codex and Claude Code Runners write local JSON Lines to
+  `~/.wildcrane/logs/runner.log` (`$WILDCRANE_HOME/logs/runner.log` when overridden).
+  Logs rotate on UTC date changes or at 5 MiB. The current file and up to three archives
+  (`runner.log.YYYY-MM-DD.N`) cover at most seven UTC dates including today, and 20 MiB total.
+  They contain lifecycle and sync diagnostics with selected fields only. If the log cannot
+  be written, the Runner continues and warns on stderr at most once a minute per process.
 - **Runner files**: `~/.wildcrane/bin/` holds the downloaded versions and the `akb` shims.
 - **Periodic agents**: in each project folder it also runs the board's own agents (reflect,
   describe-project, review-dismissals, prune-memory) and each studio's scheduled agents, when

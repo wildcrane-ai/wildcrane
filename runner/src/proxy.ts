@@ -6,6 +6,7 @@ import { EnvHttpProxyAgent, install, setGlobalDispatcher } from 'undici'
 import { PROXY_KEYS, withSystemProxy } from '../../cli/src/lib/agent/proxy'
 
 const LOOPBACK = 'localhost,127.0.0.1,[::1]'
+export const withLoopback = (value?: string) => [value, LOOPBACK].filter(Boolean).join(',')
 /** The host's own proxy variables, handed to an akb the Runner starts (#435): its env also
  *  carries the system's, which must stay re-readable. */
 export const HOST_PROXY_ENV = 'WILDCRANE_HOST_PROXY'
@@ -31,7 +32,7 @@ export function followProxy(read?: () => string): NodeJS.ProcessEnv {
   const route = {
     httpProxy,
     httpsProxy: current.HTTPS_PROXY || current.https_proxy || httpProxy,
-    noProxy: [current.NO_PROXY ?? current.no_proxy, LOOPBACK].filter(Boolean).join(','),
+    noProxy: withLoopback(current.NO_PROXY ?? current.no_proxy),
   }
   const key = JSON.stringify(route)
   if (key !== applied) {

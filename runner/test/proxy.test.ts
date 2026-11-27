@@ -14,6 +14,7 @@ import { it } from 'node:test'
 for (const key of ['WILDCRANE_HOST_PROXY', 'HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy']) delete process.env[key]
 const { followProxy } = await import('../src/proxy')
 const { useRunnerHome } = await import('../src/home')
+const { akbEnv } = await import('../src/akb')
 
 it('ignores the retired proxy.env on startup', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-proxy-test-'))
@@ -71,4 +72,15 @@ it('routes a started akb through the host proxy', async (t) => {
   const out = await new Promise<string>((resolve, reject) =>
     execFile(process.execPath, ['--import', pathToFileURL(preload).href, '-e', "fetch('http://akb.proxy.test/').then((r) => r.text()).then(console.log)"], { env }, (e, stdout) => (e ? reject(e) : resolve(stdout))))
   assert.equal(out.trim(), 'proxied')
+})
+
+it('keeps child task bridges on loopback when the Runner uses a proxy', (t) => {
+  const shim = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-proxy-shim-'))
+  t.after(() => fs.rmSync(shim, { recursive: true, force: true }))
+  const env = akbEnv({ command: process.execPath, args: [], version: 'test', shim }, undefined, undefined, undefined, {
+    HTTP_PROXY: 'http://127.0.0.1:7890', NO_PROXY: '127.*', no_proxy: 'internal.example',
+  })
+  assert.equal(env.NODE_USE_ENV_PROXY, '1')
+  assert.equal(env.NO_PROXY, '127.*,localhost,127.0.0.1,[::1]')
+  assert.equal(env.no_proxy, 'internal.example,localhost,127.0.0.1,[::1]')
 })

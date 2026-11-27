@@ -46,8 +46,8 @@ than treating this catalogue as a fixed sequence.
   internal facts, personal experience or stance instead of inventing them.
 - **Destinations**: use the user's choice, explicit project or Studio rules, then the task
   and existing posts; ask only if these leave the destination unresolved.
-- **Files**: keep sources and assets in `<board-state>/assets/<card id>/`, linked from the
-  task as `.assets/<card id>/...`; retain working relative paths when copying files.
+- **Files**: save sources and assets in the task's Asset folder. Use `asset:<file>` in the card
+  and keep relative links working when copying files.
 - **Evidence**: cite primary sources for key facts, concrete cases or further reading;
   narrow, qualify or drop unsupported claims and check that links resolve.
 - **Keywords**: use supplied keywords naturally in relevant sections, with the primary one
