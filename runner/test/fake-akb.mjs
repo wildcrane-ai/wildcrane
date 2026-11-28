@@ -104,10 +104,23 @@ if (a === 'raw' && b === 'init') {
   const runs = read('runs.json', [])
   const cloudExecution = JSON.parse(process.env.AI4KANBAN_EXECUTION ?? 'null')
   if (runs.some((r) => r.cardId === id && r.status === 'running')) fail(`#${id} is already being worked on`)
+  if (how.missingSession && flag('--session')) {
+    const sessionId = `missing-${b}-${runs.length + 1}`
+    const summary = 'Session not found.'
+    runs.push({ sessionId, cardId: id, action: b, status: 'error', cloudExecution, deliveryId: how.delivery?.id,
+      failure: { code: 'session_not_found', source: 'runtime', summary } })
+    write('runs.json', runs)
+    console.log(JSON.stringify({ ok: false, error: { kind: 'run-failed', sessionId, message: summary } }))
+    process.exit(1)
+  }
   if (how.missingFork && words.includes('--fork')) {
     const sessionId = `run-${b}-${runs.length + 1}`
-    const reason = `no rollout found for thread id ${flag('--session')}`
-    runs.push({ sessionId, cardId: id, action: b, status: 'error', cloudExecution, failure: { code: 'codex_fork_source_missing', level: 3, source: 'harness', reason } })
+    const paginated = how.missingFork === 'paginated'
+    const reason = paginated
+      ? `invalid paginated history lineage for ${flag('--session')}: missing source rollout`
+      : `no rollout found for thread id ${flag('--session')}`
+    const code = how.missingForkCode ?? 'codex_fork_source_missing'
+    runs.push({ sessionId, cardId: id, action: b, status: 'error', cloudExecution, failure: { code, source: 'runtime', summary: reason } })
     write('runs.json', runs)
     console.log(JSON.stringify({ ok: false, error: { kind: 'run-failed', message: reason, lastSessionId: sessionId } }))
     process.exit(1)
@@ -115,6 +128,7 @@ if (a === 'raw' && b === 'init') {
   // The board every `akb` the agent types reaches.
   fs.writeFileSync(path.join(state, 'agent-board'), process.env.AI4KANBAN_BOARD ?? '')
   fs.writeFileSync(path.join(state, 'session-cost'), process.env.AI4KANBAN_SESSION_COST ?? '')
+  if (phase === 'land') fs.writeFileSync(path.join(state, 'land-implement-run'), process.env.AI4KANBAN_LAND_IMPLEMENT_RUN ?? '')
   if (process.env.AI4KANBAN_TASK_REVIEW) {
     write('review-context.json', {
       review: JSON.parse(process.env.AI4KANBAN_TASK_REVIEW),
@@ -174,7 +188,7 @@ if (a === 'raw' && b === 'init') {
     }
   }
   if (how.gates?.length) runs.pop()
-  const evidence = how.trackExecution && { action: b, status: 'done', deliveryId: how.delivery?.id, resumeId: how.agentSession,
+  const evidence = how.trackExecution && { action: b, status: 'done', deliveryId: how.delivery?.id, resumeId: how.agentSession, cwd: how.cwd,
     cloudExecution: JSON.parse(process.env.AI4KANBAN_EXECUTION), pendingWrites: false }
   runs.push({ sessionId, cardId: id, status: 'done', cloudExecution, result: how.result, ...spent, ...evidence },
     ...(last !== sessionId ? [{ sessionId: last, cardId: id, status: 'done', cloudExecution, result: how.landed ?? 'Landed it.', ...spent }] : []))
@@ -296,7 +310,7 @@ if (a === 'raw' && b === 'init') {
     if (fs.readFileSync(path.join(board, file), 'utf8') !== content) fail('saved work changed')
   }
   const sessionId = b === 'resume' ? `resumed-${c}` : c
-  const agentSession = words.includes('--new-session') ? 'new-agent-session' : previous.resumeId
+  const agentSession = words.includes('--fresh') ? 'new-agent-session' : previous.resumeId
   if (b === 'resume') {
     runs.splice(runs.indexOf(previous), 1)
     runs.push({ ...previous, ...how.spent, sessionId, resumeId: agentSession, resumedFrom: c, status: 'done', startedAt: Date.now(),
@@ -307,7 +321,8 @@ if (a === 'raw' && b === 'init') {
   const file = cardOf(previous.cardId)
   const resumedDelivery = how.deliveryId ?? previous.deliveryId
   if (resumedDelivery && file && file.includes(`${path.sep}todo${path.sep}`)) archive(file)
-  if (phase === 'land') write('land-resume.json', { session: previous.resumeId, diagnostic: process.env.AI4KANBAN_SYNC_DIAGNOSTIC })
+  if (phase === 'land') write('land-resume.json', { session: previous.resumeId,
+    diagnostic: process.env.AI4KANBAN_SYNC_DIAGNOSTIC, implementationRun: process.env.AI4KANBAN_LAND_IMPLEMENT_RUN })
   console.log(JSON.stringify({ ok: true, sessionId, status: 'done', result: 'Continued it.', agentSession,
     ...(resumedDelivery ? { delivery: { id: resumedDelivery, status: 'finished', commit: 'abc123', branch: 'main' } } : {}) }))
 } else if (a === 'delivery' && b === 'cancel') {

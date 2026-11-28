@@ -1,7 +1,7 @@
 # 目标错误（英文 message/reason；调用方按现有错误码处理）
 
 PUT /v1/discussions/{id}/draft：输入 expectedVersion 与 goals；成功返回讨论，冲突返回 409/version_conflict 和最新 discussion。
-POST /v1/discussions/{id}/goals/{goal}/start：输入 expectedVersion、action?（start 或 refine）、project?、machine?；成功返回任务，保留外部讨论重复调用返回原任务的行为。
+POST /v1/discussions/{id}/goals/{goal}/start 接收 `expectedVersion`、`action?`（`start` 或 `refine`）、`project?`、`machine?` 和 `runtime?`。`runtime` 指定首个操作的运行环境。已确定且没有审阅点的目标直接实施，显式 `refine` 先细化。成功返回任务，外部讨论重复调用返回原任务。
 wildcrane_draft_save({discussionId, expectedVersion, goals})：传开放目标数组；成功返回 saved:true，冲突返回 saved:false、最新 version/goals/url，参数错误保持 isError:true。
 akb goal <new|save|drop|start> [--id <goal>] [--title <title>] [--body-file <file>] [--studio <id>] [--review <flow> | --review-file <path>]：编辑目标及审核安排，成功结果包含 review_plan，校验失败以非零状态退出。
 
@@ -13,7 +13,8 @@ akb goal <new|save|drop|start> [--id <goal>] [--title <title>] [--body-file <fil
 | HTTP 保存冲突，409/version_conflict | The goals have changed. Read them again before saving. |
 | HTTP 目标不存在，404/not_found | No goal has this id. |
 | HTTP 已开始，409/conflict | This goal has already been started. |
-| HTTP 直接执行但审核安排待定，409/conflict | Set the goal review plan before starting. |
+| HTTP 启动动作无效，400/bad_request | action must be start or refine. |
+| HTTP 显式 start 但审核安排待定，409/conflict | Set the goal review plan before starting. |
 | 数据库工作台变化，409/conflict | This goal's studio has changed. |
 | MCP 保存冲突，saved:false 的 reason | The goals have changed. Merge your changes with the latest goals and save again. |
 | CLI 本地草稿缺少目标数组 | The goals array is missing or invalid. |

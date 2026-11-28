@@ -1,20 +1,30 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, it } from 'node:test'
 import { runAgent } from '../src/lib/agent-cli'
-import { writeSession } from '../src/lib/cloud/session'
+import { readSession, writeSession } from '../src/lib/cloud/session'
 import { parseFrontmatter } from '../src/lib/frontmatter'
+import { runnerMachineFile, runnerGrantsFile, runnerSocketPath } from '../src/lib/machine/runner'
+import { projectStateDir } from '../src/lib/machine/project'
+import { tryLock } from '../src/lib/lock'
 
 const originalEnv = { ...process.env }
 const originalFetch = globalThis.fetch
+const machine = '00000000-0000-4000-8000-000000000002'
+const execution = JSON.stringify({ job: '00000000-0000-4000-8000-000000000001', machine })
 let root: string
 let a: string
 let b: string
 let empty: string
 let calls: { url: URL; method: string; body: any }[]
 let serve: (url: URL) => Response
+let socket: net.Server | undefined
+const card = '---\ntitle: Current\npriority: med\nstatus: todo\nquestions: []\n---\n\nCard body.\n'
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'task-selection-'))
@@ -61,20 +71,67 @@ beforeEach(() => {
   }) as typeof fetch
 })
 
-afterEach(() => {
+afterEach(async () => {
+  if (socket) await new Promise<void>((resolve, reject) => socket!.close(error => error ? reject(error) : resolve()))
+  socket = undefined
   globalThis.fetch = originalFetch
-  for (const key of ['AI4KANBAN_HOME', 'WILDCRANE_HOME', 'AI4KANBAN_SUPABASE_URL', 'AI4KANBAN_CLOUD_URL', 'AI4KANBAN_BOARD', 'AI4KANBAN_REPLY_APPROVAL', 'AI4KANBAN_TASK', 'AI4KANBAN_EXECUTION']) {
+  for (const key of ['AI4KANBAN_HOME', 'WILDCRANE_HOME', 'AI4KANBAN_SUPABASE_URL', 'AI4KANBAN_CLOUD_URL', 'AI4KANBAN_BOARD', 'AI4KANBAN_REPLY_APPROVAL', 'AI4KANBAN_TASK', 'AI4KANBAN_EXECUTION', 'AI4KANBAN_REVIEW_SYNC', 'KANBAN_GOALS']) {
     if (originalEnv[key] === undefined) delete process.env[key]
     else process.env[key] = originalEnv[key]
   }
   fs.rmSync(root, { recursive: true, force: true })
 })
 
+function localBoard(board = path.join(a, '.akb', 'kanban'), content = card) {
+  fs.mkdirSync(path.join(board, 'todo'), { recursive: true })
+  fs.writeFileSync(path.join(board, 'config.md'), '# Board\n')
+  fs.writeFileSync(path.join(board, 'todo', 'README.md'), '# Tasks\n')
+  fs.writeFileSync(path.join(board, 'todo', '12-card.md'), content)
+  return board
+}
+
+function boundRunner() {
+  fs.writeFileSync(runnerMachineFile(), JSON.stringify({ id: machine }))
+  fs.writeFileSync(runnerGrantsFile(), JSON.stringify({ projects: [a] }))
+  const normal = serve
+  serve = url => {
+    if (url.pathname !== '/v1/runner/folders') return normal(url)
+    assert.equal(url.searchParams.get('machine'), machine)
+    return Response.json({ folders: [{ path: a, project: 'prj_a' }] })
+  }
+}
+
+async function online() {
+  socket = net.createServer(peer => peer.end()).listen(runnerSocketPath())
+  await once(socket, 'listening')
+}
+
+function boardSnapshot(board: string) {
+  return fs.readdirSync(board, { recursive: true, withFileTypes: true })
+    .filter(entry => entry.isFile())
+    .map(entry => path.join(entry.parentPath, entry.name)).sort()
+    .map(file => [path.relative(board, file), fs.readFileSync(file, 'utf8')])
+}
+
+async function runnerRefusal(argv: string[], code: string) {
+  const out = await run(argv)
+  assert.equal(out.code, 1, out.stderr || out.stdout)
+  assert.equal(out.value.error.kind, 'runner-required', out.stdout)
+  assert.equal(out.value.error.code, code, out.stdout)
+  assert.match(out.value.error.message, /try again/)
+}
+
 async function run(argv: string[], json = true, cwd = a) {
   let stdout = ''; let stderr = ''
   const out = process.stdout.write; const err = process.stderr.write
-  process.stdout.write = ((chunk: any) => { stdout += chunk; return true }) as typeof out
-  process.stderr.write = ((chunk: any) => { stderr += chunk; return true }) as typeof err
+  process.stdout.write = ((chunk: any) => {
+    if (typeof chunk !== 'string') return out.call(process.stdout, chunk)
+    stdout += chunk; return true
+  }) as typeof out
+  process.stderr.write = ((chunk: any) => {
+    if (typeof chunk !== 'string') return err.call(process.stderr, chunk)
+    stderr += chunk; return true
+  }) as typeof err
   try {
     const code = await runAgent([...argv, ...(json ? ['--json'] : [])], { program: 'akb', cwd })
     const values = json ? stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []
@@ -168,11 +225,20 @@ it('edits only the current Runner task locally, using the selected board and tas
   fs.writeFileSync(record, JSON.stringify({ task: 'task_a', number: 12 }))
   process.env.AI4KANBAN_BOARD = board
   process.env.AI4KANBAN_TASK = 'task_a'
-  process.env.AI4KANBAN_EXECUTION = JSON.stringify({ job: '00000000-0000-4000-8000-000000000001', machine: '00000000-0000-4000-8000-000000000002' })
+  process.env.AI4KANBAN_EXECUTION = execution
+  boundRunner()
+  await online()
   const normal = serve
-  serve = url => url.pathname === '/v1/tasks/A-12'
-    ? Response.json({ id: 'task_a', key: 'A-12', project: 'prj_a', status: 'running' })
-    : normal(url)
+  serve = url => {
+    if (url.pathname === '/v1/tasks/A-12') return Response.json({ id: 'task_a', key: 'A-12', project: 'prj_a', status: 'running' })
+    // The binding lookup leaves the board's sync lock free.
+    if (url.pathname === '/v1/runner/folders') {
+      const unlock = tryLock(path.join(projectStateDir(board), 'board-sync.lock'))
+      assert.ok(unlock)
+      unlock()
+    }
+    return normal(url)
+  }
 
   for (const [ref, args] of [
     ['task_a', ['--append', 'New?', '--option', 'One', '--recommended-option', 'Two', '--agent', 'new-agent',
@@ -213,6 +279,160 @@ it('edits only the current Runner task locally, using the selected board and tas
     if (badNumber === 12) fs.writeFileSync(path.join(board, 'todo', '13-other.md'), card)
   }
   assert.equal(fs.readFileSync(path.join(board, 'todo', '13-other.md'), 'utf8'), card)
+})
+
+it('refuses offline edits before backfilling cards, renaming, indexing, or adding to the inbox', async () => {
+  const board = localBoard()
+  const before = boardSnapshot(board)
+  for (const argv of [
+    ['task', 'update', '12', '--slug', 'renamed'],
+    ['raw', 'update', '12', '--title', 'Changed'],
+    ['raw', 'update-questions', '12', '--clear'],
+    ['raw', 'reject', '12', '--discard'],
+    ['triage', 'add', '--title', 'Suggestion', '--text', 'Add this.'],
+  ]) await runnerRefusal([...argv, '--board', board], 'runner-offline')
+  assert.deepEqual(boardSnapshot(board), before)
+  assert.equal(fs.existsSync(projectStateDir(board)), false)
+
+  process.env.AI4KANBAN_BOARD = board
+  process.env.AI4KANBAN_TASK = 'task_a'
+  process.env.AI4KANBAN_EXECUTION = execution
+  fs.mkdirSync(path.join(board, '.sync'))
+  fs.writeFileSync(path.join(board, '.sync', 'task_a.json'), JSON.stringify({ task: 'task_a', number: 12 }))
+  const current = boardSnapshot(board)
+  for (const ref of ['task_a', '12']) await runnerRefusal(['task', 'update-questions', ref, '--clear'], 'runner-offline')
+  assert.deepEqual(boardSnapshot(board), current)
+  assert.equal(calls.length, 0)
+  assert.equal((await run(['task', 'update-questions', 'task_b', '--clear'])).code, 0)
+  assert.equal(calls.at(-1)!.url.pathname, '/v1/tasks/task_b/questions')
+  assert.equal((await run(['task', 'inspect', '12', '--board', board])).code, 0)
+  assert.equal((await run(['board', 'conflict', 'list', '--board', board])).code, 0)
+  assert.equal((await run(['guide', 'board'])).code, 0)
+  assert.equal(calls.filter(({ url }) => url.pathname === '/v1/runner/folders').length, 0)
+})
+
+it('rejects a Runner socket left behind by a crashed process', { skip: process.platform === 'win32' }, async () => {
+  const board = localBoard()
+  const file = runnerSocketPath()
+  const child = spawn(process.execPath, ['-e', `require('net').createServer().listen(process.argv[1], () => console.log('ready'))`, file])
+  try {
+    await Promise.race([once(child.stdout, 'data'), once(child, 'exit').then(() => assert.fail('Socket listener exited'))])
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, 'exit')
+      child.kill('SIGKILL')
+      await exited
+    }
+  }
+  assert.ok(fs.lstatSync(file).isSocket())
+  await runnerRefusal(['task', 'update', '12', '--title', 'Changed', '--board', board], 'runner-offline')
+  assert.ok(fs.lstatSync(file).isSocket())
+})
+
+it('checks the Runner account, machine and matching Cloud folder before writing', async () => {
+  const board = localBoard()
+  const before = boardSnapshot(board)
+  const update = ['task', 'update', '12', '--title', 'Changed', '--board', board]
+  boundRunner()
+  await online()
+  const session = readSession()!
+  const home = process.env.WILDCRANE_HOME!
+  fs.rmSync(path.join(home, 'session.json'))
+  await runnerRefusal(update, 'runner-signed-out')
+  writeSession(session)
+  fs.writeFileSync(runnerGrantsFile(), JSON.stringify({ projects: [a], accounts: { other: [a] } }))
+  await runnerRefusal(update, 'runner-folder-not-authorized')
+  fs.writeFileSync(runnerGrantsFile(), JSON.stringify({ projects: [], accounts: { account: [a] } }))
+  const normal = serve
+  for (const [reply, code] of [
+    [() => Response.json({ folders: [] }), 'runner-project-not-bound'],
+    [() => Response.json({ folders: [{ path: b, project: 'prj_a' }] }), 'runner-project-not-bound'],
+    [() => Response.json({ folders: [{ path: a, project: 'prj_b' }] }), 'runner-project-link-invalid'],
+    [() => Response.json({ folders: null }), 'runner-binding-unverified'],
+    [() => { throw new Error('Cloud unreachable') }, 'runner-binding-unverified'],
+    [(url: URL) => { writeSession({ ...session, subject: 'other' }); return normal(url) }, 'runner-signed-out'],
+    [(url: URL) => { fs.writeFileSync(runnerMachineFile(), JSON.stringify({ id: '00000000-0000-4000-8000-000000000003' })); return normal(url) }, 'runner-project-not-bound'],
+  ] as const) {
+    writeSession(session)
+    fs.writeFileSync(runnerMachineFile(), JSON.stringify({ id: machine }))
+    serve = reply
+    await runnerRefusal(update, code)
+    assert.deepEqual(boardSnapshot(board), before)
+  }
+  const base = path.join(a, '.akb', 'base.json')
+  for (const data of ['{', JSON.stringify({ project: 'prj_a', files: { 'projects/prj_b/config.md': {} } })]) {
+    fs.writeFileSync(base, data)
+    await runnerRefusal(update, 'runner-project-link-invalid')
+    assert.deepEqual(boardSnapshot(board), before)
+  }
+})
+
+it('checks the selected Runner board and accepts legacy grants and project records', async () => {
+  const board = localBoard()
+  boundRunner()
+  await online()
+  fs.writeFileSync(path.join(a, '.akb', 'base.json'), JSON.stringify({ files: { 'projects/prj_a/config.md': {} } }))
+  const nested = path.join(a, 'sub')
+  fs.mkdirSync(nested)
+  assert.equal((await run(['task', 'update', '12', '--title', 'Nested'], true, nested)).code, 0)
+  assert.equal((await run(['task', 'update', '12', '--title', 'Selected', '--dir', '../a'], true, b)).code, 0)
+  const alias = path.join(b, 'board-alias')
+  fs.symlinkSync(board, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  assert.equal((await run(['task', 'update', '12', '--title', 'Alias', '--board', alias, '--dir', b])).code, 0)
+  assert.match(fs.readFileSync(path.join(board, 'todo', '12-card.md'), 'utf8'), /title: Alias/)
+  assert.equal((await run(['triage', 'add', '--title', 'Suggestion', '--text', 'Add this.', '--board', alias])).code, 0)
+  assert.ok(boardSnapshot(board).some(([file]) => file?.startsWith('triage/')))
+
+  const standalone = localBoard(path.join(a, 'docs', 'kanban'))
+  calls = []
+  assert.equal((await run(['task', 'update', '12', '--title', 'Local', '--dir', a])).code, 0)
+  assert.match(fs.readFileSync(path.join(standalone, 'todo', '12-card.md'), 'utf8'), /title: Local/)
+  assert.deepEqual(calls, [])
+})
+
+it('uses the Runner discussion board for goal drafts and preserves the direct triage job routes', async () => {
+  const board = localBoard(undefined, card.replace('priority: med', 'studio: coding\npriority: med'))
+  process.env.AI4KANBAN_BOARD = board
+  const file = path.join(root, 'goals.json')
+  const body = path.join(root, 'body.md')
+  fs.writeFileSync(file, JSON.stringify({ studios: [{ id: 'wf_builtin_coding', name: 'Coding' }], goals: [] }))
+  fs.writeFileSync(body, 'Content')
+  process.env.KANBAN_GOALS = file
+  const goals = [
+    ['goal', 'new', '--title', 'New', '--body-file', body],
+    ['goal', 'save', '--id', 'new_1', '--title', 'Changed'],
+    ['goal', 'start', '--id', 'new_1'],
+    ['goal', 'drop', '--id', 'new_1'],
+  ]
+  delete process.env.AI4KANBAN_BOARD
+  const standalone = localBoard(path.join(a, 'docs', 'kanban'))
+  assert.equal((await run([...goals[0]!, '--board', board], true, standalone)).code, 0)
+  process.env.AI4KANBAN_BOARD = board
+  const before = fs.readFileSync(file, 'utf8')
+  for (const goal of goals) await runnerRefusal([...goal, '--board', standalone, '--dir', empty], 'runner-offline')
+  assert.equal(fs.readFileSync(file, 'utf8'), before)
+
+  process.env.AI4KANBAN_TASK = 'task_a'
+  process.env.AI4KANBAN_EXECUTION = execution
+  const normal = serve
+  serve = url => url.pathname.endsWith('/triage') ? Response.json({ file: 'triage/1-suggestion.md' }) : normal(url)
+  for (const [args, action] of [
+    [['triage', 'add', '--title', 'Follow-up', '--text', 'Body', '--source', '#12', '--studio', 'coding', '--decision', 'review'], 'add'],
+    [['triage', 'decide', 'source', '--decision', 'skip', '--reason', 'Handled'], 'decide'],
+  ] as const) {
+    const out = await run([...args])
+    assert.equal(out.code, 0, out.stderr || out.stdout)
+    assert.match(calls.at(-1)!.url.pathname, /^\/v1\/runner\/jobs\/[^/]+\/triage$/)
+    assert.equal(calls.at(-1)!.body.action, action)
+  }
+  assert.equal(calls.filter(({ url }) => url.pathname === '/v1/runner/folders').length, 0)
+  boundRunner()
+  await online()
+  for (const goal of goals) assert.equal((await run(goal)).code, 0)
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8')).goals
+  assert.equal(saved.length, 2)
+  assert.equal(saved[0].start, true)
+  assert.equal(saved[0].dropped, true)
 })
 
 it('validates the entire question batch before a write and reports a stale Cloud version without retrying', async () => {
@@ -294,10 +514,99 @@ it('resolves numeric approvals before handing them to the reply approval bridge'
   serve = (url) => url.pathname === '/'
     ? Response.json({ ok: true, value: { id: 'approval', status: 'pending', task: 'B-12' } })
     : normal(url)
-  const out = await run(['task', 'approve', '12', '--revision', '1', '--dir', '../b'])
+  const out = await run(['task', 'approve', '12', '--stage', 'script', '--dir', '../b'])
   assert.equal(out.code, 0)
   assert.equal(out.value.pending, true)
-  assert.deepEqual(calls.at(-1)!.body, { task: 'B-12', review_revision: 1 })
+  assert.deepEqual(calls.at(-1)!.body, { task: 'B-12', stage: 'script' })
+})
+
+it('uses one review snapshot for a conditional merge and reads again only after Preview synchronization', async () => {
+  process.env.AI4KANBAN_TASK = 'task_b'
+  const saved = { id: 'saved', title: { en: 'Saved', zh: '已保存' }, instructions: 'Keep it.' }
+  const incoming = { id: 'new', title: { en: 'New', zh: '新增' }, instructions: 'Add it.' }
+  const definitions = path.join(root, 'definitions.json')
+  fs.writeFileSync(definitions, JSON.stringify([incoming]))
+  let revision = 4
+  const plan = { rule: 'Ask before delivery.', previews: ['saved'] }
+  const review = () => ({ revision, plan, stages: [], preview_definitions: [saved] })
+  let conflict = false
+  serve = url => {
+    if (url.pathname === '/') {
+      revision++
+      return Response.json({ ok: true })
+    }
+    if (url.pathname.endsWith('/review') && conflict) {
+      return Response.json({ error: { code: 'review_outdated', message: 'Review changed.' } }, { status: 409 })
+    }
+    return Response.json({ id: 'task_b', review: review() })
+  }
+  const runReview = (args: string[]) => run(['task', 'review', 'B-12', ...args])
+  const added = await runReview(['--add-previews', 'new', '--preview-definitions-file', definitions])
+  assert.equal(added.code, 0, added.stderr)
+  assert.equal(added.value.review.revision, undefined)
+  assert.deepEqual(calls.map(c => c.method), ['GET', 'POST'])
+  assert.deepEqual(calls.at(-1)!.body, {
+    operation: 'plan', review_revision: 4, review_plan: { rule: plan.rule, previews: ['saved', 'new'] }, preview_definitions: [saved, incoming],
+  })
+
+  process.env.AI4KANBAN_REVIEW_SYNC = JSON.stringify({ url: 'http://127.0.0.1:12345/', token: 'a'.repeat(64) })
+  calls = []
+  const submitted = await runReview(['--request-approval', 'Approve this?', '--preview', 'saved'])
+  assert.equal(submitted.code, 0, submitted.stderr)
+  assert.deepEqual(calls.map(c => c.url.pathname), ['/v1/tasks/B-12', '/', '/v1/tasks/B-12', '/v1/tasks/B-12/review'])
+  assert.deepEqual(calls[1]!.body, { task: 'task_b' })
+  assert.deepEqual(calls[3]!.body, { operation: 'request_approval', question: 'Approve this?', preview: 'saved', review_revision: 5 })
+
+  conflict = true
+  calls = []
+  const failed = await runReview(['--stage', 'saved', '--status', 'done'])
+  assert.equal(failed.value.error.code, 'review_outdated')
+  assert.match(failed.value.error.message, /Read the task and retry/)
+  assert.deepEqual(calls.map(c => c.method), ['GET', 'POST'])
+  assert.deepEqual(calls[1]!.body, { operation: 'status', stage: 'saved', status: 'done', review_revision: 5 })
+})
+
+it('projects every Agent Task receipt and keeps the standalone approval input explicit', async () => {
+  const normal = serve
+  const snapshot = { evidence: { assets: { 'draft.txt': { version: 55 } } } }
+  const review = { revision: 21, plan: { rule: 'Ask for approval.', previews: ['copy'] },
+    stages: [{ id: 'approval-19', revision: 20, requested_at_revision: 19, status: 'waiting_review', preview: 'copy',
+      snapshot: { evidence: { ...snapshot.evidence, after: { draft: 18 } } } }],
+    approvals: [{ stage: 'approval-19', revision: 20, preview: 'copy', question: 'Approve the copy?' }] }
+  serve = url => {
+    if (url.pathname.endsWith('/decisions')) return normal(url)
+    const operation = url.pathname.split('/').at(-1)
+    if (operation === 'card') return normal(url)
+    const task = {
+      id: 'task_b', key: 'B-12', title: 'Write copy', studio: null, runtime: 'rt_test',
+      status: operation === 'cancel' ? 'cancelled' : operation === 'restore' ? 'stopped' : 'queued',
+      review_revision: 21, review,
+    }
+    return Response.json(operation === 'tasks' && calls.at(-1)?.method === 'GET' ? { data: [task], next: null } : task)
+  }
+  const denied = await run(['task', 'approve', 'B-12'])
+  assert.match(denied.value.error.message, /--revision/)
+  assert.equal(calls.length, 0)
+  assert.equal((await run(['task', 'review', 'B-12'])).value.review.revision, 21)
+  assert.equal((await run(['task', 'approve', 'B-12', '--stage', 'approval-19', '--revision', '20'])).code, 0)
+  assert.deepEqual(calls.at(-1)!.body, { decision: 'approve', stage: 'approval-19', review_revision: 20 })
+
+  process.env.AI4KANBAN_TASK = 'task_b'
+  for (const args of [
+    ['review', 'B-12'], ['show', 'B-12'], ['list', '--project', 'prj_a'],
+    ['create', 'New copy', '--studio', 'coding', '--project', 'prj_a'], ['remove', 'B-12'], ['restore', 'B-12'],
+    ['resume', 'B-12'], ['resume', 'B-12', '--runtime', 'rt_test'], ['stop', 'B-12'], ['update-questions', 'B-12', '--clear'],
+  ]) {
+    const result = await run(['task', ...args])
+    assert.equal(result.code, 0, result.stderr || result.stdout)
+    const receipt = args[0] === 'list' ? result.value.data[0] : result.value
+    assert.doesNotMatch(JSON.stringify(receipt), /"review_revision"|"revision"|"requested_at_revision"|version 20/)
+    assert.deepEqual(receipt.review.stages[0].snapshot, snapshot)
+    assert.deepEqual(receipt.review.approvals, [{ stage: 'approval-19', preview: 'copy', question: 'Approve the copy?' }])
+  }
+  const terminal = await run(['task', 'show', 'B-12'], false)
+  assert.match(terminal.stdout, /approval-19 · copy · Approve the copy\?/)
+  assert.doesNotMatch(terminal.stdout, /version 20/)
 })
 
 it('honors explicit scopes and full keys/ids without requiring a local link', async () => {
@@ -485,91 +794,42 @@ it('restores the selected original task and reports its actual status', async ()
   assert.doesNotMatch(failed.stdout, /Restored /)
 })
 
-it('changes a task runtime by id or name and refuses missing or ambiguous names', async () => {
+it('resumes with a runtime ID or a name from the operation options', async () => {
   const baseServe = serve
   serve = (url) => {
-    if (url.pathname === '/v1/runtimes') {
-      return Response.json({
-        data: [
-          { id: 'rt_default', name: 'Default', default: true },
-          { id: 'rt_kimi', name: 'Kimi Lite', default: false },
-          { id: 'rt_dup_1', name: 'Shared', default: false },
-          { id: 'rt_dup_2', name: 'Shared', default: false },
-        ],
-      })
+    if (url.pathname === '/v1/tasks/B-12/runtimes' && url.searchParams.get('for') === 'resume') {
+      return Response.json({ action: 'implement', data: [
+        { id: 'rt_default', name: 'Default', default: true },
+        { id: 'rt_kimi', name: 'Kimi Lite' },
+        { id: 'rt_dup_1', name: 'Shared' },
+        { id: 'rt_dup_2', name: 'Shared' },
+      ] })
     }
-    const last = calls.at(-1)
-    if (url.pathname === '/v1/tasks/B-12' && last?.method === 'PATCH') {
-      const runtime = last.body?.runtime as string
-      return Response.json({
-        id: 'task_b',
-        key: 'B-12',
-        status: 'stopped',
-        runtime,
-        runtime_info: { id: runtime, name: runtime === 'rt_default' ? 'Global default' : 'Kimi Lite', connector: 'kimi', model: null, default: runtime === 'rt_default' },
-      })
-    }
+    if (url.pathname === '/v1/tasks/B-12/resume') return Response.json({ id: 'task_b', key: 'B-12', status: 'queued' })
     return baseServe(url)
   }
-
-  const byId = await run(['task', 'runtime', '12', 'rt_kimi', '--board', b + '/.akb/kanban'])
-  assert.equal(byId.code, 0)
-  assert.equal(byId.value.runtime, 'rt_kimi')
-  assert.deepEqual(calls.map(c => [c.method, c.url.pathname]), [['GET', '/v1/projects/prj_b'], ['PATCH', '/v1/tasks/B-12']])
-
-  calls = []
-  const byName = await run(['task', 'runtime', 'B-12', 'Kimi Lite'])
-  assert.equal(byName.code, 0)
-  assert.equal(byName.value.runtime, 'rt_kimi')
-  assert.deepEqual(calls.map(c => [c.method, c.url.pathname]), [['GET', '/v1/runtimes'], ['PATCH', '/v1/tasks/B-12']])
-
-  calls = []
-  const byDefault = await run(['task', 'runtime', 'B-12', 'Global default'])
-  assert.equal(byDefault.code, 0)
-  assert.equal(byDefault.value.runtime, 'rt_default')
-
-  calls = []
-  const missing = await run(['task', 'runtime', 'B-12', 'NoSuchRuntime'])
-  assert.equal(missing.code, 1)
-  assert.equal(missing.value.error.code, 'not_found')
-  assert.equal(calls.length, 1)
-
-  calls = []
-  const dup = await run(['task', 'runtime', 'B-12', 'Shared'])
-  assert.equal(dup.code, 1)
-  assert.equal(dup.value.error.code, 'conflict')
-  assert.match(dup.value.error.message, /rt_\.\.\./)
-  assert.equal(calls.length, 1)
-})
-
-it('requires the saved runtime and any effective runtime to match before reporting success', async () => {
-  const task = { id: 'task_b', key: 'B-12', status: 'waiting_review' }
-  const args = ['task', 'runtime', 'B-12', 'rt_carbon']
-  const previous = { id: 'rt_default', name: 'Global default' }
-  for (const [receipt, expected] of [
-    [{ ...task, runtime: 'rt_default', runtime_info: previous }, /requested rt_carbon, saved rt_default, effective rt_default/],
-    [{ ...task, runtime: 'rt_carbon', runtime_info: previous }, /requested rt_carbon, saved rt_carbon, effective rt_default/],
-    [{ ...task, runtime_info: previous }, /requested rt_carbon, saved missing, effective rt_default/],
-  ] as const) {
-    serve = () => Response.json(receipt)
-    const json = await run(args)
-    assert.equal(json.code, 1)
-    assert.equal(json.value.error.code, 'invalid_response')
-    assert.match(json.value.error.message, expected)
-    const terminal = await run(args, false)
-    assert.equal(terminal.code, 1)
-    assert.doesNotMatch(terminal.stdout, /Updated /)
-    assert.match(terminal.stderr, expected)
+  for (const [input, target] of [['rt_kimi', 'rt_kimi'], ['Kimi Lite', 'rt_kimi'], ['Global default', 'rt_default']]) {
+    calls = []
+    const receipt = await run(['task', 'resume', 'B-12', '--runtime', input!])
+    assert.equal(receipt.code, 0)
+    assert.equal(receipt.value.status, 'queued')
+    assert.equal(calls.at(-1)?.method, 'POST')
+    assert.equal(calls.at(-1)?.body?.runtime, target)
+    assert.equal(calls.length, input === 'rt_kimi' ? 1 : 2)
   }
-  serve = () => Response.json({ ...task, runtime: 'rt_carbon' })
-  const terminal = await run(args, false)
-  assert.equal(terminal.code, 0)
-  assert.match(terminal.stdout, /Updated B-12 runtime to rt_carbon\./)
+  for (const [name, error] of [['Missing', 'not_found'], ['Shared', 'conflict']]) {
+    calls = []
+    const receipt = await run(['task', 'resume', 'B-12', '--runtime', name!])
+    assert.equal(receipt.code, 1)
+    assert.equal(receipt.value.error.code, error)
+    assert.equal(calls.length, 1)
+  }
+  assert.notEqual((await run(['task', 'runtime', 'B-12', 'rt_kimi'])).code, 0)
 })
 
 it('uses the same Cloud error and reason for terminal and JSON, and requires mutation receipts', async () => {
   const commands = [
-    ['archive', 'B-12'], ['remove', 'B-12'], ['restore', 'B-12'], ['resume', 'B-12'], ['runtime', 'B-12', 'rt_kimi'], ['stop', 'B-12'],
+    ['archive', 'B-12'], ['remove', 'B-12'], ['restore', 'B-12'], ['resume', 'B-12'], ['resume', 'B-12', '--runtime', 'rt_kimi'], ['stop', 'B-12'],
     ['approve', 'B-12', '--revision', '0'], ['chat', 'B-12', 'Hello'], ['comment', 'B-12', 'Hello'],
   ]
   for (const args of commands) {
@@ -676,7 +936,7 @@ it('shows the readable card, current review, approved pins and chat together', a
   })
   const shown = await run(['task', 'show', 'A-12'])
   assert.equal(shown.code, 0, shown.stderr)
-  assert.deepEqual(shown.value.review, review)
+  assert.deepEqual(shown.value.review, { plan: review.plan, stages: [{ id: 'design', status: 'approved', snapshot: review.stages[0]!.snapshot }] })
   assert.deepEqual(shown.value.card, { body, version: 8 })
   assert.equal(shown.value.local_context.card_file, card)
   assert.equal(shown.value.local_context.asset_folder, assetFolder)

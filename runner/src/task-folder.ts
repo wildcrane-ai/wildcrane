@@ -1,21 +1,20 @@
 import { ARCHIVE_COMPLETION_BATCH, type ArchiveCompletion, type ArchiveCompletionReceipt } from '../../cli/src/lib/shared/delivery-evidence'
 import { hasText, isRecord, invalidResponse } from '../../cli/src/lib/cloud/response'
 import { readRemoval, taskOfRemoval, writeRemoval } from '../../cli/src/lib/cloud/task-operation'
+import { stampLeavingIn } from '../../cli/src/lib/leaving'
 import { normalizeCardFrontmatter, parseFrontmatter } from '../../cli/src/lib/frontmatter'
 import { landArchiveMarker, landArchiveOwners, readLandArchiveOwner, restoreLandBlockers, writeLandArchiveOwner } from '../../cli/src/lib/shared/land-archives'
 import { parseStudioFile } from '../../cli/src/lib/agent/studio-def'
 import { allComponents, componentDocsText } from '../../cli/src/lib/components'
 // 按 seq 同步；仅自动合并无冲突修改，内容冲突留给当前任务 Agent。
 
-import { assetRef, isAssetRef, isLegacyAssetRef, isTaskAssetRef, taskAssetPath } from '../../artifact-sdk/src/internal/task-assets'
-import { collect } from '../../artifact-sdk/src/internal/collect'
-import { documentPreviewKey, isDocumentPreview, officeExtension, OFFICE_TYPES, PDF, type OfficeExtension } from '../../artifact-sdk/src/internal/document'
-import { bodyReferences, kindOf, TYPES, type Kind } from '../../artifact-sdk/src/internal/references'
+import { isAssetRef, isLegacyAssetRef } from '../../artifact-sdk/src/internal/task-assets'
+import { documentPreviewKey, isDocumentPreview, PDF, type OfficeExtension } from '../../artifact-sdk/src/internal/document'
+import type { Kind } from '../../artifact-sdk/src/internal/references'
 import { encodeFileReferencePath, fileManifest, splitFileReference } from '../../artifact-sdk/src/internal/file-references'
 import { mapReferences } from '../../artifact-sdk/src/internal/manifest'
 
 import { setTimeout as delay } from 'node:timers/promises'
-import { ASSET_FILE_LIMIT } from '../../cli/src/lib/shared/file-limits.ts'
 
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -31,19 +30,19 @@ import { studioContextBlocks } from '../../cli/src/lib/agent/studio-shared'
 import type { ContextBlock } from '../../cli/src/lib/agent/runtime-context'
 import { studioConfigContext } from '../../cli/src/lib/agent/studio-config.ts'
 import { describeTaskPreviewProblems } from '../../cli/src/lib/shared/task-preview-validation'
-import { parsePreviewBlocks, sourcePosition, type SourceProblem } from '../../cli/src/lib/shared/preview-blocks'
+import { parsePreviewBlocks, type SourceProblem } from '../../cli/src/lib/shared/preview-blocks'
 import { migrateHistoricalArchive } from '../../cli/src/lib/shared/studio-migration'
 import { makeFailure, type ExecutionFailure } from '../../cli/src/lib/agent/retry'
 import { itemAt, stampItem } from '../../cli/src/lib/shared/triage-files.ts'
-import { ensureProjectState, projectStateDir, realPathOf } from '../../cli/src/lib/machine/project'
+import { ensureProjectState, projectStateDir } from '../../cli/src/lib/machine/project'
 import { resolveBoardAsset } from '../../cli/src/lib/machine/asset-path'
 import { loadPublishedStudio, missingStudioVersion, readPin, readVersion, savePin, type StudioPin } from '../../cli/src/lib/agent/cloud-studios'
-import { safeStudioPath } from '../../cli/src/lib/shared/studio-files'
-import { renderError } from '../../cli/src/lib/preview-validation'
-import { referenceText } from '../../cli/src/lib/draw-mockup'
+import { safeStudioPath, studioSource } from '../../cli/src/lib/shared/studio-files'
 import * as api from './api'
-import type { Assets, Job } from './api'
+import type { Job } from './api'
+import { assetsOf, assetsText, artifactKey, uploadAsset, finishAssetVersion, uploadTaskAssets, type AssetRecord, type Assets } from '../../cli/src/lib/cloud/task-assets-upload'
 import { busy, hold, kept as cacheKept, markUsed, markUnsent, unsent } from './cache'
+import { queueDeliveryCleanup } from './delivery-cleanup'
 import { keepOutOfGit } from './kanban-skill'
 import { sharedMemory, type Shared } from './memory-files'
 import { memoryDirectories } from '../../cli/src/lib/memory'
@@ -79,7 +78,7 @@ interface Entry {
 }
 
 /** What this computer keeps of one task beside the board: its assets and its studio's tools. */
-interface Record_ {
+interface Record_ extends AssetRecord {
   task?: string
   number?: number
   /** Cloud removed its archived card or confirmed the task is gone. */
@@ -89,10 +88,6 @@ interface Record_ {
   /** Cloud rejected asset writes on this archived card because the task finished. */
   assetsClosed?: boolean
 
-  /** `kind` is the artifact's type (#2003); an `html` one is the page a mockup draws, and its
-   *  hash is the page's. */
-  assets: { [path: string]: Entry & { artifact: string; kind?: Kind; dependencies?: string[] } }
-  pendingVersions?: Record<string, { artifact: string; hash: string; upload: string }>
   /** Legacy agents placed on the board, by file hash. */
   agents?: { [path: string]: string }
   /** Its skills written into the project, by file hash, and the MCP servers its runs get (#2030). */
@@ -113,7 +108,7 @@ interface Base {
   deferred?: string[]
   pendingAssets?: string[]
   pendingArchives?: Record<string, string>
-  archiveReceipts?: Record<string, Omit<ArchiveCompletion, 'task'> & ArchiveCompletionReceipt>
+  archiveReceipts?: Record<string, Omit<ArchiveCompletion, 'task'> & ArchiveCompletionReceipt & { pulled?: true }>
   reconciledArchives?: unknown
   pendingRemovals?: string[]
   /** Recheck refused Preview drafts before applying Cloud changes to their files. */
@@ -548,17 +543,6 @@ export function cardAssetsDir(ws: TaskFolder, id: number): string {
   return path.join(projectStateDir(ws.board), 'assets', String(id))
 }
 
-function assetsOf(text: string | null | undefined): Assets {
-  try {
-    const held = JSON.parse(text ?? '{}') as unknown
-    return held && typeof held === 'object' && !Array.isArray(held) ? (held as Assets) : {}
-  } catch {
-    return {}
-  }
-}
-
-const assetsText = (assets: Assets) => `${JSON.stringify(Object.fromEntries(Object.entries(assets).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)), null, 2)}\n`
-
 const isBoardBusy = (error: unknown): error is Error =>
   error instanceof Error && (error as { details?: { kind?: string } }).details?.kind === 'board-busy'
 
@@ -677,7 +661,19 @@ export function syncedArchive(ws: TaskFolder): Omit<ArchiveCompletion, 'task'> |
   if (!card || !archiveMeta(card.content) || card.content !== readText(path.join(ws.board, p)) ||
       (assets?.content ?? null) !== readText(path.join(ws.board, list)) ||
       base.pendingAssets?.includes(ws.task) || base.pendingPreviews?.some(held => held === p || held === list)) return
-  return { path: p, seq: card.seq, assets_seq: assets?.seq ?? 0 }
+  return { path: p, seq: card.seq, assets_seq: assets?.seq ?? base.deleted?.[root + list] ?? 0 }
+}
+
+export function syncedDeliveryArchive(cwd: string, project: string, card: number, task?: string) {
+  const board = path.join(cwd, '.akb', 'kanban')
+  task ??= taskOfCardNumber({ board, cwd }, card)
+  if (!task || !TASK_ID.test(task)) return
+  const archive = syncedArchive({ cwd, board, project, task, number: card, cloudTask: task, studio: null })
+  if (!archive || numberOfCard(archive.path) !== card) return
+  const receipt = readBase({ cwd }).archiveReceipts?.[task]
+  const confirmed = receipt?.status === 'confirmed' && receipt.path === archive.path &&
+    receipt.seq === archive.seq && receipt.assets_seq === archive.assets_seq
+  return { task, archive, confirmed }
 }
 
 export const readHead = (ws: Pick<TaskFolder, 'cwd'>): number | null => readBase(ws).head_seq
@@ -760,6 +756,66 @@ export const pullChanges = (ws: TaskFolder): Promise<api.Call<void>> => catchBoa
   return result.ok ? { ok: true, value: undefined } : result
 }))
 
+function matchingArchives(ws: TaskFolder, base: Base, files: api.BoardFile[]) {
+  const root = rootOf(ws)
+  const owners = landArchiveOwners(ws.board, base.pendingArchives)
+  const archived = new Map(files.filter(f => f.path.startsWith(root + '.archive/') && f.content !== null).map(f => [f.path, f]))
+  const deletions = new Map<number, string>()
+  for (const f of files) {
+    if (f.content !== null || !f.path.startsWith(root + 'todo/')) continue
+    const p = f.path.slice(root.length)
+    const number = numberOfCard(p)
+    if (number !== null) deletions.set(number, p)
+  }
+  for (const owner of owners) {
+    const local = findCard(ws.board, owner.number)
+    if (!local) continue
+    const p = root + path.relative(ws.board, local).split(path.sep).join('/')
+    const before = base.files[p]
+    if (p.startsWith(root + '.archive/') && before && !archived.has(p)) archived.set(p, { path: p, ...before })
+  }
+  return [...archived.values()].flatMap(row => {
+    const p = row.path.slice(root.length)
+    const number = numberOfCard(p)
+    const meta = row.content === null ? null : archiveMeta(row.content)
+    if (number === null || !meta?.archived) return []
+    const from = deletions.get(number)
+    const markers = owners.filter(owner => owner.number === number)
+    if (!from && !markers.length) return []
+    const equivalent = (local: string) => normalizeCardFrontmatter(stampLeavingIn(local, meta.archived!, null)) === normalizeCardFrontmatter(row.content!)
+    const safe = (file: string) => {
+      const here = readText(path.join(ws.board, file))
+      return here === null || here === base.files[root + file]?.content || here === row.content || equivalent(here)
+    }
+    if (!safe(p) || from && !safe(from)) return []
+    return [{ number, from, p, markers, task: taskOfCardNumber(ws, number) }]
+  })
+}
+
+/** Record the Cloud receipt after its files have reached the local board. */
+async function confirmPulledArchives(ws: TaskFolder, base: Base, archives: ReturnType<typeof matchingArchives>): Promise<void> {
+  const root = rootOf(ws)
+  for (const { p, from, task, markers } of archives) {
+    if (!task || from && readText(path.join(ws.board, from)) !== null) continue
+    const card = base.files[root + p]
+    const list = assetsFile(task)
+    const assets = base.files[root + list]
+    if (!card || card.content !== readText(path.join(ws.board, p))
+      || (assets?.content ?? null) !== readText(path.join(ws.board, list))) continue
+    const current = await api.readTask(task)
+    if (!current.ok || current.value.status !== 'done') continue
+    for (const marker of markers) fs.rmSync(marker.file, { force: true })
+    if (base.pendingArchives) delete base.pendingArchives[task]
+    base.pendingAssets = base.pendingAssets?.filter(id => id !== task)
+    base.pendingPreviews = base.pendingPreviews?.filter(file => file !== p && file !== from && file !== list)
+    base.deferred = base.deferred?.filter(file => file !== p && file !== from && file !== list)
+    const receipts = base.archiveReceipts ??= {}
+    receipts[task] = {
+      status: 'confirmed', task, path: p, seq: card.seq, assets_seq: assets?.seq ?? base.deleted?.[root + list] ?? 0, pulled: true,
+    }
+  }
+}
+
 /** Apply Cloud changes. A deferred change keeps its file base and holds the cursor for replay. */
 async function reconcileBoard(ws: TaskFolder, base: Base, board: { files: api.BoardFile[]; head_seq: number }, shared: Shared, taskChat?: string, landTask?: string): Promise<api.Call<Set<string>>> {
   const root = rootOf(ws)
@@ -770,13 +826,17 @@ async function reconcileBoard(ws: TaskFolder, base: Base, board: { files: api.Bo
   }
   if (pendingConflicts(ws.board).length) return conflict()
   const restored = applyRestorations(ws, base, board.files)
-  const held = pendingLandArchives(ws, base).filter(({ task, number }) => task !== landTask && !(landTask && number === ws.number))
+  const archives = matchingArchives(ws, base, board.files)
+  const moved = new Set(archives.flatMap(({ from, p }) => from ? [from, p] : [p]))
+  const archiving = new Set(archives.map(({ number }) => number))
+  const held = pendingLandArchives(ws, base).filter(({ task, number }) =>
+    !archiving.has(number) && task !== landTask && !(landTask && number === ws.number))
   const numbers = new Set(held.map(({ number }) => number))
   const manifests = new Set(held.map(({ task }) => assetsFile(task)))
   if (taskChat) {
     for (const p of filesUnder(path.join(ws.board, '.archive'), ws.board)) {
       const n = numberOfCard(p)
-      if (n !== null && n !== ws.number && !base.files[root + p] && archiveMeta(readText(path.join(ws.board, p)) ?? '')) {
+      if (n !== null && !archiving.has(n) && n !== ws.number && !base.files[root + p] && archiveMeta(readText(path.join(ws.board, p)) ?? '')) {
         numbers.add(n)
         const ownerTask = taskOfCardNumber(ws, n)
         if (ownerTask) manifests.add(assetsFile(ownerTask))
@@ -785,7 +845,7 @@ async function reconcileBoard(ws: TaskFolder, base: Base, board: { files: api.Bo
   }
   const privateArchive = (p: string) => numbers.has(numberOfCard(p) ?? 0) || numbers.has(groupOfCard(p) ?? 0) || manifests.has(p)
   const snapshot = base.head_seq === null ? base.files : undefined
-  if (!snapshot && observeConflicts(ws, base, board.files, shared, privateArchive)) return conflict()
+  if (!snapshot && observeConflicts(ws, base, board.files, shared, p => moved.has(p) || privateArchive(p))) return conflict()
   if (snapshot) base.files = {}
 
   const index = syncIndex(ws)
@@ -800,7 +860,7 @@ async function reconcileBoard(ws: TaskFolder, base: Base, board: { files: api.Bo
       const file = path.join(ws.board, p)
       const here = readText(file)
       if (here !== f.content) {
-        if (!restored.has(p) && here !== (base.files[f.path]?.content ?? null)) {
+        if (!restored.has(p) && !moved.has(p) && here !== (base.files[f.path]?.content ?? null)) {
           skipped = true
           continue
         }
@@ -822,9 +882,11 @@ async function reconcileBoard(ws: TaskFolder, base: Base, board: { files: api.Bo
     for (const p of Object.keys(snapshot)) if (!base.files[p]) removed.push(p)
     resetBoardSnapshot(ws, base, snapshot, shared, privateArchive)
   }
+  await confirmPulledArchives(ws, base, archives)
   if (!skipped) base.head_seq = board.head_seq
   base.project = ws.project
   writeBase(ws, base)
+  if (archives.length) queueDeliveryCleanup(ws.cwd)
   writeIndex(ws.board)
   const tasks = index?.ready ? affectedTasks(ws, paths) : undefined
   if (ws.cloudTask === ws.task) tasks?.add(ws.task)
@@ -1075,32 +1137,9 @@ export async function readAsset(artifact: string, version: number, textField?: '
   return { ok: true, value: Buffer.from(typeof content === 'string' ? content : JSON.stringify(content)) }
 }
 
-interface Sent {
-  bytes: Uint8Array
-  type: string
-  kind: Kind
-}
-
-/** What goes up for a file: a mockup as the page it draws, anything else as it is. */
-function sentOf(file: string, kind: Kind, data: unknown): Sent {
-  if (kind === 'html' && typeof data === 'string') return { bytes: Buffer.from(data), type: 'text/html', kind }
-  const ext = path.extname(file).toLowerCase()
-  const office = officeExtension(file)
-  const type = office ? OFFICE_TYPES[office] : kind === 'tiled' && ext === '.tsx' ? 'application/xml' : TYPES[ext]
-  return { bytes: fs.readFileSync(file), type: type ?? 'application/octet-stream', kind }
-}
-
 /** The card's previews that cannot be drawn, each with why. */
 export const undrawnPreviews = (ws: TaskFolder): string[] =>
   Object.entries(assetsOf(readText(path.join(ws.board, assetsFile(ws.task))))).flatMap(([key, ref]) => ref.error ? [`${key}: ${ref.error}`] : [])
-
-/** Why a preview cannot be drawn, with its paths as the card names them. */
-function undrawn(ws: TaskFolder, reason: string): string {
-  for (const [root, prefix] of [[path.join(projectStateDir(ws.board), 'assets', String(ws.number)), 'asset:'], [ws.board, '']]) {
-    reason = reason.split(`file://${root}${path.sep}`).join(prefix).split(`${root}${path.sep}`).join(prefix)
-  }
-  return reason.replace(/ \(at [^)]*file:\/\/[^)]*\)$/, '').slice(0, 500)
-}
 
 function previewFailure<T extends { code?: string; status?: number }>(
   stage: 'create_artifact' | 'create_upload' | 'upload' | 'complete_upload' | 'commit_version', task: number | null, failure: T,
@@ -1111,42 +1150,6 @@ function previewFailure<T extends { code?: string; status?: number }>(
 
 function finishedPreviewWrite(problem: { code?: string; error: string }): boolean {
   return problem.code === 'conflict' && /(?:^|: )This task has finished\.$/.test(problem.error)
-}
-
-async function uploadAsset(task: number | null, artifact: string, { bytes, type }: Sent): Promise<api.Call<string>> {
-  const upload = await api.createUpload(artifact, type, Math.max(bytes.length, 1))
-  if (!upload.ok) return previewFailure('create_upload', task, upload)
-  const { id, url, parts } = upload.value
-  if (parts) {
-    for (let part = 1; part <= parts.count; part++) {
-      const put = await api.upload(parts.url.replace('{part}', String(part)), bytes.subarray((part - 1) * parts.size, part * parts.size), type)
-      if (!put.ok) return previewFailure('upload', task, put)
-    }
-    const done = await api.completeUpload(url ?? `/v1/uploads/${encodeURIComponent(id)}/complete`)
-    if (!done.ok) return previewFailure('complete_upload', task, done)
-  } else {
-    const put = await api.upload(url ?? `/v1/uploads/${encodeURIComponent(id)}`, bytes, type)
-    if (!put.ok) return previewFailure('upload', task, put)
-  }
-  return { ok: true, value: id }
-}
-
-const artifactKey = (task: string, file: string, kind: Kind, previous?: string) =>
-  'runner-artifact-' + hashOf(JSON.stringify([task, file, kind, previous]))
-
-async function finishAssetVersion(ws: TaskFolder, record: Record_, key: string, pending: NonNullable<Record_['pendingVersions']>[string]): Promise<api.Call<number>> {
-  const made = await api.createVersion(pending.artifact, pending.upload)
-  if (!made.ok) {
-    previewFailure('commit_version', ws.number, made)
-    if (made.code === 'conflict' && made.error === 'That upload is unfinished, or already used.') {
-      delete record.pendingVersions![key]
-      writeRecord(ws, record)
-      return { ok: false, error: `${key}: ${made.error}` }
-    }
-    return { ...made, error: `${key}: ${made.error}` }
-  }
-  delete record.pendingVersions![key]
-  return { ok: true, value: made.value.version }
 }
 
 async function pushDocumentPreview(ws: TaskFolder, record: Record_, key: string, ext: OfficeExtension, source: Uint8Array): Promise<api.Call<Assets[string] | undefined>> {
@@ -1166,238 +1169,40 @@ async function pushDocumentPreview(ws: TaskFolder, record: Record_, key: string,
     }
     const made = await api.createArtifact(ws.cloudTask, key, 'asset', artifactKey(ws.cloudTask, key, 'asset'))
     if (!made.ok) return previewFailure('create_artifact', ws.number, made)
-    const sent = await uploadAsset(ws.number, made.value.id, { bytes, type: PDF, kind: 'asset' })
+    const sent = await uploadAsset(api, made.value.id, { bytes, type: PDF }, (stage, problem) => { previewFailure(stage, ws.number, problem) })
     if (!sent.ok) return sent
     pending = record.pendingVersions[key] = { artifact: made.value.id, hash: hashOf(bytes), upload: sent.value }
     writeRecord(ws, record)
   }
-  const version = await finishAssetVersion(ws, record, key, pending)
+  const version = await finishAssetVersion(api, record, key, pending, {
+    save: () => writeRecord(ws, record),
+    failed: (stage, problem) => { previewFailure(stage, ws.number, problem) },
+  })
   if (!version.ok) return version
   record.assets[key] = { artifact: pending.artifact, version: version.value, hash: pending.hash, kind: 'asset' }
   writeRecord(ws, record)
   return { ok: true, value: { artifact: pending.artifact, version: version.value } }
 }
 
-/** Record each successful upload so later syncs can reuse it. */
 async function pushAssets(ws: TaskFolder, record: Record_, before: Assets): Promise<api.Call<{ refs: Assets; retryPreviews: boolean } | undefined>> {
   const started = performance.now()
   logSync('assets.start', { project: ws.project, task: ws.task, entries: Object.keys(record.assets).length })
   if (ws.cloudTask && ws.number && (record.task !== ws.cloudTask || record.number !== ws.number)) {
-    record.task = ws.cloudTask; record.number = ws.number; writeRecord(ws, record)
+    record.task = ws.cloudTask
+    record.number = ws.number
+    writeRecord(ws, record)
   }
   const file = cardFile(ws)
   const body = readText(file)
   if (body === null) return { ok: true, value: undefined }
-  const refs: Assets = {}
-  const currentDocumentPreviews = new Set<string>()
-  let retryPreviews = false
-  const sources = bodyReferences(body)
-  // Keep the existing index of cards that still use only legacy task references.
-  const legacy = !sources.some(ref => isAssetRef(ref.src))
-    && (sources.some(ref => isLegacyAssetRef(ref.src)) || Object.keys(before).some(isLegacyAssetRef))
-  const folder = ws.number === null ? null : realPathOf(cardAssetsDir(ws, ws.number))
-  const canonical = (target: string) => {
-    const real = realPathOf(target)
-    if (folder && real.startsWith(folder + path.sep)) {
-      const local = path.relative(folder, real).split(path.sep).join('/')
-      return legacy ? `.assets/${ws.number}/${local}` : assetRef(local)
-    }
-    return path.relative(realPathOf(path.dirname(file)), real).split(path.sep).join('/')
-  }
-  const equivalent = new Map<string, string[]>()
-  for (const source of new Set([...Object.keys(before), ...Object.keys(record.assets)])) {
-    const name = taskAssetPath(source, ws.number ?? undefined)
-    if (name !== null) equivalent.set(name, [...(equivalent.get(name) ?? []), source])
-  }
-  const keysOf = (source: string) => [source, ...(equivalent.get(taskAssetPath(source, ws.number ?? undefined) ?? '') ?? [])]
-  const required = new Map<string, number>()
-  for (const block of parsePreviewBlocks(body).blocks) {
-    const contentStart = body.indexOf('>', block.start) + 1
-    const content = body.slice(contentStart, body.lastIndexOf('</Preview', block.end - 1))
-    const start = sourcePosition(body, contentStart).line
-    const locations = new Map<string, number>()
-    for (const ref of bodyReferences(content, (src, line) => {
-      if (!locations.has(src)) locations.set(src, start + line - 1)
-    })) {
-      if (ref.types.length || isTaskAssetRef(ref.src) || /^file:/i.test(ref.src) || path.win32.isAbsolute(ref.src)) required.set(ref.src, locations.get(ref.src)!)
-    }
-  }
-  try {
-    let recoveredReferences = false
-    const graph = await collect(body, file, {
-      resolve: (src, owner) => {
-        // 已有 artifact ID 只允许来自本任务清单。
-        const id = Object.entries(before).find(([, ref]) => ref.artifact === src)
-        if (id) return { key: id[0], file: null }
-        const target = assetPath(ws, src, owner, owner !== file)
-        if (!target) return null
-        const key = canonical(target)
-        if (!fs.statSync(target, { throwIfNoEntry: false })?.isFile()) {
-          const saved = (owner === file ? [src, ...keysOf(key)] : keysOf(key)).find(name => before[name]?.artifact)
-          if (saved) return { key: saved, file: null }
-          throw new Error(`file not found: ${target}`)
-        }
-        return { key, file: target }
-      },
-      read: (target, kind) => {
-        if (fs.statSync(target).size > ASSET_FILE_LIMIT) throw new Error('This asset is over 100 MiB.')
-        return referenceText(target, kind)
-      },
-      retained: (key, types) => {
-        let dependencies = record.assets[key]?.dependencies ?? before[key]?.dependencies
-        if (!dependencies && types.length === 1 && types[0] === 'studio' && before[key] && !recoveredReferences) {
-          recoveredReferences = true
-          dependencies = Object.keys(before).filter(src => src !== key)
-        }
-        return (dependencies ?? []).map(src => {
-          const kind = record.assets[src]?.kind
-          return { src, types: kind ? [kind] : [] }
-        })
-      },
-    })
-    for (const node of graph) {
-      const aliases = [...node.aliases]
-      const previous = [...aliases, ...keysOf(node.key)].map(key => record.assets[key]).find(Boolean)
-      const old = [...aliases, ...keysOf(node.key)].map(key => before[key]).find(Boolean)
-      const kind = node.kind as Kind
-      let out: Sent | undefined
-      const partialStudio = node.kind === 'studio' && (node.data as { version?: number })?.version === 2
-      let why = node.error ?? (partialStudio ? undefined : [...node.dependencies.values()].map(key => refs[key]?.error).find(Boolean))
-      if (!why && node.file) {
-        try {
-          if (fs.statSync(node.file).size > ASSET_FILE_LIMIT) throw new Error('This asset is over 100 MiB.')
-          out = sentOf(node.file, kind, node.data)
-        }
-        catch (error) { why = renderError(error) }
-      }
-      if (!why && !node.file && old?.error && !old.version) why = old.error
-      if (why) {
-        const key = [...node.aliases].find(alias => required.has(alias))
-        if (key) {
-          const error = `${path.relative(ws.board, file)}:${required.get(key)} — ${key}: ${undrawn(ws, why)}`
-          return { ok: false, code: 'bad_request', error, failure: validationFailure(error, 'preview_attachment') }
-        }
-        let pin: Assets[string] | null = old ? { ...old }
-          : previous?.version ? { artifact: previous.artifact, version: previous.version, ...(previous.dependencies ? { dependencies: previous.dependencies } : {}) } : null
-        if (!pin) {
-          if (!ws.cloudTask) continue
-          let artifact = previous?.artifact
-          if (!artifact) {
-            const made = await api.createArtifact(ws.cloudTask, node.key.slice(0, 200), kind, artifactKey(ws.cloudTask, node.key, kind))
-            if (!made.ok) return { ...previewFailure('create_artifact', ws.number, made), error: `${node.key}: ${made.error}` }
-            artifact = made.value.id
-            for (const alias of node.aliases) record.assets[alias] = { artifact, kind, version: 0, hash: '' }
-            writeRecord(ws, record)
-          }
-          pin = { artifact }
-        }
-        for (const alias of node.aliases) refs[alias] = { ...pin, error: undrawn(ws, why) }
-        continue
-      }
-      if (!node.file || !out) {
-        if (old?.error && !old.version) for (const alias of node.aliases) refs[alias] = old
-        else if (old) {
-          let version = old.version ?? (previous?.artifact === old.artifact ? previous.version : undefined)
-          if (version === undefined) {
-            const art = await api.readArtifact(old.artifact)
-            if (!art.ok) return art
-            version = art.value.latest_version ?? 0
-          }
-          for (const alias of node.aliases) refs[alias] = { artifact: old.artifact, version, ...(old.dependencies ? { dependencies: old.dependencies } : {}) }
-          const previewKey = documentPreviewKey(old.artifact, version)
-          currentDocumentPreviews.add(previewKey)
-          if (before[previewKey]) refs[previewKey] = before[previewKey]
-        }
-        continue
-      }
-      if (previous && previous.kind !== kind) {
-        const artifact = await api.readArtifact(previous.artifact)
-        if (!artifact.ok) return artifact
-        if (!artifact.value.type) return { ok: false, code: 'bad_request', error: `${node.key}: 资源类型缺失` }
-        previous.kind = artifact.value.type
-      }
-      const manifest = fileManifest(kind, node.file)
-      const json = !!manifest?.references && node.data !== undefined && typeof node.data !== 'string'
-      if (manifest?.references && node.data !== undefined) {
-        const map = (src: string) => {
-          const key = node.dependencies.get(src)
-          const artifact = key && refs[key]?.artifact
-          return artifact ? artifact + (json ? '' : splitFileReference(src)[1]) : src
-        }
-        out = json
-          ? { kind, type: 'application/json', bytes: Buffer.from(JSON.stringify(mapReferences(manifest, node.data, map))) }
-          : { ...out, bytes: Buffer.from(mapReferences(manifest, node.data, map) as string) }
-      }
-      const hash = hashOf(out.bytes)
-      let entry = previous
-      const localHash = hashFile(node.file)
-      const restored = json || (typeof node.data === 'string' && previous?.hash === localHash)
-      const unchanged = restored && previous && (previous.kind ?? out.kind) === out.kind
-        && localHash === (previous.localHash ?? previous.hash)
-        && [...node.dependencies.values()].every(key => refs[key]?.artifact === before[key]?.artifact)
-      if (!entry || (!unchanged && entry.hash !== hash) || (entry.kind && entry.kind !== out.kind)) {
-        if (!ws.cloudTask) continue
-        let artifact = previous && (previous.kind ?? kindOf(path.extname(node.file).toLowerCase())) === out.kind ? previous.artifact : undefined
-        if (!artifact) {
-          const made = await api.createArtifact(ws.cloudTask, node.key.slice(0, 200), out.kind, artifactKey(ws.cloudTask, node.key, out.kind, previous?.artifact))
-          if (!made.ok) return { ...previewFailure('create_artifact', ws.number, made), error: `${node.key}: ${made.error}` }
-          artifact = made.value.id
-          for (const alias of node.aliases) record.assets[alias] = { artifact, kind: out.kind, version: 0, hash: '' }
-          writeRecord(ws, record)
-        }
-        record.pendingVersions ??= {}
-        let pending = record.pendingVersions[node.key]
-        if (pending?.artifact !== artifact || pending.hash !== hash) {
-          const sent = await uploadAsset(ws.number, artifact, out)
-          if (!sent.ok) return { ...sent, error: `${node.key}: ${sent.error}` }
-          pending = record.pendingVersions[node.key] = { artifact, hash, upload: sent.value }
-          writeRecord(ws, record)
-        }
-        const version = await finishAssetVersion(ws, record, node.key, pending)
-        if (!version.ok) return version
-        entry = { artifact, version: version.value, hash, kind: out.kind }
-      }
-      entry = { ...entry, localHash: localHash ?? undefined, dependencies: [...node.dependencies.values()] }
-      let changed = false
-      for (const alias of node.aliases) {
-        if (!isDeepStrictEqual(record.assets[alias], entry)) {
-          record.assets[alias] = entry
-          changed = true
-        }
-        refs[alias] = { artifact: entry.artifact, version: entry.version, ...(entry.dependencies?.length || /\.(html?|css|json|tsx|tmx|tmj|tsj)$/i.test(alias) ? { dependencies: entry.dependencies ?? [] } : {}) }
-      }
-      if (changed) writeRecord(ws, record)
-      const office = out.kind === 'asset' && officeExtension(node.file)
-      if (office && entry.version > 0) {
-        const key = documentPreviewKey(entry.artifact, entry.version)
-        currentDocumentPreviews.add(key)
-        const preview = before[key]?.version ? { ok: true as const, value: before[key] } : await pushDocumentPreview(ws, record, key, office, out.bytes)
-        if (!preview.ok) {
-          if (finishedPreviewWrite(preview)) return preview
-          retryPreviews ||= api.temporaryCloudFailure(preview)
-          logSync('assets.documentPreviewUnavailable', { project: ws.project, task: ws.task, reason: preview.error })
-          continue
-        }
-        if (preview.value) {
-          refs[key] = preview.value
-          for (const alias of node.aliases) {
-            const ref = refs[alias]!
-            ref.dependencies = [...(ref.dependencies ?? []), key]
-          }
-        }
-      }
-    }
-    for (const name of Object.keys(record.assets)) {
-      if (isDocumentPreview(name) && !refs[name]) delete record.assets[name]
-    }
-    for (const name of Object.keys(record.pendingVersions ?? {})) {
-      if (isDocumentPreview(name) && !currentDocumentPreviews.has(name)) delete record.pendingVersions![name]
-    }
-  } catch (error) {
-    return { ok: false, code: 'bad_request', error: error instanceof Error ? error.message : String(error) }
-  }
+  const result = await uploadTaskAssets(ws, file, body, record, before, api, {
+    save: () => writeRecord(ws, record),
+    failed: (stage, problem) => { previewFailure(stage, ws.number, problem) },
+    document: (key, ext, bytes) => pushDocumentPreview(ws, record, key, ext, bytes),
+    documentUnavailable: reason => logSync('assets.documentPreviewUnavailable', { project: ws.project, task: ws.task, reason }),
+  })
   logSync('assets.end', { project: ws.project, task: ws.task, ms: Math.round(performance.now() - started) })
-  return { ok: true, value: { refs, retryPreviews } }
+  return result
 }
 
 /** Each item the job added to `triage/`, proposed from its task on its studio — the job's when
@@ -1730,9 +1535,8 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
     if (!ownsArchive && fullBoardSync && knownTask && (owner === null || base.files[rootOf(ws) + archived])) {
       // A Runner may have stopped after Cloud confirmed Land and before removing its mark.
       const current = await api.readTask(knownTask)
-      const unchangedCancelled = current.ok && current.value.status === 'cancelled'
-        && readText(path.join(ws.board, archived)) === base.files[rootOf(ws) + archived]?.content
-      if (current.ok && (current.value.status === 'done' || unchangedCancelled)) {
+      const unchanged = readText(path.join(ws.board, archived)) === base.files[rootOf(ws) + archived]?.content
+      if (current.ok && unchanged && (current.value.status === 'done' || current.value.status === 'cancelled')) {
         fs.rmSync(file, { force: true })
         continue
       }
@@ -1801,11 +1605,11 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
     const readyArchive = archive && unchangedBase
       && !Object.keys(item.record.pendingVersions ?? {}).length
       && !newer && clean()
-    const confirmedArchive = readyArchive
+    const confirmedArchive = (readyArchive || receipt?.pulled && card.startsWith('.archive/') && unchangedBase)
       && receipt?.status === 'confirmed'
       && receipt.path === card
       && receipt.seq === base.files[rootOf(ws) + card]?.seq
-      && receipt.assets_seq === (base.files[rootOf(ws) + listPath]?.seq ?? 0)
+      && receipt.assets_seq === (base.files[rootOf(ws) + listPath]?.seq ?? base.deleted?.[rootOf(ws) + listPath] ?? 0)
     const archived = confirmedArchive || (!selected && readyArchive && !retryAssets.has(item.folder.task))
     retryAssets.delete(item.folder.task)
     if (!previewClosed && !archived && !item.record.deleted) {
@@ -1828,6 +1632,14 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
         selected?.add(list)
         continue
       }
+      if (retryRestore && finishedPreviewWrite(assets)) {
+        const read = await readSyncedBoard(ws, base.head_seq)
+        if (read.ok && matchingArchives(ws, base, read.value.files).some(move => move.number === item.folder.number)) {
+          const refreshed = await reconcileBoard(ws, base, read.value, sharedMemory(ws.board), taskChat)
+          if (!refreshed.ok) return conflictFailure(ws)
+          return send(ws, job, { paths, taskChat, taskNumber }, false)
+        }
+      }
       if (!boardSync && !assets.failure) return fail(assets.error, false, assets.code, assets.status)
       if (job.id && ws.cloudTask && assets.failure) return { ok: false, conflict: false, error: assets.error, failure: assets.failure }
       if (finishedPreviewWrite(assets)) {
@@ -1847,7 +1659,7 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
         assetErrors[item.folder.task] = { error: assets.error, failure: assets.failure, code: assets.code, ...(api.temporaryCloudFailure(assets) ? { offline: true } : {}) }
       }
     }
-    if (archived && !previewClosed) archives.set(item.folder.task, card)
+    if (archive && archived && !previewClosed && !(confirmedArchive && receipt?.pulled)) archives.set(item.folder.task, card)
     deferredCards.add(item.folder.number!)
     deferredLists.add(listPath)
   }
@@ -2096,12 +1908,13 @@ async function send(ws: TaskFolder, job: { id: string | null; machineId: string 
     const root = rootOf(ws)
     const deletedCards = new Set(sent.files.filter(f => f.content === null && f.path.startsWith(root))
       .map(f => numberOfCard(f.path.slice(root.length))).filter(number => number !== null))
-    if (boardSync && retryRestore && deletedCards.size) {
+    if (retryRestore && deletedCards.size) {
       const read = await readSyncedBoard(ws, base.head_seq)
-      if (read.ok && restoredCards(ws, base, read.value.files).some(card => deletedCards.has(card.number))) {
+      if (read.ok && (matchingArchives(ws, base, read.value.files).some(card => deletedCards.has(card.number))
+        || boardSync && restoredCards(ws, base, read.value.files).some(card => deletedCards.has(card.number)))) {
         const refreshed = await reconcileBoard(ws, base, read.value, shared, taskChat)
         if (!refreshed.ok) return conflictFailure(ws, sent.status)
-        return send(ws, job, { paths, taskChat }, false)
+        return send(ws, job, { paths, taskChat, taskNumber }, false)
       }
     }
     // Obsolete project copies cannot take ownership from shared memory.
@@ -2276,6 +2089,7 @@ async function reconcileArchives(ws: TaskFolder, base: Base, archives: Map<strin
       }
     }
     save(true)
+    if (batch.some(({ task }) => receipts[task]?.status === 'confirmed')) queueDeliveryCleanup(ws.cwd)
   }
   return errors
 }
@@ -2284,7 +2098,7 @@ export function taskStudio(ws: TaskFolder) {
   if (!ws.cloudTask) return null
   const pin = ws.studioSnapshot ?? readPin(ws.cloudTask), held = pin && readVersion(pin.studio, pin.version)
   if (!held) throw new Error(pin ? missingStudioVersion(pin) : 'The task Studio version is not downloaded.')
-  const read = parseStudioFile(studioName(held.id), held.files['STUDIO.md'] ?? '', 'STUDIO.md')
+  const read = parseStudioFile(studioName(held.id), studioSource(held.files), 'STUDIO.md')
   if ('problem' in read) throw new Error(read.problem)
   return { held, def: read.def }
 }
@@ -2300,7 +2114,7 @@ export function taskContextBlocks(ws: TaskFolder, action: string, canonicalComma
     return '- ' + id + (titles.length ? ' · ' + titles.join(' / ') : '')
   })
   const catalog = previews.length
-    ? ['Studio Previews:', ...previews, 'Add any listed Preview to the review plan with `akb task review <id> --add-previews <ids> --revision <n>`.'].join('\n')
+    ? ['Studio Previews:', ...previews, 'Add any listed Preview to the review plan with `akb task review <id> --add-previews <ids>`.'].join('\n')
     : 'Studio Previews: none.'
   return blocks.flatMap((block): ContextBlock[] => block[0] === 'skills'
     ? [['studio-previews', catalog], ['skills', block[1] || 'Studio skills: none.']]

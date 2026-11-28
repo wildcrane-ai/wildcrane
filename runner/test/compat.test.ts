@@ -13,6 +13,12 @@ import { answerOf, runAkb, type Akb, type Ran } from '../src/akb'
 /** Stands in for Claude Code. Its version beats any other copy, and the PATH below has no other. */
 const AGENT = `#!${process.execPath}
 if (process.argv.includes('--version')) { console.log('999.0.0 (Claude Code)'); process.exit(0) }
+if (process.env.COMPAT_IMPLEMENT === '1') {
+  const { execFileSync } = require('node:child_process')
+  require('node:fs').writeFileSync('managed.txt', 'Saved implementation')
+  execFileSync('git', ['add', '--', 'managed.txt'])
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'Implement', '--only', '--', 'managed.txt'])
+}
 const at = process.argv.indexOf('--session-id')
 const session_id = at < 0 ? 's1' : process.argv[at + 1]
 const say = (line) => console.log(JSON.stringify(line))
@@ -88,7 +94,7 @@ describe('the akb the Runner carries (#171)', () => {
   it('makes a card with the task’s number, keeps a retry to that card, and names what it refuses', async () => {
     const body = path.join(project, 'request.md')
     fs.writeFileSync(body, 'Two tiers.\n\n## Worth noting\n- Monthly leads.\n\n<!-- agent -->\n\n## Scope\n- Pricing.\n\n## Todo\n- [ ] Build it\n\n## Decided by the agent\n- Two.\n')
-    const create = ['raw', 'create', '--title', 'Pricing', '--studio', 'coding', '--body-file', body, '--id', '2', '--priority', 'med', '--json']
+    const create = ['raw', 'create', '--title', 'Pricing', '--studio', 'coding', '--body-file', body, '--id', '2', '--json']
     for (let i = 0; i < 2; i++) {
       const made = await onBoard(create)
       ok(made)
@@ -145,7 +151,7 @@ describe('the akb the Runner carries (#171)', () => {
     ))
   })
 
-  it('creates a Git implementation checkout and archives a verified merge through the bundled CLI', async () => {
+  it('implements on a task branch and archives the landed commit through the bundled CLI', async () => {
     if (!fs.existsSync(path.join(board, 'config.md'))) {
       ok(await onBoard(['raw', 'init']))
       ok(await onBoard(['raw', 'agent', 'use', 'claude-code']))
@@ -156,25 +162,34 @@ describe('the akb the Runner carries (#171)', () => {
       return result.stdout.trim()
     }
     const base = git(project, 'rev-parse', 'HEAD')
+    const branch = git(project, 'symbolic-ref', '--short', 'HEAD')
     ok(await onBoard(['raw', 'create', '--title', 'Managed build', '--studio', 'coding', '--id', '12', '--json']))
     const ran = await runAkb(akb, ['raw', 'card', 'implement', '12', '--board', board, ...follow], {
-      cwd: project, board, env: { AI4KANBAN_DELIVERY_PHASE: 'implement' },
+      cwd: project, board, env: { AI4KANBAN_DELIVERY_PHASE: 'implement', COMPAT_IMPLEMENT: '1' },
     })
     ok(ran)
     const id = answerOf<{ delivery?: { id: string } }>(ran)?.delivery?.id
     assert.ok(id)
     const deliveryFile = path.join(board, 'deliveries', `${id}.json`)
     const saved = JSON.parse(fs.readFileSync(deliveryFile, 'utf8'))
+    assert.equal(saved.worktree, path.join('.akb', 'worktrees', id, 'work'))
+    assert.equal(saved.base, base)
+    assert.equal(saved.branch, `akb/${id}`)
+    assert.equal(saved.targetBranch, branch)
     const work = path.join(project, saved.worktree)
-    assert.equal(git(work, 'rev-parse', 'HEAD'), base)
+    const commit = git(work, 'rev-parse', 'HEAD')
+    assert.notEqual(commit, base)
     assert.equal(git(project, 'rev-parse', 'HEAD'), base)
-    fs.writeFileSync(path.join(work, 'managed.txt'), 'Saved implementation')
-    git(work, 'add', 'managed.txt')
-    git(work, 'commit', '-m', 'Implement')
-    assert.equal(fs.existsSync(path.join(project, 'managed.txt')), false)
+    assert.equal(fs.readFileSync(path.join(work, 'managed.txt'), 'utf8'), 'Saved implementation')
+    const landEnv = { cwd: project, board, env: { AI4KANBAN_DELIVERY_PHASE: 'land' } }
+    const verified = await runAkb(akb, ['delivery', 'reconcile', '12', '--board', board, '--json'], landEnv)
+    ok(verified)
+    assert.equal(answerOf<{ kind: string }>(verified)?.kind, 'resumable')
     git(project, 'merge', '--ff-only', saved.branch)
-    ok(await onBoard(['task', 'archive', '12', '--json']))
-    assert.equal(JSON.parse(fs.readFileSync(deliveryFile, 'utf8')).landing.commit, git(project, 'rev-parse', 'HEAD'))
+    ok(await runAkb(akb, ['task', 'archive', '12', '--board', board, '--json'], landEnv))
+    const landed = JSON.parse(fs.readFileSync(deliveryFile, 'utf8'))
+    assert.equal(landed.landing.commit, commit)
+    assert.equal(landed.targetBranch, branch)
   })
 
   it('takes every other verb a job sends', async () => {

@@ -129,8 +129,8 @@ export function captureConflict(board: string, project: string, files: ConflictF
 }
 
 /** Shared by synchronization and explicit resolution, never held across an agent process. */
-export async function withSyncLock<T>(board: string, work: () => Promise<T>): Promise<T> {
-  const lock = path.join(migrateProjectState(board), 'board-sync.lock')
+export async function withSyncLock<T>(board: string, work: () => Promise<T>, { migrateState = true } = {}): Promise<T> {
+  const lock = path.join(migrateState ? migrateProjectState(board) : projectStateDir(board), 'board-sync.lock')
   const until = Date.now() + 60_000
   let release: (() => void) | undefined
   while (!(release = tryLock(lock))) {
@@ -154,15 +154,15 @@ function resolutionOf(record: ConflictRecord, value: unknown): { path: string; c
     const saved = record.files.find(x => x.path === f.path)!
     if (saved.remote.content === null && saved.base.content !== null && f.content !== null && (numberOfCard(f.path) !== null || f.path.startsWith('triage/'))) refuse(record, `This path was removed or moved: ${f.path}. Preserve the local draft outside the board.`, 'cloud-refused')
     if (numberOfCard(f.path) !== null && f.content !== null) {
-      const front = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(f.content)?.[1]
+      const front = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(normalizeCardFrontmatter(f.content))?.[1]
       const parsed = parseDocument(front ?? '')
       const fields = parsed.toJS() as Record<string, unknown> | null
-      if (!front || parsed.errors.length || !fields || typeof fields.title !== 'string' || ['title', 'priority', 'status', 'blocked_by', 'related', 'modules', 'questions'].some(key => !(key in fields))
+      if (!front || parsed.errors.length || !fields || typeof fields.title !== 'string' || ['title', 'status', 'blocked_by', 'related', 'modules', 'questions'].some(key => !(key in fields))
         || ['blocked_by', 'related', 'modules', 'questions'].some(key => !Array.isArray(fields[key]))
         || (fields.modules as unknown[]).some(v => typeof v !== 'string')
         || ['blocked_by', 'related'].some(key => (fields[key] as unknown[]).some(v => !Number.isSafeInteger(v) || Number(v) < 1))) refuse(record, `Invalid card metadata: ${f.path}`, 'invalid-usage')
       const meta = parseFrontmatter(f.content).meta
-      if (!meta?.title?.trim() || !STATUSES.includes(meta.status) || !['high', 'med', 'low'].includes(meta.priority)) refuse(record, `Invalid card metadata: ${f.path}`, 'invalid-usage')
+      if (!meta?.title?.trim() || !STATUSES.includes(meta.status)) refuse(record, `Invalid card metadata: ${f.path}`, 'invalid-usage')
       if (meta.status === 'planned' && meta.questions.length) refuse(record, 'A planned card cannot have open questions.', 'invalid-usage')
       const remote = parseFrontmatter(record.files.find(x => x.path === f.path)!.remote.content ?? '').meta
       for (const key of ['preview_approved', 'restored', 'archived', 'rejected'] as const) {

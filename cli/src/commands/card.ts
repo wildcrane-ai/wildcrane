@@ -59,7 +59,6 @@ function defaultBody(summary = '<用一小段话先讲发生了什么、用户�
 /** `akb raw create`, as its command declares it (lib/cli/board.ts). */
 export interface CreateOptions {
   title: string
-  priority?: string
   blockedBy?: string[]
   related?: string[]
   modules?: string[]
@@ -137,7 +136,6 @@ function normalizeBody(text: string) {
 export function validateCreate(opts: CreateOptions) {
   const title = opts.title.trim()
   if (!title) die('--title must not be empty')
-  const priority = opts.priority ?? 'med'
   const blocked_by = parseIdList(opts.blockedBy ?? [], 'blocked-by')
   const related = parseIdList(opts.related ?? [], 'related')
   const modules = validModules(opts.modules ?? [])
@@ -150,11 +148,11 @@ export function validateCreate(opts: CreateOptions) {
   const questions = collectQuestions(opts.asked ?? [])
   const draft = bodyFromFile(opts)
   const written = draft ? normalizeBody(draft) : null
-  return { title, priority, blocked_by, related, modules, triage, studio, previews, source, questions, written }
+  return { title, blocked_by, related, modules, triage, studio, previews, source, questions, written }
 }
 
 export function cmdCreate(opts: CreateOptions): MoveResult {
-  const { title, priority, blocked_by, related, modules, triage, studio, previews, source, questions, written } = validateCreate(opts)
+  const { title, blocked_by, related, modules, triage, studio, previews, source, questions, written } = validateCreate(opts)
   if (opts.id === undefined) die('请通过 `akb task create --title "<title>"` 创建卡片，由 Cloud 分配编号', { kind: 'needs-cloud' })
   const start = opts.id
   const slug = slugify(opts.slug !== undefined ? opts.slug : title)
@@ -172,7 +170,7 @@ export function cmdCreate(opts: CreateOptions): MoveResult {
 
   // validation passed → write
   countBoardEvent(triage ? 'cards_created_proposed' : 'cards_created_asked')
-  const meta: Partial<Meta> = { title, priority, status: 'todo', blocked_by, related, modules, studio, previews, triage, source, questions }
+  const meta: Partial<Meta> = { title, status: 'todo', blocked_by, related, modules, studio, previews, triage, source, questions }
   const scaffolded = !written && opts.body !== false
   const body = written ?? (scaffolded ? defaultBody() : '')
   fs.writeFileSync(file, serializeFrontmatter(meta) + '\n\n' + body)
@@ -191,7 +189,6 @@ export function cmdCreate(opts: CreateOptions): MoveResult {
 /** `akb raw update`, as its command declares it (lib/cli/board.ts). */
 export interface UpdateOptions {
   title?: string
-  priority?: string
   status?: string
   blockedBy?: string[]
   related?: string[]
@@ -275,10 +272,6 @@ export function cmdUpdate(id: number, flags: UpdateOptions): MoveResult {
     if (!t) die('--title must not be empty')
     meta.title = t
     changes.push('title')
-  }
-  if (flags.priority !== undefined) {
-    meta.priority = flags.priority
-    changes.push('priority')
   }
   if (flags.status !== undefined) {
     meta.status = flags.status

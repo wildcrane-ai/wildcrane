@@ -34,7 +34,6 @@ interface Row {
   isRoot: boolean
   title: string
   status: string
-  priority: string
   blocked_by: number[]
   modules: string[]
   questions: Question[]
@@ -45,9 +44,6 @@ interface Row {
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
-
-// How a card ranks. `med` stands in for a card whose line was damaged by hand.
-const level = (value: string | undefined): string => value || 'med'
 
 // The card's opening paragraph — the body's first non-heading text, unwrapped
 // (bodies hard-wrap, so one paragraph spans several file lines). The body template
@@ -81,7 +77,6 @@ function openRows(): Row[] {
       isRoot,
       title: (meta && meta.title) || base.replace(/^\d+-/, '').replace(/\.md$/, ''),
       status: (meta && meta.status) || 'todo',
-      priority: level(meta?.priority),
       blocked_by: (meta && meta.blocked_by) || [],
       modules: (meta && meta.modules) || [],
       questions: (meta && meta.questions) || [],
@@ -227,7 +222,7 @@ export function cmdList(opts: ListOptions): MoveResult {
 
   say(`${plural(rows.length, 'open card')} ${scope}:`)
   for (const r of rows) {
-    const meta = [r.status, `priority ${r.priority}`]
+    const meta = [r.status]
     if (r.isRoot) meta.push('group root')
     if (r.blocked_by.length) meta.push(`blocked by ${r.blocked_by.map((n) => `#${n}`).join(', ')}`)
     const open = r.questions.length

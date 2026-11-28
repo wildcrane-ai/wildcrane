@@ -38,60 +38,60 @@ it('splits the outcome from what counts as done', () => {
   assert.deepEqual(splitBody('Just an outcome.'), { outcome: 'Just an outcome.', acceptance: [] })
 })
 
-it('drafts, saves, drops and starts goals in the file the Runner reads back', () => {
-  cmdGoal(['new'], { title: 'Pricing page', bodyFile: draft('Prices.\n\n## Done when\n- shown') })
+it('drafts, saves, drops and starts goals in the file the Runner reads back', async () => {
+  await cmdGoal(['new'], { title: 'Pricing page', bodyFile: draft('Prices.\n\n## Done when\n- shown') })
   assert.deepEqual(read().goals[1], { id: 'new_1', title: 'Pricing page', outcome: 'Prices.', acceptance: ['shown'], studio: 'wf_builtin_coding', review_plan: null, task: null })
-  cmdGoal(['save'], { id: 'new_1', studio: 'slide-deck' })
+  await cmdGoal(['save'], { id: 'new_1', studio: 'slide-deck' })
   assert.equal(read().goals[1].studio, 'wf_builtin_slide_deck')
   assert.equal(read().goals[1].start, undefined)
-  cmdGoal(['new'], { title: 'Blog', bodyFile: draft('A post.') })
-  cmdGoal(['drop'], { id: 'new_2' })
-  cmdGoal(['start'], { id: 'new_1' })
+  await cmdGoal(['new'], { title: 'Blog', bodyFile: draft('A post.') })
+  await cmdGoal(['drop'], { id: 'new_2' })
+  await cmdGoal(['start'], { id: 'new_1' })
   const goals = read().goals
   assert.equal(goals[2].dropped, true)
   assert.equal(goals[1].start, true)
-  assert.throws(() => cmdGoal(['save'], { id: 'idea_a', title: 'x' }), /already a task/)
-  assert.throws(() => cmdGoal(['save'], { id: 'new_2', title: 'x' }), /--id must name/)
-  assert.throws(() => cmdGoal(['new'], { title: 'x', bodyFile: draft('y'), studio: 'video' }), /No studio `video`/)
+  await assert.rejects(cmdGoal(['save'], { id: 'idea_a', title: 'x' }), /already a task/)
+  await assert.rejects(cmdGoal(['save'], { id: 'new_2', title: 'x' }), /--id must name/)
+  await assert.rejects(cmdGoal(['new'], { title: 'x', bodyFile: draft('y'), studio: 'video' }), /No studio `video`/)
 })
 
 it('lists the workspace studios by their short ids', () => {
   assert.deepEqual((cmdGoalStudios().studios as { id: string }[]).map((w) => w.id), ['coding', 'slide-deck'])
 })
 
-it('refuses outside a goal discussion', () => {
+it('refuses outside a goal discussion', async () => {
   delete process.env.KANBAN_GOALS
-  assert.throws(() => cmdGoal(['new'], { title: 'x' }), /only inside/)
+  await assert.rejects(cmdGoal(['new'], { title: 'x' }), /only inside/)
 })
 
-it('requires a Goal array and an installed Studio', () => {
+it('requires a Goal array and an installed Studio', async () => {
   for (const held of [{}, { goals: null }, { ideas: [] }]) {
     fs.writeFileSync(file, JSON.stringify(held))
-    assert.throws(() => cmdGoal(['save'], { id: 'idea_a' }), { message: 'The goals array is missing or invalid.' })
+    await assert.rejects(cmdGoal(['save'], { id: 'idea_a' }), { message: 'The goals array is missing or invalid.' })
   }
   fs.writeFileSync(file, JSON.stringify({ goals: [] }))
-  assert.throws(() => cmdGoal(['new'], { title: '目标', bodyFile: draft('结果') }), { message: 'Install a studio first.' })
+  await assert.rejects(cmdGoal(['new'], { title: '目标', bodyFile: draft('结果') }), { message: 'Install a studio first.' })
   assert.ok(findGuide('discuss-goal'))
   assert.equal(findGuide('discuss-idea'), null)
 })
 
-it('审核安排区分未定与空安排，保留依赖并拒绝静默删除 Preview', () => {
+it('审核安排区分未定与空安排，保留依赖并拒绝静默删除 Preview', async () => {
   const held = read()
   held.studios[0].previews = [{ id: 'ui-design', instructions: 'UI' }]
   held.studios[1].previews = []
   fs.writeFileSync(file, JSON.stringify(held))
   const plan = [{ id: 'ui', after: [], previews: ['ui-design'] }]
   const reviewFile = path.join(dir, 'review.json'); fs.writeFileSync(reviewFile, JSON.stringify(plan))
-  cmdGoal(['new'], { title: 'Review', bodyFile: draft('Deliver.'), reviewFile })
+  await cmdGoal(['new'], { title: 'Review', bodyFile: draft('Deliver.'), reviewFile })
   assert.deepEqual(read().goals[1].review_plan, plan)
-  cmdGoal(['new'], { title: 'Other', bodyFile: draft('Other.') })
+  await cmdGoal(['new'], { title: 'Other', bodyFile: draft('Other.') })
   assert.equal(read().goals[2].review_plan, null)
-  cmdGoal(['save'], { id: 'new_1', title: 'Changed' })
+  await cmdGoal(['save'], { id: 'new_1', title: 'Changed' })
   assert.deepEqual(read().goals[1].review_plan, plan)
   const before = fs.readFileSync(file, 'utf8')
-  assert.throws(() => cmdGoal(['save'], { id: 'new_1', studio: 'slide-deck' }), /Preview ui-design is not defined/)
+  await assert.rejects(cmdGoal(['save'], { id: 'new_1', studio: 'slide-deck' }), /Preview ui-design is not defined/)
   assert.equal(fs.readFileSync(file, 'utf8'), before)
-  cmdGoal(['save'], { id: 'new_1', reviewFile: draft('[]') })
+  await cmdGoal(['save'], { id: 'new_1', reviewFile: draft('[]') })
   assert.deepEqual(read().goals[1].review_plan, [])
 })
 

@@ -15,7 +15,6 @@ import { STATUSES, parseFrontmatter } from './frontmatter'
 
 export { slugify } from './slug'
 
-export { LEVELS } from './shared/card-structure'
 
 // The stages a card can rest in, in order: `todo` (raw), `ready` (plan concrete,
 // no open questions, someone could start now), `implementing`. `reject`/`archive`

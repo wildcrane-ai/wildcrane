@@ -23,6 +23,9 @@ import { archivesOnApproval, cardStudioId, noStudioMessage, studioFor } from './
 import { carriedSession, closeRun, markSpawned, openResume, openRun, peekRun, preparePlanningCarry, type ResumeOptions } from './sessions'
 import type { CodexStopVerification } from './wire/codex-verify'
 import { runRuntimeById } from './runtimes'
+import { ExecutionError } from './wire/failures'
+import { executionOf } from '../cloud/execution'
+import { isSessionMissingFailure } from './retry'
 import { refusal, retiredStudioRun, type AgentRequest, type RunRecord, type RunRefusal } from './types'
 
 /** Open a run and spawn its watcher. `spawned` false means nothing is watching it — the
@@ -31,7 +34,8 @@ export async function startRun(req: AgentRequest): Promise<{ run: RunRecord; spa
   const short = retiredStudioRun(req.action) ?? studioRefusal(req)
   if (short) return short
   const delivery = req.action === 'implement' ? deliveryFor(req) : undefined
-  if (delivery && req.session !== 'new' && deliveryPhase() !== 'land') {
+  const bound = req.carry?.resumeId && executionOf()?.sessionKind === 'implement'
+  if (delivery && req.session !== 'new' && !bound && deliveryPhase() !== 'land') {
     const previous = pendingDeliveryRun(delivery, readRuns())
     if (previous) return startResume(previous.sessionId, { deliveryId: delivery.deliveryId, notes: req.notes, exact: true })
   }
@@ -100,7 +104,16 @@ function open(
   const ask = runAsk(req, sessionId)
   // A card's planning carries its own session on (#1304), where there is one to carry, and
   // its log opens by saying which it was (#1309).
-  const planning = carriedSession(ask, verifiedPlanning)
+  let planning: ReturnType<typeof carriedSession>
+  try {
+    planning = carriedSession(ask, verifiedPlanning)
+  } catch (error) {
+    returnRunPictures(sessionId, req.box)
+    if (error instanceof ExecutionError && isSessionMissingFailure(error.failure)) {
+      return refusal('runSessionMissing', error.failure.summary)
+    }
+    throw error
+  }
   const carried = planning?.carried
   const { prompt, notes } = buildRun(carried ? { ...ask, session: carried.fork ? 'fork' : 'resume' } : ask, false)
   if (planning) notes.unshift(planning.note)

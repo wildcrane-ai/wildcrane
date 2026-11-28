@@ -66,7 +66,6 @@ const wroteOf = (card: Card): string =>
         card.status,
         card.relPath,
         card.title,
-        card.priority,
         card.related,
         card.questions.map((q) => [q.text, q.mode ?? '', q.options ?? [], q.recommend ?? []]),
         card.modules,

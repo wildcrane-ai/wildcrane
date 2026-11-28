@@ -2,11 +2,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { deliveryPhase } from './env'
-import { DELIVERIES, REPO_ROOT } from '../paths'
+import { DELIVERIES, KANBAN, REPO_ROOT } from '../paths'
 import { plannedTodos } from './outputs'
 import { readStore } from './store'
 import type { DeliveryRecord, RunRefusal } from './types'
 import { currentBranch, git, headCommit, worktreeDir } from './worktree'
+import { checkoutAt, PROJECT_CHECKOUT } from './delivery-workspace'
 
 const ID_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789'
 const ID_LENGTH = 8
@@ -49,33 +50,42 @@ export interface DeliveryStart {
 }
 
 export const deliveryCwd = (delivery: { worktree?: string }): string =>
-  delivery.worktree && fs.existsSync(worktreeDir(delivery.worktree)) ? worktreeDir(delivery.worktree) : REPO_ROOT
+  delivery.worktree ? worktreeDir(delivery.worktree) : REPO_ROOT
 
 export function prepareDelivery(cardId: number | null): { start: DeliveryStart } | RunRefusal {
   const deliveryId = newDeliveryId()
-  const base = headCommit() ?? undefined
-  const targetBranch = currentBranch() ?? undefined
+  const initialized = checkoutAt(REPO_ROOT)
+  const base = initialized ? headCommit() ?? undefined : undefined
+  const targetBranch = initialized ? currentBranch() ?? undefined : undefined
   const start: DeliveryStart = { deliveryId, base, targetBranch, planned: cardId === null ? [] : plannedTodos(cardId) }
-  if (cardId === null || deliveryPhase() !== 'implement') return { start }
+  const phase = deliveryPhase()
+  if (phase === 'land') return { error: 'Land requires a saved implementation.' }
+  if (initialized) {
+    if (!targetBranch) return { error: 'Check out the target branch before starting implementation.' }
+    if (base && phase === 'implement') {
+      const branch = `akb/${deliveryId}`
+      const worktree = path.join('.akb', 'worktrees', deliveryId, 'work')
+      const work = worktreeDir(worktree)
+      fs.mkdirSync(path.dirname(work), { recursive: true })
+      if (git(['worktree', 'add', '-b', branch, work, base]) === null) {
+        return { error: `Could not create the implementation worktree at ${work}.` }
+      }
+      return { start: { ...start, worktree, branch } }
+    }
+    return { start: { ...start, worktree: PROJECT_CHECKOUT, branch: targetBranch } }
+  }
 
   start.worktree = path.join('.akb', 'worktrees', deliveryId, 'work')
   const work = worktreeDir(start.worktree)
-  if (base) {
-    start.branch = `akb/${deliveryId}`
-    fs.mkdirSync(path.dirname(work), { recursive: true })
-    if (git(['worktree', 'add', '-b', start.branch, work, base]) === null) {
-      return { error: `Could not create the implementation worktree at ${work}.` }
-    }
-  } else {
-    const ignored = new Set(['.akb', '.git', 'node_modules', '.venv', 'dist', 'build'])
-    const options: fs.CopySyncOptions = { recursive: true, verbatimSymlinks: true, filter: source => !ignored.has(path.basename(source)) }
-    const baseline = path.join(path.dirname(work), 'base')
-    fs.mkdirSync(baseline, { recursive: true })
-    for (const name of fs.readdirSync(REPO_ROOT).filter(name => !ignored.has(name))) {
-      fs.cpSync(path.join(REPO_ROOT, name), path.join(baseline, name), options)
-    }
-    fs.cpSync(baseline, work, options)
+  const ignored = new Set(['.akb', '.git', 'node_modules', '.venv', 'dist', 'build'])
+  const options: fs.CopySyncOptions = { recursive: true, verbatimSymlinks: true,
+    filter: source => source !== KANBAN && !ignored.has(path.basename(source)) }
+  const baseline = path.join(path.dirname(work), 'base')
+  fs.mkdirSync(baseline, { recursive: true })
+  for (const name of fs.readdirSync(REPO_ROOT).filter(name => !ignored.has(name))) {
+    fs.cpSync(path.join(REPO_ROOT, name), path.join(baseline, name), options)
   }
+  fs.cpSync(baseline, work, options)
   return { start }
 }
 

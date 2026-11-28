@@ -43,16 +43,19 @@ or Set for more than two files.
   `description`. A missing `icon` displays `file`. Older definitions remain readable:
   labels fall back to English, another supplied title, or the ID. Review points open
   the description when it is available in the current language.
+- **Follow-ups**: Optional `allowedFollowUps` is a string of admission rules for Follow-up and
+  Reflect. Omit it or leave it blank to disable both. Built-in Coding is enabled by default.
 - **Schema**: use one shared strict JSON Schema, with additionalProperties:false for
   Studio metadata and each Preview metadata object, explicit locale keys, no coercion,
   and existing glyph/path-part icon constraints. Reject nulls, malformed or duplicate YAML
   keys, unknown fields, invalid locale values and invalid icons. `when`, `file`, `components`,
   `format`, `land`, `scheduled`, `memoryFiles`, `runtime`, `session`, `after` and `stages`
   do not belong in the new definition. YAML is checked before constructing its map.
-- **Land**: new and updated definitions require one nonempty `## Land` heading in the
-  Studio body. Describe what to deliver, where it goes, what to check and what to record.
-  Headings in code examples and Preview blocks are ignored. Existing task pins and
-  published review baselines remain readable. Place optional Preview blocks under `## Previews`.
+- **Sections**: include exactly one top-level `## Work`, `## Land`, and `## Previews`.
+  Work describes the workflow and tools. Land describes what to deliver, where it goes,
+  what to check and what to record. Both require instructions. Put every Preview block
+  under Previews, which may be empty when there are no Previews. Use `## Setup` and
+  `## Planning` when needed. Headings in code examples and Preview blocks do not count.
 - **Blocks**: opening `<Preview id="<id>">` and closing `</Preview>` each occupy their own
   line, with optional indentation. Require exactly one quoted `id` attribute and a nonempty
   Markdown body. Reject missing or stray closing tags, malformed reserved tags, nested or
@@ -79,9 +82,9 @@ or Set for more than two files.
   version. Unknown IDs fail except recorded migration-only historical IDs. Single results
   display directly; multiple results retain Multitab and the full scrollable directory.
   Both devices display only the current result; Set remains the file selector inside it.
-- **Validation**: CLI create/update, Cloud, packaging and marketplace publication use the
-  same schema, delimiter parser, ID correspondence and reference checks. Reject invalid
-  input atomically. Preserve existing size limits, access rules and version protection.
+- **Validation**: CLI validation, create and update, Cloud writes, and official packaging
+  use the same section, schema, delimiter, ID and reference checks. Reject invalid input
+  atomically. Existing published definitions, task pins and review baselines remain readable.
   Source diagnostics identify the file, line, column, field or block path, code and repair
   hint; validators report errors without modifying files. The Agent fixes editable drafts
   from these diagnostics and reruns validation before continuing its authorized operation.
@@ -113,6 +116,9 @@ inside the existing `bad_request` error details and create no version.
 | studio-land-missing | Studio body has no `## Land` section | Add the heading and describe delivery |
 | studio-land-empty | The section has no instructions | Describe delivery, checks and what to record |
 | studio-land-duplicate | Studio body has multiple `## Land` headings | Combine instructions under one heading |
+| studio-work-missing / studio-work-empty / studio-work-duplicate | Missing, empty or repeated `## Work` | Describe the workflow under one heading |
+| studio-previews-missing / studio-previews-duplicate | Missing or repeated `## Previews` | Keep one heading even when there are no Preview blocks |
+| preview-section | Preview block is outside `## Previews` | Move the block under the heading |
 | preview-tag | Malformed, nested, self-closing or extra-attribute tag | Use one non-nested Preview block with only id |
 | preview-unclosed | An opening tag has no closing tag | Add `</Preview>` after this block |
 | preview-unexpected-close | A closing tag has no opening tag | Remove it or restore its opening tag |
@@ -366,7 +372,8 @@ unsuffixed document.
 Copies the complete definition and resources using the existing optional
 `{workspace, name}` input, permission and idempotency rules. Returns the existing new
 Studio result, HTTP 201. MCP files make cloning fail with
-`bad_request`; missing source IDs remain `not_found`. Cloning creates no Agent configuration.
+`bad_request`, as does a source without the required sections. Missing source IDs remain
+`not_found`. Cloning creates no Agent configuration.
 
 ```sh
 curl -X POST -H 'Authorization: Bearer <credential>' -H 'Content-Type: application/json' \

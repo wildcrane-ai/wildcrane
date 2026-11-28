@@ -1,9 +1,11 @@
 import { reviewBoundary, taskReviewBoundary } from '../shared/review-plan'
-import { recordDeliveryArchive } from './delivery-archive'
-import { deliveryPhase, SAVED_PREVIEW_FILE_ENV, taskReviewContext } from './env'
+import { inPlaceLanding, recordDeliveryArchive, recordImplementationCommit } from './delivery-archive'
+import { deliveryPhase, LAND_IMPLEMENT_RUN_ENV, SAVED_PREVIEW_FILE_ENV, taskReviewContext } from './env'
 import { connectionIdentity, connectionStopped, endConnection } from './connection-process'
 import { verifyCodexStopState } from './wire/codex-verify'
-import { deliveryFor, findDelivery } from './deliveries'
+import { deliveryFor, findDelivery, openQuestions } from './deliveries'
+import { lockDeliveryProject, PROJECT_CHECKOUT, verifiedWorkspace } from './delivery-workspace'
+import { headCommit } from './worktree'
 import { studioForRun } from './runner'
 import { runnerProject, workspaceTask } from '../cloud/tasks'
 import { missingStudioVersion, readRuntimeContext, readVersion, saveRuntimeContext, saveStudioSession, STUDIO_SNAPSHOT_ENV, type HeldVersion } from './cloud-studios'
@@ -130,6 +132,45 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   // its turn — so the record, not this process's own memory, is what says whether to carry
   // on. It is re-read at every step.
   const stopping = (): boolean => peekRun(sessionId)?.status !== 'running'
+  const stoppingProject = (): boolean => stopping() || !!peekRun(sessionId)?.stopping
+
+  const land = run.action === 'implement' && deliveryPhase() === 'land'
+  const delivery = run.deliveryId ? findDelivery(run.deliveryId) : undefined
+  const inPlace = run.action === 'implement' && delivery?.worktree === PROJECT_CHECKOUT
+  const resolving = run.action === 'resolve' && run.cloudExecution?.sessionKind === 'implement' && !!delivery?.worktree
+  let releaseProject: (() => void) | undefined
+  let implementationHead: string | null = null
+  try {
+    if (run.action === 'implement' && (inPlace || land || !deliveryPhase()) ||
+        resolving && delivery.worktree === PROJECT_CHECKOUT) {
+      releaseProject = await lockDeliveryProject(REPO_ROOT, stoppingProject)
+      if (!releaseProject || stoppingProject()) {
+        releaseProject?.()
+        await closeRun(sessionId, { status: 'stopped', code: null })
+        return 1
+      }
+    }
+    if ((resolving || run.action === 'implement' && (delivery?.worktree || land)) &&
+        (!delivery || !verifiedWorkspace(REPO_ROOT, delivery, run.cwd))) {
+      throw new Error('The saved delivery workspace is unavailable.')
+    }
+    if (inPlace && land && !inPlaceLanding(delivery)) {
+      throw new Error('The saved implementation commit could not be verified on the target branch.')
+    }
+    if (inPlace && !land) {
+      implementationHead = headCommit()
+      if (delivery.sessions[0] === sessionId && delivery.base !== implementationHead) {
+        withStore(store => {
+          const saved = store.deliveries.find(d => d.deliveryId === delivery.deliveryId)
+          if (saved) saved.base = implementationHead ?? undefined
+        })
+      }
+    }
+  } catch (error) {
+    await closeRun(sessionId, { status: 'error', code: null, error: error instanceof Error ? error.message : String(error) })
+    releaseProject?.()
+    return 1
+  }
 
   let releaseIndex: (() => void) | null = null
   if (needsIndexLock(run.action)) {
@@ -143,6 +184,8 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   const letGo = () => {
     if (releaseIndex) releaseIndex()
     releaseIndex = null
+    releaseProject?.()
+    releaseProject = undefined
   }
 
   if (stopping()) {
@@ -238,7 +281,6 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   const scope = task ?? 'board-' + contextFingerprint(KANBAN)
   const fromSession = record.continues?.resumeId ?? (carriesSession(record) ? active.resumeId : undefined)
   const previous = fromSession ? readRuntimeContext(scope, record.harness, fromSession) : undefined
-  const land = record.action === 'implement' && deliveryPhase() === 'land'
   const action = land ? 'land' : contextAction(record.action)
   const parsed = studio && parseStudioFile(studio.id, studio.files['STUDIO.md'] ?? '', 'STUDIO.md')
   const command = boardCommand()
@@ -255,18 +297,27 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   const studioPreviews = !compact && review?.preview_definitions?.length
     ? (deliveryFor(studioRequest)?.studio ?? studioFor(studioForRun(studioRequest)))?.previews
     : undefined
+  const reviewOptions = { phase: resolving || deliveryPhase() === 'resolve' ? 'implement' : action }
   const boundary = review && (compact
-    ? review.plan === null ? compactReview(review, reviewContext.assigned) : taskReviewBoundary(review, reviewContext.assigned)
+    ? review.plan === null ? compactReview(review, reviewContext.assigned) : taskReviewBoundary(review, reviewContext.assigned, reviewOptions)
     : reviewBoundary(savedPreviews ? { ...review, stages: review.stages.map(stage => ({ ...stage, snapshot: null })) }
-      : review, reviewContext.assigned, studioPreviews))
+      : review, reviewContext.assigned, studioPreviews, reviewOptions))
   const savedPrompt = (!compact || land) && savedPreviews
     ? `Use the task inputs and pinned files listed in \`${savedPreviews}\`. Follow the task's delivery instructions.`
     : ''
   const landRules = land && parsed && 'def' in parsed ? studioLand(parsed.def.rules) : ''
-  const delivery = land ? deliveryFor(studioRequest) : undefined
+  const sourceRun = process.env[LAND_IMPLEMENT_RUN_ENV]
+  const implementation = land && inPlace ? inPlaceLanding(delivery) : undefined
+  const isolated = delivery?.worktree && delivery.worktree !== PROJECT_CHECKOUT && delivery.branch && delivery.base
+  const implementWorkspace = action === 'implement' && isolated && delivery.targetBranch
+    ? `Implement, test and commit on ${delivery.branch} in ${active.cwd ?? record.cwd}. Land applies the saved work to ${delivery.targetBranch}.`
+    : ''
   const landingContext = land ? [
     `Project folder: ${REPO_ROOT}. Saved workspace: ${active.cwd ?? record.cwd}.`,
     delivery?.targetBranch ? `Target branch: ${delivery.targetBranch}.` : '',
+    isolated ? `Task branch: ${delivery.branch} (base ${delivery.base}).` : '',
+    implementation ? `Saved in-place implementation commit: ${implementation.commit}.` : '',
+    sourceRun ? `Read the Implement result and checks with \`${command} run log ${sourceRun}\` as needed.` : '',
     landRules && `## Land\n\n${landRules}\n\nRead linked Studio files with the Studio file command.`,
   ].filter(Boolean).join('\n\n') : ''
   const retryDiag = record.retry
@@ -277,9 +328,9 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
   const blocks = (prior: typeof previous): ContextBlock[] => [
     ...(card ? [taskCardBlock(card)] : []),
     ...studioBlocks.filter(([key]) => key === 'studio' || !land && key === 'skills'),
-    reviewBlock(boundary ?? '', review, prior),
+    reviewBlock(boundary ?? '', reviewContext?.fingerprint, prior),
     ...studioBlocks.filter(([key]) => !land && key === 'setup' && compact || key === 'config' && (compact || spec.studioAtLaunch)),
-    ['inline-studio', launchStudio], ['land', landingContext], ['approved-inputs', savedPrompt],
+    ['inline-studio', launchStudio], ['implement-workspace', implementWorkspace], ['land', landingContext], ['approved-inputs', savedPrompt],
   ]
   const context = contextUpdate(previous, blocks(previous))
   const diagnostics = [process.env.AI4KANBAN_SYNC_DIAGNOSTIC ? syncRepairPrompt(process.env.AI4KANBAN_SYNC_DIAGNOSTIC) : '',
@@ -578,7 +629,7 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       const subRunsStopped = await stopSubRuns(sessionId)
       if (silent && !subRunsStopped) patch(sessionId, run => { run.cleanup = { status: 'unconfirmed', execution: sessionId, kept: [] } })
       const taskCompleted = completed()
-      if (taskCompleted && !client?.managedProcess) {
+      if ((taskCompleted || releaseProject) && !client?.managedProcess) {
         endChild()
         const mark = runMark(sessionId, agentStartedAt)
         const root = child.pid ? { pid: child.pid, since: agentStartedAt } : undefined
@@ -613,6 +664,19 @@ export async function watchRun(sessionId: string, resume = startResume, retryBac
       // would advance and the refinements behind it would run on work that never happened.
       const held = peekRun(sessionId) ?? record
       const rendered = renderer?.failure?.() ?? (!taskCompleted && renderer?.background?.() ? 'The agent exited with unfinished background tasks.' : undefined)
+      if (inPlace && !land && !taskCompleted) {
+        try {
+          const saved = recordImplementationCommit(delivery.deliveryId, sessionId, implementationHead)
+          if (!saved && code === 0 && deliveryPhase() === 'implement' &&
+              (run.cardId === null || !openQuestions(run.cardId))) {
+            spawnError = 'Commit the task changes on the saved target branch before Land.'
+            code = 1
+          }
+        } catch (error) {
+          spawnError = error instanceof Error ? error.message : String(error)
+          code = 1
+        }
+      }
       const said = spawnError ?? (silent ? IDLE_FAILURE.summary : spoken?.error ?? rendered)
       const failed = code !== 0 || spoken?.ok === false || !!rendered || silent || !!blocker
       const failure: ExecutionFailure | undefined = failed && !asked

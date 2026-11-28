@@ -1,6 +1,6 @@
 import { IDLE_FAILURE } from '../idle'
 import { progressSnapshots, toolOutput } from './events'
-import { makeFailure, type ExecutionFailure } from '../retry'
+import { isSessionMissingFailure, isSessionMissingText, makeFailure, type ExecutionFailure } from '../retry'
 import { codexFailure, executionFailure } from './failures'
 import { bounded, CONVERSATION_MS } from '../../shared/conversation'
 import type { RunClient, ClientTurn, TurnEnd } from './client'
@@ -558,12 +558,11 @@ async function run(io: ClientTurn, options: Options, count: (value: number) => v
       try {
         response = await bounded(rpc.call(method, params), preparingUntil - Date.now(), `Codex ${method} timed out.`)
       } catch (error) {
-        if (mode === 'fork' && error instanceof RpcError && error.code === -32600 &&
-            error.message === `no rollout found for thread id ${params.threadId}`) {
-          end(error.message, { code: 'codex_fork_source_missing', source: 'runtime', summary: error.message, detail: error.message })
+        const failure = error instanceof RpcError ? codexFailure(error.data, error.message) : undefined
+        if (mode === 'fork' && error instanceof RpcError && (isSessionMissingFailure(failure) || isSessionMissingText(error.message))) {
+          end(error.message, makeFailure('runtime', error.message, { code: 'codex_fork_source_missing', detail: failure?.detail ?? error.message }))
           return done
         }
-        const failure = error instanceof RpcError ? codexFailure(error.data, error.message) : undefined
         if (mode !== 'fork' || failure?.code !== 'codex_source_busy') throw error
         if (!waiting) {
           waiting = true

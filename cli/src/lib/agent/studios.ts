@@ -58,5 +58,5 @@ export const cardStudio = (id: number | null | undefined): Studio | undefined =>
 
 export function frozenStudio(id: string): FrozenStudio | undefined {
   const flow = studioFor(id)
-  return flow ? { id: flow.id, name: flow.name, needsArtifact: flow.needsArtifact, previews: flow.previews, rules: flow.rules } : undefined
+  return flow ? { id: flow.id, name: flow.name, needsArtifact: flow.needsArtifact, allowedFollowUps: flow.allowedFollowUps, previews: flow.previews, rules: flow.rules } : undefined
 }

@@ -233,7 +233,6 @@ export interface Card {
   /** Path relative to `docs/kanban/todo/`, e.g. `features/07-local-kanban-ui.md`. */
   relPath: string
   title: string
-  priority: string
   status: CardStatus
   blocked_by: number[]
   related: number[]

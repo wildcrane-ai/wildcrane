@@ -1,19 +1,11 @@
 # Handle follow-up work
 
-Use when planning or implementation discovers additional work.
+Apply `akb guide triage-decision` using this card as the source. Complete the judgment in this run; submit nothing for `skip`.
 
-- **Current task**: finish required work on this card; queue independent follow-ups in triage, then resume the original task.
-- **Drop what was turned down**: queue nothing that
-  `docs/kanban/memory/agents/planner/rejected.md` or
-  `docs/kanban/memory/agents/planner/*/rejected.md` turns down.
-- **Existing card**: when only another open card needs changing, run `akb task revise <id> "<the change and why>"`.
-- **Queue it**: use the command below; skip an item the command reports as already there.
-- **Studio**: use the source card's `studio:`, or the id from `akb studio list` that fits the work when it has none.
+- **Current task**: finish work required by this card; propose independent work separately, then resume this task.
+- **Existing card**: when another open card only needs updating, run `akb task revise <id> "<the change and why>"` instead.
+- **Queue**: write the title and body in the **Goal format** of `akb guide discuss-goal`, using the source card's `studio:` and stating the evidence or unresolved question.
 
 ```text
-akb triage add --title "<one line>" --slug <short-english-slug> --source "#<id>" --studio <studio> --text "<body>"
+akb triage add --title "<one line>" --slug <short-english-slug> --source "#<id>" --studio <studio> --decision <plan|review> --text "<body>"
 ```
-
-## Write the item
-
-Write each item's title and body in the **Goal format** of `akb guide discuss-goal`.

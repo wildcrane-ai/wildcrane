@@ -18,6 +18,16 @@ export const PUBLICATION_FILE = '.publication.json'
 export const STUDIO_CATALOG_FILE = 'catalog.json'
 export const versionText = (id: string, version: number) => `${JSON.stringify({ id, version })}\n`
 
+/** Official packages keep new metadata in the catalog so older Runners can parse the Studio. */
+export function studioSource(files: StudioFiles): string {
+  const source = files[STUDIO_FILE] ?? ''
+  let rule: unknown
+  try { rule = JSON.parse(files[STUDIO_CATALOG_FILE] ?? '{}')?.allowedFollowUps } catch {}
+  if (typeof rule !== 'string' || !rule.trim()) return source
+  const lines = rule.trim().split(/\r?\n/).map(line => `  ${line}`).join('\n')
+  return source.replace(/^---\r?\n/, () => `---\nallowedFollowUps: |2-\n${lines}\n`)
+}
+
 const KB = 1024
 export const FILE_LIMITS = { file: 2 * KB * KB, total: 10 * KB * KB, count: 500, path: 512 }
 
@@ -151,7 +161,7 @@ function mcpProblem(text: string): string | null {
 
 export type FilesProblem = Partial<SourceProblem> & { file: string; reason: string; tooLarge?: boolean }
 
-type StudioFileChecks = { allowLegacyPreviewCopy?: boolean; allowLegacyLand?: boolean }
+type StudioFileChecks = { allowLegacyPreviewCopy?: boolean; allowLegacySections?: boolean }
 
 export function formatStudioProblem({ file, line, column, reason, hint }: FilesProblem) {
   const location = line === undefined ? file : `${file}:${line}:${column ?? 1}`
@@ -168,7 +178,7 @@ export function checkStudioFiles(value: unknown, official = false, checks: Studi
 /** Every problem `checkStudioFiles` would refuse the files for. */
 export const studioFilesProblems = (value: unknown, official = false): FilesProblem[] => inspect(value, official).problems
 
-function inspect(value: unknown, official: boolean, { allowLegacyPreviewCopy, allowLegacyLand }: StudioFileChecks = {}): { problems: FilesProblem[]; def?: StudioDef; files?: StudioFiles } {
+function inspect(value: unknown, official: boolean, { allowLegacyPreviewCopy, allowLegacySections }: StudioFileChecks = {}): { problems: FilesProblem[]; def?: StudioDef; files?: StudioFiles } {
   const problems: FilesProblem[] = []
   const fail = (file: string, reason: string, tooLarge = false) => {
     problems.push({ file, reason, ...(tooLarge ? { tooLarge } : {}) })
@@ -235,7 +245,7 @@ function inspect(value: unknown, official: boolean, { allowLegacyPreviewCopy, al
   }
 
   const source = files[STUDIO_FILE]
-  const read = typeof source === 'string' ? parseStudioFile('studio', source, STUDIO_FILE, { requirePreviewCopy: !official && !allowLegacyPreviewCopy, requireLand: !allowLegacyLand }) : null
+  const read = typeof source === 'string' ? parseStudioFile('studio', source, STUDIO_FILE, { requirePreviewCopy: !official && !allowLegacyPreviewCopy, requireSections: !allowLegacySections }) : null
   if (!read) fail(STUDIO_FILE, 'is missing')
   else if ('problem' in read) for (const problem of read.problems) problems.push({ ...problem, reason: problem.message })
   if (!read || 'problem' in read) return { problems }

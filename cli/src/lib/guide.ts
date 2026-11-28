@@ -36,6 +36,8 @@ import reviewMemory from '../guide/review-memory.md'
 import reviewRejections from '../guide/review-rejections.md'
 import refine from '../guide/refine.md'
 import reflect from '../guide/reflect.md'
+import triageDecision from '../guide/triage-decision.md'
+import triageSort from '../guide/triage-sort.md'
 import resolve from '../guide/resolve.md'
 import resolveConflict from '../guide/resolve-conflict.md'
 import revise from '../guide/revise.md'
@@ -78,6 +80,8 @@ export const GUIDES: Guide[] = [
   { name: 'review-memory', when: 'read what the conversations settled, and write it into memory', text: reviewMemory },
   { name: 'describe-project', when: 'rewrite the description of what the project is today', text: describeProject },
   { name: 'review-rejections', when: 'learn what the user does not want from their rejection and dismissal reasons', text: reviewRejections },
+  { name: 'triage-decision', when: 'decide whether a suggestion should proceed', text: triageDecision },
+  { name: 'triage-sort', when: 'decide the incoming suggestions in a Runner batch', text: triageSort },
   { name: 'reflect', when: 'propose the work just-completed cards leave behind', text: reflect },
   { name: 'write-agent', when: 'create or change an agent, including one built from a skill — its AGENT.md, files, memory, and how to check it', text: writeAgent },
   { name: 'write-prompt', when: "write or change any prompt's text — an agent, a skill, a guide, or a prompt in code", text: writePrompt },

@@ -23,11 +23,15 @@ previews:
     description: {en: Review release notes., zh: 审阅更新说明。}
 ---
 
+## Work
+
 Write requested notes.
 
 ## Land
 
 Save the final notes and record their path.
+
+## Previews
 
 <Preview id="notes">
 Write a short document. Read [style](references/style.md) if needed.
@@ -67,30 +71,42 @@ it('keeps Markdown code examples out of delimiter parsing and retains single-fil
   const code = '\n`<Preview id="example" />`\n\n```md\n<Preview id="example">\n```\n'
   assert.equal(parsePreviewBlocks(code).blocks.length, 0)
   assert.equal(parsePreviewBlocks(code).problems.length, 0)
-  assert.ok(checkStudioFiles({ 'STUDIO.md': '---\nname: Plain\n---\n\nWrite the requested document.\n\n## Land\n\nCheck and save the final copy.\n' }).ok)
+  assert.ok(checkStudioFiles({ 'STUDIO.md': '---\nname: Plain\n---\n\n## Work\n\nWrite the requested document.\n\n## Land\n\nCheck and save the final copy.\n\n## Previews\n' }).ok)
   assert.ok(checkStudioFiles({ ...files, 'STUDIO.md': source + code }).ok)
 })
 
-it('requires one nonempty Land section in published definitions and reads older definitions', () => {
-  const work = '---\nname: Notes\npreviews: {example: {}}\n---\n\nWrite notes.\n'
-  const examples = '\n<!--\n## Land\nA commented example.\n-->\n\n```markdown\n## Land\nA fenced example.\n```\n\n<Preview id="example">\n## Land\nA Preview example.\n</Preview>\n'
-  const legacy = work + examples
-  assert.ok('def' in parseStudioFile('notes', legacy, 'STUDIO.md'))
+it('validates Studio sections without counting headings in examples or Preview blocks', () => {
+  const headings = '## Land\n## Work\n## Previews'
+  const examples = `<!--\n${headings}\n-->\n\n~~~markdown\n${headings}\n~~~\n\n    ## Work\n`
+  const preview = `<Preview id="example">\n${headings}\nA Preview example.\n</Preview>\n`
+  const front = '---\nname: Notes\npreviews: {example: {}}\n---\n\n'
+  const legacy = front + examples + preview
+  const read = parseStudioFile('notes', legacy, 'STUDIO.md')
+  assert.ok('def' in read)
+  assert.equal(read.def.previews[0]?.id, 'example')
 
-  for (const [body, code, line] of [
-    [legacy, 'studio-land-missing', 5],
-    [work + '\n## Land\n\n<!-- Fill this in. -->\n\n## Previews\n' + examples, 'studio-land-empty', 8],
-    [work + '\n## Land\nCheck the document.\n\n## Land\nSave it.\n' + examples, 'studio-land-duplicate', 11],
+  const valid = front + '## Work ##\nWrite notes.\n\n  ## Land ##\n`npm test`\n\n' + examples + '\n## Previews\n\n' + preview
+  assert.ok(checkStudioFiles({ 'STUDIO.md': valid.replaceAll('\n', '\r\n') }, true).ok)
+
+  const misplaced = valid.replace('\n' + preview, '\n## Planning\n\n' + preview)
+  for (const [body, code, heading, location, column] of [
+    [legacy, 'studio-land-missing', 'Land', 'start', 1],
+    [legacy, 'studio-work-missing', 'Work', 'start', 1],
+    [legacy, 'studio-previews-missing', 'Previews', 'start', 1],
+    [valid.replace('`npm test`', '<!-- Check the result. -->').replace(examples, ''), 'studio-land-empty', 'Land', '  ## Land ##', 3],
+    [valid.replace('Write notes.', '<!-- Fill this in. -->'), 'studio-work-empty', 'Work', '## Work ##', 1],
+    [valid + '\n## Land\nSave it.\n', 'studio-land-duplicate', 'Land', '## Land', 1],
+    [valid + '\n## Work\nWrite it.\n', 'studio-work-duplicate', 'Work', '## Work', 1],
+    [valid + '\n## Previews\n', 'studio-previews-duplicate', 'Previews', '## Previews', 1],
+    [misplaced, 'preview-section', 'previews.example', '<Preview id="example">', 1],
   ] as const) {
     const checked = checkStudioFiles({ 'STUDIO.md': body }, true)
     assert.ok(!checked.ok)
     const problem = checked.problems.find(p => p.code === code)
-    assert.deepEqual([problem?.file, problem?.line, problem?.column], ['STUDIO.md', line, 1])
+    const line = location === 'start' ? 5 : body.split('\n').lastIndexOf(location) + 1
+    assert.deepEqual([problem?.file, problem?.line, problem?.column, problem?.path], ['STUDIO.md', line, column, heading])
     assert.ok(problem?.hint)
   }
-
-  const valid = legacy + '\n  ## Land ##\n\n`npm test`\n'
-  assert.ok(checkStudioFiles({ 'STUDIO.md': valid.replaceAll('\n', '\r\n') }, true).ok)
 })
 
 it('keeps indented historical examples literal without masking list resources (#873)', () => {
@@ -121,7 +137,7 @@ it('requires localized display text when authoring custom Previews and keeps leg
 it('preserves display metadata and resources through full definition round trips', () => {
   const read = checkStudioFiles(files)
   assert.ok(read.ok)
-  const again = parseStudioFile('studio', studioFileText(read.def), 'STUDIO.md')
+  const again = parseStudioFile('studio', studioFileText(read.def), 'STUDIO.md', { requireSections: true })
   assert.ok('def' in again)
   assert.deepEqual(again.def, read.def)
   const copied = cloneFiles(files, 'My notes')
@@ -130,7 +146,7 @@ it('preserves display metadata and resources through full definition round trips
   assert.deepEqual(previewCatalog(copied.files), read.def.previews)
   assert.deepEqual(landsOf(read.def), { lands: true })
   assert.notEqual(hashInput(files), hashInput({ ...files, 'STUDIO.md': source.replace('Release notes', 'Notes revised') }))
-  assert.equal(read.def.rules, 'Write requested notes.\n\n## Land\n\nSave the final notes and record their path.')
+  assert.equal(read.def.rules, '## Work\n\nWrite requested notes.\n\n## Land\n\nSave the final notes and record their path.\n\n## Previews')
 })
 
 it('rejects missing resources and safe-path violations without executing scripts', () => {
@@ -145,6 +161,9 @@ it('rejects missing resources and safe-path violations without executing scripts
     assert.throws(() => cmdStudioValidate(folder), /Missing resource/)
     fs.mkdirSync(path.join(folder, 'references'))
     fs.writeFileSync(path.join(folder, 'references/style.md'), files['references/style.md'])
+    fs.writeFileSync(path.join(folder, 'STUDIO.md'), source.replace('## Previews', '## Planning'))
+    assert.throws(() => cmdStudioValidate(folder), /studio-previews-missing/)
+    fs.writeFileSync(path.join(folder, 'STUDIO.md'), source)
     assert.equal((cmdStudioValidate(folder).problems as unknown[]).length, 0)
     assert.equal(fs.readFileSync(path.join(folder, 'STUDIO.md'), 'utf8'), source)
   } finally { fs.rmSync(folder, { recursive: true, force: true }) }
@@ -188,10 +207,42 @@ it('packs all built-ins on the same format and exposes only ID and output instru
   assert.ok(checkStudioFiles({ 'STUDIO.md': template }).ok)
   assert.match(template!, /^## Work\n[^]+^## Land\n[^]+^## Previews\n\n<Preview id="draft">/m)
   assert.ok(!Object.keys(builder.files).some(p => p.startsWith('agents/') || p === 'shared/RULES.md'))
-  assert.equal(packed.find(s => s.id === 'wf_builtin_coding')!.lands, true)
+  const coding = packed.find(s => s.id === 'wf_builtin_coding')!
+  assert.equal(coding.lands, true)
+  const codingDef = checkStudioFiles(coding.files, true)
+  assert.ok(codingDef.ok)
+  const bugContext = codingDef.def.previews.find(p => p.id === 'bug-context')
+  assert.ok(bugContext)
+  assert.deepEqual(
+    { id: bugContext.id, icon: bugContext.icon, title: bugContext.title, description: bugContext.description },
+    {
+      id: 'bug-context',
+      icon: 'notebook',
+      title: { en: 'Bug context', zh: 'Bug 上下文' },
+      description: {
+        en: 'Review bug context, visual captures, and reproduction steps before fixing.',
+        zh: '在修复前审阅 Bug 上下文、截图录屏或可复现步骤与关键现场。',
+      },
+    },
+  )
+  assert.match(bugContext.instructions, /Visual or interaction bugs[\s\S]*Non-visual or uncapturable bugs/)
   const context = studioRulesBlock({ action: 'clarify', studio: 'coding' })
+  assert.match(context, /<Preview id="bug-context">/)
   assert.match(context, /<Preview id="api-docs">/)
   assert.doesNotMatch(context, /title:|AGENT\.md|what.*remembers|Preview Agent|preview agents/)
   const ask = buildAsk({ action: 'clarify', studio: 'coding', id: 1 })
   for (const component of ['Asset', 'Compare', 'Storyboard', 'Set', 'Studio']) assert.match(ask, new RegExp(component))
+})
+
+it('keeps multiline follow-up rules and disables omitted or blank rules', () => {
+  const studio = (field: string) => parseStudioFile('example', `---\nname: Example\n${field}---\n`, 'STUDIO.md')
+  const rules = (field: string) => {
+    const result = studio(field)
+    assert.ok('def' in result)
+    return result.def.allowedFollowUps
+  }
+  assert.equal(rules('allowedFollowUps: |\n  First rule.\n  Second rule.\n'), 'First rule.\nSecond rule.')
+  assert.equal(rules('allowedFollowUps: "  "\n'), undefined)
+  assert.equal(rules(''), undefined)
+  assert.ok('problem' in studio('allowedFollowUps: [First rule.]\n'))
 })

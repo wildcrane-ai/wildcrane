@@ -9,7 +9,7 @@ import { STUDIO_MEMORY_DIR } from '../memory'
 import { MEMORY, rel } from '../paths'
 import { workspaceTask } from '../cloud/tasks'
 import { studioName } from '../shared/board-files'
-import { RULES_FILE, SHARED_DIR } from '../shared/studio-files'
+import { RULES_FILE, SHARED_DIR, studioSource, STUDIO_FILE } from '../shared/studio-files'
 import { configurationBlock, studioEntry, type ContextBlock } from './runtime-context'
 import { studioSetup } from './studio-def'
 import { studioConfigContext } from './studio-config'
@@ -23,7 +23,7 @@ export function studioFiles(studio: string): StudioFiles | null {
   if (pin && (pin.studio === studio || studioName(pin.studio) === studio)) {
     const held = readVersion(pin.studio, pin.version)
     if (!held) throw new Error(missingStudioVersion(pin))
-    return held.files
+    return { ...held.files, [STUDIO_FILE]: studioSource(held.files) }
   }
   const flow = cloudFlows().find((f) => f.def.id === studio || f.cloudId === studio)
   if (flow) return flow.files

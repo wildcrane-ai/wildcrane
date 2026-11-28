@@ -1,10 +1,45 @@
 import { activeDelivery, syncAudit } from './deliveries'
-import { insideRun } from './env'
+import { deliveryPhase, insideRun } from './env'
+import { REPO_ROOT } from '../paths'
+import { checkoutAt, containsCommit, PROJECT_CHECKOUT, verifiedWorkspace } from './delivery-workspace'
 import { withStore } from './store'
 import type { DeliveryRecord } from './types'
-import { git } from './worktree'
+import { currentBranch, git, headCommit } from './worktree'
 
-function landingOf(delivery: DeliveryRecord) {
+export function inPlaceLanding(delivery: DeliveryRecord) {
+  const branch = delivery.targetBranch
+  if (!branch || branch !== delivery.branch) return
+  const commit = delivery.landing?.commit ?? delivery.completions?.slice().reverse().find(c => c.branch === branch)?.commit
+  if (commit && checkoutAt(REPO_ROOT) && containsCommit(REPO_ROOT, commit, `refs/heads/${branch}`)) return { branch, commit }
+}
+
+export function recordImplementationCommit(deliveryId: string, sessionId: string, before: string | null): boolean {
+  return withStore(store => {
+    const delivery = store.deliveries.find(d => d.deliveryId === deliveryId && d.status === 'active')
+    if (!delivery || !delivery.targetBranch || currentBranch() !== delivery.targetBranch) return false
+    const commit = headCommit()
+    if (commit && commit !== before && (!before || containsCommit(REPO_ROOT, before, commit))) {
+      (delivery.completions ??= []).push({ sessionId, step: delivery.steps.length, at: Date.now(),
+        branch: delivery.targetBranch, commit, finished: false })
+    }
+    return !!inPlaceLanding(delivery)
+  })
+}
+
+export function hasInPlaceArchiveCommit(card: number): boolean {
+  const delivery = activeDelivery(card)
+  return delivery?.worktree !== PROJECT_CHECKOUT || !!verifiedWorkspace(REPO_ROOT, delivery) && !!inPlaceLanding(delivery)
+}
+
+export function landingOf(delivery: DeliveryRecord) {
+  if (delivery.worktree === PROJECT_CHECKOUT) {
+    const saved = inPlaceLanding(delivery)
+    if (saved || deliveryPhase() === 'land') return saved
+    const commit = headCommit()
+    const branch = currentBranch()
+    if (commit && commit !== delivery.base && branch && branch === delivery.targetBranch) return { commit, branch }
+    return
+  }
   const recorded = delivery.completions?.slice().reverse().find(receipt => receipt.commit && receipt.branch)
   const branch = recorded?.branch ?? delivery.targetBranch
   if (!branch) return

@@ -27,6 +27,45 @@ previews:
       zh: 审阅仿制视频成片与可复用模板。
 ---
 
+## Planning
+
+- **Review**: propose checkpoints suited to this request, normally reviewing the breakdown and clone draft before template production; follow the task’s saved review plan, referencing `clone-storyboard` and `video-template` as outputs rather than stages.
+
+## Work
+
+- **Request**: make only the requested breakdown, clone draft, template or revision; reuse existing files and feedback instead of restarting the whole production.
+- **Cost**: wait for valid approval of every required prerequisite before downstream music, speech, image or video generation and rendering; stopping, resuming or answering a question never grants approval.
+- **Revision**: when an approved draft changes, use the task’s review mechanism to return affected work for review before dependent production; preserve unaffected drafts and cached clips.
+- **Existing tasks**: keep pinned files and review evidence readable; when switching definitions, revise affected Preview references through the saved review plan, without transferring approval to renamed outputs.
+
+### Terms
+
+- **Craft**: how the source is made, reproduced in the template code — beat cuts and lengths, camera moves, motion and easing, layout, transitions, type scale, the role each colour plays, where sounds land, and how product UI is shown — redrawn or captured, cropped to which module, placed where and how it moves.
+- **Content**: what the source says and whose it is, replaced by the user's — copy, data, product screens, footage, brand names, logos, illustrations, music, voice, typefaces and brand colours. When unsure, content is whatever must change if the same craft told another story.
+- **Props**: generic system UI that is neither, such as windows, browser chrome and file pickers.
+
+### Quality
+
+- **Evidence first**: read the video itself — cut points, sampled frames, audio beats — rather than guessing from a few stills.
+- **Default choices**: pick technical choices yourself; explain only those needed for review and ask only for what the user owns.
+- **Free only**: besides `akb image`, `akb tts` and `akb music`, use only tools and libraries free for commercial use; never one that needs a paid plan or a company license.
+- **Never ship the source's content**: stand in for content the user has not supplied with labelled placeholders; draw props faithfully.
+- **Craft first**: match beats, timing, motion, element alignment and cursor landing points; pixel-exact output is not the goal.
+- **Rebuild, don't paste**: when the source draws its UI, redraw the few modules of the user's product a beat needs, centred, so every frame stays clean; a screenshot is only a reference. A beat that moves in the source never becomes a still.
+
+### Files
+
+Save files in the task's Asset folder and use `asset:<file>` in the card. Save the template in the folder named on the card when supplied. When the card names a video outside that folder, copy it in first; with no video, or none of the user's content to fill it, ask for it.
+
+## Land
+
+Deliver the requested comparison and reusable files from the task's asset folder or the folder
+specified on the card. For a template, check the render against the source, record the render
+command and template path, and name any remaining differences by beat. Complete delivery after
+any required final review and publish only when requested.
+
+## Previews
+
 <Preview id="clone-storyboard">
 
 Break down the source and draft a clone that tells the user's story with its craft; preserve every beat needed to build the template.
@@ -53,37 +92,3 @@ Build or revise the requested template from the current `clone-storyboard` draft
 - **Card**: inside this Preview block, show only the clone against the source as a `<Compare>` with `breakdown.json` as `shots`, and each difference left in one line, naming its beat id; append a ticked todo with the template folder's absolute path and, in backticks, its render command.
 
 </Preview>
-
-## Work
-
-- **Request**: make only the requested breakdown, clone draft, template or revision; reuse existing files and feedback instead of restarting the whole production.
-- **Review**: propose checkpoints suited to this request, normally reviewing the breakdown and clone draft before template production; follow the task’s saved review plan, referencing `clone-storyboard` and `video-template` as outputs rather than stages.
-- **Cost**: wait for valid approval of every required prerequisite before downstream music, speech, image or video generation and rendering; stopping, resuming or answering a question never grants approval.
-- **Revision**: when an approved draft changes, use the task’s review mechanism to return affected work for review before dependent production; preserve unaffected drafts and cached clips.
-- **Existing tasks**: keep pinned files and review evidence readable; when switching definitions, revise affected Preview references through the saved review plan, without transferring approval to renamed outputs.
-
-## Land
-
-Deliver the requested comparison and reusable files from the task's asset folder or the folder
-specified on the card. For a template, check the render against the source, record the render
-command and template path, and name any remaining differences by beat. Complete delivery after
-any required final review and publish only when requested.
-
-## Terms
-
-- **Craft**: how the source is made, reproduced in the template code — beat cuts and lengths, camera moves, motion and easing, layout, transitions, type scale, the role each colour plays, where sounds land, and how product UI is shown — redrawn or captured, cropped to which module, placed where and how it moves.
-- **Content**: what the source says and whose it is, replaced by the user's — copy, data, product screens, footage, brand names, logos, illustrations, music, voice, typefaces and brand colours. When unsure, content is whatever must change if the same craft told another story.
-- **Props**: generic system UI that is neither, such as windows, browser chrome and file pickers.
-
-## Quality
-
-- **Evidence first**: read the video itself — cut points, sampled frames, audio beats — rather than guessing from a few stills.
-- **Default choices**: pick technical choices yourself; explain only those needed for review and ask only for what the user owns.
-- **Free only**: besides `akb image`, `akb tts` and `akb music`, use only tools and libraries free for commercial use; never one that needs a paid plan or a company license.
-- **Never ship the source's content**: stand in for content the user has not supplied with labelled placeholders; draw props faithfully.
-- **Craft first**: match beats, timing, motion, element alignment and cursor landing points; pixel-exact output is not the goal.
-- **Rebuild, don't paste**: when the source draws its UI, redraw the few modules of the user's product a beat needs, centred, so every frame stays clean; a screenshot is only a reference. A beat that moves in the source never becomes a still.
-
-## Files
-
-Save files in the task's Asset folder and use `asset:<file>` in the card. Save the template in the folder named on the card when supplied. When the card names a video outside that folder, copy it in first; with no video, or none of the user's content to fill it, ask for it.

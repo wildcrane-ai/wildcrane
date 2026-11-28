@@ -27,7 +27,9 @@ beforeEach(() => {
     write(path.join(dir, 'templates/项目资料/notes.md'), 'Before\n')
     write(path.join(dir, 'templates/项目资料/deleted.md'), 'Remove\n')
   }
-  fs.appendFileSync(path.join(draft, 'STUDIO.md'), '\n## Land\n\nCheck and save the requested document.\n')
+  const draftFile = path.join(draft, 'STUDIO.md')
+  const legacy = fs.readFileSync(draftFile, 'utf8')
+  write(draftFile, legacy.replace('<Preview', '## Work\n\nWrite the requested document.\n\n## Land\n\nCheck and save the requested document.\n\n## Previews\n\n<Preview'))
   write(path.join(draft, 'templates/项目资料/notes.md'), 'After\n')
   write(path.join(draft, 'templates/项目资料/added.md'), 'New\n')
   fs.rmSync(path.join(draft, 'templates/项目资料/deleted.md'))

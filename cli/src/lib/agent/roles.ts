@@ -122,10 +122,7 @@ const PROPOSER: AgentRole = {
           value: 'auto',
           label: 'Just do them',
           cost: 'For speed over quality',
-          prompt:
-            `${SMALL_FIX} Do each one instead of proposing it: create it with ` +
-            '`akb task create --title "<title>" --studio <studio> --source "#<finished card id>"`, its Scope and Todo ' +
-            'written per `akb guide writing`, then record completed planning with `akb task update <id> --status planned`.',
+          prompt: `${SMALL_FIX} For eligible small fixes, submit a plan decision when the shared triage rules support it.`,
         },
         { value: 'propose', label: 'Ask me first', cost: 'For balancing speed and quality' },
         {

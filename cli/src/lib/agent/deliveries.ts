@@ -1,4 +1,4 @@
-import { executionOf, WRONG_TASK, type CloudExecution } from '../cloud/execution'
+import { executionOf, flowSessionKind, WRONG_TASK, type CloudExecution, type FlowSessionKind } from '../cloud/execution'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -29,6 +29,7 @@ import {
 } from './types'
 import { worktreeExists } from './worktree'
 import { withBoardLock } from '../lock'
+import { PROJECT_CHECKOUT } from './delivery-workspace'
 
 // ---- the permanent record ---------------------------------------------------
 
@@ -39,6 +40,8 @@ const auditPath = (deliveryId: string): string => path.join(DELIVERIES, `${deliv
  *  the repository's and does not. */
 interface DeliverySessionEntry {
   sessionId: string
+  sessionKind?: FlowSessionKind
+  cloudExecution?: CloudExecution
   action: string
   status: string
   startedAt: number
@@ -71,6 +74,8 @@ export function writeAudit(delivery: DeliveryRecord, runs: RunRecord[]): void {
     return [
       {
         sessionId: run.sessionId,
+        sessionKind: run.sessionKind,
+        cloudExecution: run.cloudExecution,
         action: run.action,
         status: run.status,
         startedAt: run.startedAt,
@@ -107,12 +112,7 @@ function writeAuditFile(record: DeliveryAudit): boolean {
 
 /** The permanent record as it stands, or null when there is none to read. */
 function readAudit(deliveryId: string): { sessions: DeliverySessionEntry[] } | null {
-  try {
-    const data = JSON.parse(fs.readFileSync(auditPath(deliveryId), 'utf8')) as { sessions?: unknown }
-    return { sessions: Array.isArray(data?.sessions) ? (data.sessions as DeliverySessionEntry[]) : [] }
-  } catch {
-    return null
-  }
+  return wholeAudit(auditPath(deliveryId))
 }
 
 export function syncAudit(deliveryId: string, just?: RunRecord): void {
@@ -130,7 +130,13 @@ export function syncAudit(deliveryId: string, just?: RunRecord): void {
 function wholeAudit(file: string): DeliveryAudit | null {
   try {
     const data = JSON.parse(fs.readFileSync(file, 'utf8')) as DeliveryAudit
-    return typeof data?.deliveryId === 'string' && Array.isArray(data.sessions) ? data : null
+    if (typeof data?.deliveryId !== 'string' || !Array.isArray(data.sessions)) return null
+    data.sessions = data.sessions.map(session => ({
+      ...session,
+      sessionKind: flowSessionKind(session.sessionKind) ??
+        executionOf(session.cloudExecution ?? null)?.sessionKind ?? 'implement',
+    }))
+    return data
   } catch {
     return null
   }
@@ -358,10 +364,12 @@ function cardOnBoard(cardId: number): boolean | undefined {
  *  the board keeps its checkout at all (#720). */
 export const isResumable = (delivery: DeliveryRecord): boolean => !resumeRefusal(delivery)
 
-export function pendingDeliveryRun(delivery: DeliveryRecord, runs: RunRecord[]): RunRecord | undefined {
-  const latest = runs.filter(r => r.deliveryId === delivery.deliveryId && r.action === 'implement')
+export function pendingDeliveryRun(delivery: DeliveryRecord, runs: RunRecord[], execution?: CloudExecution): RunRecord | undefined {
+  const latest = runs.filter(r => r.deliveryId === delivery.deliveryId && r.action === 'implement'
+    && (!execution?.sessionKind || !r.cloudExecution?.sessionKind || r.cloudExecution.sessionKind === execution.sessionKind))
     .reverse().sort((a, b) => b.startedAt - a.startedAt)[0]
-  if (latest && !delivery.completions?.some(c => c.sessionId === latest.sessionId || c.resumedSessions?.includes(latest.sessionId))) return latest
+  if (latest && (delivery.worktree === PROJECT_CHECKOUT || !delivery.completions?.some(c =>
+    c.sessionId === latest.sessionId || c.resumedSessions?.includes(latest.sessionId)))) return latest
 }
 
 export function resumableDelivery(store: Store, id: string): DeliveryRecord | RunRefusal {
@@ -403,7 +411,7 @@ export function resumeRecord(id: string, execution?: CloudExecution): { ok: true
     const row = resumableDelivery(store, found.deliveryId)
     if ('error' in row) return { ok: false, ...(row.reason === 'deliveryNotFound' ? unknownDelivery(id) : row) }
     if (row.status === 'finished') return { ok: true, delivery: row }
-    const previous = pendingDeliveryRun(row, store.runs)
+    const previous = pendingDeliveryRun(row, store.runs, execution)
     if (previous) return { ok: true, delivery: row, runId: previous.sessionId }
     const resumed = activateDelivery(store, row, Date.now(), execution)
     writeAudit(resumed, store.runs)

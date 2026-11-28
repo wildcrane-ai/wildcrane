@@ -5,9 +5,8 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { readSession } from '../../cli/src/lib/cloud/session'
+import { allowedRunnerProjects, readRunnerGrants as readGrants, runnerGrantsFile as projectsFile, runnerGrantsFor } from '../../cli/src/lib/machine/runner'
 import { runnerHome } from './home'
-
-const projectsFile = () => path.join(runnerHome(), 'projects.json')
 
 function realpath(p: string): string | null {
   try {
@@ -15,25 +14,6 @@ function realpath(p: string): string | null {
   } catch {
     return null
   }
-}
-
-interface Grants { projects: string[]; accounts?: Record<string, string[]>; legacyOwner?: string }
-
-function readGrants(): Grants {
-  try {
-    const held = JSON.parse(fs.readFileSync(projectsFile(), 'utf8')) as Grants
-    if (!Array.isArray(held.projects)) throw new Error('invalid_projects')
-    return held
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { projects: [] }
-    throw error
-  }
-}
-
-function listOf(held: Grants): string[] {
-  const subject = readSession()?.subject
-  if (!held.accounts) return held.projects
-  return subject ? held.accounts[subject] ?? [] : []
 }
 
 /** 锁内合并、原子替换，防止两个插件丢失对方的目录更新。 */
@@ -56,7 +36,7 @@ function update(change: (list: string[]) => string[]): string[] {
   try {
     const held = readGrants()
     const subject = readSession()?.subject
-    const before = listOf(held)
+    const before = runnerGrantsFor(held, subject)
     const after = [...new Set(change(before))]
     if (subject) {
       if (!held.accounts) {
@@ -78,10 +58,7 @@ export function adoptLegacy(): void {
 }
 
 export function allowedProjects(): string[] {
-  return listOf(readGrants()).flatMap((p) => {
-    const real = realpath(p)
-    return real && fs.statSync(real).isDirectory() ? [real] : []
-  })
+  return allowedRunnerProjects(runnerHome(), readSession()?.subject)
 }
 
 export const allow = (dir: string) => { update((list) => [...list, dir]) }

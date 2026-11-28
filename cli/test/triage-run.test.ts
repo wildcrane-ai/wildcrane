@@ -93,7 +93,7 @@ describe('a card made of a triage item', () => {
   it('keeps the field through a later rewrite of the card', async () => {
     const id = await waiting('Rewritten')
     const { value } = quiet(() => cmdCreate({ title: 'Rewritten', triage: id, asked: [], id: 1 }))
-    quiet(() => cmdUpdate(Number(value.id), { priority: 'high' }))
+    quiet(() => cmdUpdate(Number(value.id), { title: 'Updated' }))
     assert.match(fs.readFileSync(path.join(root, String(value.file)), 'utf8'), new RegExp(`^triage: ${id}$`, 'm'))
   })
 })

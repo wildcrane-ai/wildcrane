@@ -8,7 +8,8 @@ import path from 'node:path'
 
 import { readStudioDownload } from '../shared/studio-package'
 import { cloudConfigured, cloudEndpoints, NOT_CONFIGURED } from './config'
-import { accessToken } from './session'
+import { accessToken, type TokenResult } from './session'
+import { runnerBoardRoot } from '../machine/project'
 import { cloudProblem, invalidResponse, isRecord, readCloudJson } from './response'
 
 /** A refusal with no `code` never reached the service. */
@@ -40,10 +41,11 @@ export function cloudStudio(name: string): string {
 }
 
 export async function call<T>(
-  method: 'GET' | 'POST' | 'PATCH' | 'PUT', route: string, body?: unknown, key?: string, { allowResultError = false, downloadBytes }: { allowResultError?: boolean; downloadBytes?: number } = {},
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT', route: string, body?: unknown, key?: string,
+  { allowResultError = false, downloadBytes, auth }: { allowResultError?: boolean; downloadBytes?: number; auth?: Extract<TokenResult, { ok: true }> } = {},
 ): Promise<CloudCall<T> & { replayed?: boolean }> {
   if (!cloudConfigured()) return { ok: false, error: NOT_CONFIGURED, code: 'bad_request' }
-  const token = await accessToken()
+  const token = auth ?? await accessToken()
   if (!token.ok) {
     return token.reason === 'unreachable'
       ? { ok: false, error: `Cloud could not be reached: ${token.error}`, code: 'unreachable', retryable: true }
@@ -59,7 +61,7 @@ export async function call<T>(
         ...(key ? { 'idempotency-key': key } : {}),
       },
       ...(body ? { body: body instanceof Blob ? body : JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(body instanceof Blob ? 10 * 60_000 : 20_000),
     })
   } catch (e) {
     return { ok: false, error: `Cloud could not be reached: ${e instanceof Error ? e.message : String(e)}`, code: 'unreachable', retryable: true }
@@ -97,7 +99,6 @@ export interface NewTask {
 }
 
 export interface CardFields {
-  priority?: string
   modules?: string[]
   related?: string[]
   blocked_by?: string[]
@@ -132,8 +133,9 @@ export async function createTask(from: string, said: NewTask): Promise<Made> {
 /** The Cloud project a Runner keeps this board for: the board is `<project>/.akb/kanban`, and the
  *  Runner's `.akb/base.json` beside it holds that project's files. Null on a board no Runner keeps. */
 export function runnerProject(board: string): string | null {
-  if (path.basename(board) !== 'kanban' || path.basename(path.dirname(board)) !== '.akb') return null
-  const linked = linkedProject(board, path.dirname(path.dirname(board)))
+  const root = runnerBoardRoot(board)
+  if (!root) return null
+  const linked = linkedProject(board, root)
   return linked.ok ? linked.value : null
 }
 
@@ -193,5 +195,5 @@ export async function createProjectTask(project: string, said: NewTask, key: str
 /** The web's Approve on card `number` of `project`: Cloud moves the task on and sends its next
  *  step to the Runner. */
 export async function approveTask(_project: string, _number: number): Promise<CloudCall<{ key: string }>> {
-  return { ok: false, code: 'refused', error: 'Use akb task approve with the --revision you reviewed.' }
+  return { ok: false, code: 'refused', error: 'Use akb task approve to approve the reviewed snapshot.' }
 }

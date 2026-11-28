@@ -5,7 +5,7 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pathToFileURL } from 'node:url'
 import { it } from 'node:test'
 
 // #415: the Runner's own fetch follows the macOS proxy on every supported Node, from 22.0, and
@@ -66,7 +66,7 @@ it('routes a started akb through the host proxy', async (t) => {
   await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve))
   t.after(() => proxy.close())
   const { port } = proxy.address() as AddressInfo
-  const preload = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'akb-proxy.mjs')
+  const preload = path.join(process.env.RUNNER_DIST!, 'akb-proxy.mjs')
   const env: NodeJS.ProcessEnv = { ...process.env, WILDCRANE_HOST_PROXY: JSON.stringify({ HTTP_PROXY: `http://127.0.0.1:${port}` }) }
   delete env.NODE_USE_ENV_PROXY
   const out = await new Promise<string>((resolve, reject) =>

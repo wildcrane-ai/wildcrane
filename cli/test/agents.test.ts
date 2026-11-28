@@ -421,7 +421,7 @@ describe('legacy agent settings', () => {
 
     pick('auto')
     assert.equal(values()['small-fixes'], 'auto')
-    assert.match(reflect(), /Your settings on this board:\n- A small fix .*--status planned/)
+    assert.match(reflect(), /Your settings on this board:\n- A small fix .*plan decision/)
     assert.doesNotMatch(buildPrompt({ action: 'implement', id: 7 }), /Your settings on this board/)
 
     pick('skip')

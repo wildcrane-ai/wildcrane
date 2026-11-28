@@ -65,11 +65,15 @@ async function main(): Promise<void> {
     void runner.update().then(() => process.exit(EXIT_UPDATE)).catch((error) => { status(String(error)); tell({ type: 'update-deferred' }) })
   })
 
+  let stopping = false
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    process.on(signal, async () => {
-      await runner.close()
-      status(t.stopped())
-      process.exit(0)
+    process.on(signal, () => {
+      if (stopping) return
+      stopping = true
+      void runner.close().finally(() => {
+        status(t.stopped())
+        process.exit(0)
+      })
     })
   }
 

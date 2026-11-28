@@ -182,6 +182,21 @@ akb guide discuss-goal
 - **看板**：`akb board list` 查看本地卡片，`task inspect` 查看本地卡片和执行记录，`task validate` 校验，`task update` 更新字段。Cloud 任务继续用 `task list` 和 `task show`。
 - **流程**：`akb task refine|revise|resolve|implement <id> …` 启动本地流程。加 `--print` 在当前会话读取流程。用 `akb run list`、`run log`、`run stop` 或 `run resume` 管理本地运行。
 
+### 关联看板的本地编辑
+
+在 Runner 维护的关联看板上，`task update`、当前会话任务的 `task update-questions`、写入本地收件箱的 `triage add`、关联项目会话的 `goal new|save|drop|start`，以及兼容命令 `raw update|update-questions|reject`，写入前会确认本机 Runner 在线、当前账号已授权该目录，且 Cloud 绑定与本地项目一致。直连 Cloud 的提案提交（含 `triage decide`）、独立本地看板和离线排查沿用现有路径。
+
+校验失败以 `1` 退出。`--json` 返回 `{ "ok": false, "error": { "kind": "runner-required", "code": "…", "message": "…" } }`，`message` 为英文恢复提示。
+
+| `error.code` | 恢复方式 |
+| --- | --- |
+| `runner-offline` | 运行 `wildcrane-runner` 或重开 WildCrane 插件 |
+| `runner-signed-out` | 在 WildCrane 设置中登录项目所属账号 |
+| `runner-folder-not-authorized` | 在 WildCrane 设置中授权该目录 |
+| `runner-project-not-bound` | 在 WildCrane 设置中将目录关联到正确的项目 |
+| `runner-project-link-invalid` | 在 WildCrane 设置中检查并重新关联目录 |
+| `runner-binding-unverified` | 检查 Cloud 连接后重试 |
+
 ## Preview
 
 `akb studio previews [--studio <id>] [--json]` 列出 Studio 声明的 Preview ID 和制作说明。任务会话按需制作产物，审阅与批准使用 `akb task review` 和 `akb task approve`。

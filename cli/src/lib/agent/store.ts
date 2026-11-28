@@ -1,6 +1,6 @@
 import { readFailure, readRetryHistory, readRetryPause, readRetryPlan } from './retry'
 
-import { executionOf } from '../cloud/execution'
+import { executionOf, flowSessionKind } from '../cloud/execution'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -122,12 +122,20 @@ function parseStore(): Store {
     ? box.runs
     : [...(Array.isArray(box?.live) ? box.live : []), ...(Array.isArray(box?.finished) ? box.finished : [])]
   const runs: RunRecord[] = []
+  const deliveries = readDeliveryRows(box?.deliveries)
   for (const entry of raw as Partial<RunRecord>[]) {
     if (!entry || typeof entry.sessionId !== 'string' || !entry.sessionId) continue
     if (!knownAction(entry.action)) continue
+    const execution = executionOf(entry.cloudExecution ?? null)
+    const delivery = deliveries.find(d => d.deliveryId === entry.deliveryId)
+    const sessionKind = flowSessionKind(entry.sessionKind) ?? execution?.sessionKind ??
+      (entry.deliveryId
+        ? (execution && delivery?.cloudExecution?.job === execution.job && delivery.landing ? 'land' : 'implement')
+        : (['refine', 'revise', 'edit', 'resolve', 'clarify', 'approve'].includes(String(entry.action)) ? 'refine' : undefined))
     runs.push({
       sessionId: entry.sessionId,
-      cloudExecution: executionOf(entry.cloudExecution ?? null),
+      sessionKind,
+      cloudExecution: execution,
       studioPin: typeof entry.studioPin?.studio === 'string' && Number.isSafeInteger(entry.studioPin.version)
         && entry.studioPin.version > 0 ? entry.studioPin : undefined,
       pendingWrites: entry.pendingWrites === true || undefined,
@@ -218,7 +226,7 @@ function parseStore(): Store {
   }
   runs.sort((a, b) => a.startedAt - b.startedAt)
   const refined = readRefined(box?.refined)
-  return { runs, deliveries: readDeliveryRows(box?.deliveries), marks: readMarks(box?.marks), ...(refined ? { refined } : {}) }
+  return { runs, deliveries, marks: readMarks(box?.marks), ...(refined ? { refined } : {}) }
 }
 
 const strings = (raw: unknown): string[] | undefined =>
@@ -410,7 +418,7 @@ function readStudio(raw: unknown): FrozenStudio | undefined {
     const p = one as Record<string, unknown>
     return typeof p?.id === 'string' && typeof p.instructions === 'string' ? [{ id: p.id, instructions: p.instructions }] : []
   })
-  return { id, name: typeof box.name === 'string' ? box.name : '', needsArtifact: box.needsArtifact === true, previews, rules: typeof box.rules === 'string' ? box.rules : '' }
+  return { id, name: typeof box.name === 'string' ? box.name : '', needsArtifact: box.needsArtifact === true, ...(typeof box.allowedFollowUps === 'string' ? { allowedFollowUps: box.allowedFollowUps } : {}), previews, rules: typeof box.rules === 'string' ? box.rules : '' }
 }
 
 const text = (value: unknown): string | undefined =>

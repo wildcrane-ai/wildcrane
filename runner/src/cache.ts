@@ -11,6 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { sweepVersions } from '../../cli/src/lib/agent/cloud-studios'
+import { deliveryCleanupDir } from '../../cli/src/lib/agent/delivery-cleanup-receipt'
 import { readSession } from '../../cli/src/lib/cloud/session'
 import { SESSIONS_FILE, hasLegacyProjectState, projectStateDir } from '../../cli/src/lib/machine/project'
 import * as api from './api'
@@ -109,10 +110,17 @@ function legacyState(dir: string): boolean {
 }
 export const kept = (dir: string) => busy(dir) || unsent(dir) || legacyState(dir) || paused(dir) || conflicted(dir)
 
+function deliveryCleanupPending(dir: string): boolean {
+  try {
+    if (fs.lstatSync(path.join(akbDir(dir), 'worktrees'), { throwIfNoEntry: false })) return true
+    return fs.readdirSync(deliveryCleanupDir(dir)).some(file => file.endsWith('.json'))
+  } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT' }
+}
+
 /** Empty a linked folder's `.akb/`, its own files untouched; false when it is kept. */
 export function clearAkb(dir: string): boolean {
   dir = realpath(dir)
-  if (kept(dir) || fs.existsSync(path.join(akbDir(dir), 'worktrees')) || fs.existsSync(path.join(akbDir(dir), 'handoffs'))) return false
+  if (kept(dir) || deliveryCleanupPending(dir) || fs.existsSync(path.join(akbDir(dir), 'handoffs'))) return false
   let entries: string[]
   try {
     entries = fs.readdirSync(akbDir(dir))
@@ -155,7 +163,7 @@ function idle(dir: string, now: number): boolean {
 }
 
 /** Clean the cache; answers the folders it cleaned. */
-export async function sweepCache(machineId: string, now = Date.now()): Promise<string[]> {
+export async function sweepCache(machineId: string, now = Date.now(), cleanDeliveries?: (dir: string) => Promise<void>): Promise<string[]> {
   const access = await readAccess(machineId)
   const swept: string[] = []
   let cached: fs.Dirent[] = []
@@ -166,14 +174,20 @@ export async function sweepCache(machineId: string, now = Date.now()): Promise<s
   }
   for (const e of cached) {
     const dir = path.join(cacheRoot(), e.name)
-    if (!e.isDirectory() || kept(dir) || fs.existsSync(path.join(dir, '.git'))) continue
+    if (!e.isDirectory() || busy(dir)) continue
+    await cleanDeliveries?.(dir)
+    if (kept(dir) || fs.existsSync(path.join(dir, '.git'))) continue
     const gone = access && !access.projects.has(e.name)
-    if ((idle(dir, now) || gone) && !fs.existsSync(path.join(akbDir(dir), 'worktrees')) && !fs.existsSync(path.join(akbDir(dir), 'handoffs'))) {
+    if ((idle(dir, now) || gone) && !deliveryCleanupPending(dir) && !fs.existsSync(path.join(akbDir(dir), 'handoffs'))) {
       fs.rmSync(dir, { recursive: true, force: true })
       swept.push(dir)
     }
   }
-  for (const dir of allowedProjects()) {
+  const allowed = allowedProjects()
+  for (const dir of access?.folders ?? []) {
+    if (allowed.some(root => dir.startsWith(root + path.sep)) && !allowed.includes(dir) && !busy(dir)) await cleanDeliveries?.(dir)
+  }
+  for (const dir of allowed) {
     let held: string[] = []
     try {
       held = fs.readdirSync(akbDir(dir))
@@ -181,8 +195,16 @@ export async function sweepCache(machineId: string, now = Date.now()): Promise<s
       // Never worked in.
     }
     if (!held.length) continue
+    if (!busy(dir)) await cleanDeliveries?.(dir)
     const gone = access && !access.folders.has(dir)
     if ((idle(dir, now) || gone) && clearAkb(dir)) swept.push(dir)
+  }
+  const work = path.join(runnerHome(), 'work')
+  if (cleanDeliveries && fs.existsSync(work)) {
+    for (const entry of fs.readdirSync(work, { withFileTypes: true })) {
+      const dir = path.join(work, entry.name)
+      if (entry.isDirectory() && !busy(dir)) await cleanDeliveries(dir)
+    }
   }
   return swept
 }

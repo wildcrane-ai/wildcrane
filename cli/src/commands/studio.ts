@@ -23,7 +23,7 @@ import {
 } from '../lib/agent/studios'
 import type { MoveResult } from '../lib/types'
 import { readStudioFolder } from '../lib/agent/studio-folder'
-import { checkStudioFiles, cloneFiles, isAboutFile, PUBLICATION_FILE, VERSION_FILE, versionText, STUDIO_FILE, studioFilesProblems, studioSkills, hashInput, diagramFrom, formatStudioProblem } from '../lib/shared/studio-files'
+import { checkStudioFiles, cloneFiles, isAboutFile, PUBLICATION_FILE, VERSION_FILE, versionText, STUDIO_FILE, studioFilesProblems, studioSkills, hashInput, diagramFrom, formatStudioProblem, studioSource, STUDIO_CATALOG_FILE } from '../lib/shared/studio-files'
 import { parseStudioFile } from '../lib/agent/studio-def'
 import { studioName } from '../lib/shared/board-files'
 import { call, workspaceTask, type CloudCall } from '../lib/cloud/tasks'
@@ -92,7 +92,8 @@ async function currentStudio(id: string) {
   const read = await loadWorkspaceStudio(cloudId!)
   const held = requireResponse(cloudOk(read, read.ok || read.code !== 'not_found' ? undefined : 'no-such-studio'),
     'the Studio version and files', value => value.id === cloudId && isStudioVersion(value.version) && isStudioFiles(value.files))
-  const { 'catalog.json': _catalog, ...files } = held.files
+  const { [STUDIO_CATALOG_FILE]: _catalog, ...files } = held.files
+  files[STUDIO_FILE] = studioSource(held.files)
   return { ...held, files }
 }
 

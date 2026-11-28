@@ -16,13 +16,17 @@ export const normalizeCardStatus = (status: string): string => status === 'ready
 
 /** Upgrade the header on write without changing the body or other metadata. */
 export function normalizeCardFrontmatter(text: string): string {
-  if (!/^status:[ \t]*(['"]?)ready\1[ \t]*\r?$/m.test(text)) return text
   const lines = text.split('\n')
   const end = frontmatterEnd(lines)
+  const header: string[] = []
   for (let i = 1; i < end; i++) {
-    lines[i] = lines[i]!.replace(/^(status:[ \t]*)(['"]?)ready\2([ \t]*\r?)$/, '$1$2planned$2$3')
+    if (/^priority:/.test(lines[i]!)) {
+      while (i + 1 < end && /^[ \t]+\S/.test(lines[i + 1]!)) i++
+      continue
+    }
+    header.push(lines[i]!.replace(/^(status:[ \t]*)(['"]?)ready\2([ \t]*\r?)$/, '$1$2planned$2$3'))
   }
-  return lines.join('\n')
+  return end ? [lines[0], ...header, ...lines.slice(end)].join('\n') : text
 }
 
 // Takes a partial meta on purpose: a card being written names only the fields it has,
@@ -30,7 +34,6 @@ export function normalizeCardFrontmatter(text: string): string {
 export function serializeFrontmatter(m: Partial<Meta>): string {
   const out = ['---']
   out.push(`title: ${yamlScalar(m.title)}`)
-  out.push(`priority: ${m.priority}`)
   const status = normalizeCardStatus(String(m.status))
   out.push(`status: ${STATUSES.includes(status) ? status : 'todo'}`)
   out.push(`blocked_by: [${(m.blocked_by || []).join(', ')}]`)
@@ -137,8 +140,6 @@ export function parseFrontmatter(text: string): { meta: Meta | null; body: strin
     meta.questions = meta.questions ? [normalizeQuestion(meta.questions)] : ([] as Question[])
   }
   if (typeof meta.status === 'string') meta.status = normalizeCardStatus(meta.status)
-  // A missing priority reads as empty rather than as a level nobody chose.
-  meta.priority = typeof meta.priority === 'string' ? meta.priority.trim() : ''
   // modules is an optional string list; a card written before this field parses as [].
   if (!Array.isArray(meta.modules)) meta.modules = []
   // Retired fields: `channels:` (#718), `decided:` (#1255), `verify:` (#1329), `release:`
@@ -150,6 +151,7 @@ export function parseFrontmatter(text: string): { meta: Meta | null; body: strin
   delete meta.verify
   delete meta.release
   delete meta.schedule
+  delete meta.priority
   delete meta.roi
   // The studio this card runs on; missing, empty or damaged reads as none.
   meta.studio = typeof meta.studio === 'string' && meta.studio.trim() ? meta.studio.trim() : ''

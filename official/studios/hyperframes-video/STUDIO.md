@@ -43,10 +43,15 @@ previews:
       zh: 审阅渲染完成的最终视频。
 ---
 
-Make or revise only the requested product-video outputs. Reuse existing work and change only affected shots, narration or assets; the catalog below is optional, not a checklist. A script-only request does not call for voice samples, a video or a cover. HyperFrames is the default production framework; read its installed skill when creating or editing a composition, and load other skills only as needed.
+## Planning
 
 - **Approval**: set the review points the request needs, normally approving script and storyboard before making and showing a new video. Use the Task's saved review plan; Preview IDs describe outputs, not stages. Await the required script and storyboard approvals before downstream paid generation or final production.
 - **Review references**: use this definition's Preview IDs in the saved review plan. When switching an existing Task to this definition, use the existing plan-revision flow for affected references and approvals; do not transfer old approvals to renamed outputs. Preserve pinned versions and historical outputs.
+
+## Work
+
+Make or revise only the requested product-video outputs. Reuse existing work and change only affected shots, narration or assets. HyperFrames is the default production framework; read its installed skill when creating or editing a composition, and load other skills only as needed.
+
 - **Resume**: continue from saved outputs and current authorization. An answer or an old approval does not approve changed content; leave affected downstream production waiting for the system to unlock it.
 - **Resources**: read linked references only when needed. Reuse task assets and explicit project or Studio rules; do not read or maintain independent role memories or replace Studio examples automatically.
 

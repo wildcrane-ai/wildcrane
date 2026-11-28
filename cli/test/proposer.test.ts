@@ -31,7 +31,7 @@ const kanban = (): string => path.join(root, 'docs', 'kanban')
 const TODO = (): string => path.join(kanban(), 'todo')
 const ARCHIVE = (): string => path.join(kanban(), '.archive')
 
-const cardText = (title: string): string =>
+const cardText = (title: string, studio: string): string =>
   [
     '---',
     `title: ${title}`,
@@ -41,6 +41,7 @@ const cardText = (title: string): string =>
     'related: []',
     'modules: []',
     'questions: []',
+    `studio: ${studio}`,
     '---',
     '',
     'What this card was for.',
@@ -55,8 +56,8 @@ const cardText = (title: string): string =>
     '',
   ].join('\n')
 
-const open = (id: number): void => {
-  fs.writeFileSync(path.join(TODO(), `${id}-card.md`), cardText(`card ${id}`))
+const open = (id: number, studio = 'coding'): void => {
+  fs.writeFileSync(path.join(TODO(), `${id}-card.md`), cardText(`card ${id}`, studio))
 }
 
 /** Move an open card into the archive, the way `task archive` renames it. */
@@ -122,6 +123,13 @@ describe('what archiving hands over', () => {
     const before = openNow()
     complete(1)
     assert.deepEqual(queuedAfter(before), [1])
+  })
+
+  it('leaves completed cards from a Studio without rules out of the queue', () => {
+    open(1, 'studio-builder')
+    const before = openNow()
+    complete(1)
+    assert.deepEqual(queuedAfter(before), [])
   })
 
   it('queues every card completed at once, oldest first', () => {
@@ -191,21 +199,22 @@ describe('what archiving hands over', () => {
 })
 
 describe('a reflection run', () => {
-  it('signs what it proposes', async () => {
+  it('requires a decision and a held Runner job before submitting a proposal', async () => {
     open(1)
-    const before = openNow()
     complete(1)
-    queueCompleted(before)
     const opened = openRun({ action: 'reflect', cards: [1] }, 'prompt', [])
     assert.ok(!('error' in opened))
     process.env.KANBAN_RUN = opened.run.sessionId
+    const proposal = { title: 'Follow it up', text: 'More.', source: '#1', studio: 'coding' }
     try {
-      await cmdTriageAdd({ title: 'Follow it up', text: 'More.', source: '#1', studio: 'coding' })
+      await assert.rejects(cmdTriageAdd(proposal), /--decision/)
+      await assert.rejects(cmdTriageAdd({ ...proposal, decision: 'review' }), /held Runner job/)
     } finally {
       delete process.env.KANBAN_RUN
     }
-    assert.equal(readSignals().signals.find((s) => s.title === 'Follow it up')?.agent, 'proposer')
+    assert.equal(readSignals().signals.length, 0)
   })
+
 })
 
 describe('the flow', () => {
@@ -247,8 +256,8 @@ describe('the flow', () => {
     assert.doesNotMatch(await printed(), /Your settings on this board|settings below/)
     writeConfig((cfg) => void (cfg.specAgents = { proposer: { 'small-fixes': 'auto' } }))
     const auto = await printed()
-    assert.match(auto, /Your settings on this board:\n- A small fix .*--status planned/)
-    assert.doesNotMatch(auto, /--related/)
+    assert.match(auto, /Your settings on this board:\n- A small fix .*plan decision/)
+    assert.doesNotMatch(auto, /task create/)
   })
 
   const ended = (extra: Record<string, unknown>): void => {
@@ -332,10 +341,11 @@ describe('a proposal in the inbox', () => {
     assert.equal(readSignals().signals[0]!.studio, 'hyperframes-video')
   })
 
-  it('refuses one with no studio, or one this board has not got (#2139)', async () => {
-    await assert.rejects(() => cmdTriageAdd({ title: 'An idea', text: 'Words.' }), /--studio/)
+  it('accepts an unbound suggestion and refuses an unknown Studio', async () => {
+    const item = await cmdTriageAdd({ title: 'An idea', text: 'Words.' })
+    assert.equal(readSignals().signals.find(s => s.sourceId === item.source_id)?.studio, undefined)
     await assert.rejects(() => add({ title: 'An idea', text: 'Words.', studio: 'nope' }), /no studio called "nope"/)
-    assert.equal(readSignals().signals.length, 0)
+    assert.equal(readSignals().signals.length, 1)
   })
 
   it('refuses one with nothing written in it', async () => {

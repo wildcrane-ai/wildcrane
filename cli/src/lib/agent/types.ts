@@ -66,6 +66,7 @@ export type AgentAction =
    *  one flow. It names no card and writes only that file. */
   | 'describe-project'
   | 'reflect'
+  | 'triage-sort'
   /** Retired (#2115): the board no longer sorts triage. Kept for the runs recorded. */
   | 'triage'
   /** Retired (#1334): the sweeper is gone. Kept for the runs recorded. */
@@ -325,6 +326,7 @@ export interface RunRecord {
   /** This run's id and the record's key — ours, always, generated before anything
    *  spawns. A harness that mints an id of its own keeps it in `resumeId`. */
   sessionId: string
+  sessionKind?: import('../cloud/execution').FlowSessionKind
   cloudExecution?: import('../cloud/execution').CloudExecution
   studioPin?: import('./cloud-studios').StudioPin
   pendingWrites?: boolean
@@ -646,7 +648,7 @@ export interface DeliveryCompletion {
 export interface DeliveryRecord {
   completions?: DeliveryCompletion[]
 
-  cloudExecution?: { job: string; machine: string }
+  cloudExecution?: import('../cloud/execution').CloudExecution
   deliveryId: string
   /** The card it builds, or null for a build with no card at all (#428) — **Start now**
    *  sends a typed sentence straight to an implementation run. A card-less delivery is found
@@ -704,8 +706,9 @@ export interface DeliveryRecord {
    *  its work is meant to land. Read once, so a branch switched later can't move the
    *  target under a card whose author only ever saw one. */
   targetBranch?: string
+  /** `.` records a delivery in the project checkout. Other paths name saved workspaces. */
   worktree?: string
-  /** The branch that worktree builds on — `card/<card>/<delivery>`. */
+  /** The saved checkout's branch, including the target branch for in-place delivery. */
   branch?: string
   reviewed?: { mark: string; diff?: string; at: number }
   landing?: DeliveryLanding
@@ -726,6 +729,7 @@ export interface FrozenStudio {
   id: string
   name: string
   needsArtifact?: boolean
+  allowedFollowUps?: string
   previews?: import('./studio-def').StudioPreview[]
   rules?: string
 }

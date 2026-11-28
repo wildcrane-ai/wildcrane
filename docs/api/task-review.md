@@ -3,9 +3,15 @@
 Goal 的 `review_plan` 保存审核约定，Task 的 `review.plan` 执行同一份约定。
 Preview 是供审阅的草稿或成果。任务背景和要求留在卡片正文。
 
+Goal 和普通用户任务在启动时已有空审阅安排，直接进入实施。普通运行任务也可以用 `POST /v1/tasks` 的 `skip_plan: true` 指定空安排。安排待定时先规划，提交空安排后自动授权，准备完成即进入实施。启动请求的 `runtime` 用于首个操作，细化后的实施独立选择环境。
+
+有审阅点的任务和 Agent 提议的任务在准备完成后进入 `waiting_review`。用户可通过审批或调用 `POST /v1/tasks/{id}/execute { review_revision, runtime? }` 确认当前版本。已有审批和问答仍须处理。
+
+所选 Preview 的正文或附件不可读时，Task 返回 `failure: "task_previews_not_ready"`，缺失项见 `review.previews`。调用 `POST /v1/tasks/{id}/resume` 接续细化。
+
 ## Review Plan
 
-`ReviewPlan = { rule: string, previews: string[] } | LegacyReviewNode[] | null`。新计划按 Goal 或 Task 保存一句提审规则，并从有效 Preview 目录选择 ID。空字符串取消额外审批，空数组清空所选 Preview。`null` 表示待定。
+`ReviewPlan = { rule: string, previews: string[] } | LegacyReviewNode[] | null`。非空白规则、所选 Preview 或旧计划中的任意节点均算审阅点。规则和 Preview 均为空的扁平安排以及旧版 `[]` 表示无审阅点。`null` 表示待定。
 
 ```json
 {"rule":"先审核心创意，获批后再写成稿并提审。","previews":["copy"]}
@@ -19,7 +25,9 @@ Preview 是供审阅的草稿或成果。任务背景和要求留在卡片正文
 
 将上述请求发到 `POST /v1/tasks/{id}/review`。`review_revision` 使用 Task 审核总版本，响应返回最新 Task 和冻结的正文与资产版本。重复请求复用同一待审目标。内容变化后旧决定返回 `409 review_outdated`。
 
-`POST /v1/tasks/{id}/decisions` 使用待审批项的 `stage` 和 `revision`，提交 `{ decision: "approve" | "request_changes", stage, review_revision }`。批准后继续工作，要求修改后修订当前稿并重新提审。重复决定返回原回执。普通问答、`execute` 和 `resume` 均保留独立审批。
+`request_approval` 可用于细化阶段。任务已获执行授权或已进入实施时，提审返回 `409 conflict`。历史审核记录可通过 Task 接口查看。
+
+`POST /v1/tasks/{id}/decisions` 使用待审批项的 `stage` 和 `revision`，提交 `{ decision: "approve" | "request_changes", stage, review_revision }`。批准后按剩余审核条件继续，要求修改后修订当前稿并重新提审。重复决定返回原回执。普通问答、`execute` 和 `resume` 均保留独立审批。
 
 ### 旧计划
 
@@ -142,7 +150,7 @@ GET /v1/tasks/W-818
 
 任务返回 `can_execute: true` 时，用户可直接执行该任务。`POST /v1/tasks/{id}/execute` 仍使用 `review.revision`，并按已保存的安排派发工作。直接执行不会记录审阅决定。
 
-`POST /v1/tasks/{id}/execute` 使用任务的 **`review.revision`**，并派发当前可执行的工作。有解锁下游审核的阶段待批准时，此次只批准这些阶段。其余情况一次批准当前就绪的审核阶段。全部审核阶段获批且普通工作完成后，才派发交付。
+`POST /v1/tasks/{id}/execute` 使用任务的 **`review.revision`**，并派发当前可执行的工作。可用 `runtime` 为本次派发选择运行环境。有解锁下游审核的阶段待批准时，此次只批准这些阶段。其余情况一次批准当前就绪的审核阶段。全部审核阶段获批且普通工作完成后，才派发交付。
 
 ```http
 POST /v1/tasks/W-918/execute
@@ -191,7 +199,7 @@ Question 继续使用独立问答入口；回答不批准节点，批准不关�
 | --- | --- |
 | `400 bad_request` | 非法 JSON/节点字段、重复 ID 或依赖、未知节点或引用、自依赖、循环、未知 Preview、互斥操作混用。 |
 | `409 review_outdated` | 写入总版本过期，或决定目标的内容、定义、依赖批准已变化。重新读取；不得自动改用新版本批准。 |
-| `409 conflict` | 节点未解锁、待审目标不唯一、资产未同步、试图绕过审核或旧执行仍写入。 |
+| `409 conflict` | 节点未解锁、待审目标不唯一、资产未同步、执行阶段提审、试图绕过审核或旧执行仍写入。 |
 
 既有访问权限、取消与停止检查保留。任何拒绝都不记录批准或启动后续工作。
 
@@ -199,18 +207,18 @@ Question 继续使用独立问答入口；回答不批准节点，批准不关�
 
 ```sh
 akb task review W-818
-akb task review W-818 --previews copy --review 'Approve the final copy.' --revision 8
-akb task review W-818 --request-approval 'Approve this copy?' --preview copy --revision 9
-akb task review W-818 --preview-definitions-file revised-previews.json --revision 8
-akb task review W-818 --stage style --status done --revision 9
-akb task review W-818 --revise-from script --revision 10
-akb task approve W-818 --stage script --revision 7
+akb task review W-818 --previews copy --review 'Approve the final copy.'
+akb task review W-818 --request-approval 'Approve this copy?' --preview copy
+akb task review W-818 --preview-definitions-file revised-previews.json
+akb task review W-818 --stage style --status done
+akb task review W-818 --revise-from script
+akb task approve W-818 --stage script # 卡片对话
 ```
 
-- **读取**：不带写参数返回生效安排、尚不可读取的 Preview、冻结版本和当前可用批准。
-- **写入**：设置计划、提审、报告旧节点状态及修订旧节点为独立操作。`--revision` 对应审核总版本。`--preview-definitions-file` 可单独提交或与计划输入合用。计划输入见[目标与任务审阅 CLI](goal-previews.md#cli)。
-- **批准**：`--revision` 对应所审节点的版本。`--stage` 的省略规则与 HTTP 相同。输出既有决定结果。
-- **失败**：参数或文件错误非零退出且不写入；服务端错误保留原错误码。批准不得自动读取新版本代填。
+- **读取**：返回生效安排、阶段、待批准目标、快照及资产版本。Agent 输出省略用于并发控制的审核版本。
+- **写入**：CLI 自动提交读取的审核版本。并发冲突时重新读取并重试。`--preview-definitions-file` 可单独提交或与计划输入合用。计划输入见[目标与任务审阅 CLI](goal-previews.md#cli)。
+- **卡片对话**：批准本轮绑定的快照。待批准目标不唯一时指定 `--stage`，回复成功同步后才提交审批。
+- **人工 CLI**：`akb task approve W-818 --stage script --revision 7` 显式指定所审节点的版本。`akb task review` 仍接受 `--revision` 作为条件写入的兼容参数。
 
 旧的 Preview Agent 阶段参数与 `confirm_preview` 分支移除，不保留双轨执行。
 既有任务一次性迁移成果、节点及批准证据后使用同一契约，不从旧阶段序号继续推进。

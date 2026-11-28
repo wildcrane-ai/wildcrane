@@ -60,7 +60,6 @@ function buildCard(id: number, file: string, relFromTodo: string): Card | null {
     updatedAt: fs.statSync(file).mtime.toISOString(),
     relPath,
     title: meta.title,
-    priority: meta.priority,
     status: meta.status as CardStatus,
     blocked_by: meta.blocked_by,
     related: meta.related,

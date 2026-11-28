@@ -62,6 +62,7 @@ const BOARD_STAGES: StageContract[] = [
 // stage reaching them: a card finishing, a cadence coming
 // round, a day passing over conversations that said something new.
 const BOARD_NODES: FlowNode[] = [
+  { flow: 'triage-sort', kind: 'event', agent: 'discussion-helper' },
   { flow: 'reflect', kind: 'event', agent: 'proposer' },
   { flow: 'prune-memory', kind: 'event', agent: 'memory-pruner' },
   { flow: 'review-memory', kind: 'event', agent: 'chat-reviewer' },

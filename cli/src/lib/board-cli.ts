@@ -18,7 +18,7 @@ import path from 'node:path'
 import { die, projectRootOf, setBoardDir, setBoardRoot, useProjectState } from './paths'
 import { BoardError, warn, type Sink } from './io'
 import { backfillCardStudios } from './card-studio-backfill'
-import { migrateProjectState } from './machine/project'
+import { migrateProjectState, realPathOf, runnerBoardRoot } from './machine/project'
 
 // `init` is the one move that may run where no board exists yet — it is what makes one.
 const MAKES_A_BOARD = 'init'
@@ -54,9 +54,13 @@ const boardFromEnv = (): string | null => {
 /** Point every path in ./paths.ts at what `resolveBoard` found. The project goes with the
  *  board: `resolveBoard` already worked it out, and letting `setBoardDir` guess it again
  *  would put `.akb/` a folder deep in a project that is not a git repository. */
-export function useBoard(found: FoundBoard, dirNamed: boolean, readOnly = false): void {
+export function selectBoard(found: FoundBoard, dirNamed: boolean): void {
   if (!found.named && found.board === path.join(found.root, 'docs', 'kanban')) setBoardRoot(found.root, dirNamed)
   else setBoardDir(found.board, found.root)
+}
+
+export function useBoard(found: FoundBoard, dirNamed: boolean, readOnly = false): void {
+  selectBoard(found, dirNamed)
   if (readOnly) migrateProjectState(found.board, found.root)
   else { useProjectState(); backfillCardStudios() }
 }
@@ -72,7 +76,9 @@ function whole(found: FoundBoard, move: string): FoundBoard {
       dir: found.root,
     })
   }
-  return found
+  const board = realPathOf(found.board)
+  const root = runnerBoardRoot(board)
+  return root ? { ...found, root, board } : found
 }
 
 // Walk up from `from` until a board turns up. An agent's terminal is often a subfolder
@@ -114,10 +120,10 @@ export function resolveBoard(
         dir: folder,
       })
     }
-    return { root: projectRootOf(folder), board: folder, named: true }
+    return whole({ root: projectRootOf(folder), board: folder, named: true }, move)
   }
   if (dir !== null) {
-    const root = path.resolve(dir)
+    const root = path.resolve(cwd, dir)
     if (!fs.existsSync(root)) die(`no such folder: ${root}`, { kind: 'no-such-folder', dir: root })
     const kept = path.join(root, '.akb', 'kanban')
     if (!hasBoard(root) && move !== MAKES_A_BOARD && fs.existsSync(path.join(kept, 'todo'))) return whole({ root, board: kept }, move)

@@ -77,4 +77,4 @@ the Studio's fallback. Keep credentials out of cards, configuration, synced file
 
 - **Read the Studio first**: before choosing Previews, read its `STUDIO.md` (`akb studio file <studio> STUDIO.md`), relevant linked files, and its configuration (`akb studio rule <studio>`).
 - **Built-in Previews first**: match deliverables that need review to the Studio's built-in Previews; never replace a built-in Preview with a custom one or mix a built-in Preview's deliverable into a custom Preview.
-- **Custom Previews as fallback**: define a custom Preview only when built-in Previews cannot cover a deliverable that needs review, and keep task plans and context in the card or goal body.
+- **Custom Previews as fallback**: define a custom Preview only when built-in Previews cannot cover a deliverable that needs review, and leave general task plans in the card or goal body unless the Studio defines a Preview for them.

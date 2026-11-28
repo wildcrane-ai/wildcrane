@@ -102,12 +102,12 @@ describe('--source', () => {
 describe('source: in frontmatter', () => {
   it('round-trips an address with commas, colons and a hash', () => {
     const source = ['https://example.test/a,b?c=1,2#top', '#7', 'plan:12', 'https://example.test/q?a=b: c']
-    const text = serializeFrontmatter({ title: 'T', priority: 'med', status: 'todo', source })
+    const text = serializeFrontmatter({ title: 'T', status: 'todo', source })
     assert.deepEqual(parseFrontmatter(text + '\n').meta!.source, source)
   })
 
   it('writes no key on a card with none, and reads a card without one as empty', () => {
-    const text = serializeFrontmatter({ title: 'T', priority: 'med', status: 'todo' })
+    const text = serializeFrontmatter({ title: 'T', status: 'todo' })
     assert.doesNotMatch(text, /^source:/m)
     assert.deepEqual(parseFrontmatter(text + '\n').meta!.source, [])
   })

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { studioName } from '../shared/board-files'
-import { isFlatReviewPlan, isWaitingReview, reviewAuthorization, type TaskReview } from '../shared/review-plan'
+import { isFlatReviewPlan, isWaitingReview, reviewAuthorization, type AgentReview, type TaskReview } from '../shared/review-plan'
 
 export type SentContext = Record<string, string>
 export type ContextBlock = [key: string, text: string, cleared?: string, identity?: string]
@@ -30,19 +30,19 @@ export function studioEntry(id: string, name: string, version: number, action: s
   return ['studio', 'Studio: ' + name + '. Read `' + command + ' ' + studioName(id) + ' STUDIO.md`' + read + '.', undefined, JSON.stringify([id, name, version, command])]
 }
 
-export function compactReview(review: TaskReview, assigned?: readonly string[]): string {
+export function compactReview(review: AgentReview, assigned?: readonly string[]): string {
   if (isFlatReviewPlan(review.plan)) {
     const pending = (review.approvals ?? []).filter(approval => 'preview' in approval)
     return [
-      'Review r' + review.revision + ' · flat plan',
+      'Review · flat plan',
       'Selected Previews: ' + (review.plan.previews.join(', ') || 'none'),
       'Review rule: ' + (review.plan.rule || 'No extra approval.'),
-      ...(pending.length ? ['Pending approvals:', ...pending.map(({ preview, stage, revision, question }) =>
-        `- ${preview} · ${stage} · r${revision}: ${question}`)] : []),
+      ...(pending.length ? ['Pending approvals:', ...pending.map(({ preview, stage, question }) =>
+        `- ${preview} · ${stage} · ${question}`)] : []),
     ].map(line => line.replace(/[\r\n]+/g, ' ')).join('\n')
   }
   const authorization = reviewAuthorization(review, assigned)
-  if (authorization.kind === 'changed') return 'Review r' + review.revision + ' · authorization changed. Read the task again.'
+  if (authorization.kind === 'changed') return 'Review · authorization changed. Read the task again.'
   const custom = review.preview_definitions?.length
     ? '\nCustom Previews: ' + review.preview_definitions.map(d => d.id).join(', ')
     : ''
@@ -60,14 +60,18 @@ export function compactReview(review: TaskReview, assigned?: readonly string[]):
       : stage.status === 'running' && assigned && !unlocked.has(stage.id) ? 'running outside this dispatch' : stage.status
     return stage.id + previewNote + ' ' + status
   })
-  return ['Review r' + review.revision, ...stages].join(' · ') + custom
+  return ['Review', ...stages].join(' · ') + custom
 }
 
 export const configurationBlock = (text: string): ContextBlock => ['config', text, 'Studio configuration cleared.']
 
-export function reviewBlock(text: string, review: TaskReview | undefined, previous?: SentContext): ContextBlock {
-  return ['review', previous?.review && /^Review (?:r\d+|·)/.test(text) ? text.replace(/^Review/, 'Review updated') : text,
-    'Review context cleared. Read the current task.', text && JSON.stringify([text, review?.revision, review?.stages.map(stage => stage.revision)])]
+export function reviewFingerprint(review: TaskReview): string {
+  return contextFingerprint(JSON.stringify([review.revision, review.stages.map(stage => stage.revision)]))
+}
+
+export function reviewBlock(text: string, fingerprint?: string, previous?: SentContext): ContextBlock {
+  return ['review', previous?.review && /^Review ·/.test(text) ? text.replace(/^Review/, 'Review updated') : text,
+    'Review context cleared. Read the current task.', text && JSON.stringify([text, fingerprint])]
 }
 
 export const contextAction = (action: string): string =>

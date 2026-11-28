@@ -149,35 +149,32 @@ test('a saved failed report without resume evidence remains unverified (W-1207)'
   } finally { ctx.cleanup() }
 })
 
-test('W-947: resumable delivery on stale revise continues same delivery instead of replanning (#966)', async () => {
+test('a resumed revision stays in the refine slot when the card has a delivery (#1280)', async () => {
   const ctx = setupFakeFlow({
     reconcile: { kind: 'resumable', deliveryId: 'd947', sessionId: 's947', hasSession: true },
-    delivery: { deliveryId: 'd947', carryOn: 'build' },
-    resume: { deliveryId: 'd947' },
-  })
+    revise: { agentSession: 'refine-947', result: 'Revised the saved card.' },
+  }, { sessionKind: 'refine', flow: { verb: 'revise', studio: 'coding', resume: true, text: 'Update the draft.' } })
   fs.writeFileSync(path.join(ctx.board, '.fake', 'runs.json'), JSON.stringify([
     { sessionId: 's947', cardId: 947, action: 'implement', status: 'interrupted', deliveryId: 'd947', resumeId: 'agent-947' },
   ]))
   try {
     const end = await runFlow(ctx.job, ctx.ws, ctx.deps, ctx.io)
     assert.equal(end.ok, true, !end.ok ? end.reason : '')
-    assert.equal(end.ok && end.report.deliveryCompleted, true)
-    assert.equal(end.ok && end.report.deliveryId, 'd947')
+    assert.equal(end.ok && end.report.deliveryCompleted, undefined)
+    assert.equal(end.ok && end.report.session, 'refine-947')
     const verbs = ctx.calls().map((a) => a.slice(0, 3).join(' '))
-    assert.ok(verbs.includes('raw delivery reconcile'))
-    assert.ok(verbs.includes('raw delivery resume'))
-    assert.ok(!verbs.includes('raw card revise'))
+    assert.ok(!verbs.some(verb => verb.startsWith('raw delivery ')))
+    assert.ok(verbs.includes('raw card revise'))
   } finally { ctx.cleanup() }
 })
 
-test('an approval request pauses the active delivery and retains its session', async () => {
+test('a Preview approval request pauses refinement and retains its session', async () => {
   const plan = { rule: 'Approve the direction before drafting.', previews: ['copy'] }
-  const checkout = '.akb/worktrees/d947'
   const ctx = setupFakeFlow({
-    reconcile: [{ kind: 'none' }, { kind: 'resumable', deliveryId: 'd947', status: 'active', worktree: `${checkout}/work` }],
-    implement: { trackExecution: true, delivery: { id: 'd947', status: 'active' }, agentSession: 'copy-session' },
+    refine: { trackExecution: true, agentSession: 'copy-session' },
   }, {
-    flow: { verb: 'implement', phase: 'implement', studio: 'coding', review_stages: [], review_revision: 1 },
+    sessionKind: 'refine',
+    flow: { verb: 'refine', studio: 'coding', review_stages: [], review_revision: 1 },
     taskReview: { plan, revision: 1, stages: [], approvals: [] },
     reviewAtDispatch: true,
   })
@@ -192,11 +189,11 @@ test('an approval request pauses the active delivery and retains its session', a
     } } }
   }
   try {
-    for (const dir of ['work', 'base']) fs.mkdirSync(path.join(ctx.ws.cwd, checkout, dir), { recursive: true })
     const end = await runFlow(ctx.job, ctx.ws, ctx.deps, ctx.io)
     assert.ok(end.ok, !end.ok ? end.reason : '')
     assert.equal(end.report.deliveryCompleted, false)
-    assert.equal(end.report.deliveryId, 'd947')
+    assert.equal(end.report.deliveryId, undefined)
+    assert.equal(end.report.landReady, undefined)
     assert.equal(end.report.session, 'copy-session')
     assert.ok(fs.existsSync(path.join(ctx.board, 'todo', '947-reconcile.md')))
   } finally { ctx.cleanup() }
@@ -302,6 +299,7 @@ test('flowRunEvidence matches interrupted clarify planning runs by cloudExecutio
 
 test('a legacy #1247 run under #1246 blocks exit proof without taking ownership of #1247’s real job', async () => {
   const ctx = setupFakeFlow({}, { task: 'task_1246', number: 1246 })
+  ctx.deps.stopMs = 5_000
   ctx.ws.task = ctx.ws.cloudTask = 'task_1246'
   ctx.ws.number = 1246
   const file = path.join(ctx.board, '.fake', 'runs.json')

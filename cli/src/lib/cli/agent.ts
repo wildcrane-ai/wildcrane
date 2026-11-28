@@ -4,7 +4,7 @@ import { Option } from 'commander'
 
 import { BoardError } from '../io'
 import { die, KANBAN } from '../paths'
-import { resolveBoard, useBoard } from '../board-cli'
+import { resolveBoard, selectBoard, useBoard } from '../board-cli'
 import { syncStudios } from '../agent/cloud-studios'
 import { FLOWS, flowVerb, type Flow, type FlowGroup, type FlowOption } from '../agent/flows'
 import { namedDelivery } from '../agent/deliveries'
@@ -30,7 +30,7 @@ import {
   cloud,
   projectList,
   runnerList,
-  taskApprove,
+  agentTaskContext, taskApprove,
   taskReview,
   taskUpdateQuestions,
   taskChat,
@@ -39,7 +39,6 @@ import {
   taskList,
   taskArchive, taskRemove, taskRestore,
   taskResume,
-  taskRuntime,
   taskShow,
   taskStop,
   workspaceList,
@@ -62,7 +61,7 @@ import {
   cmdSubWait,
   cmdWatch,
 } from '../../commands/run'
-import { cmdTriageAdd, cmdTriageCheck } from '../../commands/triage'
+import { cmdTriageAdd, cmdTriageCheck, cmdTriageDecide } from '../../commands/triage'
 import { cmdGoalStudios, cmdGoalPreviews, goalsFile } from '../../commands/goal'
 import { listPreviews } from '../../commands/previews'
 import { cmdStudioPreview } from '../../commands/studio-preview'
@@ -225,21 +224,36 @@ function declareLocalRuns(program: Command, cli: AgentCliOptions, canonical?: { 
 
   withShared(triage.command('add'))
     .summary('write one item into triage')
-    .description(
-      'One item, from words you already have — no endpoint, and nothing is pulled. The body is ' +
-        '`--text` for a line or two, `--file <path>` when it is longer. `--source` says where it came ' +
-        'from, and a reflection puts the card that prompted it there. It is not a task: it waits in ' +
-        'triage until somebody sorts it. One already waiting, or already made into a card, is refused ' +
-        'and told where it is; one only ignored is taken, and its `dismissed/` record is left alone.',
-    )
+    .description('Submit a suggestion from text or a file. Follow-up and Reflect also record plan or review.')
     .requiredOption('--title <text>', 'what it is, in one line')
     .option('--text <text>', 'its own words')
     .option('--file <path>', 'its own words, written to a file first')
     .option('--source <text>', 'where it came from')
-    .requiredOption('--studio <id>', 'the studio that does it (`akb studio list`); the card made of it runs on it')
+    .option('--studio <id>', 'the Studio that fits the item (`akb studio list`)')
+    .option('--decision <plan|review>', 'required for Follow-up and Reflect proposals')
     .option('--slug <slug>', 'a short English name for its file, and for the card it becomes (default: from the title)')
     .action(async function (this: Command) {
-      await onBoard(this, cli, () => cmdTriageAdd(this.opts()))
+      const ctx = ctxOf(this, cli.program)
+      await runAction(ctx, {}, async () => {
+        const found = resolveBoard('triage', { ...ctx, cwd: cli.cwd, installHint: cli.installHint })
+        selectBoard(found, ctx.dir !== null)
+        const result = await cmdTriageAdd(this.opts(), async check => {
+          if (check) { await syncStudios(); check() }
+          useBoard(found, ctx.dir !== null)
+          if (!check) await syncStudios()
+        })
+        return { board: KANBAN, ...result }
+      })
+    })
+
+  withShared(triage.command('decide'))
+    .summary('record a decision for an item in the current Runner batch')
+    .argument('<source-id>')
+    .requiredOption('--decision <plan|review|skip>')
+    .requiredOption('--reason <text>')
+    .option('--studio <id>', 'choose an available Studio for an unbound item')
+    .action(async function (this: Command, source: string) {
+      await onBoard(this, cli, () => cmdTriageDecide(source, this.opts()))
     })
 
   withShared(triage.command('check'))
@@ -347,7 +361,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
         }
         return createBoardCard(this, cli)
       }
-      if (['priority', 'blockedBy', 'related', 'modules', 'slug', 'triage', 'source'].some((key) => opts[key] !== undefined)) {
+      if (['blockedBy', 'related', 'modules', 'slug', 'triage', 'source'].some((key) => opts[key] !== undefined)) {
         die('Card fields require --title.', 'bad-args')
       }
       if (!request.length) this.error("missing required argument 'request' or option '--title'", { code: 'commander.missingArgument' })
@@ -357,7 +371,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .argument('<task>')
     .summary('approve the current review point')
     .option('--stage <id>', 'the reviewed node')
-    .requiredOption('--revision <n>', 'the stage version you reviewed')
+    .addOption(new Option('--revision <n>', 'the stage version you reviewed').hideHelp(agentTaskContext()))
     .option('--comment <text>', 'a note with the approval')
     .action(async function (this: Command, id: string) {
       await boardless(this, cli, (_, location) => taskApprove(id, this.opts().comment, this.opts(), location))
@@ -365,7 +379,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
   withShared(task.command('review'))
     .argument('<task>')
     .summary('read or update the task review, ask for approval, or report a stage')
-    .option('--previews <ids>', 'select comma-separated Studio Preview IDs')
+    .option('--previews <ids>', 'select comma-separated Studio Preview IDs, or "" for none')
     .option('--add-previews <ids>', 'append comma-separated Preview IDs to the review plan')
     .option('--review <rule>', 'set when to ask for approval, or set a legacy review flow')
     .addHelpText('after', REVIEW_FLOW_HELP)
@@ -376,7 +390,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .option('--status <status>', 'running or done')
     .option('--preview-definitions-file <path>', 'propose a JSON list of task Preview definitions')
     .option('--revise-from <id>', 'revise this node and its dependents')
-    .option('--revision <n>', 'the task review version read before this write')
+    .addOption(new Option('--revision <n>', 'require the task review version you read').hideHelp(agentTaskContext()))
     .action(async function (this: Command, id: string) {
       await boardless(this, cli, (_, location) => taskReview(id, this.opts(), location))
     })
@@ -409,7 +423,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
   withShared(task.command('archive'))
     .argument('<task>')
     .summary('archive an eligible task')
-    .description('Archive the current Runner task locally for sync, or wait for Cloud to confirm the archive of another task.')
+    .description('Archive a linked task directly in Cloud. Runner mirrors the archive to disk. On an unlinked board, archive locally.')
     .action(async function (this: Command, id: string) {
       await boardless(this, cli, (_, location) => taskArchive(id, location))
     })
@@ -433,16 +447,10 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
   withShared(task.command('resume'))
     .argument('<task>')
     .summary('resume a Cloud task')
+    .option('--runtime <name-or-id>', 'runtime for this execution')
     .description('Resume a Cloud task using its task key, Cloud task ID, or number in the linked project. Returns the queued or running status.')
     .action(async function (this: Command, id: string) {
-      await boardless(this, cli, (_, location) => taskResume(id, location))
-    })
-  withShared(task.command('runtime'))
-    .argument('<task>')
-    .argument('<runtime>')
-    .summary('change a task’s runtime')
-    .action(async function (this: Command, id: string, runtime: string) {
-      await boardless(this, cli, (_, location) => taskRuntime(id, runtime, location))
+      await boardless(this, cli, (_, location) => taskResume(id, location, this.opts().runtime))
     })
   withShared(task.command('stop'))
     .argument('<task>')
@@ -472,7 +480,7 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
     .option('--review-file <path>', 'JSON review nodes with after dependencies; [] needs no extra review')
     .addHelpText('after', REVIEW_FLOW_HELP)
   goal.action(async function (this: Command, sub: string) {
-    await boardless(this, cli, () => (externalGoalSession() ? cloudGoal([sub], this.opts()) : cmdGoal([sub], this.opts())))
+    await boardless(this, cli, () => (externalGoalSession() ? cloudGoal([sub], this.opts()) : cmdGoal([sub], this.opts(), cli.cwd)))
   })
 
   withShared(withShared(program.command('workspace')).summary('your WildCrane workspaces').command('list'))
@@ -555,9 +563,9 @@ export function declareRuns(program: Command, cli: AgentCliOptions): void {
 
   withShared(program.command('transcribe'))
     .argument('<media>', 'the local video or audio file')
-    .summary('transcribe an audio stream in a Runner task')
-    .option('--audio-stream <index>', 'zero-based audio stream index, required when there are multiple streams')
-    .option('--language <code>', 'language hint or auto (default)')
+    .summary('transcribe the first audio stream in a Runner task')
+    .description('Transcribe the first audio stream of a local file in a Runner task.')
+    .option('--language <auto|code>', 'language hint or auto (default)')
     .requiredOption('--out <file>', 'where to write the JSON transcript')
     .requiredOption('--vtt <file>', 'where to write the WebVTT captions')
     .action(async function (this: Command, media: string) {

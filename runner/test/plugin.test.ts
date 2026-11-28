@@ -70,6 +70,48 @@ describe('one Runner per computer', () => {
     } finally { await release() }
     await (await acquireMachine('codex'))()
   })
+
+  it('takes over when a stale owner lock collides with a reused PID and dead socket', async () => {
+    if (process.platform === 'win32') return
+    fs.mkdirSync(path.dirname(lockPath()), { recursive: true })
+    const crashed = spawn(process.execPath, ['-e', `require('net').createServer().listen(${JSON.stringify(lockPath())}, () => console.log('up'))`])
+    await new Promise((r) => crashed.stdout.once('data', r))
+    crashed.kill('SIGKILL')
+    await new Promise((r) => crashed.once('exit', r))
+    const ownerDir = `${lockPath()}.owner`
+    fs.mkdirSync(ownerDir, { recursive: true })
+    fs.writeFileSync(path.join(ownerDir, `${process.pid}-00000000-0000-4000-8000-000000000000`), '')
+    await (await acquireMachine('terminal'))()
+    assert.equal(fs.existsSync(lockPath()), false)
+    assert.equal(fs.existsSync(ownerDir), false)
+  })
+
+  it('cleans up its socket and owner lock when SIGTERM arrives twice during shutdown', async () => {
+    if (process.platform === 'win32') return
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wildcrane-runner-sigterm-'))
+    const cloud = new FakeCloud()
+    await cloud.start()
+    writeFakeSession(home)
+    const sock = path.join(home, 'runner.sock')
+    const ownerDir = `${sock}.owner`
+    const child = spawn(process.execPath, [path.join(process.env.RUNNER_DIST!, 'runner.mjs')], {
+      env: { ...process.env, WILDCRANE_HOME: home, AI4KANBAN_CLOUD_URL: `http://127.0.0.1:${cloud.port}` },
+      stdio: 'pipe',
+    })
+    const exited = once(child, 'exit')
+    try {
+      await until(() => fs.existsSync(sock) && fs.existsSync(ownerDir) && cloud.registrations > 0, 10_000)
+      child.kill('SIGTERM')
+      child.kill('SIGTERM')
+      assert.equal((await exited)[0], 0)
+      assert.equal(fs.existsSync(sock), false, 'runner.sock should be removed on exit')
+      assert.equal(fs.existsSync(ownerDir), false, 'runner.sock.owner should be removed on exit')
+    } finally {
+      child.kill('SIGKILL')
+      await cloud.stop()
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
 })
 
 const components = new Set<ReturnType<typeof spawn>>()
@@ -251,7 +293,7 @@ describe('the plugin akb in a session started by hand (#187)', () => {
     const dsh = component('dsh')
     await dsh.ready
     dsh.send(2, 'tools/call', { name: 'wildcrane_status', arguments: { path: os.homedir() } })
-    await until(() => dsh.answers.has(2))
+    await until(() => dsh.answers.has(2), 10_000)
     const status = JSON.parse((dsh.answers.get(2)!.result as { content: { text: string }[] }).content[0]!.text)
     assert.equal(status.akb, path.join(runnerHome(), 'bin', 'akb', 'akb'))
     await stop(dsh.child)

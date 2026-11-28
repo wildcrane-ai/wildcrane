@@ -55,3 +55,11 @@ export type ArchiveCompletionReceipt = { task: string } & (
 )
 
 export const ARCHIVE_COMPLETION_BATCH = 100
+
+interface ArchiveFile { content: string; base_seq: number }
+export interface ArchiveInput {
+  card?: ArchiveFile & { path: string }
+  assets?: ArchiveFile
+  delivery_id?: string
+  landing?: { commit: string; branch: string }
+}

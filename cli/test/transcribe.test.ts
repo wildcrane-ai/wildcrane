@@ -6,11 +6,11 @@ import path from 'node:path'
 import { it } from 'node:test'
 import { runAgent } from '../src/lib/agent-cli.ts'
 import { writeSession } from '../src/lib/cloud/session.ts'
-import { restoreMachineHome } from './helpers/board.ts'
+import { restoreMachineHome, run } from './helpers/board.ts'
 
-const hasFfmpeg = ['ffmpeg', 'ffprobe'].every(tool => spawnSync(tool, ['-version'], { stdio: 'ignore' }).status === 0)
+const hasFfmpeg = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0
 
-it('selects one audio stream, keeps its leading silence and retries submission without uploading again', { skip: !hasFfmpeg }, async t => {
+it('transcribes the first audio stream, keeps its leading silence and retries submission without uploading again', { skip: !hasFfmpeg }, async t => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'akb-transcribe-test-'))
   const api = 'https://transcription.test'
   const previousHome = process.env.AI4KANBAN_HOME
@@ -32,10 +32,13 @@ it('selects one audio stream, keeps its leading silence and retries submission w
     expiresAt: Date.now() + 3_600_000, subject: 'user' })
   const media = spawnSync('ffmpeg', ['-v', 'error',
     '-f', 'lavfi', '-i', 'color=c=black:s=16x16:d=1',
-    '-f', 'lavfi', '-i', 'sine=frequency=300:sample_rate=16000:duration=0.2',
     '-f', 'lavfi', '-i', 'sine=frequency=900:sample_rate=16000:duration=0.3',
-    '-filter_complex', '[2:a]adelay=300:all=1[delayed]', '-map', '0:v', '-map', '1:a', '-map', '[delayed]',
+    '-f', 'lavfi', '-i', 'sine=frequency=300:sample_rate=16000:duration=0.2',
+    '-filter_complex', '[1:a]adelay=300:all=1,asplit[first][single]',
+    '-map', '0:v', '-map', '[first]', '-map', '2:a', '-disposition:a:0', '0', '-disposition:a:1', 'default',
     '-c:v', 'mpeg4', '-c:a', 'aac', 'clip.mp4',
+    '-map', '[single]', '-c:a', 'pcm_s16le', 'single.wav',
+    '-map', '0:v', '-c:v', 'mpeg4', 'silent.mp4',
   ], { cwd, encoding: 'utf8' })
   assert.equal(media.status, 0, media.stderr)
 
@@ -52,6 +55,8 @@ it('selects one audio stream, keeps its leading silence and retries submission w
         assert.ok(init?.body instanceof Blob)
         const wav = Buffer.from(await init.body.arrayBuffer())
         assert.equal(wav.subarray(0, 4).toString(), 'RIFF')
+        assert.equal(wav.readUInt16LE(22), 1)
+        assert.equal(wav.readUInt32LE(24), 16_000)
         const data = wav.indexOf('data', 12) + 8
         assert.ok(wav.length > 16_000)
         assert.ok(wav.subarray(data, data + 8000).every(byte => byte === 0))
@@ -70,20 +75,29 @@ it('selects one audio stream, keeps its leading silence and retries submission w
     }
   }
 
-  const command = ['transcribe', 'clip.mp4', '--out', 'transcript.json', '--vtt', 'captions.vtt']
-  assert.equal(await runAgent(command, { cwd }), 1)
-  assert.equal(await runAgent([...command, '--audio-stream', '2'], { cwd }), 1)
+  const outputs = ['--out', 'transcript.json', '--vtt', 'captions.vtt']
+  const command = ['transcribe', 'clip.mp4', ...outputs]
+  await assert.rejects(run(cwd, [...command, '--audio-stream', '1']), /unknown option '--audio-stream'/)
+  await assert.rejects(run(cwd, ['transcribe', 'silent.mp4', ...outputs]), /The media contains no audio streams\./)
   assert.equal(uploads, 0)
-  assert.equal(await runAgent([...command, '--audio-stream', '1', '--language', 'zh'], { cwd }), 0)
+  assert.equal(await runAgent([...command, '--language', 'zh'], { cwd }), 0)
   assert.equal(uploads, 1)
   assert.equal(submits.length, 2)
   assert.ok(submits[0]?.key)
   assert.deepEqual(submits[0], submits[1])
   assert.deepEqual(submits[0]?.body, { audio: { artifact: 'art_1', version: 1 }, language: 'zh' })
   const transcript = fs.readFileSync(path.join(cwd, 'transcript.json'), 'utf8')
-  assert.deepEqual(JSON.parse(transcript), { ...result, source: { media: 'clip.mp4', audio_stream: 1 } })
-  assert.match(fs.readFileSync(path.join(cwd, 'captions.vtt'), 'utf8'), /00:00:00\.300 --> 00:00:00\.591\n你好 &lt;World&gt;/)
+  assert.deepEqual(JSON.parse(transcript), { ...result, source: { media: 'clip.mp4' } })
+  const captions = fs.readFileSync(path.join(cwd, 'captions.vtt'), 'utf8')
+  assert.match(captions, /00:00:00\.300 --> 00:00:00\.591\n你好 &lt;World&gt;/)
   failJob = true
-  assert.equal(await runAgent([...command, '--audio-stream', '1'], { cwd }), 1)
+  await assert.rejects(run(cwd, command), /Model failed/)
   assert.equal(fs.readFileSync(path.join(cwd, 'transcript.json'), 'utf8'), transcript)
+  assert.equal(fs.readFileSync(path.join(cwd, 'captions.vtt'), 'utf8'), captions)
+
+  failJob = false
+  assert.equal(await runAgent(['transcribe', 'single.wav', ...outputs], { cwd }), 0)
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(cwd, 'transcript.json'), 'utf8')),
+    { ...result, source: { media: 'single.wav' } })
+  assert.equal(fs.readFileSync(path.join(cwd, 'captions.vtt'), 'utf8'), captions)
 })

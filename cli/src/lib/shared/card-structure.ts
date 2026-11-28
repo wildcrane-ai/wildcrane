@@ -5,20 +5,18 @@ import { unquote } from '../yaml.ts'
 import { cardHeading, todoHeading, todoLines } from './card-lines.ts'
 import type { SourceProblem } from './preview-blocks.ts'
 
-export const LEVELS = ['high', 'med', 'low']
-
 export interface CardStudioContext {
   studio?: string
   previewIds?: readonly string[]
   historicalPreviews?: readonly string[]
 }
 
-const required = ['title', 'priority', 'status', 'blocked_by', 'related', 'modules', 'questions']
+const required = ['title', 'status', 'blocked_by', 'related', 'modules', 'questions']
 const lists = new Set(['blocked_by', 'related', 'modules', 'previews', 'source'])
 const flags = new Set(['preview_approved', 'rejected'])
 const rejection = new Set(['rejected_reason', 'rejected_at', 'rejected_by'])
-const scalars = new Set(['title', 'priority', 'status', 'studio', 'triage', 'archived', 'restored', ...flags, ...rejection])
-const legacy = new Set(['cadence', 'last_run', 'channels', 'decided', 'verify', 'release', 'schedule', 'roi', 'phases', 'stages', 'phase'])
+const scalars = new Set(['title', 'status', 'studio', 'triage', 'archived', 'restored', ...flags, ...rejection])
+const legacy = new Set(['cadence', 'last_run', 'channels', 'decided', 'verify', 'release', 'schedule', 'roi', 'phases', 'stages', 'phase', 'priority'])
 
 function problem(file: string, line: number, path: string, code: string, message: string, hint: string): SourceProblem {
   return { file, line, column: 1, path, code, message, hint }
@@ -47,7 +45,7 @@ export function cardHeaderProblems(file: string, text: string, context?: CardStu
     const match = raw.match(/^([A-Za-z_]+):\s*(.*)$/)
     if (match) {
       const name = match[1]!
-      if (fields.has(name)) add(i + 1, name, 'duplicate-field', `Field ${name} is repeated`, `Keep one ${name}: entry.`)
+      if (fields.has(name) && name !== 'priority') add(i + 1, name, 'duplicate-field', `Field ${name} is repeated`, `Keep one ${name}: entry.`)
       current = { line: i + 1, value: match[2]!, block: [] }
       fields.set(name, current)
       ended = false
@@ -102,10 +100,9 @@ export function cardHeaderProblems(file: string, text: string, context?: CardStu
       continue
     }
     if (block.length) checked(block[0]!, 'frontmatter-field', `Indented lines under ${name} are ignored`, 'Keep the value on the same line as the field.')
-    const allowed = name === 'status' ? STATUSES : name === 'priority' ? LEVELS : undefined
-    if (allowed) {
-      if (!allowed.includes(name === 'status' ? meta.status : meta.priority) || !balancedScalar(value)) {
-        checked(field, name, `Invalid ${name} ${JSON.stringify(value)}`, `Use ${allowed.join(', ')}.`)
+    if (name === 'status') {
+      if (!STATUSES.includes(meta.status) || !balancedScalar(value)) {
+        checked(field, name, `Invalid ${name} ${JSON.stringify(value)}`, `Use ${STATUSES.join(', ')}.`)
       }
     } else if (flags.has(name)) {
       if (!/^(['"]?)true\1$/.test(value.trim())) checked(field, name, `Invalid ${name} ${JSON.stringify(value)}`, 'Use true or omit the field.')

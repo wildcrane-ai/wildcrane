@@ -572,7 +572,7 @@ describe('a delivery the live record lost', () => {
     await recoverOrphanedDeliveries()
     syncAudit('rest4444')
     assert.deepEqual(readAudit('rest4444').sessions, [
-      { sessionId: 'rest4444-1', action: 'implement', status: 'done', startedAt: 1_000, endedAt: 2_000, log: 'x.log' },
+      { sessionId: 'rest4444-1', sessionKind: 'implement', action: 'implement', status: 'done', startedAt: 1_000, endedAt: 2_000, log: 'x.log' },
     ])
   })
 

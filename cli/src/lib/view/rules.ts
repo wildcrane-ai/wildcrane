@@ -63,19 +63,8 @@ const planUnfinished = (card: Card): boolean => card.deliversIn === 'plan' && pl
 
 // ---- pick order ------------------------------------------------------------
 //
-const LEVEL_RANK: Record<string, number> = { high: 0, med: 1, low: 2 }
-
-const rank = (table: Record<string, number>, value: string): number =>
-  table[value] ?? Object.keys(table).length
-
-/** Highest priority first, then id — the order the board takes cards in when it
- *  starts them itself. Every candidate is
- *  `todo`, so status doesn't enter this one. */
 export function byDispatchOrder(a: Card, b: Card): number {
-  return (
-    rank(LEVEL_RANK, a.priority) - rank(LEVEL_RANK, b.priority) ||
-    a.id - b.id
-  )
+  return a.id - b.id
 }
 
 // ---- would a refine move this card? ----------------------------------------

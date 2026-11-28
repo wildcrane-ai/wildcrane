@@ -69,7 +69,7 @@ export function addPreviewsToPlan(previous: ReviewPlan | undefined, previews: re
   ])
 }
 export type ReviewStatus = 'blocked' | 'available' | 'running' | 'waiting_review' | 'approved' | 'done' | 'changes_requested' | 'superseded'
-export interface ReviewStage { id: string; status: ReviewStatus | 'ready'; revision: number; snapshot: Record<string, unknown> | null; preview?: string; job?: string }
+export interface ReviewStage { id: string; status: ReviewStatus | 'ready'; revision: number; snapshot: Record<string, unknown> | null; preview?: string; question?: string; job?: string }
 
 /** Read stages in older responses and saved Runner state during an upgrade. */
 export function isWaitingReview(status: ReviewStage['status']): boolean {
@@ -86,6 +86,33 @@ export interface TaskReview {
   previews?: Record<string, PreviewUnavailable>
   approvals?: ReviewApproval[]
   preview_definitions?: PreviewDefinition[]
+}
+
+type AgentApproval = Omit<LegacyReviewApproval, 'revision'> | Omit<PendingApproval, 'revision'>
+type AgentReviewStage = Pick<ReviewStage, 'id' | 'status' | 'snapshot' | 'preview' | 'question'>
+export interface AgentReview extends Omit<TaskReview, 'revision' | 'stages' | 'approvals'> {
+  stages: AgentReviewStage[]
+  approvals?: AgentApproval[]
+}
+
+function agentSnapshot(snapshot: ReviewStage['snapshot']): ReviewStage['snapshot'] {
+  const evidence = snapshot?.evidence
+  if (!evidence || typeof evidence !== 'object' || !('after' in evidence)) return snapshot
+  const { after: _reviewRevisions, ...pins } = evidence
+  return { ...snapshot, evidence: pins }
+}
+
+export function agentReview(review: AgentReview): AgentReview {
+  const { plan, stages, previews, approvals, preview_definitions } = review
+  return {
+    plan,
+    stages: stages.map(({ id, status, snapshot, preview, question }) => ({ id, status, snapshot: agentSnapshot(snapshot), preview, question })),
+    previews,
+    approvals: approvals?.map(approval => 'preview' in approval
+      ? { stage: approval.stage, preview: approval.preview, question: approval.question }
+      : { stage: approval.stage, starts: approval.starts }),
+    preview_definitions,
+  }
 }
 
 export interface SavedPreviewInputs {
@@ -231,7 +258,7 @@ type ReviewAuthorization =
   | { kind: 'flat'; plan: FlatReviewPlan }
   | { kind: 'stages'; nodes: ReviewNode[] }
 
-export function reviewAuthorization(review: TaskReview, assigned?: readonly string[], dispatchRevision?: number): ReviewAuthorization {
+export function reviewAuthorization(review: AgentReview, assigned?: readonly string[], dispatchRevision?: number): ReviewAuthorization {
   if (isFlatReviewPlan(review.plan)) {
     return review.stages.some(stage => isWaitingReview(stage.status)) ? { kind: 'waiting' } : { kind: 'flat', plan: review.plan }
   }
@@ -241,7 +268,8 @@ export function reviewAuthorization(review: TaskReview, assigned?: readonly stri
     if (!stage || (assigned && !assigned.includes(node.id))) return false
     // An available stage revised after dispatch needs a new grant. Starting it advances its running revision.
     return stage.status === 'running' ||
-      (stage.status === 'available' && (dispatchRevision === undefined || stage.revision <= dispatchRevision))
+      (stage.status === 'available' && (dispatchRevision === undefined ||
+        'revision' in stage && typeof stage.revision === 'number' && stage.revision <= dispatchRevision))
   })
   if (assigned?.some(id => !nodes.some(node => node.id === id))) return { kind: 'changed' }
   if (review.plan === null) return { kind: 'plan' }
@@ -260,7 +288,11 @@ export function reviewAllows(authorization: ReviewAuthorization, action: 'refine
     : authorization.kind === 'unreviewed' || authorization.kind === 'delivery' || authorization.kind === 'flat'
 }
 
-function reviewInstruction(authorization: ReviewAuthorization, review: TaskReview): string {
+interface ReviewBoundaryOptions {
+  phase?: string
+}
+
+function reviewInstruction(authorization: ReviewAuthorization, review: AgentReview, delivery: boolean): string {
   switch (authorization.kind) {
     case 'plan': return 'Planning only. Submit a review plan. Work only on dispatched stages.'
     case 'unreviewed': return 'No extra review. Complete the authorized work and Studio delivery checks.'
@@ -270,9 +302,10 @@ function reviewInstruction(authorization: ReviewAuthorization, review: TaskRevie
     ].join('\n')
     case 'flat': return [
       'Selected Previews: ' + (authorization.plan.previews.join(', ') || 'none'),
-      'Review rule: ' + (authorization.plan.rule || 'No extra approval.'),
-      ...(authorization.plan.rule ? [
-        'At each approval point, save the current Preview and assets. Read akb task review <task>, then run akb task review <task> --request-approval <question> --preview <id> --revision <n>.',
+      delivery ? 'Complete the authorized work and follow Studio delivery checks.'
+        : 'Review rule: ' + (authorization.plan.rule || 'No extra approval.'),
+      ...(!delivery && authorization.plan.rule ? [
+        'At each approval point, save the current Preview and assets. Run akb task review <task> --request-approval <question> --preview <id>.',
         'End this run after submitting an approval. On continuation, read the task review and the latest decision before continuing or revising the draft.',
       ] : []),
       ...review.stages.filter(stage => stage.preview && (stage.status === 'approved' || stage.status === 'changes_requested'))
@@ -286,23 +319,28 @@ function reviewInstruction(authorization: ReviewAuthorization, review: TaskRevie
   }
 }
 
-const reviewWriteRules = 'Read akb task review before reporting running/done with its revision. Sync content and assets before done. Revise a stage before changing its approved output. Only stage approval accepts reviewable outputs.'
+const reviewWriteRules = 'Sync content and assets before reporting a stage done. Revise a stage before changing its approved output. Only stage approval accepts reviewable outputs.'
 
-export function taskReviewBoundary(review: TaskReview, assigned?: readonly string[]): string {
+export function taskReviewBoundary(review: AgentReview, assigned?: readonly string[], options?: ReviewBoundaryOptions): string {
+  const delivery = options?.phase === 'implement' || options?.phase === 'land'
   return [
-    reviewInstruction(reviewAuthorization(review, assigned), review),
+    reviewInstruction(reviewAuthorization(review, assigned), review, delivery),
     ...(isFlatReviewPlan(review.plan) ? [] : [reviewWriteRules]),
   ].join('\n')
 }
 
-export function reviewBoundary(review: TaskReview, assigned?: readonly string[], studio: readonly { id: string }[] = []): string {
-  const { preview_definitions = [], ...state } = review
+export function reviewBoundary(review: AgentReview, assigned?: readonly string[], studio: readonly { id: string }[] = [],
+  options?: ReviewBoundaryOptions): string {
+  const { preview_definitions = [], ...state } = agentReview(review)
   const authorization = reviewAuthorization(review, assigned)
+  const delivery = options?.phase === 'implement' || options?.phase === 'land'
+  const details = delivery && isFlatReviewPlan(state.plan)
+    ? { ...state, plan: { previews: state.plan.previews } } : state
   const definitions = taskOnlyPreviews(studio, preview_definitions).filter(p =>
     authorization.kind !== 'stages' || !assigned || authorization.nodes.some(node => node.previews.includes(p.id)))
   return [
-    'Task review: ' + JSON.stringify(state),
-    reviewInstruction(authorization, review),
+    'Task review: ' + JSON.stringify(details),
+    reviewInstruction(authorization, review, delivery),
     ...definitions.map(p => [
       `<Preview id="${p.id}">`, p.instructions,
       ...(p.components ? [`Allowed Preview Components: ${p.components.join(', ') || 'none'}.`] : []),

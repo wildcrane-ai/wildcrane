@@ -162,7 +162,7 @@ export function makeFailure(
 }
 
 const SESSION_MISSING_RE =
-  /no rollout found for thread id|no conversation found with session id|session[_\s-]*not[_\s-]*found|session[_\s-]*mismatch|(?:session|thread|conversation)\s+\S+\s+not\s+found|unknown\s+(?:session|thread)|did not resume the requested conversation|did not return the requested session/i
+  /no rollout found for thread id|invalid paginated history lineage|missing source rollout|no conversation found with session id|session[_\s-]*not[_\s-]*found|session[_\s-]*mismatch|(?:session|thread|conversation)\s+\S+\s+not\s+found|unknown\s+(?:session|thread)|did not resume the requested conversation|did not return the requested session/i
 
 export function isSessionMissingText(text: string | undefined): boolean {
   return !!text && SESSION_MISSING_RE.test(text)
@@ -170,7 +170,7 @@ export function isSessionMissingText(text: string | undefined): boolean {
 
 export function isSessionMissingFailure(failure: ExecutionFailure | undefined): boolean {
   if (!failure) return false
-  if (failure.code === 'session_not_found' || failure.code === 'session_mismatch') return true
+  if (failure.code === 'session_not_found' || failure.code === 'session_mismatch' || failure.code === 'codex_fork_source_missing') return true
   return isSessionMissingText(failure.summary) || isSessionMissingText(failure.detail)
 }
 

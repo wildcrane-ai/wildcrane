@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { it } from 'node:test'
 import { addPreviewsToPlan, parseReviewFlow, parseReviewPlan, readReviewPlan, validateReviewPreviews, reviewLayers, reviewBoundary, reviewAuthorization, reviewAllows, taskReviewBoundary, type TaskReview } from '../src/lib/shared/review-plan'
 import { mergePreviewDefinitions, type PreviewDefinition } from '../src/lib/shared/preview-definitions'
-import { compactReview } from '../src/lib/agent/runtime-context'
+import { compactReview, contextUpdate, reviewBlock, reviewFingerprint } from '../src/lib/agent/runtime-context'
 
 it('validates forward references and parallel joins without using array order', () => {
   const plan = parseReviewPlan([{id:'c',after:['a','b']},{id:'b'},{id:'a'}])!
@@ -101,7 +101,7 @@ it('limits the work and Preview instructions to the dispatched runnable stages',
   assert.deepEqual(authorization, { kind: 'stages', nodes: [plan[1]] })
   assert.equal(reviewAllows(authorization, 'refine'), true)
   assert.equal(reviewAllows(authorization, 'implement'), false)
-  assert.match(reviewBoundary(review, ['assigned']), /Work only on these unlocked stages: assigned\n- assigned: ui-design\nRead/)
+  assert.match(reviewBoundary(review, ['assigned']), /Work only on these unlocked stages: assigned\n- assigned: ui-design\nSync/)
   assert.match(reviewBoundary(review, ['assigned', 'approved']), /Review authorization changed/)
   assert.match(reviewBoundary(review, []), /Wait for review/)
 })
@@ -166,7 +166,7 @@ it('includes stage preview mappings and custom Preview IDs in compactReview', ()
   }
   assert.equal(
     compactReview(review),
-    'Review r4 · api-docs (previews: api-docs) approved · delivery-handoff available to start\nCustom Previews: custom-check',
+    'Review · api-docs (previews: api-docs) approved · delivery-handoff available to start\nCustom Previews: custom-check',
   )
 })
 
@@ -181,15 +181,35 @@ it('keeps flat review rules visible in Card Chat while background work waits for
     approvals: [{ preview: 'ui-design', stage: 'approval-7', revision: 7, question: '这个界面稿可以确认吗？' }],
   }
   assert.equal(compactReview(review), [
-    'Review r8 · flat plan',
+    'Review · flat plan',
     'Selected Previews: api-docs, ui-design',
     'Review rule: Ask for approval when a public interface signature changes.',
     'Pending approvals:',
-    '- ui-design · approval-7 · r7: 这个界面稿可以确认吗？',
+    '- ui-design · approval-7 · 这个界面稿可以确认吗？',
   ].join('\n'))
   assert.equal(compactReview({
-    revision: 0, plan: { previews: [], rule: '' }, stages: [],
-  }), 'Review r0 · flat plan\nSelected Previews: none\nReview rule: No extra approval.')
+    plan: { previews: [], rule: '' }, stages: [],
+  }), 'Review · flat plan\nSelected Previews: none\nReview rule: No extra approval.')
+  const summary = compactReview(review)
+  const { sent } = contextUpdate(undefined, [reviewBlock(summary, reviewFingerprint(review))])
+  assert.deepEqual(contextUpdate(sent, [reviewBlock(summary, reviewFingerprint(review), sent)]).parts, [])
+  const refreshed = contextUpdate(sent, [reviewBlock(summary, reviewFingerprint({ ...review, revision: 9 }), sent)])
+  assert.deepEqual(refreshed.parts, [summary.replace(/^Review/, 'Review updated')])
   assert.match(taskReviewBoundary(review), /Wait for an explicit decision/)
   assert.equal(reviewAllows(reviewAuthorization(review), 'implement'), false)
+})
+
+it('only gives Preview approval instructions before implementation', () => {
+  const review = { plan: { previews: ['api-docs'], rule: 'Approve the API before execution.' }, stages: [] }
+  for (const boundary of [
+    (phase: string) => taskReviewBoundary(review, undefined, { phase }),
+    (phase: string) => reviewBoundary(review, undefined, [], { phase }),
+  ]) {
+    assert.match(boundary('refine'), /--request-approval <question> --preview <id>/)
+    for (const phase of ['implement', 'land']) {
+      const prompt = boundary(phase)
+      assert.match(prompt, /Selected Previews: api-docs/)
+      assert.doesNotMatch(prompt, /--request-approval|End this run|Approve the API before execution/)
+    }
+  }
 })

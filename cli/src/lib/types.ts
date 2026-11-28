@@ -25,7 +25,6 @@ export interface QuestionDraft {
 // reader never has to guard for a missing list or a damaged scalar.
 export interface Meta {
   title: string
-  priority: string
   status: string
   blocked_by: number[]
   related: number[]

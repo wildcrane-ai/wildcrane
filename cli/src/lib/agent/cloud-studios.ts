@@ -12,7 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { tryLock } from '../lock'
-import { hashInput, safeStudioPath, skillFile, studioSkills, VERSION_FILE, type StudioSkill } from '../shared/studio-files'
+import { hashInput, safeStudioPath, skillFile, studioSkills, studioSource, STUDIO_FILE, VERSION_FILE, type StudioSkill } from '../shared/studio-files'
 import { decodeStudioZip, isDigest, STUDIO_ZIP_LIMIT, type StudioPackage } from '../shared/studio-package'
 import { studioName } from '../shared/board-files.ts'
 import { packOfficial } from '../../../../official/pack.ts'
@@ -470,9 +470,10 @@ export async function syncStudios(force = false): Promise<void> {
 
 const flowOf = (held: HeldVersion): CloudFlow | null => {
   const id = studioName(held.id)
-  const read = parseStudioFile(id, held.files['STUDIO.md'] ?? '', `the \`${id}\` studio`)
+  const source = studioSource(held.files)
+  const read = parseStudioFile(id, source, `the \`${id}\` studio`)
   if ('problem' in read) return null
-  return { def: read.def, cloudId: held.id, version: held.version, builtIn: held.id.startsWith('wf_builtin_'), files: held.files }
+  return { def: read.def, cloudId: held.id, version: held.version, builtIn: held.id.startsWith('wf_builtin_'), files: { ...held.files, [STUDIO_FILE]: source } }
 }
 
 function readFlows(): CloudFlow[] {

@@ -39,6 +39,7 @@ import {
   stopRun,
   titleOf,
 } from '../lib/agent/sessions'
+import { cardStudio } from '../lib/agent/studios'
 import { startResume, startRun, startSubRun } from '../lib/agent/start'
 import { cardCreation, eventsPathOf, noteRefineTried, readRuns, withStore } from '../lib/agent/store'
 import type {
@@ -83,7 +84,7 @@ export async function cmdStartRun(
 ): Promise<MoveResult> {
   const { req, follow, print } = readRequest(action, args, opts)
   if (!print && (action === 'approve' || action === 'implement')) {
-    if (process.env[REPLY_APPROVAL_ENV]) die('Use akb task approve with --stage and the --revision you reviewed.')
+    if (process.env[REPLY_APPROVAL_ENV]) die('Use akb task approve to approve the reviewed snapshot.')
   }
   // A card its creator has not finished writing takes no flow (#564) — printed here, or
   // started below. `cardCreation` lets the creating run itself through, which is what keeps
@@ -129,6 +130,10 @@ export async function cmdStartRun(
   // A run spends the user's quota, so a batch with nothing to read starts none (#185).
   if (action === 'review-memory' && !taskChatsToReview(req.tasks ?? []).length) {
     say('review-memory — nothing to review, so no run started.')
+    return { action, skipped: true }
+  }
+  if (action === 'reflect' && !req.cards?.length) {
+    say('reflect — no archived cards with follow-ups enabled.')
     return { action, skipped: true }
   }
   sayBeforeStart(req, program)
@@ -280,12 +285,17 @@ function readRequest(
     return { req: { action, tasks: opts.task }, follow, print }
   }
   if (action === 'review-dismissals') return { req: { action }, follow, print }
+  if (action === 'triage-sort') {
+    const file = typeof args[0] === 'string' ? args[0] : ''
+    if (!executionOf() || !file) die('A claimed Runner triage batch is required.', { kind: 'run-refused', action })
+    return { req: { action, notes: file }, follow, print }
+  }
   if (action === 'reflect') {
     const cards = (opts.cards ?? []).map(Number)
     if (!cards.length || !cards.every((n) => Number.isInteger(n) && n > 0)) {
       die('name the archived cards to reflect on: --cards <id...>', { kind: 'run-refused', action })
     }
-    return { req: { action, cards }, follow, print }
+    return { req: { action, cards: executionOf() ? cards : cards.filter(id => cardStudio(id)?.allowedFollowUps) }, follow, print }
   }
 
   // A delivery verb is aimed at the delivery its command already looked up (#428) — never
@@ -303,7 +313,7 @@ function readRequest(
   // nothing else can be given one.
   if (action === 'implement') req.runtime = opts.runtime
   if (opts.newSession) req.session = 'new'
-  if (action === 'implement') {
+  if (action === 'implement' && !executionOf()?.sessionKind) {
     if (opts.transcript) req.carry = { transcript: opts.transcript }
   } else if (opts.session || opts.transcript) {
     // Set by the Runner (#627): an env var, so an older akb ignores it.

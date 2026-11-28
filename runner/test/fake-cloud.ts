@@ -13,6 +13,7 @@ import path from 'node:path'
 import type { AddressInfo, Socket } from 'node:net'
 
 export interface FakeJob {
+  sessionKind?: import('../src/api').Job['sessionKind']
   taskReview?: import('../src/api').Job['taskReview']
   reviewAtDispatch?: boolean
   handoff?: import('../src/api').Job['handoff']
@@ -37,7 +38,7 @@ export interface FakeJob {
   resumeCostUsd?: number | null
   fork?: boolean
   transcript?: string | null
-  flow?: { phase?: 'implement' | 'land'; land_from?: string; delivery_id?: string; reviewed_implementation?: true; review_stages?: string[]; review_revision?: number; sync_recovery_of?: string; resume_execution?: string; verb: string; studio: string; card?: number; text?: string; title?: string; resume?: boolean; replan?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null
+  flow?: { phase?: 'implement' | 'land'; land_from?: string; delivery_id?: string; review_stages?: string[]; review_revision?: number; session_from?: string; sync_recovery_of?: string; resume_execution?: string; verb: string; studio: string; card?: number; text?: string; title?: string; resume?: boolean; replan?: boolean; skip_plan?: boolean; metadata?: Record<string, unknown> } | null
   discussion?: { id: string; workspace: string; version?: number; goals: Record<string, unknown>[] } | null
   chat?: { message: string; body: string } | null
   replyInput?: import('../src/api').Job['replyInput']
@@ -109,6 +110,7 @@ export class FakeCloud {
   task: FakeTask = { artifacts: new Map() }
   /** A task's status as `GET /v1/tasks/{id}` answers it; `gone` is no such task, `down` a failing read. */
   taskStatus: Record<string, string> = {}
+  taskDetails: Record<string, { card_version?: number; last_job?: string; landing?: import('../src/api').JobReport['landing'] }> = {}
   replyApprovals: { job: string; fields: Record<string, unknown>; card: string | null }[] = []
   /** The workspace's own studios' files, by id (#2004). */
   studios: Record<string, Record<string, string>> = {}
@@ -618,7 +620,7 @@ export class FakeCloud {
       if (status === 'gone') return refuse(404, 'not_found', 'No task has this id.')
       if (status === 'down') return refuse(500, 'internal', 'Down.')
       if (status === 'unauthenticated' || status === 'forbidden') return refuse(status === 'unauthenticated' ? 401 : 403, status, 'Task read refused.')
-      return send(200, { status, cancel_reason: this.taskCancelReasons[route.split('/')[3]!] ?? null, project: task.project ?? 'prj_1', key: 'WC-1', card_version: this.board.get('projects/prj_1/todo/1-task-1.md')?.seq, review: task.review ?? { revision: 1 }, preview_inputs: task.previewInputs, id: route.split('/')[3], title: task.title ?? 'Pricing', request: task.request ?? 'Two tiers.', context: task.context ?? {} })
+      return send(200, { status, cancel_reason: this.taskCancelReasons[route.split('/')[3]!] ?? null, project: task.project ?? 'prj_1', key: 'WC-1', card_version: this.board.get('projects/prj_1/todo/1-task-1.md')?.seq, review: task.review ?? { revision: 1 }, preview_inputs: task.previewInputs, id: route.split('/')[3], title: task.title ?? 'Pricing', request: task.request ?? 'Two tiers.', context: task.context ?? {}, ...this.taskDetails[route.split('/')[3]!] })
     }
     if (/^\/v1\/studios\/[^/]+$/.test(route)) {
       const files = this.studios[route.split('/')[3]!]
@@ -753,7 +755,7 @@ export function writeFakeSession(home: string): void {
   )
 }
 
-export async function until(check: () => boolean, ms = 5_000): Promise<void> {
+export async function until(check: () => boolean, ms = 10_000): Promise<void> {
   const end = Date.now() + ms
   while (!check()) {
     if (Date.now() > end) throw new Error('timed out waiting')

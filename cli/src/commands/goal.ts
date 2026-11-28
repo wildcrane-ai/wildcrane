@@ -1,9 +1,11 @@
 import fs from 'node:fs'
+import path from 'node:path'
 import { effectivePreviewCatalog, previewDefinitionsSchema, type PreviewDefinition } from '../lib/shared/preview-definitions'
 import { parseReviewFlow, parseReviewPlan, readReviewPlan, reviewPlanFromOptions, validateReviewPreviews, type ReviewPlan } from '../lib/shared/review-plan'
 
 import { type Goal } from '../lib/shared/goal'
 import { goalDraftPath, readGoalDraft, writeGoalDraft } from '../lib/goal-draft'
+import { confirmRunnerBinding } from '../lib/cloud/runner-binding'
 import { say } from '../lib/io'
 import { die } from '../lib/paths'
 import { noStudioMessage } from '../lib/agent/studios'
@@ -92,9 +94,13 @@ function named(held: GoalsFile, id: string | undefined): Goal {
   return goal
 }
 
-export function cmdGoal(args: string[], opts: GoalOptions): MoveResult {
+export async function cmdGoal(args: string[], opts: GoalOptions, cwd = process.cwd()): Promise<MoveResult> {
+  if (!goalDraftPath()) die('Goals exist only inside a WildCrane goal discussion.')
+  const board = process.env.AI4KANBAN_BOARD?.trim()
+  const check = board ? await confirmRunnerBinding(path.resolve(cwd, board)) : undefined
   const { held, write } = loadGoals()
   const result = editGoal(args, opts, held)
+  check?.()
   write()
   if ('dropped' in result) say(`Dropped goal ${result.id}.`)
   else if ('start' in result) say(`Goal ${result.id} starts as a task when this turn ends.`)

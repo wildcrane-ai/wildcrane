@@ -302,7 +302,7 @@ describe('a new implementation session (#768, #896)', () => {
   })
 })
 
-it('passes the delivery manifest and current review revision to implementation and resume', async (t) => {
+it('passes the delivery manifest and projected review to implementation and resume', async (t) => {
   const previewId = 'custom-output'
   const plan = [{ id: 'design', after: [], previews: [previewId] }]
   const review = (revision: number): TaskReview => ({
@@ -334,7 +334,8 @@ it('passes the delivery manifest and current review revision to implementation a
   await watchRun(first.run.sessionId)
   const captured = fs.readFileSync(prompt, 'utf8')
   assert.ok(captured.includes(`Use the task inputs and pinned files listed in \`${manifest}\`. Follow the task's delivery instructions.`))
-  assert.match(captured, /"revision":4,"snapshot":null/)
+  assert.match(captured, /"status":"approved","snapshot":null/)
+  assert.doesNotMatch(captured, /"revision":/)
   assert.doesNotMatch(captured, /Frozen content in the manifest/)
 
   const updated = path.join(root, 'revised-inputs.md')
@@ -346,7 +347,8 @@ it('passes the delivery manifest and current review revision to implementation a
   assert.equal(resumed.run.resumedFrom, first.run.sessionId)
   await watchRun(resumed.run.sessionId)
   const resumedPrompt = fs.readFileSync(prompt, 'utf8')
-  assert.match(resumedPrompt, /"revision":8,"snapshot":null/)
+  assert.match(resumedPrompt, /"status":"approved","snapshot":null/)
+  assert.doesNotMatch(resumedPrompt, /"revision":/)
   assert.ok(resumedPrompt.includes(updated))
 })
 

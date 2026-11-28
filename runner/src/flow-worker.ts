@@ -18,6 +18,7 @@ import { defaultDeps, folderFor, runJob, type Deps } from './jobs'
 import { accountGeneration, executorRecord } from './settings-control'
 import { VERSION } from './protocol'
 import { logRunner, startRunnerLogMaintenance } from './runner-log'
+import { noteLandArchive, queueDeliveryCleanup } from './delivery-cleanup'
 
 interface Worker {
   id: string
@@ -42,7 +43,7 @@ const FLOW_MARK = 'WILDCRANE_FLOW_WORKER'
 const directory = () => path.join(runnerHome(), 'flow-workers')
 const fileOf = (id: string) => path.join(directory(), `${encodeURIComponent(id)}.json`)
 const stopFile = (id: string) => `${fileOf(id)}.stop`
-const freshFlow = (job: api.Job) => !job.flow?.sync_recovery_of && !job.syncRecoveryOf && !job.recoveryOf && !job.manualRecovery
+const freshFlow = (job: api.Job) => !job.flow?.session_from && !job.flow?.sync_recovery_of && !job.syncRecoveryOf && !job.recoveryOf && !job.manualRecovery
 export const flowWorkerEntry = fileURLToPath(new URL('./flow-worker-main.mjs', import.meta.url))
 export const canKeepFlow = (job: api.Job): boolean => !!job.task && !!job.flow
   && ['create', 'refine', 'implement', 'preview'].includes(job.flow.verb)
@@ -294,7 +295,16 @@ export async function reclaimFlowWorkers(machine: string, given?: Deps, only?: s
           fs.rmSync(`${file}.log`, { force: true })
           fs.rmSync(`${file}.stop`, { force: true })
           fs.unlinkSync(file)
-          if (job.state === 'finished' && job.outcome === 'done') clearCheckpoint(job.id)
+          if (job.state === 'finished' && job.outcome === 'done') {
+            if (job.flow?.phase === 'land') {
+              const folder = folderFor(job)
+              if ('cwd' in folder) {
+                noteLandArchive(folder.cwd, job, readCheckpoint(job.id)?.ending?.report)
+                queueDeliveryCleanup(folder.cwd)
+              }
+            }
+            clearCheckpoint(job.id)
+          }
           if (retry) return retry
         } finally { release() }
       } catch { /* Preserve the record for the next sweep. */ }

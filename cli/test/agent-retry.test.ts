@@ -83,9 +83,16 @@ it('honors structured retryAfterMs up to the wait cap without short-circuiting b
 })
 
 it('detects missing session and missing Codex rollout errors', () => {
-  const rollout = codexFailure({ message: 'no rollout found for thread id 01a1f83e-4dc4-7bd3' }, 'Codex failed')
-  assert.equal(rollout.code, 'session_not_found')
-  assert.equal(isSessionMissingFailure(rollout), true)
+  for (const message of [
+    'no rollout found for thread id 01a1f83e-4dc4-7bd3',
+    'invalid paginated history lineage for 01a21880-3a2b-78f1-881e-97470790f2be: missing source rollout',
+    'invalid paginated history lineage for 01a21880-3a2b-78f1-881e-97470790f2be: corrupted parent link',
+  ]) {
+    const rollout = codexFailure({ message }, 'Codex failed')
+    assert.equal(rollout.code, 'session_not_found')
+    assert.equal(isSessionMissingFailure(rollout), true)
+  }
+  assert.equal(isSessionMissingFailure({ code: 'codex_fork_source_missing', source: 'runtime', summary: 'fork source unavailable' }), true)
   assert.equal(isSessionMissingFailure({ source: 'runtime', summary: 'HTTP 503 Service Unavailable' }), false)
 })
 

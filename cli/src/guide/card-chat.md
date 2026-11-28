@@ -2,15 +2,15 @@
 
 An empty plan needs no extra approval; an undecided plan allows planning only.
 
-- **Task and review**: read the current card or use `akb task show <id>` when needed. Use `akb task review <id>` for the full review state and snapshots, and before reporting a stage with its revision. Finish the reply to let the Runner sync and submit Preview changes.
+- **Task and review**: read the current card or use `akb task show <id>` when needed. Use `akb task review <id>` for review status and snapshots. Finish the reply to let the Runner sync and submit Preview changes.
 - **Studio and Previews**: when working on a draft, read `akb studio file <studio> STUDIO.md`, any `shared/RULES.md`, and current preferences with `akb studio rule <studio>`. Use the relevant `akb studio previews --studio <studio> --json` entries and component docs as needed. Read only applicable board memory.
 - **Button labels**: Quote current labels from the conversation verbatim. Otherwise, consult the task-page guide for the user's language (`akb guide task-ui-en` or `akb guide task-ui-zh`) and describe the action if its label is uncertain.
 
 - **Change requirements or drafts**: when the user changes the scope, expected behavior, or draft, use `akb task revise <id> "<change>" --print`.
 - **Record an answer**: when the user answers an open question on the card, use `akb task resolve <id> --print`.
 - **Manage open questions**: when a decision needs the user's input, follow `akb guide update-questions` and use `akb task update-questions <task>` to edit the question list.
-- **Change card fields**: when the user changes metadata such as priority, modules, or dependencies, use `akb task update <id>`.
-- **Previews**: if the current plan does not cover a needed reviewable output, expand the plan first before writing its Preview block. Follow `akb guide writing` and the task-bound Studio’s Preview instructions. Edit approved Previews directly, and run `akb task review <id> --request-approval <question> --preview <id> --revision <n>` only when the review rule calls for it. Preserve unrelated work.
+- **Change card fields**: when the user changes modules or dependencies, use `akb task update <id>`.
+- **Previews**: if the current plan does not cover a needed reviewable output, expand the plan first before writing its Preview block. Follow `akb guide writing` and the task-bound Studio’s Preview instructions. Edit approved Previews directly, and run `akb task review <id> --request-approval <question> --preview <id>` only when the review rule calls for it. Preserve unrelated work.
   Save files in the `Asset folder` shown by `akb task show <id>` and reference them as `asset:<file>`.
 - **Create a separate task**: when the user asks to capture work unrelated to this card, follow `akb guide add-task`.
 - **Split this card**: when the user asks to break this card's outcome into subtasks, follow the group procedure in `akb guide add-task`.
@@ -20,5 +20,5 @@ An empty plan needs no extra approval; an undecided plan allows planning only.
 
 Reply in plain, natural language. Do not write memory, including through any flow this conversation starts.
 
-- **Approve**: only on an explicit request, use `akb task approve <id> --stage <stage> --revision <reviewed revision>`. In a reply this commits after successful synchronization. Finish the reply without further edits or waiting. Never substitute the latest revision for the one reviewed.
-- **Change the plan**: add Previews safely with `akb task review <id> --add-previews <ids> --revision <n>` (and `--preview-definitions-file <path>` for custom Previews); this preserves existing stages and approvals. Use `--previews <ids> --review <rule>` or `--file <path>` only to replace the plan.
+- **Approve**: only on an explicit request, use `akb task approve <id>` with `--stage <stage>` if several approvals are pending. Finish the reply without further edits or waiting so the approval can commit after synchronization.
+- **Change the plan**: add Previews safely with `akb task review <id> --add-previews <ids>` (and `--preview-definitions-file <path>` for custom Previews); this preserves existing stages and approvals. Use `--previews <ids> --review <rule>` or `--file <path>` only to replace the plan.

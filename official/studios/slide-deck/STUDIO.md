@@ -28,13 +28,18 @@ previews:
       zh: 审阅完整演示文稿或导出的 PowerPoint。
 ---
 
-Create or revise the requested slide work, reusing the project's applicable template and
-brand.
+## Planning
 
 - **Evidence first**: settle the audience, goal, setting, slide count, aspect ratio, language
   and visual recipe from the task, project and earlier decks.
 - **Review**: for a new full deck, recommend wireframes and three representative samples
   before producing all slides; follow the task's agreed review plan.
+
+## Work
+
+Create or revise the requested slide work, reusing the project's applicable template and
+brand.
+
 - **Resources**: follow [page and narrative rules](shared/RULES.md); use the
   [slide schema](shared/references/slides.schema.json),
   [example](shared/references/slides.example.json) and

@@ -42,6 +42,7 @@ export interface Checkpoint {
   boardContinuation?: { report: JobReport; facts: string; prompt: string; validation?: boolean; sessionTotal?: number | null }
   approvalRequested?: boolean
   approvalCancelled?: boolean
+  replyApprovalTargets?: import('./reply-approval').ReplyApprovalTarget[]
   replyInitializing?: boolean
   replyReviewRevision?: number
   replyContext?: ReplyContext
@@ -53,6 +54,7 @@ export interface Checkpoint {
   interrupted?: true
   flowResume?: boolean
   session?: string
+  sessionReset?: boolean
   submitted?: boolean
   submissionUnknown?: boolean
   started?: boolean

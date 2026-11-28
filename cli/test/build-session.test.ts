@@ -6,19 +6,21 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { openResume, openRun, patch, readSpec, listRuns } from '../src/lib/agent/sessions.ts'
-import { endDelivery, syncAudit } from '../src/lib/agent/deliveries.ts'
+import { endDelivery, findDelivery, syncAudit } from '../src/lib/agent/deliveries.ts'
+import { lockDeliveryProject } from '../src/lib/agent/delivery-workspace.ts'
 import { startRun } from '../src/lib/agent/start.ts'
 import { approvalRequest } from '../src/lib/agent/approve.ts'
 import { cmdResumeDelivery, cmdStartRun } from '../src/commands/run.ts'
 import { BoardError, startCollecting, stopCollecting } from '../src/lib/io.ts'
 import { eventsPathOf, readStore, withStore } from '../src/lib/agent/store.ts'
 import { watchRun } from '../src/lib/agent/watch.ts'
-import { DELIVERY_PHASE_ENV } from '../src/lib/agent/env.ts'
+import { DELIVERY_PHASE_ENV, LAND_IMPLEMENT_RUN_ENV } from '../src/lib/agent/env.ts'
 import type { RunRecord, RunStatus } from '../src/lib/agent/types.ts'
 import { cardFile } from '../src/lib/cards.ts'
-import { DELIVERIES, setBoardRoot } from '../src/lib/paths.ts'
+import { DELIVERIES, SESSIONS, setBoardRoot } from '../src/lib/paths.ts'
 import { forgetMachineState, move, uiConfigOf } from './helpers/board.ts'
 
 let root = ''
@@ -56,7 +58,132 @@ function build(status: RunStatus = 'stopped', resumeId?: string): RunRecord {
   return { ...opened.run, status, ...(resumeId ? { resumeId } : {}) }
 }
 
+it('implements Git tasks in parallel and waits for the project lock before Land', async (t) => {
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim()
+  git('init', '-qb', 'main')
+  git('config', 'user.email', 'test@example.com')
+  git('config', 'user.name', 'Test')
+  git('commit', '--allow-empty', '-qm', 'Initial')
+  const base = git('rev-parse', 'HEAD')
+  await move(root, ['create', '--title', 'Another task'])
+  const landed = path.join(root, 'land-prompt.txt')
+  const agent = path.join(root, 'fake-implement.mjs')
+  fs.writeFileSync(agent, `
+    import { execFileSync } from 'node:child_process'
+    import fs from 'node:fs'
+    import { createInterface } from 'node:readline'
+    const git = (args, cwd = process.cwd()) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+    for await (const line of createInterface({ input: process.stdin })) {
+      const branch = git(['branch', '--show-current'])
+      if (process.env.AI4KANBAN_DELIVERY_PHASE === 'implement') {
+        const file = branch.split('/').at(-1) + '.txt'
+        fs.writeFileSync(file, branch)
+        git(['add', file])
+        git(['commit', '-qm', 'Implement'])
+      } else {
+        fs.writeFileSync(${JSON.stringify(landed)}, JSON.parse(line).message.content)
+        git(['merge', '--ff-only', branch], ${JSON.stringify(root)})
+      }
+      break
+    }
+    console.log(JSON.stringify({ type: 'result', result: 'Saved' }))
+  `)
+  fs.writeFileSync(uiConfigOf(root, 'docs', 'kanban'), JSON.stringify({
+    runtimes: [{ id: 'global', name: 'Global', harness: 'claude-code', settings: { command: `${process.execPath} ${agent}` } }],
+  }))
+  t.after(() => {
+    delete process.env[DELIVERY_PHASE_ENV]
+    delete process.env[LAND_IMPLEMENT_RUN_ENV]
+  })
+  process.env[DELIVERY_PHASE_ENV] = 'implement'
+  const start = (id: number) => {
+    const opened = openRun({ action: 'implement', id }, 'Work on the task.', [])
+    if ('error' in opened) assert.fail(opened.error)
+    return opened.run
+  }
+  const first = start(1)
+  const second = start(2)
+  const firstBranch = `akb/${first.deliveryId}`
+  const secondBranch = `akb/${second.deliveryId}`
+  assert.notEqual(first.cwd, second.cwd)
+  assert.equal(findDelivery(first.deliveryId!)?.base, base)
+  assert.equal(findDelivery(second.deliveryId!)?.base, base)
+  const release = await lockDeliveryProject(root, () => false)
+  assert.ok(release)
+  try {
+    assert.deepEqual(await Promise.race([
+      Promise.all([watchRun(first.sessionId), watchRun(second.sessionId)]),
+      delay(8_000, 'blocked by the project lock', { ref: false }),
+    ]), [0, 0])
+    assert.equal(git('rev-parse', 'main'), base)
+    assert.equal(git('show', `--format=%s`, '--name-only', firstBranch), `Implement\n\n${first.deliveryId}.txt`)
+    assert.equal(git('show', `--format=%s`, '--name-only', secondBranch), `Implement\n\n${second.deliveryId}.txt`)
+
+    process.env[DELIVERY_PHASE_ENV] = 'land'
+    process.env[LAND_IMPLEMENT_RUN_ENV] = first.sessionId
+    const land = start(1)
+    assert.equal(land.cwd, first.cwd)
+    const pending = watchRun(land.sessionId)
+    await delay(150)
+    assert.equal(fs.existsSync(landed), false)
+    release()
+    assert.equal(await pending, 0, fs.readFileSync(land.logPath, 'utf8'))
+    assert.equal(git('rev-parse', 'main'), git('rev-parse', firstBranch))
+    const prompt = fs.readFileSync(landed, 'utf8')
+    assert.ok(prompt.includes(`Task branch: ${firstBranch} (base ${base}).`))
+    assert.ok(prompt.includes(`run log ${first.sessionId}`))
+  } finally {
+    release()
+  }
+})
+
 describe('交付的构建会话续接（#368）', () => {
+  it('carries the bound Land session into the existing delivery workspace (#1280)', async () => {
+    const machine = '12800000-0000-4000-8000-000000000002'
+    try {
+      process.env[DELIVERY_PHASE_ENV] = 'implement'
+      const old = build('done', 'build-thread')
+      process.env.AI4KANBAN_EXECUTION = JSON.stringify({
+        job: '12800000-0000-4000-8000-000000000004', machine, card: 1, sessionKind: 'land',
+      })
+      process.env[DELIVERY_PHASE_ENV] = 'land'
+      await assert.rejects(cmdStartRun('implement', [1, []], { session: 'land-thread' }), { kind: 'spawn-failed' })
+      const land = readStore().runs.at(-1)!
+      assert.equal(land.sessionKind, 'land')
+      assert.equal(land.deliveryId, old.deliveryId)
+      assert.equal(land.cwd, old.cwd)
+      assert.equal(land.continues?.resumeId, 'land-thread')
+      assert.ok(land.argv?.includes('land-thread'))
+    } finally {
+      delete process.env.AI4KANBAN_EXECUTION
+      delete process.env[DELIVERY_PHASE_ENV]
+    }
+  })
+
+  it('normalizes older local build records and refuses to resume them as Land once bound (#1280)', async () => {
+    const old = build('stopped', 'build-thread')
+    const read = JSON.parse(fs.readFileSync(SESSIONS, 'utf8'))
+    delete read.runs[0].sessionKind
+    fs.writeFileSync(SESSIONS, JSON.stringify(read))
+    assert.equal(readStore().runs[0].sessionKind, 'implement')
+    const machine = '12800000-0000-4000-8000-000000000002'
+    withStore(store => {
+      store.runs[0].cloudExecution = { job: '12800000-0000-4000-8000-000000000003', machine, card: 1, sessionKind: 'implement' }
+    })
+    const saved = process.env.AI4KANBAN_EXECUTION
+    process.env.AI4KANBAN_EXECUTION = JSON.stringify({
+      job: '12800000-0000-4000-8000-000000000004', machine, card: 1, sessionKind: 'land',
+    })
+    try {
+      const result = await openResume(old.sessionId, { fresh: true })
+      assert.ok('error' in result)
+      assert.match(result.error, /different task step/)
+    } finally {
+      if (saved === undefined) delete process.env.AI4KANBAN_EXECUTION
+      else process.env.AI4KANBAN_EXECUTION = saved
+    }
+  })
+
   it('starts and resumes an ordinary task with no Preview role progress', async () => {
     await move(root, ['update', '1', '--previews', 'ui-design', '--status', 'ready'])
     assert.equal((approvalRequest({ action: 'approve', id: 1 }) as {action: string}).action, 'implement')

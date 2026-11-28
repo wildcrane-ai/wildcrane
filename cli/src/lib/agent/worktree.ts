@@ -13,7 +13,7 @@ export class GitTimeoutError extends Error {}
 
 function spawnGit(args: string[], options: SpawnSyncOptions) {
   const out = spawnSync('git', args, {
-    ...options, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    ...options, encoding: 'utf8', stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     timeout: gitLimits.timeoutMs, killSignal: 'SIGKILL',
   })
   if ((out.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') throw new GitTimeoutError(`Git ${args[0]} timed out after ${gitLimits.timeoutMs / 1000}s; the command was killed.`)
@@ -21,9 +21,9 @@ function spawnGit(args: string[], options: SpawnSyncOptions) {
 }
 
 /** Run one git command and hand back its stdout, or null when it failed. */
-export function git(args: string[], cwd = REPO_ROOT): string | null {
+export function git(args: string[], cwd = REPO_ROOT, input?: string): string | null {
   try {
-    const out = spawnGit(args, { cwd, encoding: 'utf8', maxBuffer: MAX_OUTPUT, windowsHide: true })
+    const out = spawnGit(args, { cwd, input, encoding: 'utf8', maxBuffer: MAX_OUTPUT, windowsHide: true })
     if (out.error || out.status !== 0) return null
     return out.stdout
   } catch (error) {
@@ -70,8 +70,8 @@ export const headCommit = (cwd = REPO_ROOT): string | null =>
 
 /** The branch checked out right now, or null on a detached HEAD (and outside git). */
 export function currentBranch(cwd = REPO_ROOT): string | null {
-  const name = git(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd)?.trim()
-  return name || null
+  const ref = git(['symbolic-ref', '--quiet', 'HEAD'], cwd)?.trim()
+  return ref?.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : null
 }
 
 /** True when this delivery's worktree is still on disk and still git's. */

@@ -1,4 +1,5 @@
-import { recordDeliveryArchive } from '../lib/agent/delivery-archive'
+import { hasInPlaceArchiveCommit, landingOf, recordDeliveryArchive } from '../lib/agent/delivery-archive'
+import { saveDeliveryCleanupReceipt } from '../lib/agent/delivery-cleanup-receipt'
 import { REVIEW_SYNC_ENV, syncPreviewForApproval } from '../lib/cloud/review-sync'
 import { deliveryPhase, insideRun, SAVED_PREVIEW_FILE_ENV } from '../lib/agent/env'
 import { runAgent } from '../lib/agent/project-agent'
@@ -6,7 +7,7 @@ import { activeDelivery, endedDelivery } from '../lib/agent/deliveries'
 import { taskChatFile } from '../lib/agent/task-chats'
 import { REPLY_APPROVAL_ENV } from '../lib/cloud/reply-approval'
 import { mergePreviewDefinitions, previewDefinitionsSchema } from '../lib/shared/preview-definitions'
-import { addPreviewsToPlan, isFlatReviewPlan, parseReviewPlan, reviewAuthorization, reviewPlanFromOptions, reviewPreviewIds, type SavedPreviewInputs, type TaskReview } from '../lib/shared/review-plan'
+import { addPreviewsToPlan, agentReview, isFlatReviewPlan, parseReviewPlan, reviewAuthorization, reviewPlanFromOptions, reviewPreviewIds, type SavedPreviewInputs, type TaskReview } from '../lib/shared/review-plan'
 // `akb task`, `workspace`, `project`, `runner` (#550): the signed-in account's WildCrane tasks, read
 // and changed from any chat.
 
@@ -17,21 +18,25 @@ import path from 'node:path'
 
 import { cloudEndpoints } from '../lib/cloud/config'
 import { accessToken, CLOUD_ACCESS_HINTS } from '../lib/cloud/session'
+import { confirmRunnerBinding } from '../lib/cloud/runner-binding'
 import { cloudStudio, linkedProject, numberOf, runnerProject, workspaceTask } from '../lib/cloud/tasks'
 import { executionOf } from '../lib/cloud/execution'
+import { localArchiveInput } from '../lib/cloud/archive'
 import { BOARD_LINK_HINT, resolveBoard, useBoard } from '../lib/board-cli'
 import { locate, locateArchived } from '../lib/cards'
 import { peekRun } from '../lib/agent/sessions'
 import { withCreationLock } from '../lib/agent/creation-lock'
 import { withBoardLock } from '../lib/lock'
 import { readRemoval, writeRemoval, type TaskOperationResult } from '../lib/cloud/task-operation'
+import type { ArchiveInput } from '../lib/shared/delivery-evidence'
 import { assetsFile, legacyStudioRuleFile, projectConfigFile, studioConfigFile, studioName } from '../lib/shared/board-files'
 import { withSyncLock } from '../lib/shared/board-conflicts'
 import { cmdRemove, recoveredArchiveHandoff } from './remove'
 import { updateCardQuestions } from './card'
-import { BoardError, say } from '../lib/io'
+import { BoardError, say, warn } from '../lib/io'
+import { runnerBoardRoot } from '../lib/machine/project'
 import { cloudError, cloudProblem, hasText, invalidResponse, isRecord, readCloudJson, requireResponse } from '../lib/cloud/response'
-import { ASSETS, die, projectRootOf, shellWord } from '../lib/paths'
+import { ASSETS, die, projectRootOf, setBoardDir, shellWord } from '../lib/paths'
 import { parsePreviewBlocks } from '../lib/shared/preview-blocks'
 import { parseFrontmatter } from '../lib/frontmatter'
 import { readQuestionOps } from '../lib/questions'
@@ -82,20 +87,29 @@ export const taskUrl = (key: string) => `${WEB()}/tasks/${enc(key)}`
 interface Page<T> { data: T[]; next: string | null }
 interface Project { id: string; workspace: string; name: string; prefix: string }
 interface Workspace { id: string; name: string }
-interface Task {
+type Task = {
   id: string
   key: string
   title: string
   status: string
   project?: string
-  runtime?: string | null
-  runtime_info?: { id: string | null; name: string; connector: string; model: string | null; default: boolean }
   studio: { id: string; name: string } | null
   card_version?: number | null
+  last_job?: string | null
+  landing?: { commit: string; branch: string } | null
   failure?: string | null
   review?: TaskReview | null
+  review_revision?: number
   preview_inputs?: SavedPreviewInputs
   preview_definitions?: TaskReview['preview_definitions']
+}
+
+export const agentTaskContext = () => Boolean(insideRun() || executionOf() || workspaceTask() || process.env[REPLY_APPROVAL_ENV])
+
+function taskReceipt<T extends Pick<Task, 'review' | 'review_revision'>>(task: T) {
+  if (!agentTaskContext()) return task
+  const { review, review_revision: _revision, ...rest } = task
+  return { ...rest, ...(review !== undefined && { review: review && agentReview(review) }) }
 }
 
 async function all<T>(route: string): Promise<T[]> {
@@ -161,7 +175,7 @@ export async function taskList(opts: { project?: string; workspace?: string; sta
   const scope = opts.project || !opts.workspace ? `project=${enc(await project(opts.project, location))}` : `workspace=${enc(opts.workspace)}`
   const data = await all<Task>(`/v1/tasks?${scope}${opts.status ? `&status=${enc(opts.status)}` : ''}`)
   for (const t of data) say(`${t.key}  ${t.status}  ${t.title}`)
-  return { data, next: null }
+  return { data: data.map(taskReceipt), next: null }
 }
 
 function readableFile(file?: string): string | null {
@@ -228,8 +242,9 @@ function showReview(task: Task, card: string) {
     }
     if (isFlatReviewPlan(review.plan)) {
       if (review.plan.rule) say(review.plan.rule)
+      const agent = agentTaskContext()
       for (const approval of review.approvals ?? []) {
-        if ('question' in approval) say(`- ${approval.stage} · ${approval.preview} · version ${approval.revision} · ${approval.question}`)
+        if ('question' in approval) say(`- ${approval.stage} · ${approval.preview} · ${agent ? '' : 'version ' + approval.revision + ' · '}${approval.question}`)
       }
     }
     const authorization = reviewAuthorization(review)
@@ -320,7 +335,7 @@ export async function taskShow(id: string, location: TaskLocation = {}): Promise
     }
   }
   if (sync) say(`${sync.kind === 'remove' ? 'Removal' : 'Archive'}: ${sync.status}${'code' in sync && sync.code ? ` [${sync.code}] ${sync.message ?? ''}` : ''}.`)
-  return { ...task, card, local_context: files, card_read_status: card ? 'available' : task.studio ? 'not_generated' : 'no_studio', ...(sync ? { sync } : {}) }
+  return { ...taskReceipt(task), card, local_context: files, card_read_status: card ? 'available' : task.studio ? 'not_generated' : 'no_studio', ...(sync ? { sync } : {}) }
 }
 
 export interface TaskCreateOptions {
@@ -361,7 +376,7 @@ export async function taskCreate(request: string, opts: TaskCreateOptions, locat
   const task = await cloud<Task>('POST', '/v1/tasks', body)
   say(`Created ${task.key}: ${task.title}  ${taskUrl(task.key)}`)
   say(`Status: ${task.status}${task.failure ? ` — ${task.failure}` : ''}`)
-  return { ...task }
+  return taskReceipt(task)
 }
 
 function requireTask(task: Task): Task {
@@ -371,9 +386,9 @@ function requireTask(task: Task): Task {
 async function act(id: string, route: string, body: unknown, done: (key: string, value: Record<string, unknown>) => string,
   location: TaskLocation): Promise<MoveResult> {
   const ref = await taskRef(id, location)
-  const value = await cloud<Record<string, unknown>>('POST', `/v1/tasks/${enc(ref)}/${route}`, body)
+  const value = await cloud<Record<string, unknown> & Pick<Task, 'review' | 'review_revision'>>('POST', `/v1/tasks/${enc(ref)}/${route}`, body)
   say(done(ref, value))
-  return value
+  return route === 'cancel' ? taskReceipt(value) : value
 }
 
 export interface ReviewOptions { previewDefinitionsFile?: string; stage?: string; revision?: string; review?: string; previews?: string; addPreviews?: string; requestApproval?: string; preview?: string; file?: string; status?: string; reviseFrom?: string }
@@ -390,30 +405,29 @@ export async function taskReview(id: string, opts: ReviewOptions = {}, location:
   if (count > 1 || opts.stage !== undefined && opts.status === undefined) die('Review operations cannot be combined.')
   if ((opts.preview === undefined) !== (opts.requestApproval === undefined)) die('--request-approval and --preview are required together.')
   const ref = await taskRef(id, location)
-  let task: Task
   if (opts.previewDefinitionsFile !== undefined && (opts.status !== undefined || opts.reviseFrom !== undefined || opts.requestApproval !== undefined)) die('Preview definitions can only change with a review plan.')
-  if (!count && opts.previewDefinitionsFile === undefined) task = await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`)
-  else {
-    const review_revision = reviewRevision(opts.revision)
+  const route = `/v1/tasks/${enc(ref)}`
+  let task = await cloud<Task>('GET', route)
+  if (count || opts.previewDefinitionsFile !== undefined) {
+    if (opts.requestApproval !== undefined && process.env[REVIEW_SYNC_ENV]) {
+      await syncPreviewForApproval(task.id)
+      task = await cloud<Task>('GET', route)
+    }
+    const previous = task.review
+    if (!previous) return refuse('This task has no review.', 'review_refused')
+    const review_revision = !agentTaskContext() && opts.revision !== undefined ? reviewRevision(opts.revision) : previous.revision
+    if ((updatingPlan || addingPreviews) && previous.revision !== review_revision) {
+      return refuse('Review changed. Read it again.', 'review_outdated')
+    }
     let fields: Record<string, unknown>
-    let existingDefinitions: TaskReview['preview_definitions']
     if (updatingPlan) {
-      const previous = await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`)
-      if (previous.review?.revision !== review_revision) return refuse('Review changed. Read it again.', 'review_outdated')
-      const plan = reviewPlanFromOptions(opts, previous.review.plan)
+      const plan = reviewPlanFromOptions(opts, previous.plan)
       fields = plan ? { operation: 'plan', review_plan: plan } : { operation: 'plan', review_flow: opts.review }
     } else if (addingPreviews) {
       const previewsToAdd = opts.addPreviews!.split(',').map(s => s.trim()).filter(Boolean)
       if (!previewsToAdd.length) die('--add-previews requires at least one Preview ID.')
-      const previous = await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`)
-      if (previous.review?.revision !== review_revision) return refuse('Review changed. Read it again.', 'review_outdated')
-      fields = { operation: 'plan', review_plan: addPreviewsToPlan(previous.review?.plan, previewsToAdd) }
-      existingDefinitions = previous.review?.preview_definitions
+      fields = { operation: 'plan', review_plan: addPreviewsToPlan(previous.plan, previewsToAdd) }
     } else if (opts.requestApproval !== undefined) {
-      if (process.env[REVIEW_SYNC_ENV]) {
-        const current = await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`)
-        await syncPreviewForApproval(current.id)
-      }
       fields = { operation: 'request_approval', preview: opts.preview, question: opts.requestApproval }
     } else if (opts.file !== undefined) {
       fields = { operation: 'plan', review_plan: parseReviewPlan(JSON.parse(fs.readFileSync(opts.file, 'utf8'))) }
@@ -427,21 +441,30 @@ export async function taskReview(id: string, opts: ReviewOptions = {}, location:
     }
     if (opts.previewDefinitionsFile !== undefined) {
       const incoming = previewDefinitionsSchema.parse(JSON.parse(fs.readFileSync(opts.previewDefinitionsFile, 'utf8')))
-      fields.preview_definitions = addingPreviews ? mergePreviewDefinitions(existingDefinitions ?? [], incoming) : incoming
+      fields.preview_definitions = addingPreviews ? mergePreviewDefinitions(previous.preview_definitions ?? [], incoming) : incoming
     }
-    task = await cloud<Task>('POST', `/v1/tasks/${enc(ref)}/review`, { ...fields, review_revision })
+    try {
+      task = await cloud<Task>('POST', `${route}/review`, { ...fields, review_revision })
+    } catch (error) {
+      if (error instanceof BoardError && error.details.code === 'review_outdated') {
+        return refuse('Review changed. Read the task and retry.', 'review_outdated')
+      }
+      throw error
+    }
   }
-  say(JSON.stringify(task.review, null, 2))
-  return { review: task.review }
+  const { review } = taskReceipt(task)
+  say(JSON.stringify(review, null, 2))
+  return { review }
 }
 
 export async function taskApprove(id: string, comment?: string, opts: ReviewOptions = {}, location: TaskLocation = {}): Promise<MoveResult> {
+  if (process.env[REPLY_APPROVAL_ENV]) {
+    const ref = linked(location) ? await taskRef(id, location) : id.trim()
+    return approveAfterReply(ref, comment, opts.stage)
+  }
+  if (agentTaskContext()) return refuse('Only the user approves a review.', 'review_refused')
   const review_revision = reviewRevision(opts.revision)
-  if (insideRun() && !process.env[REPLY_APPROVAL_ENV]) return refuse('Only the user approves a review.', 'review_refused')
-  const ref = process.env[REPLY_APPROVAL_ENV] && !linked(location) ? id.trim() : await taskRef(id, location)
-  const deferred = await approveAfterReply(ref, comment, { stage: opts.stage, review_revision })
-  if (deferred) return deferred
-  return act(ref, 'decisions', { decision: 'approve', review_revision, ...(opts.stage ? { stage: opts.stage } : {}),
+  return act(id, 'decisions', { decision: 'approve', review_revision, ...(opts.stage ? { stage: opts.stage } : {}),
     ...(comment?.trim() ? { comment: comment.trim() } : {}) }, (key, value) => {
     requireResponse(value, 'an approval receipt', receipt => hasText(receipt.id) && receipt.decision === 'approve')
     return `Approved ${key}.`
@@ -451,22 +474,25 @@ export async function taskApprove(id: string, comment?: string, opts: ReviewOpti
 export async function taskUpdateQuestions(id: string, typed: Typed[], location: TaskLocation = {}): Promise<MoveResult> {
   const ops = readQuestionOps(typed)
   const current = executionOf() ? workspaceTask() : null
-  const ref = await taskRef(id, location)
+  const board = current ? runnerTaskBoard(location, false) : null
+  const localNumber = board && current ? localTaskRecord(board, current)?.number : undefined
+  const ref = current && /^\d+$/.test(id.trim()) && Number(id) === localNumber ? current : await taskRef(id, location)
   const selected = current && !ref.startsWith('task_')
     ? requireTask(await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`))
     : null
   const target = selected?.id ?? ref
   if (current && target === current) {
-    const board = runnerTaskBoard(location)
     const unavailable = () => refuse('Cannot find the current task’s local card on its Runner board.', 'local_card_unavailable')
     if (!board) return unavailable()
+    const check = await confirmRunnerBinding(board)
     return withSyncLock(board, async () => {
+      check?.()
       const project = runnerProject(board)
       const mapped = localTaskRecord(board, current)
       if (!mapped || !project || (selected && (selected.project !== project || numberOf(selected.key) !== mapped.number))) {
         return unavailable()
       }
-      const root = projectRootOf(board)
+      const root = runnerBoardRoot(board)!
       useBoard({ board, root, named: true }, false, true)
       return withBoardLock(() => {
         const run = insideRun()
@@ -502,7 +528,7 @@ export async function taskUpdateQuestions(id: string, typed: Typed[], location: 
   })
   const task = await cloud<Task>('PATCH', `/v1/tasks/${enc(target)}/questions`, { base_version: card.version, ops: body })
   say(`updated ${task.key} questions: ${changes.join(', ')} (${open} open)`)
-  return { ...task, changes, open }
+  return { ...taskReceipt(task), changes, open }
 }
 
 export const taskChat = (id: string, message: string, location: TaskLocation = {}) =>
@@ -516,13 +542,15 @@ export const taskChat = (id: string, message: string, location: TaskLocation = {
     return ['queued', 'replying'].includes(String(chat.status)) ? `Sent to ${key}. Reply pending.` : `Sent to ${key}.`
   }, location)
 
-function runnerTaskBoard(location: TaskLocation): string | null {
+function runnerTaskBoard(location: TaskLocation, requireLink = true): string | null {
   const runnerBoard = process.env.AI4KANBAN_BOARD?.trim()
   if (!runnerBoard) return null
   const cwd = location.cwd ?? process.cwd()
   try {
     const board = path.resolve(cwd, location.board ?? runnerBoard)
-    return fs.realpathSync(board) === fs.realpathSync(path.resolve(cwd, runnerBoard)) && runnerProject(board) ? board : null
+    const real = fs.realpathSync(board)
+    if (real !== fs.realpathSync(path.resolve(cwd, runnerBoard))) return null
+    return requireLink ? (runnerProject(board) && board) : (runnerBoardRoot(real) && real)
   } catch { return null }
 }
 
@@ -545,16 +573,23 @@ function localTaskTarget(location: TaskLocation) {
   return board ? localTaskRecord(board, task) : null
 }
 
-function linkedBoard(location: TaskLocation): string | null {
+function linkedBoard(location: TaskLocation, strict = false): string | null {
   const cwd = location.cwd ?? process.cwd()
   const named = location.board ?? process.env.AI4KANBAN_BOARD
+  const projectOf = (board: string) => {
+    if (!strict) return runnerProject(board)
+    if (path.basename(board) !== 'kanban' || path.basename(path.dirname(board)) !== '.akb') return null
+    const link = linkedProject(board, path.resolve(board, '../..'))
+    if (!link.ok) return refuse(`${link.error} Restore the Runner's project link before archiving.`, 'invalid_link')
+    return link.value
+  }
   if (named) {
     const board = path.resolve(cwd, named)
-    return runnerProject(board) ? board : null
+    return projectOf(board) ? board : null
   }
   for (let dir = path.resolve(cwd, location.dir ?? '.'); ; dir = path.dirname(dir)) {
     const board = path.join(dir, '.akb', 'kanban')
-    if (runnerProject(board)) return board
+    if (projectOf(board)) return board
     if (path.dirname(dir) === dir) return null
   }
 }
@@ -564,7 +599,7 @@ function operationStatus(result: TaskOperationResult): TaskOperationResult {
   return { status: result.status, code: result.code, message: result.message }
 }
 
-function archiveReceipt(board: string, task: string, file?: string): TaskOperationResult | null {
+function archiveReceipt(board: string, task: string): TaskOperationResult | null {
   try {
     const base = JSON.parse(fs.readFileSync(path.join(board, '..', 'base.json'), 'utf8'))
     const receipt = base.archiveReceipts?.[task]
@@ -572,12 +607,11 @@ function archiveReceipt(board: string, task: string, file?: string): TaskOperati
     const synced = receipt && base.files?.[root + receipt.path]
     const manifest = assetsFile(task)
     const assets = base.files?.[root + manifest]
-    if (synced && (!file || receipt.path === file) && synced.seq === receipt.seq && (assets?.seq ?? 0) === receipt.assets_seq) {
+    if (synced && synced.seq === receipt.seq && (assets?.seq ?? base.deleted?.[root + manifest] ?? 0) === receipt.assets_seq) {
       const local = (name: string) => {
         try { return fs.readFileSync(path.join(board, name), 'utf8') } catch { return null }
       }
       if (synced.content === local(receipt.path) && (assets?.content ?? null) === local(manifest)) return operationStatus(receipt)
-      if (file) return { status: 'pending' }
     }
     return base.pendingArchives?.[task] ? { status: 'pending' } : null
   } catch { return null }
@@ -585,52 +619,12 @@ function archiveReceipt(board: string, task: string, file?: string): TaskOperati
 
 export async function taskArchive(asked: string, location: TaskLocation = {}): Promise<MoveResult> {
   const ref = asked.trim()
-  const local = localTaskTarget(location)
-  const keyMatch = local && /^[a-z][a-z0-9]{0,9}-[1-9]\d{0,8}$/i.test(ref)
-    ? await cloud<Task>('GET', `/v1/tasks/${enc(ref)}`) : null
-  if (local && (ref === local.task || /^\d+$/.test(ref) && Number(ref) === local.number || keyMatch && keyMatch.id === local.task)) {
-    if (deliveryPhase() === 'implement') return refuse('Archive this task during Land.', 'conflict')
-    const pendingLand = deliveryPhase() === 'land'
-    const archive = await withSyncLock(local.board, async () => {
-      useBoard({ board: local.board, root: projectRootOf(local.board), named: true }, false)
-      return withCreationLock(() => withBoardLock(() => {
-        if (locate(local.number)) {
-          const receipt = cmdRemove(local.number, 'completed', { archivingTask: true, pendingLand })
-          recordDeliveryArchive(local.number)
-          return { receipt }
-        }
-        const existing = locateArchived(local.number)
-        if (!existing) return null
-        const file = existing.kind === 'group' ? path.join(existing.target, 'root.md') : existing.target
-        const { meta } = parseFrontmatter(fs.readFileSync(file, 'utf8'))
-        if (!meta?.archived || meta.rejected) return refuse('This task is not eligible for archive.', 'conflict')
-        const receipt = activeDelivery(local.number) ? recoveredArchiveHandoff(local.number, undefined, pendingLand)
-          : { archived_to: path.relative(local.board, existing.target) }
-        recordDeliveryArchive(local.number)
-        return { receipt,
-          existing: path.relative(local.board, file) }
-      }))
-    })
-    if (archive) {
-      const receipt = archive.existing && archiveReceipt(local.board, local.task, archive.existing)
-      if (receipt && receipt.status === 'confirmed') {
-        say('Archive confirmed by Cloud.')
-        return { task: local.task, archive_status: 'archived' }
-      }
-      if (receipt && receipt.status === 'rejected') {
-        if (receipt.code === 'version_conflict' || receipt.code === 'not_found') {
-          return refuse(receipt.message ?? 'Cloud rejected the archive.', receipt.code)
-        }
-        if (deliveryPhase() === 'land') return refuse(receipt.message ?? 'Cloud rejected the archive.', receipt.code ?? 'conflict')
-        // An explicit retry rechecks the Cloud refusal after review or questions change.
-      } else {
-        const pending = receipt && receipt.status === 'pending' && receipt.code ? receipt : null
-        say(`Archived locally. Waiting for Runner synchronization.${pending ? ` [${pending.code}] ${pending.message}` : ''}`)
-        return { ...archive.receipt, task: local.task, archive_status: 'pending_sync', ...(pending ? { sync: pending } : {}) }
-      }
-    }
-  }
-  if (!workspaceTask() && /^\d+$/.test(ref) && !linkedBoard(location)) {
+  const board = linkedBoard(location, true)
+  const current = localTaskTarget(location)
+  const currentRef = current && (ref === current.task || /^\d+$/.test(ref) && Number(ref) === current.number)
+  if (currentRef && deliveryPhase() === 'implement') return refuse('Archive this task during Land.', 'conflict')
+  if (!workspaceTask() && /^\d+$/.test(ref) && !board) {
+    if (linked(location)) return refuse('Select the linked kanban folder with --board before archiving a local card.', 'invalid_link')
     const found = resolveBoard('archive', { board: location.board, dir: location.dir ?? null, cwd: location.cwd ?? process.cwd(), installHint: BOARD_LINK_HINT })
     useBoard(found, !!location.dir)
     return withCreationLock(() => withBoardLock(() => {
@@ -649,14 +643,55 @@ export async function taskArchive(asked: string, location: TaskLocation = {}): P
       return { ...result, archive_status: 'archived' }
     }))
   }
-  if (local && deliveryPhase() === 'land' && (ref === local.task || Number(ref) === local.number || keyMatch?.id === local.task)) {
-    return refuse('The task card is missing from the Land workspace.', 'not_found')
+  const target = currentRef ? current.task : await taskRef(ref, location)
+  const archive = async (id: string, input?: ArchiveInput) => {
+    const result = requireResponse(requireTask(await cloud<Task>('POST', `/v1/tasks/${enc(id)}/archive`, input)),
+      'confirmation that the task was archived', task => task.status === 'done')
+    say(`Archived ${result.key}.`)
+    return result
   }
-  const result = await cloud<Task>('POST', `/v1/tasks/${enc(keyMatch?.id ??
-    (local && /^\d+$/.test(ref) && Number(ref) === local.number ? local.task : await taskRef(ref, location)))}/archive`)
-  requireResponse(requireTask(result), 'confirmation that the task was archived', task => task.status === 'done')
-  say(`Archived ${result.key}.`)
-  return { task: result.id, archive_status: 'archived' }
+  const archived = (task: Task) => ({ task: task.id, archive_status: 'archived' })
+  const project = board && runnerProject(board)
+  if (!board || !project) return archived(await archive(target))
+  const task = requireTask(await cloud<Task>('GET', `/v1/tasks/${enc(target)}`))
+  const number = numberOf(task.key)
+  if (project !== task.project || !Number.isSafeInteger(number)) return archived(await archive(task.id))
+
+  return withSyncLock(board, async () => {
+    setBoardDir(board, path.resolve(board, '../..'))
+    const own = task.id === workspaceTask()
+    if (own && deliveryPhase() === 'implement') return refuse('Archive this task during Land.', 'conflict')
+    const land = own && deliveryPhase() === 'land'
+    const delivery = activeDelivery(number) ?? (land ? endedDelivery(String(number)) : undefined)
+    const landing = delivery && landingOf(delivery)
+    if (land && (!hasInPlaceArchiveCommit(number) || delivery?.targetBranch && !landing)) {
+      return refuse('The saved implementation commit could not be verified. Apply it to the target branch and retry from Land.', 'conflict')
+    }
+    const found = (fs.existsSync(path.join(board, 'todo')) && locate(number)) || locateArchived(number)
+    if (!found && land && task.status !== 'done') return refuse('The task card is missing from the Land workspace. Refresh the board and retry.', 'not_found')
+    const file = found && (found.kind === 'group' ? path.join(found.target, 'root.md') : found.target)
+    const input = file && task.status !== 'done' ? {
+      ...await localArchiveInput(board, project, task.id, number, file),
+      ...(delivery ? { delivery_id: delivery.deliveryId } : {}),
+      ...(landing ? { landing } : {}),
+    } : undefined
+    const result = await archive(task.id, input)
+    if (file || land) recordDeliveryArchive(number)
+    const execution = executionOf()
+    if (land && execution && result.last_job === execution.job && input?.card && input.delivery_id &&
+        delivery?.worktree === path.join('.akb', 'worktrees', input.delivery_id, 'work') &&
+        result.id === task.id && result.project === project && typeof result.card_version === 'number' &&
+        (!landing || result.landing?.commit === landing.commit && result.landing.branch === landing.branch)) {
+      try {
+        saveDeliveryCleanupReceipt(path.resolve(board, '../..'), {
+          project, task: task.id, card: number, deliveryId: input.delivery_id, seq: result.card_version,
+        })
+      } catch {
+        warn('Could not save the delivery cleanup receipt. The archive was confirmed.')
+      }
+    }
+    return archived(result)
+  }, { migrateState: false })
 }
 
 export async function taskRemove(asked: string, reason: string, location: TaskLocation = {}, discard = false): Promise<MoveResult> {
@@ -711,26 +746,32 @@ export async function taskRestore(id: string, location: TaskLocation = {}): Prom
   const task = await cloud<Task>('POST', `/v1/tasks/${enc(await taskRef(id, location))}/restore`)
   requireResponse(requireTask(task), 'confirmation that the task was restored', value => ['stopped', 'waiting_review', 'failed'].includes(value.status))
   say(`Restored ${task.key}. Status: ${task.status}.`)
-  return { ...task }
+  return taskReceipt(task)
 }
-export async function taskResume(id: string, location: TaskLocation = {}): Promise<MoveResult> {
-  const task = requireTask(await cloud<Task>('POST', `/v1/tasks/${enc(await taskRef(id, location))}/resume`))
+export async function taskResume(id: string, location: TaskLocation = {}, runtime?: string): Promise<MoveResult> {
+  const ref = await taskRef(id, location)
+  const body = runtime === undefined ? undefined : { runtime: await resolveCloudRuntime(ref, runtime) }
+  const task = requireTask(await cloud<Task>('POST', `/v1/tasks/${enc(ref)}/resume`, body))
   if (!['queued', 'running'].includes(task.status)) {
-    const reason = task.failure || (task.status === 'waiting_review' ? 'The task is waiting for review.' :
-      ['done', 'cancelled'].includes(task.status) ? 'This task has finished.' : `The task is ${task.status}.`)
+    const messages: Record<string, string> = {
+      land_runtime_unavailable: 'The computer holding the saved work needs an available runtime. Configure one to resume Land.',
+      operation_runtime_unavailable: 'The selected runtime is unavailable. Choose an available runtime and resume.',
+    }
+    const reason = messages[task.failure ?? ''] ?? (task.failure || (task.status === 'waiting_review' ? 'The task is waiting for review.' :
+      ['done', 'cancelled'].includes(task.status) ? 'This task has finished.' : `The task is ${task.status}.`))
     return refuse(reason, task.status === 'failed' ? 'execution_failed' : 'conflict')
   }
   say(task.status === 'queued' ? `Resume queued for ${task.key}.` : `Resumed ${task.key}.`)
-  return { ...task }
+  return taskReceipt(task)
 }
 
 interface CloudRuntime { id: string; name: string; default?: boolean }
 
-async function resolveCloudRuntime(asked: string): Promise<string> {
+async function resolveCloudRuntime(task: string, asked: string): Promise<string> {
   const value = asked.trim()
   if (!value) die('Specify a runtime id or name.', { kind: 'bad-args', exitCode: 2 })
   if (value.startsWith('rt_')) return value
-  const list = await cloud<{ data: CloudRuntime[] }>('GET', '/v1/runtimes')
+  const list = await cloud<{ data: CloudRuntime[] }>('GET', `/v1/tasks/${enc(task)}/runtimes?for=resume`)
   requireResponse(list, 'a list of runtimes', v => Array.isArray(v.data))
   const matches = list.data.filter(r => r.name === value || (r.default && value === 'Global default'))
   if (!matches.length) return refuse(`No runtime named "${value}".`, 'not_found')
@@ -738,25 +779,12 @@ async function resolveCloudRuntime(asked: string): Promise<string> {
   return matches[0]!.id
 }
 
-export async function taskRuntime(id: string, runtime: string, location: TaskLocation = {}): Promise<MoveResult> {
-  const runtimeId = await resolveCloudRuntime(runtime)
-  const ref = await taskRef(id, location)
-  const task = requireTask(await cloud<Task>('PATCH', `/v1/tasks/${enc(ref)}`, { runtime: runtimeId }))
-  if (task.runtime !== runtimeId || (task.runtime_info != null && task.runtime_info.id !== runtimeId)) {
-    const effective = task.runtime_info == null ? '' : `, effective ${task.runtime_info.id ?? 'missing'}`
-    throw cloudError(invalidResponse(`a matching runtime (requested ${runtimeId}, saved ${task.runtime ?? 'missing'}${effective})`))
-  }
-  const name = task.runtime_info?.name
-  say(`Updated ${task.key} runtime to ${hasText(name) ? name : task.runtime}.`)
-  return { ...task }
-}
-
 export async function taskStop(id: string, location: TaskLocation = {}): Promise<MoveResult> {
   const task = requireTask(await cloud<Task>('POST', `/v1/tasks/${enc(await taskRef(id, location))}/stop`))
   requireResponse(task, 'a stop receipt', value => ['running', 'queued', 'waiting_review', 'stopped'].includes(value.status))
   const stop_status = task.status === 'stopped' ? 'stopped' : 'requested'
   say(stop_status === 'stopped' ? `Stopped ${task.key}.` : `Stop requested for ${task.key}.`)
-  return { ...task, stop_status }
+  return { ...taskReceipt(task), stop_status }
 }
 
 export const taskComment = (id: string, text: string, location: TaskLocation = {}) =>

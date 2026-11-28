@@ -13,6 +13,7 @@
 import { readArchive } from '../view/archive'
 import { queueReflect, reflectQueue } from './settings'
 import { withStore } from './store'
+import { cardStudio } from './studios'
 
 /** Queue every card in `openBefore` — still on the board when the caller started watching —
  *  that is in the archive now as finished. True when one joined. */
@@ -22,7 +23,7 @@ export function queueCompleted(openBefore: Iterable<number>): boolean {
   let done: number[]
   try {
     // A rejected card is filed in the archive too, and there is nothing shipped to reflect on.
-    done = readArchive().cards.filter((card) => before.has(card.id) && !card.rejected).map((card) => card.id)
+    done = readArchive().cards.filter((card) => before.has(card.id) && !card.rejected && !!cardStudio(card.id)?.allowedFollowUps).map((card) => card.id)
   } catch {
     return false
   }

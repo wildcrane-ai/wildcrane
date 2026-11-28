@@ -19,6 +19,7 @@ export interface StudioDef {
   summaries?: Record<string, string>
   entrypoints?: string[]
   needsArtifact: boolean
+  allowedFollowUps?: string
   icon?: AgentIcon
   previews: StudioPreview[]
   rules: string
@@ -30,7 +31,8 @@ export function withoutStudioCatalog(source: string): string {
     const document = parseDocument(yaml)
     const summaries = document.delete('summaries')
     const entrypoints = document.delete('entrypoints')
-    return summaries || entrypoints ? `---\n${document.toString({ lineWidth: 0 })}---\n` : front
+    const followUps = document.delete('allowedFollowUps')
+    return summaries || entrypoints || followUps ? `---\n${document.toString({ lineWidth: 0 })}---\n` : front
   })
 }
 export const scalar = (value: string): string => (/\s#/.test(value) ? JSON.stringify(value) : yamlScalar(value))
@@ -48,7 +50,7 @@ export const STUDIO_SCHEMA = {
     name: { type: 'string', minLength: 1, pattern: '\\S' }, names: titles,
     description: { type: 'string' }, summaries: titles,
     entrypoints: { type: 'array', minItems: 1, maxItems: 10, uniqueItems: true, items: { type: 'string', pattern: PREVIEW_ID.source } },
-    needsArtifact: { type: 'boolean' }, icon,
+    needsArtifact: { type: 'boolean' }, allowedFollowUps: { type: 'string' }, icon,
     previews: { type: 'object', propertyNames: { pattern: PREVIEW_ID.source }, additionalProperties: {
       type: 'object', additionalProperties: false, properties: { title: titles, description: titles, icon },
     } },
@@ -58,39 +60,66 @@ const validate = new Ajv({ allErrors: true, meta: false, validateSchema: false }
 
 const comments = /<!--[^]*?(?:-->|$)/g
 const blank = (text: string) => text.replace(/[^\r\n]/g, ' ')
-const headingsOf = (body: string) =>
-  [...withoutCode(body).replace(comments, blank).matchAll(/^ {0,3}#{1,2}(?=[ \t\r\n]|$)[^\r\n]*/gm)]
 
-export function studioSetup(body: string): string {
-  const headings = headingsOf(body)
-  const index = headings.findIndex(h => /^ {0,3}##[ \t]+Setup(?:[ \t]+#+)?[ \t]*$/.test(body.slice(h.index, h.index + h[0].length)))
-  if (index === -1) return ''
-  const heading = headings[index]!
-  const section = body.slice(heading.index + heading[0].length, headings[index + 1]?.index).trim()
-  return section.replace(comments, '').trim() ? section : ''
-}
-
-function landSections(body: string, previews: PreviewBlock[]) {
-  let visible = '', at = 0
-  for (const { start, end } of previews) {
-    visible += body.slice(at, start) + blank(body.slice(start, end))
-    at = end
-  }
-  visible += body.slice(at)
-
-  const headings = headingsOf(visible)
-  return headings.flatMap((heading, index) => {
-    const start = heading.index
-    const end = start + heading[0].length
-    if (!/^ {0,3}##[ \t]+Land(?:[ \t]+#+)?[ \t]*$/.test(visible.slice(start, end))) return []
-    const text = visible.slice(end, headings[index + 1]?.index).replace(comments, '').trim()
-    return [{ offset: start + heading[0].indexOf('#'), empty: !text, text }]
+function studioSections(body: string) {
+  const headings = [...withoutCode(body).replace(comments, blank).matchAll(/^ {0,3}#{1,2}(?=[ \t\r\n]|$)[^\r\n]*/gm)]
+  return headings.map((heading, index) => {
+    const start = heading.index + heading[0].indexOf('#')
+    const content = heading.index + heading[0].length
+    const name = /^##[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/.exec(body.slice(start, content))?.[1]
+    return { name, start, content, end: headings[index + 1]?.index ?? body.length }
   })
 }
 
-export const studioLand = (rules: string): string => landSections(rules, [])[0]?.text ?? ''
+function sectionText(body: string, name: string): string {
+  const section = studioSections(body).find(heading => heading.name === name)
+  return section ? body.slice(section.content, section.end).trim() : ''
+}
 
-export function parseStudioFile(id: string, source: string, from: string, { requirePreviewCopy = false, requireLand = false } = {}): { def: StudioDef } | { problem: string; problems: SourceProblem[] } {
+export function studioSetup(body: string): string {
+  const text = sectionText(body, 'Setup')
+  return text.replace(comments, '').trim() ? text : ''
+}
+
+export const studioLand = (rules: string): string => sectionText(rules, 'Land').replace(comments, '').trim()
+
+function checkStudioSections(body: string, previews: PreviewBlock[], fail: (offset: number, path: string, code: string, message: string, hint: string) => void) {
+  let visible = '', end = 0
+  for (const block of previews) {
+    visible += body.slice(end, block.start) + blank(body.slice(block.start, block.end))
+    end = block.end
+  }
+  visible += body.slice(end)
+
+  const sections = studioSections(visible)
+  const instructions = {
+    Land: 'Describe delivery, checks and what to record.',
+    Work: 'Describe the workflow and tools.',
+    Previews: 'Put Preview blocks under this heading, or leave it empty if none are needed.',
+  }
+  for (const name of ['Land', 'Work', 'Previews'] as const) {
+    const matching = sections.filter(section => section.name === name)
+    const code = `studio-${name.toLowerCase()}`
+    if (!matching.length) fail(0, name, `${code}-missing`, `Missing ## ${name} section`, `Add ## ${name} to the Studio body. ${instructions[name]}`)
+    for (const [index, section] of matching.entries()) {
+      if (index) fail(section.start, name, `${code}-duplicate`, `Repeated ## ${name} section`, `Combine its contents under one ## ${name} heading.`)
+      if (name !== 'Previews' && !visible.slice(section.content, section.end).replace(comments, '').trim()) {
+        fail(section.start, name, `${code}-empty`, `The ## ${name} section is empty`, instructions[name])
+      }
+    }
+  }
+
+  let index = 0
+  for (const block of previews) {
+    while (sections[index] && sections[index]!.end <= block.start) index++
+    const section = sections[index]
+    if (section?.name !== 'Previews' || block.start < section.content) {
+      fail(block.start, `previews.${block.id}`, 'preview-section', `Preview ${block.id} is outside ## Previews`, 'Move the block under ## Previews.')
+    }
+  }
+}
+
+export function parseStudioFile(id: string, source: string, from: string, { requirePreviewCopy = false, requireSections = false } = {}): { def: StudioDef } | { problem: string; problems: SourceProblem[] } {
   const problems: SourceProblem[] = []
   const fail = (offset: number, path: string, code: string, message: string, hint: string) => problems.push({ file: from, ...sourcePosition(source, offset), path, code, message, hint })
   const result = () => ({ problem: problems.map(p => `${p.file}:${p.line}:${p.column} ${p.path}: ${p.code} — ${p.message}. ${p.hint}`).join('\n'), problems })
@@ -129,21 +158,16 @@ export function parseStudioFile(id: string, source: string, from: string, { requ
         `Preview ${block.id} needs a ${lang} ${field}`, 'Add non-blank en and zh display text in the Preview metadata.')
     }
   }
-  if (requireLand) {
-    const sections = landSections(body, parsed.blocks)
-    if (!sections.length) fail(bodyOffset, 'Land', 'studio-land-missing', 'Missing ## Land section', 'Add ## Land to the Studio body and describe delivery, checks and what to record.')
-    for (const [index, { offset, empty }] of sections.entries()) {
-      if (index) fail(bodyOffset + offset, 'Land', 'studio-land-duplicate', 'Repeated ## Land section', 'Combine delivery instructions under one ## Land heading.')
-      if (empty) fail(bodyOffset + offset, 'Land', 'studio-land-empty', 'The ## Land section is empty', 'Describe delivery, checks and what to record under ## Land.')
-    }
-  }
+  if (requireSections) checkStudioSections(body, parsed.blocks, (offset, ...problem) => fail(bodyOffset + offset, ...problem))
   if (problems.length) return result()
   let rules = '', at = 0
   for (const block of parsed.blocks) { rules += body.slice(at, block.start); at = block.end }
   rules += body.slice(at)
+  const allowedFollowUps = (raw.allowedFollowUps as string | undefined)?.trim()
   return { def: {
     id, name: (raw.name as string).trim(), ...(raw.names ? { names: raw.names as Record<string, string> } : {}),
     description: raw.description as string ?? '', needsArtifact: raw.needsArtifact as boolean ?? false,
+    ...(allowedFollowUps ? { allowedFollowUps } : {}),
     ...(raw.summaries ? { summaries: raw.summaries as Record<string, string> } : {}),
     ...(raw.entrypoints ? { entrypoints: raw.entrypoints as string[] } : {}),
     ...(raw.icon ? { icon: raw.icon as AgentIcon } : {}),

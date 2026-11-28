@@ -40,7 +40,6 @@ const kanban = (): string => path.join(root, 'docs', 'kanban')
 function writeCard(id: number, body = 'A card.', opts: { folder?: string; status?: string } = {}): void {
   const meta: Partial<Meta> = {
     title: `Card ${id}`,
-    priority: 'med',
     status: opts.status ?? 'todo',
     blocked_by: [],
     related: [],
@@ -107,6 +106,7 @@ describe('the classification', () => {
   it('calls the entries events', () => {
     const kinds = Object.fromEntries(flowNodes().map((n) => [n.flow, n.kind]))
     assert.deepEqual(kinds, {
+      'triage-sort': 'event',
       reflect: 'event',
       'prune-memory': 'event',
       'review-memory': 'event',

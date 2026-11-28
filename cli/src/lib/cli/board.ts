@@ -8,9 +8,10 @@ import crypto from 'node:crypto'
 import { creationReceipt, readCreation, saveCreation, archiveCreation, creationError, triageFile } from '../agent/creation'
 import { peekRun } from '../agent/sessions'
 import { KANBAN, REPO_ROOT } from '../paths'
-import { resolveBoard, useBoard } from '../board-cli'
+import { resolveBoard, selectBoard, useBoard } from '../board-cli'
 import { syncStudios } from '../agent/cloud-studios'
-import { LEVELS, STATUSES } from '../validate'
+import { confirmRunnerBinding } from '../cloud/runner-binding'
+import { STATUSES } from '../validate'
 import { normalizeCardStatus } from '../frontmatter'
 import {
   cardId,
@@ -61,6 +62,12 @@ async function dispatch(
   const data = await runAction(ctx, {}, async () => {
     const found = resolveBoard(move, { board: ctx.board, dir: ctx.dir, cwd: cli.cwd, installHint: cli.installHint })
     const conflict = move.startsWith('conflict-')
+    const check = ['update', 'update-questions', 'reject'].includes(move) ? await confirmRunnerBinding(found.board) : undefined
+    if (check) {
+      selectBoard(found, ctx.dir !== null)
+      await syncStudios()
+      check()
+    }
     useBoard(found, ctx.dir !== null, move === 'inspect' || conflict)
     if (conflict) {
       if (move === 'conflict-list') {
@@ -80,7 +87,7 @@ async function dispatch(
       say(`Board conflict ${result.id}: ${result.state}.`)
       return { board: found.board, ...result }
     }
-    if (move !== 'inspect') await syncStudios(!workspaceTask() && (move === 'file' || move === 'skills'))
+    if (!check && move !== 'inspect') await syncStudios(!workspaceTask() && (move === 'file' || move === 'skills'))
     const root = found.root
 
     const creating = move === 'create' && insideRun() ? peekRun(insideRun()!) : undefined
@@ -171,7 +178,6 @@ export function withCreateOptions(command: Command, legacy = false): Command {
   return command
     .addOption(new Option('--title <title>', 'write a local card with a Cloud-assigned number').makeOptionMandatory(legacy))
     .option('--studio <id>', "the Studio from `akb studio list`")
-    .option('--priority <level>', `how much it matters: ${LEVELS.join(' | ')} (default: med)`, oneOf(LEVELS))
     .option('--blocked-by <ids>', 'ids of open cards this one waits on', collectList)
     .option('--related <ids>', 'ids of open cards this one relates to', collectList)
     .option('--modules <names>', 'the parts of the project it touches, validated against modules.md', collectList)
@@ -214,7 +220,6 @@ export function declareBoardMoves(program: Command, cli: BoardCliOptions, groups
         'untouched — those have their own moves.',
     )
     .option('--title <title>', 'what the card is called')
-    .option('--priority <level>', LEVELS.join(' | '), oneOf(LEVELS))
     .option('--status <status>', STATUSES.join(' | '), value => oneOf(STATUSES)(normalizeCardStatus(value)))
     .option('--blocked-by <ids>', 'ids of open cards this one waits on', collectList)
     .option('--related <ids>', 'ids of open cards this one relates to', collectList)
@@ -279,7 +284,7 @@ export function declareBoardMoves(program: Command, cli: BoardCliOptions, groups
   move('list', groups?.board)
     .summary('the open cards: id, title, meta, summary, path — or, with --archived, the cards that landed')
     .description(
-      'The open cards at a glance — one block per card with its id, title, meta (status, priority, ' +
+      'The open cards at a glance — one block per card with its id, title, meta (status, ' +
         'blockers, open questions), summary line and file path.\n\n' +
         "`--stale` asks the other question: which cards have sat untouched past the board's **Stale after** " +
         'setting (config.md, 30 days by default), stalest first, each with the days it has sat and what is ' +

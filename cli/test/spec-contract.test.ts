@@ -62,17 +62,18 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
 
 describe('the card format contract', () => {
-  it('ignores the roi an old card still carries, whatever it says, and drops it on a rewrite (#206)', async () => {
-    const old = valid.replace('priority: med\n', 'priority: med\nroi: nonsense\n')
+  it('ignores old priority and ROI fields and drops them on rewrite', async () => {
+    const old = valid.replace('status: todo\n', 'priority: obsolete\nroi: nonsense\nstatus: todo\n')
     assert.deepEqual(await validateSpec(file, old), [])
     const { meta } = parseFrontmatter(old)
     assert.ok(!('roi' in meta!))
-    assert.doesNotMatch(serializeFrontmatter(meta!), /roi/)
+    assert.ok(!('priority' in meta!))
+    assert.doesNotMatch(serializeFrontmatter(meta!), /roi:|priority:/)
   })
 
-  it('starts cards by priority, then by number (#206)', () => {
-    const cards = [{ id: 2, priority: 'med' }, { id: 3, priority: 'high' }, { id: 1, priority: 'med' }] as Card[]
-    assert.deepEqual(cards.sort(byDispatchOrder).map((c) => c.id), [3, 1, 2])
+  it('starts cards in number order', () => {
+    const cards = [{ id: 2 }, { id: 3 }, { id: 1 }] as Card[]
+    assert.deepEqual(cards.sort(byDispatchOrder).map((c) => c.id), [1, 2, 3])
   })
 
   it('accepts ordinary cards and group roots', async () => {
@@ -173,9 +174,10 @@ describe('the card format contract', () => {
     assert.deepEqual(meta!.questions, [])
     assert.ok(!('decided' in meta!))
     assert.equal((await move(root, ['validate', '1'])).valid, true)
-    await move(root, ['update', '1', '--priority', 'high'])
+    await move(root, ['update', '1', '--title', 'Rewritten feature'])
     const written = fs.readFileSync(file, 'utf8')
-    assert.match(written, /priority: high/)
+    assert.match(written, /title: Rewritten feature/)
+    assert.doesNotMatch(written, /priority:/)
     assert.doesNotMatch(written, /decided:|chose:/)
   })
 

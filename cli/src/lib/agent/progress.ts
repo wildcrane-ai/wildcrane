@@ -1,5 +1,6 @@
 import { answerOutcome } from './answers'
 import { approvedRequirements, openQuestions, syncAudit } from './deliveries'
+import { PROJECT_CHECKOUT } from './delivery-workspace'
 import { readStore, withStore } from './store'
 import type { AgentRequest, DeliveryRecord } from './types'
 
@@ -34,7 +35,7 @@ export function nextDeliveryRun(deliveryId?: string): AgentRequest | undefined {
       return { action: 'implement', id: delivery.cardId, title: delivery.title, session: 'new' }
     }
     const last = store.runs.filter((r) => r.deliveryId === delivery.deliveryId && r.action === 'implement').pop()
-    const registered = delivery.completions?.some((c) => c.sessionId === last?.sessionId)
+    const registered = delivery.worktree !== PROJECT_CHECKOUT && delivery.completions?.some(c => c.sessionId === last?.sessionId)
     const answered = delivery.answers?.some((a) => !a.actedAt)
     if (registered || answered) {
       withStore((live) => {

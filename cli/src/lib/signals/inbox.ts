@@ -372,6 +372,9 @@ export function restoreInboxItems(sourceIds: string[]): ItemOutcome[] {
       dismissed_at: null,
       dismissed_by: null,
       dismissed_reason: null,
+      decision: null,
+      decision_reason: null,
+      triage_manual: 'true',
     })
     return at ? { sourceId, ok: true, relPath: at } : refuse(`nothing ignored in triage is ${sourceId}`)
   })

@@ -1,6 +1,7 @@
 import http from 'node:http'
 import crypto from 'node:crypto'
 import type { Call } from './api'
+import type { ReviewApproval } from '../../cli/src/lib/shared/review-plan'
 import { push, taskAssetsSynced, type TaskFolder } from './task-folder'
 
 export function previewSyncBridge(ws: TaskFolder, job: { id: string; machineId: string }, stopped: () => boolean) {
@@ -12,12 +13,18 @@ export function previewSyncBridge(ws: TaskFolder, job: { id: string; machineId: 
   })
 }
 
-export function replyApprovalBridge(task: string, number: number, approve: (comment: string | undefined, asked: string | undefined, target: { stage?: string; review_revision: number }) => Promise<Call<unknown>>) {
+export type ReplyApprovalTarget = Pick<ReviewApproval, 'stage' | 'revision'>
+
+export function replyApprovalBridge(task: string, number: number, targets: readonly ReplyApprovalTarget[],
+  approve: (comment: string | undefined, asked: string, target: { stage: string; review_revision: number }) => Promise<Call<unknown>>) {
   return taskBridge(task, number, body => {
-    const { task: asked, comment, stage, review_revision } = body
+    const { task: asked, comment, stage } = body
     if (comment !== undefined && typeof comment !== 'string') throw Error('Invalid comment.')
-    if (typeof review_revision !== 'number' || !Number.isSafeInteger(review_revision) || review_revision < 0 || stage !== undefined && typeof stage !== 'string') throw Error('Name the review version you read.')
-    return approve(comment, asked, { stage, review_revision })
+    if (stage !== undefined && (typeof stage !== 'string' || !stage.trim())) throw Error('Specify a review stage.')
+    if (stage === undefined && targets.length > 1) throw Error('Specify a review stage with --stage.')
+    const target = stage === undefined ? targets[0] : targets.find(approval => approval.stage === stage)
+    if (!target) throw Error('This reply has no matching approval target. Review the task and ask again in a new reply.')
+    return approve(comment, asked, { stage: target.stage, review_revision: target.revision })
   })
 }
 

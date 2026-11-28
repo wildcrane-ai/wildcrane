@@ -30,7 +30,6 @@ after(() => fs.rmSync(root, { recursive: true, force: true }))
 function card(id: number, title: string, modules: string[] = []): string {
   const meta: Partial<Meta> = {
     title,
-    priority: 'med',
     status: 'todo',
     blocked_by: [],
     related: [],

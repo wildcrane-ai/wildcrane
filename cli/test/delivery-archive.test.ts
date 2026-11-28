@@ -1,4 +1,6 @@
 import { prepareDelivery } from '../src/lib/agent/commit-mode.ts'
+import { recordDeliveryArchive, recordImplementationCommit } from '../src/lib/agent/delivery-archive.ts'
+import { lockDeliveryProject } from '../src/lib/agent/delivery-workspace.ts'
 import { taskArchive } from '../src/commands/task.ts'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -16,7 +18,8 @@ import { closeRun, cancelDelivery, openResume, openRun, reconcileCardDelivery } 
 import { logPathOf, readAction, withStore } from '../src/lib/agent/store.ts'
 import type { RunRecord } from '../src/lib/agent/types.ts'
 import { BoardError } from '../src/lib/io.ts'
-import { setBoardRoot } from '../src/lib/paths.ts'
+import { setBoardDir, setBoardRoot } from '../src/lib/paths.ts'
+import { writeSession } from '../src/lib/cloud/session.ts'
 import { move, run } from './helpers/board.ts'
 
 let root: string
@@ -39,6 +42,7 @@ afterEach(() => {
   delete process.env[RUN_ENV]
   fs.rmSync(root, { recursive: true, force: true })
 })
+const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 function open(sessionId: string): string {
   return withStore((store) => {
     const run: RunRecord = { sessionId, cardId: 1, action: 'implement', status: 'running', startedAt: Date.now(),
@@ -94,6 +98,70 @@ it('keeps a non-Git implementation and its baseline separate from the project', 
     assert.equal(fs.readFileSync(path.join(work, '../base/article.md'), 'utf8'), 'Original')
     assert.equal(fs.readFileSync(path.join(root, 'article.md'), 'utf8'), 'Original')
   } finally { delete process.env[DELIVERY_PHASE_ENV] }
+})
+
+it('saves the first Git implementation commit without including user changes or a later target commit', async () => {
+  git('init', '-qb', 'main')
+  git('config', 'user.name', 'Test')
+  git('config', 'user.email', 'test@example.com')
+  const made = prepareDelivery(1)
+  assert.ok('start' in made)
+  assert.equal(made.start.worktree, '.')
+  assert.equal(made.start.base, undefined)
+  patch(d => Object.assign(d, { ...made.start, deliveryId }))
+  fs.writeFileSync(path.join(root, 'user.txt'), 'Staged')
+  git('add', 'user.txt')
+  fs.writeFileSync(path.join(root, 'user.txt'), 'Unstaged')
+  fs.writeFileSync(path.join(root, 'task.txt'), 'Finished')
+  git('add', 'task.txt')
+  git('commit', '-qm', 'Task result', '--only', '--', 'task.txt')
+  const commit = git('rev-parse', 'HEAD')
+  assert.equal(git('ls-tree', '--name-only', 'HEAD'), 'task.txt')
+  assert.equal(git('show', ':user.txt'), 'Staged')
+  assert.equal(fs.readFileSync(path.join(root, 'user.txt'), 'utf8'), 'Unstaged')
+  assert.equal(recordImplementationCommit(deliveryId, 'first', null), true)
+  git('commit', '-qm', 'Parallel change', '--allow-empty', '--only')
+  await closeRun('first', { status: 'done' })
+  assert.equal(nextDeliveryRun(deliveryId), undefined)
+  process.env[DELIVERY_PHASE_ENV] = 'land'
+  try {
+    assert.equal((await reconcileCardDelivery(1)).kind, 'resumable')
+    recordDeliveryArchive(1)
+    assert.deepEqual(await reconcileCardDelivery(1), {
+      kind: 'completed', deliveryId, sessionId: 'first', commit, branch: 'main',
+    })
+  } finally { delete process.env[DELIVERY_PHASE_ENV] }
+})
+
+it('uses a directory copy with an initialized repository when Git is unavailable', () => {
+  git('init', '-qb', 'main')
+  const env = process.env.PATH
+  process.env.PATH = ''
+  try {
+    const made = prepareDelivery(1)
+    assert.ok('start' in made)
+    assert.match(made.start.worktree!, /worktrees[/\\].+[/\\]work$/)
+    assert.equal(made.start.branch, undefined)
+  } finally { process.env.PATH = env }
+})
+
+it('serializes project access and lets a waiting operation stop and retry', async () => {
+  const release = await lockDeliveryProject(root, () => false)
+  assert.ok(release)
+  const alias = path.join(root, 'alias')
+  fs.symlinkSync(root, alias, 'junction')
+  let stopped = false
+  let granted = false
+  const waiting = lockDeliveryProject(alias, () => stopped).then(unlock => { granted = !!unlock; unlock?.() })
+  await new Promise(resolve => setTimeout(resolve, 150))
+  assert.equal(granted, false)
+  stopped = true
+  await waiting
+  assert.equal(granted, false)
+  release()
+  const retried = await lockDeliveryProject(alias, () => false)
+  assert.ok(retried)
+  retried()
 })
 
 it('archives an active non-Git delivery and returns the same archive on retry', async () => {
@@ -283,4 +351,68 @@ it('reads a legacy landing receipt from the archived delivery', async () => {
   assert.deepEqual(await reconcileCardDelivery(1), {
     kind: 'completed', deliveryId, sessionId: 'first', commit: sha, branch: 'main',
   })
+})
+
+it('verifies the Land commit and saves the receipt only after Cloud confirms', async () => {
+  const board = path.join(root, '.akb', 'kanban')
+  const todo = 'todo/1-deliver-it.md'
+  const file = path.join(board, todo)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.copyFileSync(card, file)
+  const content = fs.readFileSync(file, 'utf8')
+  fs.writeFileSync(path.join(board, '..', 'base.json'), JSON.stringify({
+    project: 'prj_1', files: { ['projects/prj_1/' + todo]: { seq: 7, content } },
+  }))
+  const restore = { ...process.env }
+  const fetch = globalThis.fetch
+  try {
+    setBoardDir(board, root)
+    git('init', '-qb', 'main')
+    git('config', 'user.name', 'Test')
+    git('config', 'user.email', 'test@example.com')
+    git('commit', '-qm', 'Baseline', '--allow-empty')
+    const base = git('rev-parse', 'HEAD')
+    const currentId = open('cloud-land')
+    process.env[RUN_ENV] = 'cloud-land'
+    withStore(store => Object.assign(store.deliveries.find(d => d.deliveryId === currentId)!, {
+      worktree: '.', branch: 'main', targetBranch: 'main', base,
+    }))
+    process.env.AI4KANBAN_HOME = path.join(root, '.test-cloud')
+    process.env.AI4KANBAN_SUPABASE_URL = 'https://test.supabase.co'
+    process.env.AI4KANBAN_CLOUD_URL = 'https://api.example.test'
+    process.env.AI4KANBAN_BOARD = board
+    process.env.AI4KANBAN_TASK = 'task_abc'
+    process.env[DELIVERY_PHASE_ENV] = 'land'
+    writeSession({ version: 1, supabaseUrl: 'https://test.supabase.co', accessToken: 'test', refreshToken: 'test',
+      expiresAt: Date.now() + 60 * 60 * 1000, subject: '11111111-1111-4111-8111-111111111111' })
+    let blocked = true
+    const posted: unknown[] = []
+    globalThis.fetch = (async (_url, init) => {
+      if (init?.method === 'POST') {
+        posted.push(JSON.parse(String(init.body)))
+        if (blocked) return Response.json({ error: { code: 'conflict', message: 'Finish review.' } }, { status: 409 })
+      }
+      return Response.json({ id: 'task_abc', key: 'WC-1', project: 'prj_1', status: init?.method === 'POST' ? 'done' : 'running' })
+    }) as typeof fetch
+    const archive = () => taskArchive('task_abc', { cwd: root, board })
+    await assert.rejects(archive, /implementation commit could not be verified/)
+    assert.deepEqual(posted, [])
+    git('commit', '-qm', 'Implementation', '--allow-empty')
+    const commit = git('rev-parse', 'HEAD')
+    assert.ok(recordImplementationCommit(currentId, 'cloud-land', base))
+    await assert.rejects(archive, /Finish review/)
+    assert.equal(findDelivery(currentId)?.status, 'active')
+    blocked = false
+    assert.equal((await archive()).archive_status, 'archived')
+    assert.equal(findDelivery(currentId)?.status, 'finished')
+    assert.equal(findDelivery(currentId)?.landing?.commit, commit)
+    assert.deepEqual(posted.at(-1), { card: { path: todo, base_seq: 7, content }, delivery_id: currentId, landing: { branch: 'main', commit } })
+    assert.equal(fs.readFileSync(file, 'utf8'), content)
+  } finally {
+    globalThis.fetch = fetch
+    for (const name of ['AI4KANBAN_HOME', 'AI4KANBAN_SUPABASE_URL', 'AI4KANBAN_CLOUD_URL', 'AI4KANBAN_BOARD', 'AI4KANBAN_TASK', DELIVERY_PHASE_ENV]) {
+      if (restore[name] === undefined) delete process.env[name]
+      else process.env[name] = restore[name]
+    }
+  }
 })

@@ -27,7 +27,6 @@ after(() => fs.rmSync(root, { recursive: true, force: true }))
 function writeCard(id: number, meta: Partial<Meta> = {}, at = `${id}-card-${id}.md`): void {
   const full: Partial<Meta> = {
     title: `Card ${id}`,
-    priority: 'med',
     status: 'todo',
     blocked_by: [],
     related: [],

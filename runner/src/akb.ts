@@ -11,7 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { DELIVERY_PHASE_ENV, SESSION_COST_ENV } from '../../cli/src/lib/agent/env'
+import { DELIVERY_PHASE_ENV, REVIEW_FINGERPRINT_ENV, SESSION_COST_ENV } from '../../cli/src/lib/agent/env'
 import { PROXY_KEYS } from '../../cli/src/lib/agent/proxy'
 import { EXECUTION_RUNTIMES_ENV } from '../../cli/src/lib/agent/runtimes'
 import { LANGUAGE_ENV } from '../../cli/src/lib/agent/language'
@@ -75,7 +75,9 @@ export function shimDir(akb: Akb): string {
 /** 清除上游运行标记，并向子 CLI 传递 Cloud 语言代码；空值禁止本机回退。 */
 export function akbEnv(akb: Akb, board?: string, task?: string, language?: 'zh' | 'en' | null, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
-  const dropped = [DELIVERY_PHASE_ENV, REVIEW_SYNC_ENV, 'AI4KANBAN_PREVIEW_BRIDGE', 'AI4KANBAN_REPLY_APPROVAL', 'AI4KANBAN_BOARD', 'AI4KANBAN_TASK', 'AI4KANBAN_EXECUTION', 'AI4KANBAN_SCHEDULED_AGENTS', STUDIO_SNAPSHOT_ENV, LANGUAGE_ENV, SESSION_COST_ENV, EXECUTION_RUNTIMES_ENV]
+  const dropped = [DELIVERY_PHASE_ENV, REVIEW_SYNC_ENV, 'AI4KANBAN_PREVIEW_BRIDGE', 'AI4KANBAN_REPLY_APPROVAL',
+    'AI4KANBAN_BOARD', 'AI4KANBAN_TASK', 'AI4KANBAN_TASK_REVIEW', 'AI4KANBAN_REVIEW_STAGES', REVIEW_FINGERPRINT_ENV,
+    'AI4KANBAN_EXECUTION', 'AI4KANBAN_SCHEDULED_AGENTS', STUDIO_SNAPSHOT_ENV, LANGUAGE_ENV, SESSION_COST_ENV, EXECUTION_RUNTIMES_ENV]
   for (const [k, v] of Object.entries({ ...proxyEnv(), ...base })) if (!k.startsWith('KANBAN_') && !dropped.includes(k)) env[k] = v
   const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
   env[key] = [shimDir(akb), env[key]].filter(Boolean).join(path.delimiter)

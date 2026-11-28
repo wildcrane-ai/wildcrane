@@ -73,7 +73,7 @@ after(() => fs.rmSync(root, { recursive: true, force: true }))
 
 describe('card approve on a Runner board', () => {
   it('requires an explicit reviewed revision and starts no run', async () => {
-    await assert.rejects(() => run(root, ['raw', 'card', 'approve', '3', '--board', board]), /Use akb task approve with the --revision you reviewed/)
+    await assert.rejects(() => run(root, ['raw', 'card', 'approve', '3', '--board', board]), /Use akb task approve to approve the reviewed snapshot/)
     assert.equal(sent.some(s => s.method === 'POST'), false)
     assert.equal(readRuns().length, 0)
   })

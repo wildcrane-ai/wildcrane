@@ -1,45 +1,18 @@
 import assert from 'node:assert/strict'
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { after, afterEach, beforeEach, it } from 'node:test'
+import { it } from 'node:test'
 import { once } from 'node:events'
-import { codexServer, threadConfig } from '../src/codex-server'
-import { initializeNative, leaseFile, nativeConnection, nativeDirectory, readPrivate, releaseNativeThread, writePrivate, type NativeBackend } from '../src/codex-native'
+import { threadConfig } from '../src/codex-server'
+import { initializeNative, leaseFile, nativeConnection, readPrivate, releaseNativeThread, writePrivate } from '../src/codex-native'
 import { createCodexClient } from '../../cli/src/lib/agent/wire/codex'
-import { connect, RpcError } from '../../cli/src/lib/agent/wire/rpc'
+import { RpcError } from '../../cli/src/lib/agent/wire/rpc'
 import { reconcileCodexLeases } from '../src/codex-ownership'
 import { until } from './fake-cloud'
-import { projectStateDir } from '../../cli/src/lib/machine/project'
-import { IDLE_TIMEOUT } from '../../cli/src/lib/agent/idle'
-import { openResume, openRun, patch, peekRun } from '../../cli/src/lib/agent/sessions'
-import { setBoardRoot } from '../../cli/src/lib/paths'
-import { RETRY_FILE_ENV, retryBudget } from '../../cli/src/lib/agent/retry'
-import { watchRun } from '../../cli/src/lib/agent/watch'
 
-const previous = process.env.WILDCRANE_HOME
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-native-test-'))
-const fake = path.join(root, 'codex')
-const calls = path.join(root, 'calls.jsonl')
-const peers = new Set<ChildProcessWithoutNullStreams>()
-let manager: Awaited<ReturnType<typeof codexServer>>
-beforeEach(async () => {
- process.env.WILDCRANE_HOME = root; process.env.FAKE_CODEX_CALLS = calls
- fs.copyFileSync(path.join(process.env.RUNNER_DIST!, '../test/fake-codex-native.mjs'), fake);fs.chmodSync(fake, 0o755)
- manager = await codexServer()
-})
-afterEach(async () => { for(const child of peers){if(child.exitCode===null&&child.signalCode===null){const done=once(child,'close');child.stdin.end();await done;}}peers.clear();await manager.shutdown();fs.rmSync(nativeDirectory(),{recursive:true,force:true}) })
-after(() => { process.env.WILDCRANE_HOME=previous;delete process.env.FAKE_CODEX_CALLS;fs.rmSync(root,{recursive:true,force:true}) })
-const read = () => fs.existsSync(calls)?fs.readFileSync(calls,'utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line)):[]
-const backends = () => fs.readdirSync(nativeDirectory()).filter(name=>/^[a-f0-9]{64}\.json$/.test(name)).map(name=>readPrivate<NativeBackend>(path.join(nativeDirectory(),name))!)
-async function peer(args:string[]=[], local:NodeJS.ProcessEnv={}) {
- const child=spawn(process.execPath,[path.join(process.env.RUNNER_DIST!,'codex-proxy.mjs'),fake,'app-server',...args],{env:{...process.env,...manager.env,...local},stdio:['pipe','pipe','pipe']})
- peers.add(child);let error='';child.stderr.on('data',s=>error+=s);const notifications:any[]=[]
- const rpc=connect(child.stdout,child.stdin,message=>notifications.push(message))
- const hello=await rpc.call('initialize',{})
- return {child,rpc,hello,notifications,async close(){if(child.exitCode!==null||child.signalCode!==null)return;const ended=once(child,'close');child.stdin.end();await ended;assert.equal(child.exitCode,0,error)}}
-}
+import { root, fake, calls, peers, manager, read, backends, peer, openManager } from './codex-server-harness'
+
 it('shares native backends while isolating settings, thread ownership and stops (#707)',async()=>{
  const offset=read().length
  const [a,b]=await Promise.all([peer(['-c','model="alpha"'],{KANBAN_RUN:'a',AI4KANBAN_TASK:'task-a',CUSTOM_TASK_VALUE:'task-a'}),peer(['-c','model="beta"'],{KANBAN_RUN:'b',CUSTOM_TASK_VALUE:'task-b'})])
@@ -92,7 +65,7 @@ for (const stop of [false, true]) it(`holds a discussion fork before submission 
   assert.deepEqual(sessions, [])
   assert.equal(read().slice(offset).filter(row => row.method === 'thread/fork' || row.method === 'turn/start').length, 0)
   await manager.close()
-  manager = await codexServer()
+  await openManager()
   if (stop) controller.abort()
   else await owner.close()
   assert.equal((await run).ok, !stop)
@@ -103,136 +76,6 @@ for (const stop of [false, true]) it(`holds a discussion fork before submission 
   if (!stop) assert.notEqual(sessions[0], source.id)
  } finally { controller.abort(); child.stdin.end(); await owner.close() }
 })
-
-for (const scenario of ['recover', 'release-rpc', 'restart', 'budget', 'unknown', 'live', 'stop', 'stop-release']) {
- it(`recovers managed Codex idle after git worktree add (${scenario}, #882)`, { timeout: 25_000 }, async () => {
-  const neighbour = await peer()
-  const other = strThread(await neighbour.rpc.call('thread/start', {}))
-  await neighbour.rpc.call('turn/start', { threadId: other, input: [{ text: 'separate task' }] })
-  const offset = read().length
-  const workspace = fs.mkdtempSync(path.join(root, 'work-'))
-  fs.mkdirSync(path.join(workspace, 'docs', 'kanban', 'todo'), { recursive: true })
-  setBoardRoot(workspace)
-  writePrivate(path.join(projectStateDir(path.join(workspace, 'docs', 'kanban')), 'ui.config.json'), {
-    runtimes: [{ id: 'global', name: 'Global', harness: 'codex', settings: { command: `${fake} exec --json` } }],
-  })
-  const previousEnv = Object.fromEntries(Object.keys(manager.env).map(key => [key, process.env[key]]))
-  Object.assign(process.env, manager.env)
-  const oldIdle = IDLE_TIMEOUT.milliseconds
-  IDLE_TIMEOUT.milliseconds = 1500
-  const request = `Idle regression ${scenario}`
-  const releaseGate = path.join(workspace, 'release-gate')
-  const started = openRun({ action: 'prune-memory' }, request, [])
-  if ('error' in started) throw Error(started.error)
-  let latest = started.run.sessionId
-  const seen: string[] = []
-  const backoff = () => scenario === 'stop' ? 5_000 : 0
-  const resume: NonNullable<Parameters<typeof watchRun>[1]> = async (id, options) => {
-    const previous = peekRun(id)!
-    assert.equal(previous.failure?.code, 'idle_timeout')
-    assert.equal(previous.cleanup?.idleStop?.threadId, previous.resumeId)
-    assert.equal(previous.cleanup?.status, 'confirmed')
-    assert.ok(previous.retry?.pending)
-    if (previous.agentPid) assert.throws(() => process.kill(previous.agentPid!, 0), { code: 'ESRCH' })
-    const continued = await openResume(id, options)
-    if ('error' in continued) throw Error(continued.error)
-    assert.equal(continued.run.resumeId, previous.resumeId)
-    latest = continued.run.sessionId
-    seen.push(previous.resumeId!)
-    patch(latest, run => {
-      run.pid = process.pid
-      if (scenario === 'budget') run.cloudExecution = execution
-    })
-    await watchRun(latest, resume, backoff)
-    return { run: continued.run, spawned: true }
-  }
-  const budgetFile = path.join(workspace, 'runner-retries')
-  const budget = retryBudget(budgetFile)
-  if (scenario === 'budget') {
-    budget.take()
-    budget.take()
-    process.env[RETRY_FILE_ENV] = budgetFile
-  }
-  const execution = { job: crypto.randomUUID(), machine: crypto.randomUUID() }
-  patch(latest, run => {
-    run.pid = process.pid
-    if (scenario === 'budget') run.cloudExecution = execution
-  })
-  try {
-    const watching = watchRun(latest, resume, backoff)
-    const submitted = () => read().slice(offset).some(call => call.method === 'turn/start')
-    await Promise.race([until(submitted, 8000), watching.then(() => assert.ok(submitted(), peekRun(latest)?.error))])
-    if (scenario === 'restart') {
-      const instance = backends()[0]!.instance
-      await manager.close()
-      manager = await codexServer()
-      assert.equal(backends()[0]!.instance, instance)
-    }
-    if (scenario === 'stop') {
-      await until(() => !!peekRun(latest)?.retry?.pending, 8000)
-      patch(latest, run => { run.stopping = true })
-      process.emit('SIGTERM', 'SIGTERM')
-    }
-    if (scenario === 'stop-release') {
-      await until(() => read().slice(offset).some(call => call.method === 'thread/unsubscribe'), 8000)
-      const backend = backends()[0]!
-      const thread = read().slice(offset).find(call => call.method === 'turn/start').params.threadId
-      const file = leaseFile(backend, thread)
-      const reaping = reconcileCodexLeases(backend)
-      patch(latest, run => { run.stopping = true })
-      process.emit('SIGTERM', 'SIGTERM')
-      await reaping
-      assert.ok(fs.existsSync(file))
-      fs.writeFileSync(releaseGate, '')
-    }
-    await watching
-    const record = peekRun(latest)!
-    const trace = read().slice(offset)
-    const starts = trace.filter(call => call.method === 'turn/start')
-    const thread = starts[0]?.params.threadId
-    const expected = scenario === 'budget' ? 3 : ['recover', 'release-rpc', 'restart'].includes(scenario) ? 2 : 1
-    assert.equal(starts.length, expected, record.error)
-    assert.equal(starts.filter(call => call.params.input[0].text === request).length, 1)
-    assert.ok(starts.every(call => call.params.threadId === thread))
-    assert.equal(trace.filter(call => call.method === 'thread/start').length, 1)
-    assert.equal(trace.filter(call => call.method === 'turn/interrupt' && call.params.threadId === other).length, 0)
-    assert.equal(fs.readFileSync(path.join(workspace, `${thread}.worktree-result`), 'utf8'), 'worktree created\n')
-    assert.equal(seen.length, expected - 1)
-    if (expected > 1) {
-      const find = (method: string, predicate = (_call: any) => true) => trace.findIndex(call => call.method === method && call.params.threadId === thread && predicate(call))
-      const interrupt = find('turn/interrupt')
-      const confirmation = find(scenario === 'restart' ? 'thread/turns/list' : 'thread/read', call => scenario === 'restart' || call.params.includeTurns)
-      const release = find('thread/unsubscribe')
-      const resume = find('thread/resume')
-      assert.ok(interrupt >= 0 && interrupt < confirmation && confirmation < release && release < resume)
-      if (scenario === 'release-rpc') {
-        const pages = trace.slice(release, resume).filter(call => call.method === 'thread/loaded/list')
-        assert.deepEqual(pages.map(call => call.params.cursor), [undefined, 'page-two'])
-      }
-    }
-    if (scenario === 'budget') {
-      assert.equal(record.retry?.attempt, 5)
-      assert.equal(retryBudget(budgetFile).take(), undefined)
-      assert.equal(record.retryPause, 'limit')
-    } else if (scenario === 'unknown' || scenario === 'live') {
-      assert.equal(record.retryPause, 'unsafe')
-      assert.equal(record.cleanup?.status, 'unconfirmed')
-      assert.equal(record.failure?.code, 'idle_timeout')
-    } else {
-      assert.equal(record.status, scenario.startsWith('stop') ? 'stopped' : 'done')
-    }
-  } finally {
-    if (scenario === 'stop-release') fs.writeFileSync(releaseGate, '')
-    if (scenario === 'budget') delete process.env[RETRY_FILE_ENV]
-    IDLE_TIMEOUT.milliseconds = oldIdle
-    for (const [key, value] of Object.entries(previousEnv)) {
-      if (value === undefined) delete process.env[key]
-      else process.env[key] = value
-    }
-    await neighbour.close()
-  }
- })
-}
 
 const strThread = (value: Record<string, unknown>) => (value.thread as { id: string }).id
 
@@ -251,7 +94,7 @@ it('keeps task connections and native identity across manager replacement (#724,
  const a=await peer();const id=((await a.rpc.call('thread/start',{})).thread as any).id;await a.rpc.call('turn/start',{threadId:id})
  const original=backends()[0]!
  await manager.close();process.kill(original.pid,0)
- manager=await codexServer()
+ await openManager()
  assert.equal(backends()[0]!.instance,original.instance)
  assert.ok(await a.rpc.call('thread/read',{threadId:id}));assert.equal(a.notifications.some(n=>n.method==='turn/completed'),false)
  const b=await peer();await b.rpc.call('thread/start',{});assert.equal(backends().length,1)
@@ -261,7 +104,7 @@ it('retains execution subscriptions and adopts services without a shared daemon 
  const a=await peer();const id=((await a.rpc.call('thread/start',{})).thread as any).id
  await a.rpc.call('turn/start',{threadId:id,input:[{text:'retain'}]})
  await a.rpc.call('wildcrane/settled',{threadId:id,...a.hello.wildcrane as object,execution:'kept',confirmed:true,kept:[{threadId:id,itemId:'service',processId:'42'}]})
- await a.close();await manager.close();manager=await codexServer()
+ await a.close();await manager.close();await openManager()
  const different=await peer(['-c','model="changed"']);await assert.rejects(different.rpc.call('thread/resume',{threadId:id}),/cannot change execution settings/);await different.close()
  const b=await peer();const resumed=await b.rpc.call('thread/resume',{threadId:id});assert.deepEqual(resumed.retainedThreads,[{id}]);assert.deepEqual(resumed.retainedTerminals,[{threadId:id,itemId:'service',processId:'42'}])
  assert.equal(((await b.rpc.call('thread/backgroundTerminals/list',{threadId:id})).data as any[]).length,1)
@@ -375,7 +218,7 @@ it('routes pending approvals through Runner takeover and stops only the owning e
  await a.rpc.call('turn/start', { threadId: aid, input: [{ text: 'approval' }] })
  await b.rpc.call('turn/start', { threadId: bid })
  await until(() => a.notifications.some(n => n.method?.endsWith('requestApproval')), 2000)
- await manager.close(); manager = await codexServer()
+ await manager.close(); await openManager()
  assert.equal(b.notifications.some(n => n.method?.endsWith('requestApproval')), false)
  b.rpc.reply('permission', { decision: 'accept' })
  a.rpc.reply('permission', { decision: 'decline' })
@@ -607,8 +450,8 @@ it('confirms cleanup via probe connection or exited backend when native connecti
  const exitedThread = strThread(await c.rpc.call('thread/start', {}))
  const exitedLease = leaseFile(backend, exitedThread)
  await c.rpc.call('turn/start', { threadId: exitedThread, input: [{ text: 'crash' }] }).catch(() => {})
- await until(() => !fs.existsSync(exitedLease), 5000)
- assert.equal(c.notifications.some(n => n.method === 'wildcrane/cleanup' && n.params.status === 'confirmed'), true)
+ await until(() => !fs.existsSync(exitedLease) &&
+  c.notifications.some(n => n.method === 'wildcrane/cleanup' && n.params.status === 'confirmed'), 5000)
  assert.equal(c.notifications.some(n => n.method === 'wildcrane/cleanup' && n.params.status === 'unconfirmed'), false)
  await c.close()
 })

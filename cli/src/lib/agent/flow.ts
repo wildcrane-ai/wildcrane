@@ -314,6 +314,7 @@ const GUIDES_FOR: Record<StartableAction, string[]> = {
   'review-memory': ['board', 'review-memory'],
   'review-dismissals': ['review-rejections'],
   'describe-project': ['describe-project'],
+  'triage-sort': ['triage-sort'],
   reflect: ['reflect'],
 }
 
@@ -527,12 +528,17 @@ function buildFlow(req: AgentRequest, program: string): Flow {
     }
     // Reflecting on a card that has just completed (#534). The cards, and the scheduled agents
     // it leaves work to, are in the ask; the guide names the memory it reads (#1498).
+    case 'triage-sort': {
+      facts.push(...field('batch', req.notes ?? ''))
+      close.push('Record one decision for each item in the claimed batch.')
+      break
+    }
     case 'reflect': {
       for (const id of reflectedCards(req)) readCard(id, 'archive')
       close.push(
-        `${self} triage add --title ".." --slug <short-english-slug> --source "#<id>" --studio <studio-id> --text ".." — one call per proposal, each naming the archived file of the card it traces to`,
+        `${self} triage add --title ".." --slug <short-english-slug> --source "#<id>" --studio <studio-id> --decision <plan|review> --text ".." — one call per proposal, each naming the archived file of the card it traces to`,
         'propose nothing at all when nothing follows: that is a complete result, and most batches are it',
-        'change nothing else — no card is created, edited or archived, and no memory file is written',
+        'Use triage for new proposals and revise existing cards only as described in the guide.',
       )
       break
     }

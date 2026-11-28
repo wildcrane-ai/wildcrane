@@ -31,15 +31,14 @@ Runner synchronization implies that a local command exposes the Cloud operation'
 | `akb task list` | list tasks | `--project <id>`; `--workspace <id>`; `--status <status>` | GET /v1/tasks; project/workspace/status; partial G06 | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task show <task>` | a task and its card | — | GET /v1/tasks/{id} + /card; task page read | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task create <request...>` | create a task and prepare its card asynchronously | `--project <id>`; `--studio <id>` | POST /v1/tasks; --studio required by handler; partial G06 | [task.ts](../../cli/src/commands/task.ts) |
-| `akb task approve <task>` | approve the reviewed version | `--revision <n>`*; `--stage <id>`; `--comment <text>` | Explicit stage revision; optional after-reply bridge | [task.ts](../../cli/src/commands/task.ts) |
-| `akb task review <task>` | read the review, set the plan or report/revise a stage | `--review <flow>` or `--file <path>`; `--stage <id> --status running/done`; `--revise-from <id>`; `--revision <n>` | GET task or POST review; write revision required | [task.ts](../../cli/src/commands/task.ts) |
+| `akb task approve <task>` | approve the reviewed snapshot | `--stage <id>`, `--comment <text>`, `--revision <n>` required for standalone approval | Pinned reply target or explicit human approval | [task.ts](../../cli/src/commands/task.ts) |
+| `akb task review <task>` | read the review, set the plan or report/revise a stage | `--review <rule>` or `--file <path>`, `--stage <id> --status running/done`, `--revise-from <id>` | GET task or conditional POST review, with automatic revision selection | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task update-questions <task>` | append, rewrite, or remove open questions | `--append <text>`; `--update <n> <text...>`; `--drop <positions>`; `--clear`; `--option <text>`; `--recommended-option <text>`; `--mode <mode>`; `--agent <name>` | Current Runner task: local save for synchronization. Other tasks: GET /card + PATCH /questions with the version read | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task chat <task> [message...]` | read task chat history, follow or stop its reply, or send a message | `--limit <n>`; `--all`; `--follow`; `--stop` | GET/POST /chat; --stop → POST /chat/stop; --follow → job read/log; partial G08 | [task-chat.ts](../../cli/src/commands/task-chat.ts) |
-| `akb task archive <task>` | archive an eligible task | — | Current Runner task: local archive; otherwise POST /v1/tasks/{id}/archive | [task.ts](../../cli/src/commands/task.ts) |
+| `akb task archive <task>` | archive an eligible task | `--json` | Linked: POST /v1/tasks/{id}/archive; Runner mirrors files | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task remove <task> [reason...] [--discard]` | remove a task; bring it back with task restore | `--discard` | Current local task via Runner sync, otherwise POST /v1/tasks/{id}/cancel | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task restore <task>` | restore a removed or completed task without starting it | — | POST /v1/tasks/{id}/restore; removed or completed task, no execution replay | [task.ts](../../cli/src/commands/task.ts) |
-| `akb task resume <task>` | resume a Cloud task | `--json` | POST /v1/tasks/{id}/resume, shared with the web Resume action. Accepts a key, Cloud task ID or linked-project number. Returns queued or running, or a nonzero exit on refusal. G06 | [task.ts](../../cli/src/commands/task.ts) |
-| `akb task runtime <task> <runtime>` | set the runtime for later task execution | `--json` | PATCH /v1/tasks/{id}; accepts a name or `rt_…` ID. Ambiguous names require an ID. A successful receipt confirms the saved runtime and any effective runtime details. | [task.ts](../../cli/src/commands/task.ts) |
+| `akb task resume <task>` | resume the current Cloud task step | `--runtime <name-or-id>`; `--json` | POST /v1/tasks/{id}/resume, shared with the web Resume action. Accepts a key, Cloud task ID or linked-project number. Returns queued or running, or a nonzero exit on refusal. G06 | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task stop <task>` | stop its current run | — | POST /v1/tasks/{id}/stop; execution only | [task.ts](../../cli/src/commands/task.ts) |
 | `akb task comment <task> <text...>` | comment on a task | — | POST /v1/tasks/{id}/comments; text, session required | [task.ts](../../cli/src/commands/task.ts) |
 | `akb goal <move>` | save, drop and start goals of this conversation | `--id <goal>`; `--title <title>`; `--body-file <path>`; `--studio <id>`; `--review <flow>` or `--review-file <path>` | new/save/drop/start; current conversation only; local goals file in Runner, Cloud external/draft/start otherwise; G10/G11 | [goal-cloud.ts](../../cli/src/commands/goal-cloud.ts) |
@@ -54,7 +53,7 @@ Runner synchronization implies that a local command exposes the Cloud operation'
 | `akb image [prompt...]` | generate an image through Cloud, using WildCrane API balance | `--aspect <ratio>`; `--tier <tier>`; `--ref <file>`; `--out <file>` | POST /v1/image; prompt, --aspect and --out required by handler; references repeatable | [cloud.ts](../../cli/src/commands/cloud.ts) |
 | `akb tts [text...]` | generate narration in a hosted voice, using WildCrane API balance | `--voice <name>`; `--tier <tier>`; `--out <file>` | POST /v1/speech; --voice and --out required by handler | [cloud.ts](../../cli/src/commands/cloud.ts) |
 | `akb music [prompt...]` | generate an instrumental track through Cloud, using WildCrane API balance | `--seconds <n>`; `--out <file>` | POST /v1/music; --out required by handler | [cloud.ts](../../cli/src/commands/cloud.ts) |
-| `akb transcribe <media>` | transcribe an audio stream in a Runner task | `--audio-stream <index>`; `--language <code>`; `--out <file>`; `--vtt <file>` | Upload selected audio and poll /v1/transcriptions | [transcribe.ts](../../cli/src/commands/transcribe.ts) |
+| `akb transcribe <media>` | transcribe the first audio stream in a Runner task | `--language <auto\|code>`; `--out <file>`; `--vtt <file>`; `--json` | Upload the first audio stream, poll /v1/transcriptions, and write JSON with `source: { media }` and WebVTT | [transcribe.ts](../../cli/src/commands/transcribe.ts) |
 | `akb template` | Command group / help | — | Help/command group only; no operation | [agent.ts](../../cli/src/lib/cli/agent.ts) |
 | `akb template list-tags` | a category's tags, with how many templates carry each | `--category <category>` | GET /v1/templates/tags?category=; --category required by handler | [cloud-template.ts](../../cli/src/commands/cloud-template.ts) |
 | `akb template search [words...]` | templates carrying a tag: metadata only, 5 by default, at most 10 | `--category <category>`; `--tags <tags>`; `--limit <n>` | GET /v1/templates; --category and --tags required by handler; limit 1–10 | [cloud-template.ts](../../cli/src/commands/cloud-template.ts) |
@@ -84,17 +83,15 @@ Runner synchronization implies that a local command exposes the Cloud operation'
 ## Task archive
 
 `akb task archive <task>` takes a task key, a task ID, or a number in a linked
-project. In a Runner execution targeting its own task, it files the local card
-and reports `pending_sync`. The Runner synchronizes the archive and retries
-transient synchronization failures.
+project. On a linked board it uploads changed local attachments and sends the
+card and their versions to Cloud. Cloud confirms completion and Runner mirrors
+the archive to disk. A successful `--json` response includes `task` and
+`archive_status: "archived"`. An unlinked board archives the card locally.
 
-Other calls archive in Cloud. They report `archived` once Cloud confirms both
-the archived card and the completed task. A successful `--json` result includes
-`task` (the canonical task ID) and `archive_status` (`pending_sync` or `archived`).
-Retrying a confirmed archive returns the confirmed result.
-
-Land applies and verifies the Studio deliverable, then archives. The Runner sends the card and attachment versions for Cloud to confirm under the current Land lease. Explicit Cloud archive checks permissions, review, questions and versions, then requests stop for running work. It exits nonzero with the reason on refusal, for example when
-creation failed, review is pending, or another operation changed the card.
+Land verifies the saved deliverable before archiving, then closes its session
+and releases the lease. Cloud refuses an archive with open questions, unfinished
+review, changed versions, or an active Land lease held by another job. The
+command exits nonzero with the reason and retains the local card for retry.
 
 Example: `akb task archive W-42 --json`
 
@@ -107,8 +104,8 @@ Example: `akb task archive W-42 --json`
 | `akb board conflict list` | list pending conflicts | — | Offline local records; no API | [board-conflicts.ts](../../cli/src/lib/shared/board-conflicts.ts) |
 | `akb board conflict show <id>` | read saved three-way versions and a read credential | — | Offline local records and current files; no API | [board-conflicts.ts](../../cli/src/lib/shared/board-conflicts.ts) |
 | `akb board conflict resolve <id>` | explicitly resolve the original atomic batch | `--expect <revision>`*; `--file <path>`* | Current execution required; GET board versions and POST /board/commits; no new HTTP route | [board-conflicts.ts](../../cli/src/lib/cloud/board-conflicts.ts) |
-| `akb task create --title <title>` | Write one local card, body scaffold and index entry | `--studio <id>`; `--priority <level>`; `--blocked-by <ids>`; `--related <ids>`; `--modules <names>`; `--slug <slug>`; `--triage <source-id>`; `--source <ref>` | Cloud assigns the number. The receipt gives the card ID and local path. A retry reuses an allocation when there is a matching receipt. | [board.ts](../../cli/src/lib/cli/board.ts) |
-| `akb task update <id>` | rewrite a card's fields | `--title <title>`; `--priority <level>`; `--status <status>`; `--blocked-by <ids>`; `--related <ids>`; `--add-blocked-by <ids>`; `--add-related <ids>`; `--modules <names>`; `--source <ref>`; `--add-source <ref>`; `--slug <slug>`; `--studio <id>` | Local card fields; no direct PATCH /v1/tasks | [board.ts](../../cli/src/lib/cli/board.ts) |
+| `akb task create --title <title>` | Write one local card, body scaffold and index entry | `--studio <id>`; `--blocked-by <ids>`; `--related <ids>`; `--modules <names>`; `--slug <slug>`; `--triage <source-id>`; `--source <ref>` | Cloud assigns the number. The receipt gives the card ID and local path. A retry reuses an allocation when there is a matching receipt. | [board.ts](../../cli/src/lib/cli/board.ts) |
+| `akb task update <id>` | rewrite a card's fields | `--title <title>`; `--status <status>`; `--blocked-by <ids>`; `--related <ids>`; `--add-blocked-by <ids>`; `--add-related <ids>`; `--modules <names>`; `--source <ref>`; `--add-source <ref>`; `--slug <slug>`; `--studio <id>` | Local card fields; no direct PATCH /v1/tasks | [board.ts](../../cli/src/lib/cli/board.ts) |
 | `akb raw update-questions <id>` | Hidden migration compatibility for numeric local cards | `--append <text>`; `--update <n> <text...>`; `--drop <positions>`; `--clear`; `--option <text>`; `--recommended-option <text>`; `--mode <mode>`; `--agent <name>` | Local question list; no direct PATCH /v1/tasks/{id}/questions | [board.ts](../../cli/src/lib/cli/board.ts) |
 | `akb task inspect <id>` | read task facts, saved work and execution references | — | Local saved facts only; no Cloud task query | [board.ts](../../cli/src/lib/cli/board.ts) |
 | `akb task validate [id]` | validate card format and report file, line, and repair instructions | — | Local explicit card/asset format diagnostic; no API | [board.ts](../../cli/src/lib/cli/board.ts) |
@@ -122,7 +119,7 @@ Example: `akb task archive W-42 --json`
 | `akb task implement <id> [note...]` | build the card | `--runtime <id>`; `-p, --print` | Local delivery/run start; not Cloud resume | [flows.ts](../../cli/src/lib/agent/flows.ts) |
 | `akb task refine <id>` | plan the card | `-p, --print` | Local planning run; no direct API counterpart | [flows.ts](../../cli/src/lib/agent/flows.ts) |
 | `akb task resolve <id> [note...]` | apply the user's answers to its open questions | `-p, --print` | Local answers run; no direct API counterpart | [flows.ts](../../cli/src/lib/agent/flows.ts) |
-| `akb raw card approve <id>` | Approve the task review | `--preview <agent>`; `--preview-stage <id>`; `--preview-version <n>`; `--definition-revision <revision>`; `-p, --print`; `-f, --follow`; `--events` | Cloud-linked card: POST /v1/tasks/{id}/decisions; local flow otherwise; preview flags refused | [flows.ts](../../cli/src/lib/agent/flows.ts) |
+| `akb raw card approve <id>` | Approve a local card | `-p, --print`, `-f, --follow`, `--events` | Cloud review uses `akb task approve` | [run.ts](../../cli/src/commands/run.ts) |
 | `akb task revise <id> <what...>` | change the card to say something else | `-p, --print` | Local revision run; no direct API counterpart | [flows.ts](../../cli/src/lib/agent/flows.ts) |
 | `akb delivery` | Command group / help | — | Help/command group only; no operation | [agent.ts](../../cli/src/lib/cli/agent.ts) |
 | `akb delivery answered <delivery>` | say what a round of applied answers did to its requirements | `--unchanged <why>`; `--changed <why>` | Local requirements conclusion; exactly one of --changed/--unchanged | [run.ts](../../cli/src/commands/run.ts) |

@@ -53,6 +53,11 @@ export function rootAbove(board: string): string {
   return ['docs', '.akb'].includes(path.basename(parent)) ? path.dirname(parent) : parent
 }
 
+export function runnerBoardRoot(board: string): string | null {
+  const state = path.dirname(board)
+  return path.basename(board) === 'kanban' && path.basename(state) === '.akb' ? path.dirname(state) : null
+}
+
 const NESTED_STATE = /(^|[/\\])\.akb[/\\](?:(?:boards|hidden-boards)[/\\])?\.akb(?=[/\\]|$)/
 
 export class InvalidBoardStatePath extends BoardError {

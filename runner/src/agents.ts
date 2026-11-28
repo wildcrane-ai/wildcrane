@@ -36,6 +36,17 @@ export function agentDue(agent: PeriodicAgent, now = Date.now()): boolean {
   return !due.wait
 }
 
+export async function askTriage(machineId: string): Promise<boolean> {
+  const folders = await api.listFolders(machineId)
+  if (!folders.ok) return false
+  let queued = false
+  for (const { project } of folders.value.folders) {
+    const result = await api.requestTriage(machineId, project)
+    if (result.ok && result.value.queued) queued = true
+  }
+  return queued
+}
+
 /** Each project with a folder here: its due agents asked for. Cloud unreached, the next hour
  *  tries again. True when a job came back. */
 export async function askDueAgents(machineId: string, now = Date.now()): Promise<boolean> {

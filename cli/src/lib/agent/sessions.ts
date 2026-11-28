@@ -1,4 +1,4 @@
-import { deliveryPhase } from './env'
+import { DELIVERY_ID_ENV, deliveryPhase } from './env'
 import { idleStopConfirmed, stoppedCleanupConfirmed } from './wire/codex-background-types'
 import { hasLiveCodexExecution, verifyCodexStopState, verifyCodexStopStateSync, type CodexStopVerification, type CodexVerifyInput } from './wire/codex-verify'
 import { connectionStopped, stopConnection } from './connection-process'
@@ -44,6 +44,8 @@ import {
 } from './deliveries'
 import { DELIVERY_FLOWS } from './flows'
 import { deliveryCwd, prepareDelivery, type DeliveryStart } from './commit-mode'
+import { PROJECT_CHECKOUT, verifiedWorkspace } from './delivery-workspace'
+import { inPlaceLanding } from './delivery-archive'
 import { reportsSessionTotal } from './own-cost'
 import { durationLine, pruneLogs, readLogTail, splitLog } from './log'
 import { adoptsSessionId, harnessLabel, onOwnEndpoint, planFork, planResume, planRun, resumesUnder, shipsHarness, type RunPlan } from './resolve'
@@ -107,6 +109,7 @@ const VERB: Record<AgentAction, string> = {
   'review-dismissals': 'reviewed for rejections and dismissals',
   'describe-project': 'described',
   triage: 'sorted',
+  'triage-sort': 'Sort incoming suggestions',
   reflect: 'reflected on',
   spec: 'specified',
   changelog: 'written up',
@@ -466,7 +469,7 @@ function manualResumeRefusal(run: RunRecord, evidence: ReturnType<typeof manualR
 }
 
 // The actions that name no card.
-const CARDLESS = new Set<AgentAction>(['prune-memory', 'review-memory', 'review-dismissals', 'describe-project'])
+const CARDLESS = new Set<AgentAction>(['prune-memory', 'review-memory', 'review-dismissals', 'describe-project', 'triage-sort'])
 
 /** The ask a run was started with, rebuilt from its record (#1321) — `runInput` read the other
  *  way. Nothing where the record does not hold it: a run that is itself a resume, nor a run
@@ -766,17 +769,9 @@ export function openRun(
   const direct = req.action === 'implement' && cardId === null ? approvedDirect(req) : undefined
   if (direct && 'error' in direct) return direct
   const cardless = !!direct
-  let start: DeliveryStart | undefined
-  if (req.action === 'implement' && (cardless || (cardId !== null && !activeDelivery(cardId)))) {
-    const prepared = prepareDelivery(cardId)
-    // Whole, kind and paths included (#706): a screen that says this in its own language
-    // reads the kind, and losing it here would leave every refusal generic.
-    if ('error' in prepared) return prepared
-    start = prepared.start
-  }
-  // Where this run works: its delivery's own worktree, or the project itself. A run of a
-  // delivery names it outright when it has no card to be found by.
-  const joining = DELIVERY_FLOWS.has(req.action)
+  const resolvingDelivery = req.action === 'resolve' && execution?.sessionKind === 'implement'
+    ? process.env[DELIVERY_ID_ENV] : undefined
+  const joining = DELIVERY_FLOWS.has(req.action) || resolvingDelivery
     ? req.deliveryId
       ? findDelivery(req.deliveryId)
       : cardId !== null
@@ -788,10 +783,17 @@ export function openRun(
   }
   // A sub-run works in its parent's folder, inside its parent's delivery and flow (#1421).
   const parent = req.action === 'sub' && req.parentId ? peekRun(req.parentId) : undefined
-  if (req.action === 'implement' && (deliveryPhase() === 'land' || deliveryPhase() === 'implement' && joining)) {
-    if (!joining?.worktree || deliveryCwd(joining) === REPO_ROOT) {
-      return refusal('deliveryNone', 'The saved delivery workspace is unavailable.')
-    }
+  const needsWorkspace = resolvingDelivery || req.action === 'implement' &&
+    (joining?.worktree || deliveryPhase() === 'land' || deliveryPhase() === 'implement' && joining)
+  if (needsWorkspace &&
+      (!joining || resolvingDelivery && resolvingDelivery !== joining.deliveryId || !verifiedWorkspace(REPO_ROOT, joining))) {
+    return refusal('deliveryNone', 'The saved delivery workspace is unavailable.')
+  }
+  let start: DeliveryStart | undefined
+  if (req.action === 'implement' && !joining && (cardless || cardId !== null)) {
+    const prepared = prepareDelivery(cardId)
+    if ('error' in prepared) return prepared
+    start = prepared.start
   }
   const cwd = parent?.cwd ?? deliveryCwd(start ?? joining ?? {})
   const plan = said
@@ -810,6 +812,7 @@ export function openRun(
   const record: RunRecord = {
     sessionId,
     cloudExecution: execution,
+    sessionKind: execution?.sessionKind,
     studioPin: pin ?? undefined,
     cardId,
     action: req.action,
@@ -850,9 +853,12 @@ export function openRun(
   const out = withCreationLock(() => withStore<{ run: RunRecord } | RunRefusal>((store) => {
     const locked = lockedBy(store.runs, req.action, cardId, req.discard)
     if (locked) return locked
-    if (req.deliveryId && DELIVERY_FLOWS.has(req.action) &&
-        !store.deliveries.some((d) => d.deliveryId === req.deliveryId && d.status === 'active')) {
+    const expected = resolvingDelivery ?? (DELIVERY_FLOWS.has(req.action) ? req.deliveryId : undefined)
+    if (expected && !store.deliveries.some(d => d.deliveryId === expected && d.status === 'active')) {
       return refusal('deliveryNone', 'The named delivery is no longer active.')
+    }
+    if (req.action === 'implement' && cardId !== null && activeIn(store, cardId)?.deliveryId !== joining?.deliveryId) {
+      return refusal('runContinued', 'The delivery changed. Check its latest record before continuing.')
     }
     store.runs.push(record)
     if (req.action === 'clarify' && cardId !== null) noteRefineTried(store, cardId)
@@ -862,12 +868,7 @@ export function openRun(
     }
     return { run: record }
   }))
-  if ('error' in out) {
-    // Refused after the delivery was got ready — take its worktree back rather than leave
-    // a checkout behind for a delivery that never started.
-
-    return out
-  }
+  if ('error' in out) return out
   const spec: RunSpec = {
     sessionId,
     plan,
@@ -948,11 +949,16 @@ export function carriedSession(
   req: AgentRequest,
   verifiedMap?: ReadonlyMap<string, CodexStopVerification>,
 ): { note: string; carried?: CarriedSession } | undefined {
-  if (!Number.isInteger(req.id) || !PLANNING.has(req.action)) return undefined
+  if (typeof req.id !== 'number' || !Number.isInteger(req.id)) return undefined
+  const kind = executionOf()?.sessionKind
+  const deliveryStep = req.action === 'implement' && (kind === 'implement' || kind === 'land')
+  if (!PLANNING.has(req.action) && !(deliveryStep && req.carry?.resumeId)) return undefined
+  const delivery = deliveryStep || req.action === 'resolve' && kind === 'implement' ? activeDelivery(req.id) : undefined
+  const cwd = deliveryCwd(delivery ?? {})
   const fresh = (why: string) => ({ note: `new session — ${why}` })
   if (req.session === 'new') return fresh('the earlier one is gone, so this step was started again')
   const agent = agentForRun(req)
-  const own = planRun(randomUUID(), REPO_ROOT, agent, req.runtime ? { pin: req.runtime } : {})
+  const own = planRun(randomUUID(), cwd, agent, req.runtime ? { pin: req.runtime } : {})
   // Cloud's task session (#2146) is on this step's connector and model already.
   const resumeId = req.carry?.resumeId
   const found = resumeId ? { session: { harness: own.harness, resumeId }, fork: req.carry?.fork === true } : planningSession(req.id as number, REPO_ROOT, verifiedMap)
@@ -967,7 +973,7 @@ export function carriedSession(
     const pin = { pin: own.runtime }
     return found.fork ? planFork(session, agent, pin, sessionId) : planResume(session, agent, pin)
   }
-  if (!plan(REPO_ROOT, randomUUID())) {
+  if (!plan(cwd, randomUUID())) {
     return fresh(`${harnessLabel(own.harness)} cannot ${found.fork ? 'copy a session' : 'continue an earlier session'}`)
   }
   return {
@@ -1020,6 +1026,7 @@ interface FreshStart {
   prompt: string
   notes: string[]
   retry?: boolean
+  again?: AgentRequest
 }
 
 export interface ResumeOptions {
@@ -1043,7 +1050,7 @@ function deliveryForResume(store: Store, id: string, run: RunRecord): DeliveryRe
     }
     return delivery
   }
-  if (delivery.status === 'finished' || run.cardId !== delivery.cardId || pendingDeliveryRun(delivery, store.runs)?.sessionId !== run.sessionId) {
+  if (delivery.status === 'finished' || run.cardId !== delivery.cardId || pendingDeliveryRun(delivery, store.runs, run.cloudExecution)?.sessionId !== run.sessionId) {
     return refusal('runContinued', 'The delivery changed. Check its latest record before resuming.', { id })
   }
   return delivery
@@ -1071,6 +1078,13 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   const delivery = prev.deliveryId ? findDelivery(prev.deliveryId) : undefined
   if (execution?.card !== undefined && (execution.card !== prev.cardId || delivery && delivery.cardId !== execution.card)) {
     return refusal('runContinued', WRONG_TASK)
+  }
+  if (execution?.sessionKind && prev.cloudExecution?.sessionKind && execution.sessionKind !== prev.cloudExecution.sessionKind) {
+    return refusal('runContinued', 'This run belongs to a different task step.')
+  }
+  const expectedDelivery = execution?.sessionKind && process.env[DELIVERY_ID_ENV]
+  if (expectedDelivery && (prev.deliveryId !== expectedDelivery || !delivery?.worktree)) {
+    return refusal('runContinued', 'The saved delivery workspace is unavailable.')
   }
   if (opts?.automatic && prev.cardId !== null && prev.cloudExecution &&
       (prev.cloudExecution.job !== execution?.job || prev.cloudExecution.machine !== execution?.machine)) {
@@ -1122,7 +1136,8 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   // Resumed where the run it continues worked: a delivery's own worktree, or the project
   // itself.
   const cwd = requireSession && prev.cwd ? prev.cwd : deliveryCwd(resuming ?? delivery ?? {})
-  if (strictBuild && forced && (!resuming || !savedDeliveryCwd(resuming, prev, cwd))) {
+  if ((strictBuild && forced || (resuming ?? delivery)?.worktree) &&
+      !savedDeliveryCwd(resuming ?? delivery, prev, cwd)) {
     return refusal('runNoSession', 'The saved delivery workspace is unavailable.')
   }
   const sessionId = randomUUID()
@@ -1131,7 +1146,7 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   if (!forced && !resetReplay && prev.harness === 'antigravity' && !session && !neverStarted(prev)) {
     return refusal('runNoSession', 'Antigravity did not record a conversation ID before interruption. The original session cannot be resumed.')
   }
-  if (!session && !forced && !resetReplay && prev.cardId !== null && !neverStarted(prev)) return refusal('runNoSession', 'The original session is unavailable. Explicitly take over the saved task in a new session.')
+  if (!session && !forced && !resetReplay && prev.cardId !== null && !neverStarted(prev)) return refusal(execution?.sessionKind ? 'runSessionMissing' : 'runNoSession', 'The original session is unavailable. Explicitly take over the saved task in a new session.')
   if (session) {
     try {
       plan = planResume({ harness: prev.harness, resumeId: session, cwd }, prev.agent, prev.runtime ? { pin: prev.runtime } : {})
@@ -1145,11 +1160,13 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
       throw error
     }
   } else {
-    const ask = retryAsk(prev) ?? requestOf(prev)
+    const again = resetReplay || forced ? readSpec(prev.sessionId)?.again : undefined
+    const ask = again ?? retryAsk(prev) ?? requestOf(prev)
     const started = await planRetry(prev, ask, sessionId, cwd)
     if ('error' in started) return started
     ;({ plan, fresh } = started)
-    const restart = restartPrompt({ ...requestOf(prev), runtime: plan.runtime }, prev.deliveryId, false)
+    fresh.again = again
+    const restart = restartPrompt({ ...(again ?? requestOf(prev)), runtime: plan.runtime, pictures: prev.pictures }, prev.deliveryId, false)
     fresh.prompt = restart ?? ['Continue work.', fresh.prompt].join('\n\n')
     if (!lacksSession(prev) && !forced) fresh.retry = false
   }
@@ -1175,10 +1192,10 @@ export async function openResume(id: string, options?: boolean | ResumeOptions):
   return opened
 }
 
-function savedDeliveryCwd(delivery: DeliveryRecord, run: RunRecord, cwd: string): boolean {
-  return (!delivery.worktree || cwd !== REPO_ROOT)
-    && deliveryCwd(delivery) === cwd && (!run.cwd || path.resolve(run.cwd) === cwd)
-    && fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory() === true
+function savedDeliveryCwd(delivery: DeliveryRecord | undefined, run: RunRecord, cwd: string): boolean {
+  if (!delivery || deliveryCwd(delivery) !== path.resolve(cwd)) return false
+  if (delivery.worktree) return !!verifiedWorkspace(REPO_ROOT, delivery, run.cwd)
+  return (!run.cwd || path.resolve(run.cwd) === cwd) && fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory() === true
 }
 
 /** How a retry starts (#1321): a sort under the terms the board starts one itself, and every
@@ -1223,6 +1240,7 @@ async function resumeHeld(
   const record: RunRecord = {
     sessionId,
     cloudExecution: executionOf(),
+    sessionKind: executionOf()?.sessionKind ?? prev.sessionKind,
     studioPin: prev.studioPin ?? (workspaceTask() ? activeStudioPin(workspaceTask()!) ?? undefined : undefined),
     cardId: prev.cardId,
     createdCardIds: prev.createdCardIds,
@@ -1279,8 +1297,12 @@ async function resumeHeld(
       const evidence = manualRecoveryEvidence(latest, all, unchanged ? codex : undefined)
       const blocked = manualResumeRefusal(latest, evidence, manual)
       if (blocked) return blocked
+      const workspace = resuming ?? store.deliveries.find(d => d.deliveryId === latest.deliveryId)
+      if ((workspace?.worktree || manual === 'fresh' && resuming) &&
+          (!plan.cwd || !savedDeliveryCwd(workspace, latest, plan.cwd))) {
+        return refusal('runNoSession', 'The saved delivery workspace is unavailable.')
+      }
       if (manual === 'fresh' && resuming) {
-        if (!plan.cwd || !savedDeliveryCwd(resuming, latest, plan.cwd)) return refusal('runNoSession', 'The saved delivery workspace is unavailable.')
         if (all.some(r => r.sessionId !== latest.sessionId && (r.deliveryId === resuming.deliveryId ||
           r.cardId !== null && r.cardId === resuming.cardId && holdsCard(r.action)) &&
           !runRecoveryEvidence(r, undefined).stopped)) {
@@ -1338,9 +1360,10 @@ async function resumeHeld(
     ? readSpec(prev.sessionId) : null
   const prompt = fresh?.prompt ?? pendingAgY?.prompt ?? ''
   const studioAtLaunch = !!fresh || !pendingAgY?.prompt || pendingAgY.studioAtLaunch === true
-  const spec: RunSpec = { sessionId, plan, prompt, studioAtLaunch, missingSessionRecovery, ...(fresh?.notes.length ? { notes: fresh.notes } : {}) }
+  const spec: RunSpec = { sessionId, plan, prompt, studioAtLaunch, missingSessionRecovery,
+    ...(fresh?.notes.length ? { notes: fresh.notes } : {}), ...(fresh?.again ? { again: fresh.again } : {}) }
   writeSpec(spec)
-  if (prev.harness === 'antigravity') dropSpec(prev.sessionId)
+  dropSpec(prev.sessionId)
   // A resume spawns a process and works like any other run, so it counts as one — and
   // started stays ahead of finished plus failed (#295).
   reportRun('started', record.harness, isCustomAgent(record.agent))
@@ -1494,7 +1517,7 @@ export async function closeRun(
   recordMemoryReview(closed)
   recordReflection(closed)
   recordProjectDescription(closed)
-  if (closed.harness !== 'antigravity' || closed.status === 'done') dropSpec(sessionId)
+  if (closed.status === 'done' || closed.harness !== 'antigravity' && !closed.retry?.pending) dropSpec(sessionId)
   pruneLogs()
 }
 
@@ -1701,7 +1724,12 @@ export async function reconcileCardDelivery(cardId: number): Promise<ReconcileRe
         }
       }
       if (!activeOrLatest) return { kind: 'none' }
-      if (activeOrLatest.status === 'finished' || activeOrLatest.completions?.some((c) => c.finished)) {
+      const finished = activeOrLatest.status === 'finished' || activeOrLatest.completions?.some(c => c.finished)
+      if (activeOrLatest.worktree === PROJECT_CHECKOUT && deliveryPhase() === 'land' && !inPlaceLanding(activeOrLatest)) {
+        return { kind: 'unverified', deliveryId: activeOrLatest.deliveryId, retryable: false,
+          diagnostic: 'The saved implementation commit could not be verified on the target branch.' }
+      }
+      if (finished) {
         const lastSession = activeOrLatest.sessions[activeOrLatest.sessions.length - 1]
         const code = activeOrLatest.completions?.slice().reverse().find((c) => c.commit)
         return {
@@ -1734,6 +1762,10 @@ export async function reconcileCardDelivery(cardId: number): Promise<ReconcileRe
         .filter((r) => r.deliveryId === activeOrLatest.deliveryId && r.action !== 'sub')
         .sort((a, b) => a.startedAt - b.startedAt)
         .pop()
+      if (activeOrLatest.worktree && !verifiedWorkspace(REPO_ROOT, activeOrLatest, lastRun?.cwd)) {
+        return { kind: 'unverified', deliveryId: activeOrLatest.deliveryId, retryable: false,
+          diagnostic: 'The saved delivery workspace is unavailable.' }
+      }
       return {
         kind: 'resumable',
         deliveryId: activeOrLatest.deliveryId,

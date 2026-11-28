@@ -109,15 +109,13 @@ function signal(pids: number[], sig: NodeJS.Signals): void {
   }
 }
 
-/** Retire detached watchers, including ones whose agent run is already marked done. */
-export function stopWatchers(sessions: string[] | undefined, onlyPid?: number, stillOwns = () => true, startedBefore?: number): number[] {
-  if (sessions ? !sessions.length : onlyPid === undefined) return []
+function watcherProcesses(): { pid: number; command: string; startedAt: number; session: string }[] | undefined {
   const command = WINDOWS ? 'powershell.exe' : 'ps'
   const args = WINDOWS
     ? ['-NoProfile', '-NonInteractive', '-Command', "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine,@{Name='StartedAt';Expression={([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds()}} | ConvertTo-Json -Compress"]
     : ['-A', '-ww', '-o', 'pid=,lstart=,command=']
   const out = spawnSync(command, args, { encoding: 'utf8', timeout: 5_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true, env: { ...process.env, LC_ALL: 'C' } })
-  if (out.status !== 0) return []
+  if (out.status !== 0 || !out.stdout) return
   let procs: { pid: number; command: string; startedAt: number }[]
   try {
     procs = WINDOWS
@@ -126,17 +124,30 @@ export function stopWatchers(sessions: string[] | undefined, onlyPid?: number, s
           const m = /^\s*(\d+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d{4})\s+(.*)$/.exec(line)
           return m ? [{ pid: Number(m[1]), command: m[3]!, startedAt: Date.parse(m[2]!) }] : []
         })
-  } catch { return [] }
+  } catch { return }
+  return procs.flatMap(proc => {
+    const match = /^"?[^\n]*?\bnode(?:\.exe)?"?\s+(?:"[^\n"]+\.mjs"|\S+\.mjs)\s+__watch\s+(\S+)(?:\s|$)/.exec(proc.command)
+    return match ? [{ ...proc, session: match[1]! }] : []
+  })
+}
+
+export function runWatchersStopped(sessions: ReadonlySet<string>): boolean {
+  const watchers = watcherProcesses()
+  return !!watchers && !watchers.some(proc => sessions.has(proc.session))
+}
+
+/** Retire detached watchers, including ones whose agent run is already marked done. */
+export function stopWatchers(sessions: string[] | undefined, onlyPid?: number, stillOwns = () => true, startedBefore?: number): number[] {
+  if (sessions ? !sessions.length : onlyPid === undefined) return []
   const known = sessions && new Set(sessions)
   const stopped: number[] = []
-  for (const proc of procs) {
+  for (const proc of watcherProcesses() ?? []) {
     if (proc.pid === process.pid || onlyPid !== undefined && proc.pid !== onlyPid) continue
     if (startedBefore !== undefined && (!Number.isFinite(proc.startedAt) || proc.startedAt > startedBefore)) continue
-    const match = /^"?[^\n]*?\bnode(?:\.exe)?"?\s+(?:"[^\n"]+\.mjs"|\S+\.mjs)\s+__watch\s+(\S+)(?:\s|$)/.exec(proc.command)
     const args = `${proc.command} `
     const names = (flag: string, value: string) => args.includes(` ${flag} ${value} `) || args.includes(` ${flag} "${value}" `)
     const board = names('--board', KANBAN) || KANBAN === path.join(REPO_ROOT, 'docs', 'kanban') && names('--dir', REPO_ROOT)
-    if (!match || (known && !known.has(match[1]!)) || !board || !stillOwns()) continue
+    if ((known && !known.has(proc.session)) || !board || !stillOwns()) continue
     if (WINDOWS) {
       if (killTreeOnWindows(proc.pid)) stopped.push(proc.pid)
     } else {

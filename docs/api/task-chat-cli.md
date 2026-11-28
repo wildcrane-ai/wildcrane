@@ -9,7 +9,7 @@ akb task chat 12 --all                  # all retained messages, oldest first
 akb task chat 12 --follow --json        # JSON Lines until this reply ends
 akb task chat 12 --stop                 # stop only this chat reply
 akb task chat 12 "Revise the draft"     # existing send behavior
-akb task runtime 12 Carbon --json       # set the runtime for later task execution
+akb task resume 12 --runtime Carbon     # choose a runtime for this continuation
 ```
 
 Reading never sends a message, resumes execution or approves work. `--limit` takes a positive

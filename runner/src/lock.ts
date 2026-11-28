@@ -1,20 +1,15 @@
-import crypto from 'node:crypto'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 
 import { tryLock } from '../../cli/src/lib/lock'
-import { runnerHome } from './home'
+import { probeRunner, runnerSocketPath as lockPath } from '../../cli/src/lib/machine/runner'
 
 export type Holder = 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'zcode' | 'kimi' | 'terminal'
 export type MachineLock = () => Promise<void>
 export class RunnerAlreadyRunning extends Error {}
 
-export function lockPath(): string {
-  const home = runnerHome()
-  if (process.platform === 'win32') return `\\\\.\\pipe\\wildcrane-${crypto.createHash('sha256').update(home).digest('hex').slice(0, 16)}`
-  return path.join(home, 'runner.sock')
-}
+export { lockPath }
 
 function socketIdentity(file: string): string | undefined {
   try {
@@ -25,17 +20,38 @@ function socketIdentity(file: string): string | undefined {
   }
 }
 
-function probe(file: string): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    const socket = net.connect(file)
-    const finish = (code?: string) => {
-      socket.destroy()
-      resolve(code)
-    }
-    socket.setTimeout(1_000, () => finish())
-    socket.once('connect', () => finish())
-    socket.once('error', (error: NodeJS.ErrnoException) => finish(error.code))
-  })
+function foreignPid(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return false
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/** Clear an `.owner` directory left behind by a dead Runner whose PID was reused. */
+async function clearStaleOwner(ownerDir: string, where: string): Promise<boolean> {
+  let entries: string[]
+  try { entries = fs.readdirSync(ownerDir) } catch { return false }
+  if (entries.length !== 1 || !/^\d+-[a-f0-9-]{36}$/.test(entries[0]!)) return false
+  const token = entries[0]!
+  const pid = Number(token.split('-')[0])
+  const identity = socketIdentity(where)
+  const probed = await probeRunner(where)
+  if (probed === true) return false
+  let stale = foreignPid(pid)
+  if (!stale && probed === 'ECONNREFUSED' && identity !== undefined && identity === socketIdentity(where)) {
+    try { stale = fs.statSync(where).mtimeMs >= fs.statSync(ownerDir).mtimeMs - 1_000 } catch { stale = false }
+  }
+  if (!stale) return false
+  try { fs.unlinkSync(path.join(ownerDir, token)) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false
+  }
+  try { fs.rmdirSync(ownerDir) } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT') return false
+  }
+  return true
 }
 
 export async function acquireMachine(kind: Holder): Promise<MachineLock> {
@@ -43,9 +59,11 @@ export async function acquireMachine(kind: Holder): Promise<MachineLock> {
   const unix = process.platform !== 'win32'
   let unlock: (() => void) | undefined
   if (unix) {
+    const ownerDir = `${where}.owner`
     fs.mkdirSync(path.dirname(where), { recursive: true, mode: 0o700 })
     // The listening path can disappear while the owner is still alive.
-    unlock = tryLock(`${where}.owner`)
+    unlock = tryLock(ownerDir)
+    if (!unlock && await clearStaleOwner(ownerDir, where)) unlock = tryLock(ownerDir)
     if (!unlock) throw new RunnerAlreadyRunning()
   }
   const peers = new Set<net.Socket>()
@@ -67,7 +85,7 @@ export async function acquireMachine(kind: Holder): Promise<MachineLock> {
       if (error.code !== 'EADDRINUSE') throw error
       if (!unix) throw new RunnerAlreadyRunning()
       const identity = socketIdentity(where)
-      const result = await probe(where)
+      const result = await probeRunner(where)
       if (result === 'ECONNREFUSED' && identity !== undefined && identity === socketIdentity(where)) fs.unlinkSync(where)
       else if (result !== 'ENOENT') throw new RunnerAlreadyRunning()
       return listen().catch((retry: NodeJS.ErrnoException) => {

@@ -7,8 +7,26 @@ summaries:
   zh: 先确认改动方案，再写代码。
   en: Approve the plan, then the code gets written.
 needsArtifact: false
+allowedFollowUps: |
+  Allow:
+  - Refactors or optimizations with substantial, demonstrable benefits.
+  - Fixes for clearly evidenced bugs.
+  - Significant gaps in existing functionality.
+
+  Avoid:
+  - Fixes for unreproducible or unverified bugs.
+  - Issues already resolved by current code or covered by existing board tasks (queued, in progress, in review, etc.).
+  - Overdesign, speculative abstractions, or low-value polish.
+  - Release, deployment, publishing, or standalone verification/testing tasks — those are the user's call.
+  - Redundant mechanisms, entry points, or artifacts for needs already met by existing functionality.
+  - Defensive guards for contrived or unsupported edge cases (e.g., manual data tampering or test-only states).
+  - Work on deprecated, retired, or unmaintained components.
 icon: software
 previews:
+  bug-context:
+    icon: notebook
+    title: {en: Bug context, zh: Bug 上下文}
+    description: {en: "Review bug context, visual captures, and reproduction steps before fixing.", zh: "在修复前审阅 Bug 上下文、截图录屏或可复现步骤与关键现场。"}
   tech-choices:
     icon: stack
     title: {en: Tech choices, zh: 技术选型}
@@ -42,19 +60,35 @@ previews:
     description: {en: "Compare competitor capabilities side by side.", zh: "横向对比竞品能力与我们的设计取舍。"}
 ---
 
+## Planning
+
 Plan software changes with `akb guide refine` without editing project code. Choose only the
 Previews the task needs and read linked references or AKB Guides when needed.
 
+## Work
+
+Follow `akb guide implement` and the project's instructions. Use the [implementation requirements](references/implement.md) to build and verify changes.
+
 ## Land
 
-Use [delivery requirements](references/delivery.md) to verify the saved implementation, merge or apply it to the target project, and archive the task. Record the commit and branch for Git projects.
+Follow the [landing requirements](references/land.md) to verify the saved work, apply any pending changes, and archive the task.
 
-## Preview memory
+## Previews
 
 Read relevant files under `docs/kanban/memory/previews/coding/<preview-id>/{project,workspace}/` on demand.
 These folders keep confirmed lasting preferences, rules and corrections; new notes belong to
 `project/` unless the user explicitly confirms cross-project reuse in `workspace/`.
 Files under `.conflicts/` are unresolved sources, not confirmed rules.
+
+<Preview id="bug-context">
+
+Use for bug fixes when showing the bug context helps reviewers verify the issue before
+implementation; skip for new features, refactors, and other non-bug work. Present the bug context
+briefly in the clearest reviewable form:
+- **Visual or interaction bugs**: capture screenshots or a short recording when feasible and attach them with `<Asset>` (use `<Set>` for multiple captures or states).
+- **Non-visual or uncapturable bugs**: state minimal reproduction steps, observed vs. expected behavior, and key evidence (logs, errors, or code references).
+
+</Preview>
 
 <Preview id="tech-choices">
 

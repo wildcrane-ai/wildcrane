@@ -182,6 +182,13 @@ export const FLOWS: Flow[] = [
     gloss: 'propose the work that should follow some finished cards',
     options: [{ flags: '--cards <id...>', description: 'the archived cards to reflect on' }],
   },
+  {
+    command: 'triage-sort',
+    action: 'triage-sort',
+    argument: '<file>',
+    argumentNote: 'the claimed batch file',
+    gloss: 'decide the suggestions in a Runner batch',
+  },
   { command: 'archive', group: 'card', action: 'archive', argument: '<id>', gloss: 'finish the card', internal: true },
 ]
 

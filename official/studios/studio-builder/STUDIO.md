@@ -47,8 +47,13 @@ previews:
 A Studio is a workbench for one kind of work: a toolbox and optional Previews (drafts or
 finished results a person reviews for details and quality). A task uses the Studio's tools and follows its own Review Plan.
 
+## Planning
+
 - **Card**: name the target studio or say it is new, the requested outcome, and a draft folder under this card’s assets. Give a new studio a sample request for its trial.
 - **Research**: for a new Studio, recommend Market research when public evidence can inform an open choice about the audience, workflow, or outputs. If the Studio Preview depends on the findings, ask for approval before preparing it.
+
+## Work
+
 - For a new Studio, find relevant examples with `akb studio list` and read them with
   `akb studio pull <id> <empty-folder>` to learn how to write a good Studio. When a cloneable
   Studio fits most of the request, use `akb studio clone <id> <draft-folder>` and adapt the draft.
@@ -70,9 +75,10 @@ finished results a person reviews for details and quality). A task uses the Stud
 - **Imports** Copy the skill and its resources at a fixed revision, and record the source URL and revision in its metadata.
 - **Memory**: leave memory out by default; when confirmed rules or preferences improve future work, follow [memory rules](references/memory.md).
 
-## Studio template
+### Studio template
 
-Replace the example metadata and instructions. Omit unused Setup, Planning, and Preview sections and metadata.
+Replace the example metadata and instructions. Omit unused Setup and Planning sections.
+If there are no Previews, omit the Preview blocks and metadata and keep `## Previews` empty.
 
 ```markdown
 ---
@@ -112,11 +118,11 @@ Show the draft as an Asset; state what details and quality the reviewer should c
 </Preview>
 ```
 
-## Check it
+### Check it
 
 For Studio definition changes, run `akb studio validate <folder> --json` and fix the reported issues.
 
-## Try it
+### Try it
 
 Try only new studios.
 
@@ -126,7 +132,7 @@ Try only new studios.
 - **Isolation**: create no cards and write no memory; use and note recommended answers instead of asking questions.
 - **Rerun**: after changes, rerun only affected outputs.
 
-## Feedback
+### Feedback
 
 Separate feedback on preview form from sample content.
 

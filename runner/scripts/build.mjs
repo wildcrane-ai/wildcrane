@@ -26,7 +26,7 @@ const PLUGIN_DISTS = Object.keys(SKILLS).map((host) => path.join(PLUGINS_DIR, ho
 for (const dir of PLUGIN_DISTS) fs.rmSync(dir, { recursive: true, force: true })
 copySkills(PLUGINS_DIR)
 
-for (const [entry, outfile] of [
+const entries = [
   ['launcher-main.ts', path.join(PKG_DIR, 'dist', 'launcher.mjs')],
   ['main.ts', path.join(PKG_DIR, 'dist', 'runner.mjs')],
   ['flow-worker-main.ts', path.join(PKG_DIR, 'dist', 'flow-worker-main.mjs')],
@@ -36,38 +36,40 @@ for (const [entry, outfile] of [
   ['codex-retained.ts', path.join(PKG_DIR, 'dist', 'codex-retained.mjs')],
   ['codex-proxy.ts', path.join(PKG_DIR, 'dist', 'codex-proxy.mjs')],
   ...PLUGIN_DISTS.map((dir) => ['plugin-start.ts', path.join(dir, 'start.mjs')]),
-]) {
-  await esbuild.build({
-    entryPoints: [path.join(PKG_DIR, 'src', entry)],
-    outfile,
-    bundle: true,
-    platform: 'node',
-    format: 'esm',
-    target: 'node22',
-    loader: { '.html': 'text', '.txt': 'text', '.md': 'text', '.svg': 'text', '.tsx': 'text', '.json': 'text' },
-    banner: { js: `// wildcrane-runner ${VERSION} — built by runner/scripts/build.mjs. Do not edit.\n${REQUIRE_SHIM}` },
-    define: { __RUNNER_VERSION__: JSON.stringify(VERSION), __AKB_VERSION__: JSON.stringify(CLI_VERSION), __AKB_CONTRACT__: String(AKB_CONTRACT) },
-    legalComments: 'none',
-    plugins: [packageJsonPlugin, settingsClientPlugin],
-  })
-  process.stdout.write(`build: wrote ${path.relative(PKG_DIR, outfile)} — ${(fs.statSync(outfile).size / 1024).toFixed(1)} kB\n`)
-}
+]
 
-await esbuild.build({
-  entryPoints: [path.join(PLUGINS_DIR, 'opencode', 'index.mjs')],
-  outfile: path.join(PLUGINS_DIR, 'opencode', 'dist', 'index.mjs'),
-  bundle: true, platform: 'node', format: 'esm', target: 'node22', loader: { '.md': 'text' },
-  nodePaths: [path.join(PKG_DIR, 'node_modules')],
-  banner: { js: REQUIRE_SHIM }, legalComments: 'none',
-})
-await esbuild.build({
-  entryPoints: [path.join(PLUGINS_DIR, 'opencode', 'manage.mjs')],
-  outfile: path.join(PLUGINS_DIR, 'opencode', 'dist', 'manage.mjs'),
-  bundle: true, platform: 'node', format: 'esm', target: 'node22', loader: { '.md': 'text' },
-  nodePaths: [path.join(PKG_DIR, 'node_modules')], mainFields: ['module', 'main'], legalComments: 'none',
-})
-
-await buildAkb(path.join(PKG_DIR, 'dist', 'akb'))
+await Promise.all([
+  ...entries.map(async ([entry, outfile]) => {
+    await esbuild.build({
+      entryPoints: [path.join(PKG_DIR, 'src', entry)],
+      outfile,
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      target: 'node22',
+      loader: { '.html': 'text', '.txt': 'text', '.md': 'text', '.svg': 'text', '.tsx': 'text', '.json': 'text' },
+      banner: { js: `// wildcrane-runner ${VERSION} — built by runner/scripts/build.mjs. Do not edit.\n${REQUIRE_SHIM}` },
+      define: { __RUNNER_VERSION__: JSON.stringify(VERSION), __AKB_VERSION__: JSON.stringify(CLI_VERSION), __AKB_CONTRACT__: String(AKB_CONTRACT) },
+      legalComments: 'none',
+      plugins: [packageJsonPlugin, settingsClientPlugin],
+    })
+    process.stdout.write(`build: wrote ${path.relative(PKG_DIR, outfile)} — ${(fs.statSync(outfile).size / 1024).toFixed(1)} kB\n`)
+  }),
+  esbuild.build({
+    entryPoints: [path.join(PLUGINS_DIR, 'opencode', 'index.mjs')],
+    outfile: path.join(PLUGINS_DIR, 'opencode', 'dist', 'index.mjs'),
+    bundle: true, platform: 'node', format: 'esm', target: 'node22', loader: { '.md': 'text' },
+    nodePaths: [path.join(PKG_DIR, 'node_modules')],
+    banner: { js: REQUIRE_SHIM }, legalComments: 'none',
+  }),
+  esbuild.build({
+    entryPoints: [path.join(PLUGINS_DIR, 'opencode', 'manage.mjs')],
+    outfile: path.join(PLUGINS_DIR, 'opencode', 'dist', 'manage.mjs'),
+    bundle: true, platform: 'node', format: 'esm', target: 'node22', loader: { '.md': 'text' },
+    nodePaths: [path.join(PKG_DIR, 'node_modules')], mainFields: ['module', 'main'], legalComments: 'none',
+  }),
+  buildAkb(path.join(PKG_DIR, 'dist', 'akb')),
+])
 
 async function buildAkb(dir) {
   fs.rmSync(dir, { recursive: true, force: true })

@@ -55,6 +55,7 @@ const cardText = (id: number, status = 'todo'): string =>
     'related: []',
     'modules: []',
     'questions: []',
+    'studio: coding',
     '---',
     '',
     `What card ${id} is for.`,

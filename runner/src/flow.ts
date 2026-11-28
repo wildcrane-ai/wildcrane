@@ -2,11 +2,12 @@ import { assetRef } from '../../artifact-sdk/src/internal/task-assets'
 import { REVIEW_SYNC_ENV } from '../../cli/src/lib/cloud/review-sync'
 import { previewSyncBridge } from './reply-approval'
 import { STUDIO_SNAPSHOT_ENV } from '../../cli/src/lib/agent/cloud-studios'
-import type { BoardRunSpend } from './recovery'
+import { readCheckpoint, type BoardRunSpend } from './recovery'
 import { agentRecovery, clipDetail, clipSummary, isSessionMissingFailure, makeFailure, MAX_RETRY_ATTEMPTS, mergeRetryHistory, planRetry, RETRY_FILE_ENV, readRetryPause, resumeBlocked, type ExecutionFailure, type FailureDetail, type RetryPause, type RetryRecord } from '../../cli/src/lib/agent/retry'
 import { idleStopConfirmed, stoppedCleanupConfirmed } from '../../cli/src/lib/agent/wire/codex-background-types'
 import { hasLiveCodexExecution, verifyCodexStopState, type CodexStopVerification } from '../../cli/src/lib/agent/wire/codex-verify'
 import { connectionStopped } from '../../cli/src/lib/agent/connection-process'
+import { flowSessionKind, type CloudExecution, type FlowSessionKind } from '../../cli/src/lib/cloud/execution'
 // A flow job (#2020): one board verb, run with the akb the Runner carries on the task's board
 // and followed to its end — for `implement`, until the delivery has landed. A periodic agent's
 // job (#2068) runs its own command the same way, on the project's board.
@@ -19,7 +20,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
-import { DELIVERY_PHASE_ENV, SAVED_PREVIEW_FILE_ENV, SESSION_COST_ENV, TASK_REQUEST_ENV } from '../../cli/src/lib/agent/env'
+import { DELIVERY_ID_ENV, DELIVERY_PHASE_ENV, LAND_IMPLEMENT_RUN_ENV, REVIEW_FINGERPRINT_ENV, SAVED_PREVIEW_FILE_ENV, SESSION_COST_ENV, TASK_REQUEST_ENV } from '../../cli/src/lib/agent/env'
+import { reviewFingerprint } from '../../cli/src/lib/agent/runtime-context'
 import { EXECUTION_RUNTIMES_ENV, GLOBAL_ID, GLOBAL_NAME, type ExecutionRuntimes } from '../../cli/src/lib/agent/runtimes'
 import { resumeSessionId } from '../../cli/src/lib/agent/sessions'
 import type { DeliveryEnding, DeliveryStatus, RunRecord } from '../../cli/src/lib/agent/types'
@@ -27,18 +29,18 @@ import { parseFrontmatter } from '../../cli/src/lib/frontmatter'
 import { asEvent, type RunEvent } from '../../cli/src/lib/agent/wire'
 import { reviewOf as cardReviewOf } from '../../cli/src/lib/card-review'
 import type * as api from './api'
-import { RUNTIMES, type AgentJob, type AgentRuntime, type Flow, type Job, type JobReport, type RuntimeReport } from './api'
+import { RUNTIMES, triageBatch, type AgentJob, type AgentRuntime, type Flow, type Job, type JobReport, type RuntimeReport } from './api'
 import { answerOf, runAkb, type Akb, type Ran } from './akb'
-import { git } from '../../cli/src/lib/agent/worktree'
+import { containsCommit, lockDeliveryProject, verifiedWorkspace } from '../../cli/src/lib/agent/delivery-workspace'
 import { quoteArg } from '../../cli/src/lib/agent/argv'
 import { RAW_ARGS_KEY } from '../../cli/src/lib/agent/harnesses/types'
 import { LABELS, forks, providerKey, providerOf, secretKeys, settingKeys } from './runtimes'
 import { runtimeCredentialsFile, secretsOf } from './secrets'
-import { akbCardOf, cardAssetsDir, cardFile, findCard, mcpServersOf, pull, push, withBoard, workspaceOf, type McpServers, type TaskFolder } from './task-folder'
+import { akbCardOf, cardAssetsDir, cardFile, findCard, mcpServersOf, pull, pullChanges, push, withBoard, workspaceOf, type McpServers, type TaskFolder } from './task-folder'
 import { studioName } from '../../cli/src/lib/shared/board-files.ts'
 import { projectStateDir } from '../../cli/src/lib/machine/project'
 import { pendingConflicts } from '../../cli/src/lib/shared/board-conflicts'
-import { isFlatReviewPlan, isWaitingReview, reviewAllows, reviewAuthorization } from '../../cli/src/lib/shared/review-plan'
+import { agentReview, isFlatReviewPlan, isWaitingReview, reviewAllows, reviewAuthorization } from '../../cli/src/lib/shared/review-plan'
 import { stageSavedPreviews } from './saved-previews'
 import { layOut, type Laid } from './triage'
 import { removeLegacyKanbanSkill } from './kanban-skill'
@@ -57,7 +59,7 @@ export interface FlowDeps {
   machineId: string
   akb: Akb
   runtimes: () => Promise<RuntimeReport[]>
-  api: Pick<typeof api, 'readTask' | 'readRejections' | 'markReviewed'>
+  api: Pick<typeof api, 'readTask' | 'readRejections' | 'markReviewed'> & Partial<Pick<typeof api, 'triageBatch'>>
   /** How long stopping the job's board runs may take. */
   stopMs: number
 }
@@ -73,6 +75,7 @@ export interface FlowIo {
   diagnostic?: string
   executionRuntimes?: string
   repairDelivery?: boolean
+  resetSession?: boolean
   sync?: Sync
   retryFile?: string
   recover?: <T>(failure: ExecutionFailure, operation: () => Promise<api.Call<T>>) => Promise<api.Call<T>>
@@ -104,7 +107,9 @@ function commandFailure(ran: Ran): Extract<api.Call<never>, { ok: false }> {
 interface Run extends BoardRunSpend {
   cardId?: number | null
   parentId?: string
-  cloudExecution?: { job: string; machine: string; card?: number }
+  cloudExecution?: CloudExecution
+  sessionKind?: FlowSessionKind
+  sessionCostUsd?: number
   harness?: string
   cwd?: string
   unspawned?: boolean
@@ -343,14 +348,17 @@ function boardAkb(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo, task?: s
       cwd: ws.cwd, board: ws.board, task, language: cloudLanguage(job), show: log?.push, track: io.track,
       env: {
         ...env,
-        [DELIVERY_PHASE_ENV]: job.flow?.phase ?? (job.flow?.verb === 'resolve' && job.flow.land_from ? 'resolve' : undefined),
+        [DELIVERY_PHASE_ENV]: job.flow?.phase ?? (job.flow?.verb === 'resolve' && (job.sessionKind === 'implement' || job.flow.land_from) ? 'resolve' : undefined),
+        [DELIVERY_ID_ENV]: job.flow?.delivery_id,
         [RETRY_FILE_ENV]: io.retryFile,
         [EXECUTION_RUNTIMES_ENV]: io.executionRuntimes,
         AI4KANBAN_SYNC_DIAGNOSTIC: io.diagnostic,
         AI4KANBAN_REVIEW_STAGES: job.flow?.review_stages ? JSON.stringify(job.flow.review_stages) : undefined,
-        AI4KANBAN_TASK_REVIEW: job.taskReview ? JSON.stringify(job.taskReview) : undefined,
+        AI4KANBAN_TASK_REVIEW: job.taskReview ? JSON.stringify(agentReview(job.taskReview)) : undefined,
+        [REVIEW_FINGERPRINT_ENV]: job.taskReview ? reviewFingerprint(job.taskReview) : undefined,
         [STUDIO_SNAPSHOT_ENV]: task && ws.studioSnapshot ? JSON.stringify(ws.studioSnapshot) : undefined,
         AI4KANBAN_EXECUTION: JSON.stringify({ job: job.id, machine: deps.machineId,
+          sessionKind: flowSessionKind(job.sessionKind),
           ...(task && job.flow && ws.number ? { card: ws.number } : {}) }),
       },
     })
@@ -517,11 +525,11 @@ function failedRunResumeDiagnostic(
 }
 
 function recoveryArgs(run: NonNullable<FlowIo['flowRun']>): string[] {
-  return run.finished ? ['run', 'log', run.id] : ['run', 'resume', run.id, run.freshSession ? '--new-session' : '--require-session']
+  return run.finished ? ['run', 'log', run.id] : ['run', 'resume', run.id, run.freshSession ? '--fresh' : '--require-session']
 }
 
 function runsSpent(runs: Run[], since: number, job: Job, io: FlowIo, machine: string, card?: number): Run[] {
-  const source = job.flow?.historical_recovery ? undefined : job.flow?.sync_recovery_of ?? job.syncRecoveryOf ?? io.flowRun?.from
+  const source = job.flow?.session_from ?? (job.flow?.historical_recovery ? undefined : job.flow?.sync_recovery_of ?? job.syncRecoveryOf ?? io.flowRun?.from)
   const current = runs.filter(r => (card === undefined || onTask(r, card)) &&
     (jobOwns(r, job.id, machine) || !!source && jobOwns(r, source, machine)
     || card === undefined && !r.cloudExecution && (r.startedAt ?? 0) >= since))
@@ -590,6 +598,32 @@ export async function runAgent(job: Job & { agent: AgentJob }, ws: TaskFolder, d
   const since = Date.now()
   const failed = await setUp(job, ws, deps, io)
   if (failed) return { ok: false, reason: failed, safeToRetry: !io.flowRun }
+  if (name === 'triage-sort') {
+    const readBatch = deps.api.triageBatch ?? triageBatch
+    const batch = await readBatch(deps.machineId, job.id)
+    if (!batch.ok) return { ok: false, reason: batch.error }
+    const directory = path.join(ws.board, '.sync')
+    const file = path.join(directory, `triage-${job.syncRecoveryOf ?? job.id}.json`)
+    if (!batch.value.items.length) {
+      fs.rmSync(file, { force: true })
+      return { ok: true, report: {} }
+    }
+    fs.mkdirSync(directory, { recursive: true })
+    fs.writeFileSync(file, JSON.stringify(batch.value, null, 2), { mode: 0o600 })
+    const akb = boardAkb(job, ws, deps, io)
+    await akb(['run', 'list', '--all', '--json'])
+    const args = io.flowRun ? recoveryArgs(io.flowRun) : ['raw', 'triage-sort', file]
+    const ran = await akb([...args, '--follow', '--events', '--json'], true)
+    if (stopping(io) || ran.code !== 0) return { ok: false, reason: refusal(ran) }
+    const left = await readBatch(deps.machineId, job.id)
+    if (!left.ok) return { ok: false, reason: left.error }
+    if (left.value.items.length) return { ok: false, reason: 'The triage batch still has items without a decision.' }
+    fs.rmSync(file, { force: true })
+    const answer = answerOf<{ result?: string; agentSession?: string }>(ran)
+    const runs = answerOf<{ runs?: Run[] }>(await akb(['run', 'list', '--all', '--json']))?.runs ?? []
+    return { ok: true, report: { reply: answer?.result, session: answer?.agentSession,
+      ...spentBy(runsSpent(runs, since, job, io, deps.machineId), job) } }
+  }
   if (io.flowRun) {
     const args = recoveryArgs(io.flowRun)
     const akb = boardAkb(job, ws, deps, io)
@@ -648,7 +682,6 @@ export function cardFlags(ws: TaskFolder, fields: api.CardFields | undefined): s
     .filter((n) => n > 0 && n !== ws.number && findCard(ws.board, n)?.startsWith(path.join(ws.board, 'todo') + path.sep))
   const lists: [string, (string | number)[]][] = [['--modules', fields.modules ?? []], ['--related', open(fields.related)], ['--blocked-by', open(fields.blocked_by)]]
   return [
-    ...(fields.priority ? ['--priority', fields.priority] : []),
     ...(fields.previews !== undefined ? ['--previews', fields.previews.join(',')] : []),
     ...lists.flatMap(([flag, list]) => list.length ? [flag, list.join(',')] : []),
   ]
@@ -664,6 +697,9 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
   const akb = boardAkb(job, ws, deps, io, ws.task)
 
   if (flow.verb === 'discard') return discardBuilds()
+  if ('sessionKind' in job && !flowSessionKind(job.sessionKind)) {
+    return fail('This task execution has no session kind.')
+  }
   if (io.flowRun && io.flowRun.card !== ws.number) return unverifiedResume()
   if (io.flowRun?.failure) {
     const failure = io.flowRun.failure
@@ -692,7 +728,8 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
   const dispatchedReview = job.reviewAtDispatch ? job.taskReview : undefined
   const hasReview = !!job.taskReview || flow.review_stages !== undefined
   const initial = job.taskReview && reviewAuthorization(job.taskReview, flow.review_stages)
-  const skipPlan = initial ? initial.kind === 'unreviewed' || initial.kind === 'flat' && flow.skip_plan : flow.skip_plan
+  const skipPlan = job.sessionKind ? job.sessionKind === 'implement'
+    : initial ? initial.kind === 'unreviewed' || initial.kind === 'flat' && flow.skip_plan : flow.skip_plan
   const verb = flow.verb === 'create' ? (skipPlan ? 'implement' : 'refine') : flow.verb
 
   if (verb === 'implement') ws.materialIssues = {}
@@ -704,11 +741,12 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     const current = await attemptSync(io, 'review', () => deps.api.readTask(ws.task))
     if (!current.ok) return refusedSync(job, current)
     const review = dispatchedReview ?? current.value.review
+    currentTask = current.value
     if (!review || ['stopped', 'done', 'cancelled'].includes(current.value.status ?? '')) {
       return 'This execution no longer has review authorization.'
     }
     const authorization = reviewAuthorization(review, flow.review_stages, dispatchedReview ? undefined : flow.review_revision)
-    if (authorization.kind === 'changed' || action === 'refine' && !reviewAllows(authorization, action)) {
+    if (authorization.kind === 'changed' || action === 'refine' && !reviewAllows(authorization, action) && !(job.sessionKind === 'refine' && flow.resume && authorization.kind === 'delivery')) {
       return 'Review authorization changed. Read the task again.'
     }
     if (action === 'implement') {
@@ -719,7 +757,6 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       }
     }
     job.taskReview = review
-    currentTask = current.value
   }
 
   let previewDirectory: string | undefined
@@ -743,7 +780,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       }
       if (staged.value) env = { ...env, [SAVED_PREVIEW_FILE_ENV]: staged.value }
     }
-    if (!show || !review || Array.isArray(review.plan) || !ws.number) return akb(args, show, env)
+    if (!show || !ws.number) return akb(args, show, env)
     const bridge = await previewSyncBridge(ws, { id: job.id, machineId: deps.machineId }, () => stopping(io))
     try { return await akb(args, show, { ...env, [REVIEW_SYNC_ENV]: bridge.env }) }
     finally { bridge.close() }
@@ -753,7 +790,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
   if (failed) return { ok: false, reason: failed, safeToRetry: !io.flowRun }
 
   let id = akbCardOf(ws)
-  if (flow.phase === 'land') {
+  if (job.sessionKind === 'land' || flow.phase === 'land') {
     try { return id ? await land(id) : fail('This task has no card in the Land workspace.') }
     finally { if (previewDirectory) fs.rmSync(previewDirectory, { recursive: true, force: true }) }
   }
@@ -862,54 +899,21 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     io.onStop(async () => {
       if (!await stopFlowRuns(ws, job, deps)) throw new Error('The Land session did not stop.')
     })
-    const reason = await refreshReview('implement')
-    if (reason || stopping(io)) return fail(reason ?? '')
-
-    const observed = await reconcileDelivery(card)
-    const deliveryId = 'deliveryId' in observed ? observed.deliveryId : undefined
-    const sourceJob = flow.land_from
-    if (stopping(io)) return fail('')
-    if (!sourceJob || flow.delivery_id && flow.delivery_id !== deliveryId) {
-      return fail('The saved implementation does not match this Land job.')
-    }
-
-    const readRuns = async () => answerOf<{ runs?: Run[] }>(
-      await akb(['run', 'list', '--card', String(card), '--all', '--json']),
-    )?.runs ?? []
-    const wroteArchive = async (runs: Run[]): Promise<FlowEnd> => {
-      const saved = await reconcileDelivery(card)
-      const landing = saved.kind === 'completed' && saved.deliveryId === deliveryId && saved.commit && saved.branch
-        ? { commit: saved.commit, branch: saved.branch } : undefined
-      const owned = runs.filter(r => onTask(r, card) && jobOwns(r, job.id, deps.machineId))
-      const last = owned.filter(r => !r.parentId).at(-1)
-      return { ok: true, report: { ...spentBy(owned, job), card, deliveryId, landing,
-        reply: last?.result, session: last?.resumeId } }
-    }
     const localArchive = () => isArchived(ws, card) && !asks(cardFile(ws))
       && isSuccessfulArchive(cardFile(ws))
-
-    const unverified = observed.kind === 'unverified' ? observed.diagnostic : 'The saved implementation workspace or its run could not be verified.'
-    const matchesSource = async () => {
-      if (!deliveryId) return false
-      const { stopped, mismatched, run } = await flowRunEvidence(ws, job, deps, sourceJob)
-      return stopped && !mismatched && run?.finished && !run.failure && run.deliveryId === deliveryId
+    const cloudArchive = async () => {
+      if (localArchive()) return true
+      const refresh = await pullChanges(ws)
+      return refresh.ok && localArchive()
     }
+    const reason = await refreshReview('implement')
+    if (stopping(io) || reason && !(currentTask?.status === 'done' && await cloudArchive())) return fail(reason ?? '')
 
-    if (localArchive() && (deliveryId ? (observed.kind === 'completed' || observed.kind === 'resumable') : !flow.delivery_id && observed.kind === 'none')) {
-      if (flow.reviewed_implementation && (observed.kind === 'resumable' && !savedWorkspace(observed) || !await matchesSource())) {
-        return fail(unverified)
-      }
-      if (observed.kind === 'resumable') {
-        const saved = await akb(['task', 'archive', String(card), '--json'])
-        if (saved.code !== 0) return fail(refusal(saved))
-      }
-      return wroteArchive(await readRuns())
-    }
-
-    if (!savedWorkspace(observed) || !await matchesSource()) return fail(unverified)
+    const sourceJob = flow.land_from
+    if (!sourceJob) return fail('The saved implementation does not match this Land job.')
 
     let resume = io.flowRun
-    if (!resume && flow.sync_recovery_of) {
+    if (!job.sessionKind && !resume && flow.sync_recovery_of) {
       if (!await stopFlowRuns(ws, { ...job, id: flow.sync_recovery_of }, deps)) {
         return fail('The previous Land session has not stopped.')
       }
@@ -917,18 +921,95 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       if (!previous.stopped) return fail('The previous Land session has not stopped.')
       resume = previous.run
     }
+
+    const readRuns = async () => answerOf<{ runs?: Run[] }>(
+      await akb(['run', 'list', '--card', String(card), '--all', '--json']),
+    )?.runs ?? []
+    let deliveryId: string | undefined
+    const wroteArchive = async (runs: Run[]): Promise<FlowEnd> => {
+      const release = await lockDeliveryProject(ws.cwd, () => stopping(io))
+      if (!release) return fail('')
+      let saved: Awaited<ReturnType<typeof reconcileDelivery>>
+      try { saved = await reconcileDelivery(card) } finally { release() }
+      if (saved.kind === 'unverified') return fail(saved.diagnostic)
+      const landing = saved.kind === 'completed' && saved.deliveryId === deliveryId && saved.commit && saved.branch
+        ? { commit: saved.commit, branch: saved.branch } : undefined
+      const owned = runs.filter(r => onTask(r, card) && jobOwns(r, job.id, deps.machineId))
+      const last = owned.filter(r => !r.parentId).at(-1)
+      return { ok: true, report: { ...spentBy(owned, job), card, deliveryId, landing,
+        reply: last?.result, session: last?.resumeId } }
+    }
+    let implementationRun: string | undefined
+    let alreadyArchived = false
+    const release = await lockDeliveryProject(ws.cwd, () => stopping(io))
+    if (!release) return fail('')
+    try {
+      const observed = await reconcileDelivery(card)
+      deliveryId = 'deliveryId' in observed ? observed.deliveryId : undefined
+      if (stopping(io)) return fail('')
+      if (flow.delivery_id && flow.delivery_id !== deliveryId) return fail('The saved implementation does not match this Land job.')
+      if (observed.kind === 'unverified') return fail(observed.diagnostic)
+      const hasArchive = localArchive()
+      alreadyArchived = hasArchive && (deliveryId
+        ? observed.kind === 'completed' || observed.kind === 'resumable'
+        : !flow.delivery_id && observed.kind === 'none')
+      const recoverArchive = job.sessionKind === 'land' && observed.kind === 'completed' && !hasArchive
+      const unverified = 'The saved implementation workspace or its run could not be verified.'
+      if (!alreadyArchived) {
+        const { stopped, mismatched, run, cwd } = await flowRunEvidence(ws, job, deps, sourceJob)
+        if (!deliveryId || !stopped || mismatched || !run?.finished || run.failure || run.deliveryId !== deliveryId ||
+            !recoverArchive && !savedWorkspace(observed, cwd)) {
+          return fail(unverified)
+        }
+        implementationRun = run.id
+      }
+      if (recoverArchive) {
+        const saved = await slotRun(card)
+        if ('ok' in saved) return saved
+        if (!observed.commit || !observed.branch ||
+            !containsCommit(ws.cwd, observed.commit, `refs/heads/${observed.branch}`)) {
+          return fail(unverified)
+        }
+      }
+      if (recoverArchive || alreadyArchived && observed.kind === 'resumable') {
+        if (!recoverArchive && !savedWorkspace(observed)) return fail('The saved implementation workspace could not be verified.')
+        const saved = await akb(['task', 'archive', String(card), '--json'])
+        if (saved.code !== 0 || recoverArchive && !await cloudArchive()) return fail(refusal(saved))
+        alreadyArchived = true
+      }
+    } finally { release() }
+    if (alreadyArchived) return wroteArchive(await readRuns())
+
+    if (job.sessionKind && !resume) {
+      const saved = await slotRun(card)
+      if ('ok' in saved) return saved
+      resume = saved.run
+    }
+    let freshAttempt = resume?.freshSession === true
+    if (freshAttempt && job.sessionKind) io.resetSession = true
     while (!stopping(io)) {
+      const carry = job.sessionKind ? boundSessionArgs(freshAttempt) : []
       const args = resume
-        ? ['run', 'resume', resume.id, '--require-session']
-        : ['task', 'implement', String(card)]
-      const ran = await launch([...args, '--follow', '--events', '--json'], true, undefined, 'implement')
+        ? ['run', 'resume', resume.id, freshAttempt ? '--fresh' : '--require-session']
+        : ['task', 'implement', String(card), ...carry]
+      const env = { ...(resume ? {} : sessionSpend(carry)), [LAND_IMPLEMENT_RUN_ENV]: implementationRun }
+      const ran = await launch([...args, '--follow', '--events', '--json'], true, env, 'implement')
       if (stopping(io)) return fail('')
       if (ran.reviewRefused) return fail(ran.reviewRefused)
       const runs = await readRuns()
-      if (localArchive()) return wroteArchive(runs)
+      if (await cloudArchive()) return wroteArchive(runs)
       const owned = runs.filter(r => onTask(r, card) && jobOwns(r, job.id, deps.machineId))
       const recent = owned.filter(r => !r.parentId).at(-1)
-      const report = { ...spentBy(owned, job), card, deliveryId, session: recent?.resumeId, reply: recent?.result }
+      const report = { ...spentBy(owned, job), card, deliveryId, session: sessionOfRun(recent), reply: recent?.result }
+      if (ran.code !== 0 && job.sessionKind && (resume || job.resume) && !freshAttempt) {
+        const missing = await missingSession(ran, recent)
+        if (missing) {
+          if (resume) resume = { ...resume, id: missing.run ?? resume.id }
+          io.resetSession = true
+          freshAttempt = true
+          continue
+        }
+      }
       if (asks(cardFile(ws))) {
         const review = reviewOf(cardFile(ws), true)
         return { ok: true, report: { ...report, review: review && review !== true ? review : {} } }
@@ -947,20 +1028,70 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     return fail('')
   }
 
-  function savedWorkspace(observed: Awaited<ReturnType<typeof reconcileDelivery>>): observed is Extract<
+  function savedWorkspace(observed: Awaited<ReturnType<typeof reconcileDelivery>>, cwd?: string): observed is Extract<
     Awaited<ReturnType<typeof reconcileDelivery>>, { kind: 'resumable' }
   > {
-    if (observed.kind !== 'resumable' || observed.status !== 'active' || !observed.worktree) return false
-    const work = path.resolve(ws.cwd, observed.worktree)
-    const present = (file: string) => fs.statSync(file, { throwIfNoEntry: false })?.isDirectory() === true
-    return path.relative(ws.cwd, work).startsWith(`.akb${path.sep}worktrees${path.sep}`) && present(work) && (observed.base
-      ? !!observed.branch && git(['symbolic-ref', '--short', 'HEAD'], work)?.trim() === observed.branch
-        && git(['merge-base', '--is-ancestor', observed.base, 'HEAD'], work) !== null
-      : present(path.join(path.dirname(work), 'base')))
+    return observed.kind === 'resumable' && observed.status === 'active' && !!verifiedWorkspace(ws.cwd, observed, cwd)
+  }
+
+  async function missingSession(ran: Ran, recent: Run | undefined): Promise<{ run?: string } | undefined> {
+    if (stopping(io)) return
+    if (recent && isSessionMissingFailure(recent.failure) && runStopped(recent) && !recent.pendingWrites &&
+        (!recent.cleanup || stoppedCleanupConfirmed(recent.cleanup))) {
+      const codex = await verifyFlowCodexRun(ws, job, recent)
+      if (!codex || codex.stopped && codex.ownershipOk) return { run: recent.sessionId }
+    }
+    if (answerOf<{ error?: { reason?: string } }>(ran)?.error?.reason === 'runSessionMissing') return {}
+  }
+
+  async function slotRun(card: number): Promise<{ run?: FlowIo['flowRun'] } | FlowEnd> {
+    const runs = await boardRuns(deps.akb, ws, ['--card', String(card)])
+    if (!runs || runs.some(run => onTask(run, card) && !runStopped(run) && !jobOwns(run, job.id, deps.machineId))) {
+      return unverifiedResume(resumeBlocked({ stopped: false }, cloudLanguage(job) === 'zh'))
+    }
+    if (!flow.session_from || flow.replan) return {}
+    if (process.platform !== 'win32') {
+      const eachStopped = [job.sessionKind, undefined].every(sessionKind => processesStopped({
+        name: 'AI4KANBAN_EXECUTION',
+        value: JSON.stringify({ job: flow.session_from, machine: deps.machineId, sessionKind, card }),
+      }))
+      if (!eachStopped) return unverifiedResume(resumeBlocked({ stopped: false }, cloudLanguage(job) === 'zh'))
+    }
+    const saved = await flowRunEvidence(ws, job, deps, flow.session_from)
+    if (!saved.stopped || saved.mismatched || saved.diagnostic) return unverifiedResume(saved.diagnostic)
+    if (!saved.run) {
+      const checkpoint = readCheckpoint(flow.session_from)
+      if (checkpoint?.pending.length || checkpoint?.cleanup?.status === 'unconfirmed' || checkpoint?.boardContinuation) {
+        return unverifiedResume(resumeBlocked({ stopped: true, unconfirmedCleanup: true }, cloudLanguage(job) === 'zh'))
+      }
+      if (process.platform === 'win32' && job.resume && !job.fork) return unverifiedResume()
+    }
+    if (saved.run && (job.fork || flow.session_reset)) return {}
+    return { run: saved.run }
+  }
+
+  async function runSlot(card: number): Promise<FlowEnd> {
+    const saved = io.flowRun ? { run: io.flowRun } : await slotRun(card)
+    if ('ok' in saved) return saved
+    if (job.sessionKind === 'refine') return workOn(card, undefined, saved.run)
+    const observed = await reconcileDelivery(card)
+    if (observed.kind === 'unverified') return unverifiedResume(observed.diagnostic)
+    if (flow.delivery_id && (!('deliveryId' in observed) || observed.deliveryId !== flow.delivery_id)) {
+      return unverifiedResume('The saved implementation workspace could not be verified.')
+    }
+    if (observed.kind === 'running') return unverifiedResume('The previous implementation is still running.')
+    if (observed.kind === 'resumable' && !savedWorkspace(observed)) {
+      return unverifiedResume('The saved implementation workspace could not be verified.')
+    }
+    if (observed.kind === 'completed') {
+      return { ok: true, report: { card, deliveryId: observed.deliveryId, landReady: { deliveryId: observed.deliveryId } } }
+    }
+    return workOn(card, observed, saved.run)
   }
 
   async function onCard(card: number): Promise<FlowEnd> {
     try {
+      if (job.sessionKind) return await runSlot(card)
       if (flow.resume_execution && !io.flowRun) {
         const saved = await flowRunEvidence(ws, job, deps, flow.resume_execution)
         if (stopping(io)) return fail('')
@@ -1085,11 +1216,11 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
 
     const text = flow.verb === 'create' || !flow.text?.trim() ? '' : flow.text
     // A resume follows where the card actually is, not the step the last job was on.
-    const archived = !original && !io.flowRun && flow.resume && isArchived(ws, id)
+    const archived = !job.sessionKind && !original && !io.flowRun && flow.resume && isArchived(ws, id)
     if (archived && (verb !== 'implement' || parseFrontmatter(fs.readFileSync(cardFile(ws), 'utf8')).meta?.rejected)) {
       return { ok: true, report: { card: id, ...(verb === 'implement' ? { deliveryCompleted: false } : {}) } }
     }
-    if (!original && !io.flowRun && flow.resume && verb === 'refine' && !hasReview && (!reconciled || reconciled.kind === 'none')) {
+    if (!job.sessionKind && !original && !io.flowRun && flow.resume && verb === 'refine' && !hasReview && (!reconciled || reconciled.kind === 'none')) {
       const review = reviewOf(cardFile(ws))
       if (review) return { ok: true, report: { card: id, ...(review === true ? {} : { review }) } }
     }
@@ -1100,7 +1231,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     const isRejected = () => isArchived(ws, id) && parseFrontmatter(fs.readFileSync(cardFile(ws), 'utf8')).meta?.rejected === true
     let ran: Awaited<ReturnType<typeof launch>> | undefined
     let continuation: string[] | undefined
-    let expectedDelivery: string | undefined
+    let expectedDelivery: string | undefined = flow.delivery_id
     let effectiveVerb = verb
     if (io.flowRun && verb === 'refine' && flow.review_stages?.length && flow.review_revision !== undefined) {
       const recorded = await attemptSync(io, 'review', () => deps.api.readTask(ws.task))
@@ -1163,26 +1294,22 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       return undefined
     }
     if (original) {
-      expectedDelivery = original.deliveryId
-      if (expectedDelivery) effectiveVerb = 'implement'
+      expectedDelivery ??= original.deliveryId
+      if (!job.sessionKind && expectedDelivery) effectiveVerb = 'implement'
       continuation = recoveryArgs(original)
+      if (job.sessionKind && original.freshSession) io.resetSession = true
     } else if (io.flowRun) {
-      expectedDelivery = io.flowRun.deliveryId
-      if (expectedDelivery) effectiveVerb = 'implement'
+      expectedDelivery ??= io.flowRun.deliveryId
+      if (!job.sessionKind && expectedDelivery) effectiveVerb = 'implement'
       continuation = io.repairDelivery ? ['run', 'resume', io.flowRun.id, '--require-session'] : recoveryArgs(io.flowRun)
-    } else if (reconciled?.kind === 'running') {
+    } else if (!job.sessionKind && reconciled?.kind === 'running') {
       expectedDelivery = reconciled.deliveryId
-      if (expectedDelivery) effectiveVerb = 'implement'
+      if (!job.sessionKind && expectedDelivery) effectiveVerb = 'implement'
       continuation = ['run', 'log', reconciled.sessionId]
-    } else if (reconciled?.kind === 'resumable') {
+    } else if (!job.sessionKind && reconciled?.kind === 'resumable') {
       const denied = hasReview ? await refreshReview('revise') : undefined
       if (denied) return fail(denied)
-      const reviewAllowsImplement = !hasReview || (!!job.taskReview && reviewAllows(reviewAuthorization(
-        job.taskReview, flow.review_stages, dispatchedReview ? undefined : flow.review_revision), 'implement'))
-      const hasOpenQuestions = asks(cardFile(ws))
-      const continueDelivery = verb === 'implement' || (!flow.replan && ['refine', 'revise', 'create'].includes(verb) && reviewAllowsImplement && !hasOpenQuestions)
-      if (continueDelivery) {
-        effectiveVerb = 'implement'
+      if (verb === 'implement') {
         const done = await resumeExistingDelivery()
         if (done) return done
       } else if (!(verb === 'resolve' && flow.land_from)) {
@@ -1196,10 +1323,10 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
           }
         }
       }
-    } else if (verb === 'implement' && flow.resume) {
+    } else if (!job.sessionKind && verb === 'implement' && flow.resume) {
       const done = await resumeExistingDelivery()
       if (done) return done
-    } else if (verb === 'implement' && text) {
+    } else if (!job.sessionKind && verb === 'implement' && text) {
       const resolved = await launch(['task', 'resolve', String(id), '--follow', '--events', '--json', '--', text], true)
       if (resolved.reviewRefused) return fail(resolved.reviewRefused)
       if (io.lost()) return fail('')
@@ -1214,7 +1341,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     const fresh = (fromTranscript = false) => {
       const carry = carryArgs(effectiveVerb, fromTranscript)
       const env = {
-        [SESSION_COST_ENV]: carry.includes('--session') && typeof job.resumeCostUsd === 'number' ? String(job.resumeCostUsd) : undefined,
+        ...sessionSpend(carry),
         [TASK_REQUEST_ENV]: newRequest ?? (effectiveVerb === 'refine' ? text || undefined : undefined),
       }
       const command = effectiveVerb === 'approve' ? ['raw', 'card', 'approve'] : ['task', effectiveVerb]
@@ -1242,20 +1369,33 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
         run.deliveryId === expectedDelivery && isSessionMissingFailure(run.failure)
         && !run.pendingWrites && (!run.cleanup || stoppedCleanupConfirmed(run.cleanup)))
       // Once a resume starts, its record replaces the previous attempt's.
-      const retryFrom = missing?.sessionId ?? (answer?.error?.reason === 'runSessionMissing' ? continuation[2] : undefined)
+      const confirmed = job.sessionKind ? await missingSession(ran, missing) : undefined
+      const retryFrom = job.sessionKind ? confirmed && (confirmed.run ?? continuation[2])
+        : missing?.sessionId ?? (answer?.error?.reason === 'runSessionMissing' ? continuation[2] : undefined)
       if (retryFrom) {
-        ran = await launch(['run', 'resume', retryFrom, '--new-session', '--follow', '--events', '--json'], true, undefined, effectiveVerb)
+        if (job.sessionKind) io.resetSession = true
+        ran = await launch(['run', 'resume', retryFrom, '--fresh', '--follow', '--events', '--json'], true, undefined, effectiveVerb)
         if (ran.reviewRefused) return fail(ran.reviewRefused)
         if (io.lost()) return fail('')
         answer = answerOf<Ended>(ran)
         runs = await readRuns()
       }
     }
-    if (ran.code !== 0 && !continuation && job.fork && job.transcript && !stopping(io) &&
-        runs.some(run => run.sessionId === lastRun(answer) && run.failure?.code === 'codex_fork_source_missing')) {
-      const failure = runs.find(run => run.sessionId === lastRun(answer))!.failure!
+    if (job.sessionKind && job.resume && !continuation && ran.code !== 0 && await missingSession(ran,
+      runs.find(run => run.sessionId === lastRun(answer) && jobOwns(run, job.id, deps.machineId)))) {
+      io.resetSession = true
+      ran = await fresh(true)
+      if (ran.reviewRefused) return fail(ran.reviewRefused)
+      answer = answerOf<Ended>(ran)
+      runs = await readRuns()
+    }
+    const missingFork = ran.code !== 0 && !continuation && !io.resetSession && job.fork && (job.sessionKind || job.transcript) && !stopping(io)
+      ? runs.find(run => run.sessionId === lastRun(answer) && jobOwns(run, job.id, deps.machineId) && isSessionMissingFailure(run.failure))
+      : undefined
+    if (missingFork?.failure && await missingSession(ran, missingFork)) {
+      if (job.sessionKind) io.resetSession = true
       if (io.recover) {
-        const result = await io.recover(failure, async () => ({ ok: true, value: await fresh(true) }))
+        const result = await io.recover(missingFork.failure, async () => ({ ok: true, value: await fresh(true) }))
         if (!result.ok) return fail(result.error)
         ran = result.value
       } else ran = await fresh(true)
@@ -1264,7 +1404,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       answer = answerOf<Ended>(ran)
       runs = await readRuns()
     }
-    const delivery = answer?.delivery ?? answer?.error?.delivery
+    const delivery = job.sessionKind === 'refine' ? undefined : answer?.delivery ?? answer?.error?.delivery
     const last = lastRun(answer)
     const followed = logged ? runs.find(r => r.sessionId === logged) : undefined
     const fromThisJob = runs.filter(r => !r.parentId && jobOwns(r, job.id, deps.machineId))
@@ -1274,41 +1414,31 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     if (last && !recent) return unverifiedResume('The final run does not belong to this task execution.')
     if (delivery && !recent) return unverifiedResume('The delivery has no verified run in this task execution.')
     const rejected = isRejected()
-    const deliveryId = expectedDelivery ?? recent?.deliveryId ?? delivery?.id
+    const deliveryId = job.sessionKind === 'refine' ? undefined : expectedDelivery ?? recent?.deliveryId ?? delivery?.id
     if (!rejected && deliveryId && delivery?.id && delivery.id !== deliveryId) {
       return { ok: false, reason: mismatchedReceipt, report: { deliveryId, deliveryCompleted: false } }
     }
     const executed = runsSpent(runs, since, job, io, deps.machineId, id)
     const spent = spentBy([...learned, ...executed], job)
     const history = mergeRetryHistory(...executed.map(run => run.retryHistory), recent?.retryHistory)
-    const managedBuild = flow.phase === 'implement' && effectiveVerb === 'implement'
-    if (!rejected && (managedBuild && hasReview || isFlatReviewPlan(job.taskReview?.plan) || job.taskReview?.plan === null && effectiveVerb === 'refine')) {
+    const managedBuild = job.sessionKind === 'implement' && effectiveVerb === 'implement' || flow.phase === 'implement' && effectiveVerb === 'implement'
+    if (!rejected && effectiveVerb !== 'implement' && job.sessionKind !== 'implement' &&
+        (isFlatReviewPlan(job.taskReview?.plan) || job.taskReview?.plan === null && effectiveVerb === 'refine')) {
       const saved = await attemptSync(io, 'review', () => deps.api.readTask(ws.task))
       if (!saved.ok) return fail(refusedSync(job, saved))
       const review = saved.value.review
-      if (review?.stages.some(stage => stage.job === job.id && (!managedBuild ||
-        isFlatReviewPlan(review.plan) && (isWaitingReview(stage.status) || stage.status === 'approved'))) && (!managedBuild || ran.code === 0)) {
-        if (managedBuild) {
-          if (!deliveryId || recent?.status !== 'done' || recent.deliveryId !== deliveryId ||
-              !jobOwns(recent, job.id, deps.machineId) || !runStopped(recent) || recent.pendingWrites ||
-              recent.retryPause || recent.cleanup?.status === 'unconfirmed') {
-            return fail('The implementation result or delivery workspace was not saved.')
-          }
-          const workspace = await reconcileDelivery(id)
-          if (!savedWorkspace(workspace) || workspace.deliveryId !== deliveryId) {
-            return fail(workspace.kind === 'unverified' ? workspace.diagnostic : 'The saved implementation workspace could not be verified.')
-          }
-        }
+      if (review?.stages.some(stage => stage.job === job.id)) {
         const session = recent?.resumeId ?? (recent ? answer?.agentSession ?? answer?.error?.agentSession : undefined)
         return { ok: true, report: {
-          ...spent, card: id, deliveryCompleted: false, ...(deliveryId ? { deliveryId } : {}),
+          ...spent, card: id, deliveryCompleted: false,
           ...(session ? { session } : {}), ...(recent?.result ? { reply: recent.result } : {}),
         } }
       }
     }
     if (ran.code !== 0 && !recent?.retryPause && (ran.code === null || recent?.status === 'interrupted')) {
       const reason = recent?.failure?.summary ?? 'The task command was interrupted.'
-      return { ok: false, reason, failure: makeFailure('runner', reason, { code: 'board_command_interrupted', detail: ran.last }) }
+      return { ok: false, reason, failure: makeFailure('runner', reason, { code: 'board_command_interrupted', detail: ran.last }),
+        report: { ...spent, session: sessionOfRun(recent), deliveryId } }
     }
     if (effectiveVerb === 'implement' && !rejected) {
       const ending = delivery?.ending
@@ -1320,7 +1450,8 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
     }
     const asked = effectiveVerb === 'implement' && !rejected && asks(cardFile(ws))
     const completed = !rejected && !asked && delivery?.status === 'finished' ? delivery.id : undefined
-    const tracked = deliveryId || delivery ? { deliveryCompleted: !!completed, ...(deliveryId ? { deliveryId } : {}) } : {}
+    const tracked = job.sessionKind === 'implement' ? { deliveryCompleted: false, ...(deliveryId ? { deliveryId } : {}) }
+      : deliveryId || delivery ? { deliveryCompleted: !!completed, ...(deliveryId ? { deliveryId } : {}) } : {}
     const waiting = rejected ? null : reviewOf(cardFile(ws), hasReview)
     const review = waiting && waiting !== true ? waiting : undefined
     // A build held on the user's question is reported as one, like a plan's.
@@ -1353,7 +1484,7 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
         reason: rawReason,
         exhausted: recent?.retryPause === 'limit',
         failure,
-        report: { ...spent, ...tracked, failure: failureDetail },
+        report: { ...spent, ...tracked, session: sessionOfRun(recent), failure: failureDetail },
       }
     }
     if (managedBuild && !rejected && !asked && !waiting) {
@@ -1363,12 +1494,12 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
       return { ok: true, report: { ...spent, card: id, landReady: { deliveryId },
         session: recent.resumeId ?? answer?.agentSession, reply: recent.result, ...(history.length ? { retries: history } : {}) } }
     }
-    if (!rejected && !completed && !asked && !waiting && (deliveryId || delivery)) {
+    if (!job.sessionKind && !rejected && !completed && !asked && !waiting && (deliveryId || delivery)) {
       const reason = 'The run ended without a delivery receipt. Verify the saved work and finish the original delivery.'
       return { ok: false, reason, failure: makeFailure('validation', reason, { code: 'delivery_incomplete', detail: reason }), report: { ...spent, ...tracked } }
     }
     const said = (recent?.result ?? (recent ? answer?.result ?? answer?.error?.result : undefined))?.trim()
-    const direct = effectiveVerb === 'implement' && !deliveryId && !delivery && !rejected && !asked && !waiting
+    const direct = !job.sessionKind && effectiveVerb === 'implement' && !deliveryId && !delivery && !rejected && !asked && !waiting
     const state = rejected && effectiveVerb === 'implement' || asked && !deliveryId && !delivery ? { deliveryCompleted: false }
       : direct ? { deliveryCompleted: true, deliveryDirect: true } : tracked
     const landing = completed ? landingOf(delivery) : {}
@@ -1393,22 +1524,40 @@ export async function runFlow(job: Job & { flow: Flow }, ws: TaskFolder, deps: F
   /** Planning carries the discussion's session and transcript; an immediate build carries only the transcript. */
   function carryArgs(verb: string, fromTranscript: boolean): string[] {
     if (flow.replan) return ['--new-session']
-    if (verb === 'implement' && flow.verb === 'create') {
-      const transcript = writeTranscript(job, path.join(ws.board, '.sync', `${ws.task}.discussion`))
-      return transcript ? ['--transcript', transcript] : []
+    if (verb === 'implement') {
+      const transcript = flow.verb === 'create' && writeTranscript(job, path.join(ws.board, '.sync', `${ws.task}.discussion`))
+      return [...(job.sessionKind ? boundSessionArgs(fromTranscript) : []), ...(transcript ? ['--transcript', transcript] : [])]
     }
     if (!['refine', 'resolve', 'revise'].includes(verb)) return []
     const transcript = writeTranscript(job, path.join(ws.board, '.sync', `${ws.task}.discussion`))
-    const freshSession = fromTranscript || (job.fork && !forks(job.runtime))
+    const freshSession = fromTranscript || job.fork && !forks(job.runtime) || !!job.sessionKind && !job.resume
     return [
       ...(freshSession ? ['--new-session'] : job.resume ? ['--session', job.resume, ...(job.fork ? ['--fork'] : [])] : []),
       ...(transcript ? ['--transcript', transcript] : []),
     ]
   }
+
+  function boundSessionArgs(fresh: boolean): string[] {
+    return fresh || !job.resume ? ['--new-session'] : ['--session', job.resume]
+  }
+
+  function sessionSpend(carry: string[]): NodeJS.ProcessEnv {
+    return { [SESSION_COST_ENV]: carry.includes('--session') && typeof job.resumeCostUsd === 'number' ? String(job.resumeCostUsd) : undefined }
+  }
 }
 
 function landingOf(delivery?: Delivery): Pick<JobReport, 'landing'> {
   return delivery?.commit ? { landing: { commit: delivery.commit, branch: delivery.branch ?? '' } } : {}
+}
+
+export async function stoppedFlowSession(ws: TaskFolder, job: Job, deps: FlowDeps): Promise<Partial<JobReport> | undefined> {
+  if (!ws.number) return
+  const runs = await boardRuns(deps.akb, ws, ['--execution', job.id])
+  const last = runs?.filter(r => !r.parentId && onTask(r, ws.number!) && jobOwns(r, job.id, deps.machineId)).at(-1)
+  if (!last || !runStopped(last)) return
+  const session = sessionOfRun(last)
+  if (!session || job.fork && session === job.resume) return
+  return { session, sessionCostUsd: last.sessionCostUsd, deliveryId: last.deliveryId }
 }
 
 export async function deliverySession(ws: TaskFolder, job: Job, deps: FlowDeps, report: JobReport) {
@@ -1449,8 +1598,9 @@ export async function confirmFlowStopped(ws: TaskFolder, job: Job, deps: FlowDep
 }
 
 export async function flowRunEvidence(ws: TaskFolder, job: Job, deps: FlowDeps, execution = job.id,
-  prior?: FlowIo['flowRun']): Promise<{ stopped: boolean; run?: FlowIo['flowRun']; diagnostic?: string; mismatched?: boolean }> {
-  const manual = job.flow?.resume_execution === execution
+  prior?: FlowIo['flowRun']): Promise<{ stopped: boolean; run?: FlowIo['flowRun']; cwd?: string; diagnostic?: string; mismatched?: boolean }> {
+  const slotSource = job.flow?.session_from === execution && !!job.sessionKind
+  const manual = slotSource || job.flow?.resume_execution === execution
   const zh = cloudLanguage(job) === 'zh'
   const id = job.flow && ws.number
   if (job.flow && !id) return { stopped: false }
@@ -1471,7 +1621,7 @@ export async function flowRunEvidence(ws: TaskFolder, job: Job, deps: FlowDeps, 
   const candidates = owned
     .filter(run => !run.parentId)
     .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
-  const fallbackOnCard = manual && id && candidates.length === 0
+  const fallbackOnCard = manual && !slotSource && id && candidates.length === 0
     ? onCard
         .filter(run => !run.parentId && onTask(run, id) && (!run.cloudExecution || run.cloudExecution.machine === deps.machineId))
         .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0]
@@ -1483,10 +1633,17 @@ export async function flowRunEvidence(ws: TaskFolder, job: Job, deps: FlowDeps, 
   if (!previous || (manual && previous !== fallbackOnCard && previous.cloudExecution?.job !== execution)) {
     return { stopped: true, mismatched }
   }
-  if (manual && id && isArchived(ws, id) && !asks(cardFile(ws)) && isSuccessfulArchive(cardFile(ws))) {
+  if (manual && !slotSource && id && isArchived(ws, id) && !asks(cardFile(ws)) && isSuccessfulArchive(cardFile(ws))) {
     return { stopped: true, mismatched }
   }
+  if (slotSource && (previous.cloudExecution?.sessionKind && previous.cloudExecution.sessionKind !== job.sessionKind ||
+      job.flow?.delivery_id && previous.deliveryId && previous.deliveryId !== job.flow.delivery_id)) {
+    return { stopped: true, mismatched: true }
+  }
   const session = sessionOfRun(previous)
+  if (slotSource && job.resume && !job.fork && !job.flow?.session_reset && session && session !== job.resume) {
+    return { stopped: true, mismatched: true }
+  }
   if (session && id && !await taskSessionMatches(ws, deps, session)) {
     return { stopped: true, mismatched: true, diagnostic: zh ? '原会话归属无法核实。' : 'Could not verify that the session belongs to this task.' }
   }
@@ -1499,13 +1656,17 @@ export async function flowRunEvidence(ws: TaskFolder, job: Job, deps: FlowDeps, 
   }
   const resumeDiagnostic = failedRunResumeDiagnostic(previous, true, zh, manual, codex)
   if (manual) {
+    if (slotSource && previous.status === 'done' && !previous.pendingWrites && (!codex || codex.settled)) {
+      return { stopped: true, mismatched, cwd: previous.cwd, run: { id: previous.sessionId, finished: true, from: execution,
+        agentSession: session, deliveryId: previous.deliveryId, card: id || undefined } }
+    }
     if (!session && previous.unspawned === true
         && !previous.pendingWrites && (!previous.managedProcess || stoppedCleanupConfirmed(previous.cleanup) || !previous.cleanup)) {
       return { stopped: true, mismatched }
     }
     if (resumeDiagnostic) return { stopped: true, diagnostic: resumeDiagnostic }
-    return { stopped: true, mismatched, run: {
-      id: previous.sessionId, finished: false, freshSession: !session, card: id || undefined, deliveryId: previous.deliveryId,
+    return { stopped: true, mismatched, cwd: previous.cwd, run: {
+      id: previous.sessionId, finished: false, freshSession: !session, from: execution, agentSession: session, card: id || undefined, deliveryId: previous.deliveryId,
     } }
   }
   const retryableUnsafe = previous.retryPause === 'unsafe' && !resumeDiagnostic && !!session && !!previous.failure
@@ -1529,7 +1690,7 @@ export async function flowRunEvidence(ws: TaskFolder, job: Job, deps: FlowDeps, 
   const { sessionId, runtime, startedAt, usage, costUsd, costIncomplete, context } = previous
   const priorSpend = new Map((!id || prior?.card === id ? prior?.priorSpend : undefined)?.map(spend => [spend.sessionId, spend]))
   priorSpend.set(sessionId, { sessionId, runtime, startedAt, usage, costUsd, costIncomplete, context })
-  return { stopped: true, mismatched, run: { id: sessionId, finished: recovery === 'report', from: previous.cloudExecution?.job, card: id || undefined,
+  return { stopped: true, mismatched, cwd: previous.cwd, run: { id: sessionId, finished: recovery === 'report', from: previous.cloudExecution?.job, card: id || undefined,
     ...(previous.resumeId ? { agentSession: previous.resumeId } : {}),
     ...(previous.deliveryId ? { deliveryId: previous.deliveryId } : {}),
     ...(failure ? { failure, resumeDiagnostic: resumeDiagnostic ?? null } : {}), ...(previous.retryPause && !retryableUnsafe ? { retryPause: previous.retryPause } : {}), priorSpend: [...priorSpend.values()] } }

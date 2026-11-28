@@ -4,13 +4,10 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
-import path from 'node:path'
+import { readRunnerMachineId, runnerHome, runnerMachineFile } from '../../cli/src/lib/machine/runner'
 import { followProxy } from './proxy'
 
-/** `WILDCRANE_HOME` moves it, which is what a test uses. */
-export function runnerHome(): string {
-  return process.env.WILDCRANE_HOME || path.join(os.homedir(), '.wildcrane')
-}
+export { runnerHome }
 
 /** Background children must not inherit a project or version directory an updater can remove. */
 export function runnerCwd(): string {
@@ -28,16 +25,11 @@ export function useRunnerHome(): void {
 
 /** This computer's id, minted once. Opaque to Cloud: only equality is read. */
 export function machineId(): string {
-  const file = path.join(runnerHome(), 'machine.json')
-  try {
-    const held = JSON.parse(fs.readFileSync(file, 'utf8')) as { id?: string }
-    if (held.id && /^[0-9a-f-]{36}$/i.test(held.id)) return held.id
-  } catch {
-    // Not minted yet.
-  }
+  const held = readRunnerMachineId()
+  if (held) return held
   const id = crypto.randomUUID()
   fs.mkdirSync(runnerHome(), { recursive: true, mode: 0o700 })
-  fs.writeFileSync(file, `${JSON.stringify({ id })}\n`)
+  fs.writeFileSync(runnerMachineFile(), `${JSON.stringify({ id })}\n`)
   return id
 }
 

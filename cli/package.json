@@ -1,7 +1,7 @@
 {
   "name": "wildcrane",
-  "version": "0.11.109",
-  "akbContract": 41,
+  "version": "0.11.111",
+  "akbContract": 44,
   "canonicalCommands": true,
   "description": "WildCrane's `akb` command — scaffold the Markdown board under docs/kanban/, put an agent on a card, and carry the flows the agent works by.",
   "keywords": [

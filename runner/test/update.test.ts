@@ -179,6 +179,7 @@ describe('the launcher', () => {
   for (const kind of ['claude-code', 'codex', 'cursor', 'zcode', 'dsh', 'kimi', 'grok', 'terminal']) {
     for (const replace of [false, true]) {
       it(`${kind}: starts, updates and rolls back with a ${replace ? 'replaced' : 'deleted'} host cwd`, { skip: process.platform === 'win32' }, async () => {
+        process.env.WILDCRANE_CONNECT_MS = '2000'
         const original = process.cwd()
         const host = fs.mkdtempSync(path.join(os.tmpdir(), 'removed-host-'))
         const behaviour = `

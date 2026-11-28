@@ -20,7 +20,6 @@ export const numbered = (items: string[]): string[] => items.map((s, i) => `${i 
  *  and by the card a board read hands back, so neither side needs a shape of its own. */
 export interface MetaBits {
   status: string
-  priority: string
   modules: string[]
   blocked_by: number[]
 }
@@ -30,7 +29,6 @@ export interface MetaBits {
 export function metaLine(meta: MetaBits): string {
   // A field this board's cards do not carry has no empty slot here either (#435).
   const bits = [meta.status || 'todo']
-  bits.push(`priority ${meta.priority}`)
   if (meta.modules.length) bits.push(`modules ${meta.modules.join(', ')}`)
   if (meta.blocked_by.length) bits.push(`blocked by ${meta.blocked_by.map((n) => `#${n}`).join(', ')}`)
   return bits.join(' · ')

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { PassThrough, Writable } from 'node:stream'
 import { afterEach, it } from 'node:test'
 import { createCodexStreamRenderer } from '../src/lib/agent/wire/codex-stream.ts'
+import { isSessionMissingFailure } from '../src/lib/agent/retry.ts'
 import { createCodexClient, createCodexConnection } from '../src/lib/agent/wire/codex.ts'
 import { streamFinished } from '../src/lib/agent/wire/background.ts'
 import { createStreamRenderer } from '../src/lib/agent/wire/claude-stream.ts'
@@ -173,17 +174,23 @@ it('lets the main agent recover from a foreground command failure', async () => 
 
 
 for (const mode of ['resume', 'fork'] as const) {
-  it(`preserves missing-session recovery when Codex cannot ${mode} its saved rollout`, async () => {
-    const s = server(method => {
-      if (method === `thread/${mode}`) throw { code: -32600, message: 'no rollout found for thread id missing' }
-      return {}
-    }, { mode, threadId: 'missing', images: [] })
-    const end = await s.end
-    assert.equal(end.ok, false)
-    assert.match(end.error!, /no rollout found/)
-    assert.equal(end.failure?.code === 'codex_fork_source_missing', mode === 'fork')
-    assert.equal(s.calls.some(c => c.method === 'turn/start'), false)
-  })
+  for (const [label, rpcError] of [
+    ['missing rollout', { code: -32600, message: 'no rollout found for thread id missing' }],
+    ['paginated lineage missing source rollout', { code: -32602, message: 'invalid paginated history lineage for missing: missing source rollout' }],
+  ] as const) {
+    it(`preserves missing-session recovery when Codex cannot ${mode} its saved rollout (${label})`, async () => {
+      const s = server(method => {
+        if (method === `thread/${mode}`) throw rpcError
+        return {}
+      }, { mode, threadId: 'missing', images: [] })
+      const end = await s.end
+      assert.equal(end.ok, false)
+      assert.equal(end.error, rpcError.message)
+      assert.equal(end.failure?.code, mode === 'fork' ? 'codex_fork_source_missing' : 'session_not_found')
+      assert.equal(isSessionMissingFailure(end.failure), true)
+      assert.equal(s.calls.some(c => c.method === 'turn/start'), false)
+    })
+  }
 }
 
 

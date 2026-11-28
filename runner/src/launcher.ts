@@ -219,6 +219,7 @@ function runOnce(own: Candidate, candidate: Candidate, options: LaunchOptions, t
       forceKill = setTimeout(() => child.kill('SIGKILL'), 5_000)
     }, Number(process.env.WILDCRANE_CONNECT_MS) || CONNECT_MS) : undefined
     const forward = (signal: NodeJS.Signals) => () => {
+      if (stopping) return
       stopping = true
       child.kill(signal)
     }

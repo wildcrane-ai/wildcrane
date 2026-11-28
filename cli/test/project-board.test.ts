@@ -175,17 +175,17 @@ describe('a build in a folder that is not a repository', () => {
     if ('error' in opened) throw new Error(opened.error)
     const delivery = listDeliveries().find((d) => d.cardId === 1)!
     assert.equal(delivery.commitMode, undefined)
-    assert.equal(delivery.worktree, undefined)
-    fs.writeFileSync(path.join(root, 'hello.txt'), 'hi\n')
+    assert.match(delivery.worktree!, /worktrees[/\\].+[/\\]work$/)
+    assert.equal(opened.run.cwd, path.join(root, delivery.worktree!))
+    fs.writeFileSync(path.join(opened.run.cwd!, 'hello.txt'), 'hi\n')
     fs.writeFileSync(opened.run.logPath, 'built\n')
     await closeRun(opened.run.sessionId, { status: 'done', ok: true, code: 0 })
 
     assert.equal(listDeliveries().find((d) => d.cardId === 1)!.status, 'active')
     assert.ok(fs.existsSync(path.join(board(), 'todo', '1-say-hello.md')))
-    assert.ok(fs.existsSync(path.join(root, 'hello.txt')))
+    assert.ok(fs.existsSync(path.join(opened.run.cwd!, 'hello.txt')))
+    assert.ok(!fs.existsSync(path.join(root, 'hello.txt')))
     assert.notEqual(spawnSync('git', ['rev-parse', '--git-dir'], { cwd: root }).status, 0)
-
-
   })
 })
 

@@ -32,6 +32,7 @@ export interface ReplyHistoryMessage {
 }
 
 export interface Job {
+  sessionKind?: import('../../cli/src/lib/cloud/execution').TaskSessionKind | null
   taskReview?: import("../../cli/src/lib/shared/review-plan").TaskReview
   reviewAtDispatch?: boolean
   handoff?: { kind: 'check' | 'execution'; action?: 'queue' | 'continue' | 'restart' | 'runtime'; started?: boolean; recovering?: boolean; isolation?: string; progressIsolation?: string | null; verb?: Flow['verb']; evidence?: string | null } | null
@@ -112,10 +113,12 @@ export interface AgentJob {
 }
 
 export interface Flow {
+  /** The prior claim of this same step, used to verify its local run and process exit. */
+  session_from?: string
+  session_reset?: boolean
   phase?: 'implement' | 'land'
   land_from?: string
   delivery_id?: string
-  reviewed_implementation?: true
   review_stages?: string[]
   review_revision?: number
   sync_recovery_of?: string
@@ -143,7 +146,6 @@ export interface Flow {
 
 export interface CardFields {
   previews?: string[]
-  priority?: string
   modules?: string[]
   related?: string[]
   blocked_by?: string[]
@@ -183,7 +185,7 @@ export interface SettingDecl {
 
 /** Raised by Cloud when it no longer takes this Runner's protocol. 9 keeps keys (#2135); 10 stops
  *  a flow job, pausing its board runs (#2128); 11 holds the computer's lock (#2161); 14 shares local settings and account revocation; 18 says Studio (#645). */
-export const PROTOCOL = 33
+export const PROTOCOL = 34
 
 const TIMEOUT_MS = 20_000
 
@@ -358,6 +360,8 @@ export interface JobReport {
   reply?: string
   parts?: ReplyPart[]
   session?: string
+  sessionCostUsd?: number
+  sessionReset?: true
   context?: { used: number; limit: number }
   usage?: Usage
   costUsd?: number
@@ -450,6 +454,12 @@ export const readAgents = (machineId: string, project: string) =>
 /** A job for an agent judged due; null when one is open, or a pass passed after `seen`. */
 export const requestAgent = (machineId: string, project: string, agent: string, seen: string | null) =>
   request<{ job: Job | null }>('POST', '/v1/runner/jobs', { machineId, project, agent, studio: null, seen })
+
+export const requestTriage = (machineId: string, project: string) =>
+  request<{ queued: boolean }>('POST', '/v1/runner/triage', { machineId, project })
+
+export const triageBatch = (machineId: string, job: string) =>
+  request<{ items: { source_id: string }[] }>('POST', `/v1/runner/jobs/${q(job)}/triage`, { machineId, action: 'batch' })
 
 export const targetVersion = (machineId: string) =>
   request<{ version: string | null }>('GET', `/v1/runner/version?machine=${encodeURIComponent(machineId)}`, undefined, false)
@@ -600,7 +610,7 @@ export const cancelTask = (task: string, reason: string, discard: boolean) =>
   request<{ id: string; status: string }>('POST', `/v1/tasks/${q(task)}/cancel`, { ...(reason ? { reason } : {}), discard })
 
 export const readTask = (task: string) =>
-  request<{ key?: string; project: string; title: string; request: string; status?: string; cancel_reason?: string | null; card_version?: number; review?: import("../../cli/src/lib/shared/review-plan").TaskReview | null; preview_inputs?: import("../../cli/src/lib/shared/review-plan").SavedPreviewInputs; context?: { studio?: string } }>('GET', `/v1/tasks/${q(task)}`)
+  request<{ key?: string; project: string; title: string; request: string; status?: string; cancel_reason?: string | null; card_version?: number; last_job?: string | null; landing?: JobReport['landing'] | null; review?: import("../../cli/src/lib/shared/review-plan").TaskReview | null; preview_inputs?: import("../../cli/src/lib/shared/review-plan").SavedPreviewInputs; context?: { studio?: string } }>('GET', `/v1/tasks/${q(task)}`)
 
 
 export const readProject = (project: string) => request<{ workspace?: string }>('GET', `/v1/projects/${q(project)}`)

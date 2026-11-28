@@ -35,10 +35,15 @@ previews:
       zh: 审阅文章正文与各平台发布版本。
 ---
 
-Create or revise blog posts using only the Previews the request needs. For a new post,
-recommend reviewing the brief and outline (`article-outline`) before making images
-(`article-images`) and the article (`article`); follow the task's saved review plan rather
-than treating this catalogue as a fixed sequence.
+## Planning
+
+Choose the Previews the request needs. For a new post, recommend reviewing the brief and
+outline (`article-outline`) before making images (`article-images`) and the article
+(`article`). Follow the task's saved review plan.
+
+## Work
+
+Create or revise the requested blog posts and destination copies.
 
 - **Existing work**: read the current article, research, assets and feedback before editing;
   preserve unaffected content and images, and revise only affected destination copies.

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -8,7 +9,7 @@ import { IDLE_FAILURE } from '../src/lib/agent/idle.ts'
 import { retryRecord } from '../src/lib/agent/retry.ts'
 import { cmdLog, cmdResume, cmdRuns } from '../src/commands/run.ts'
 import { startCollecting, stopCollecting } from '../src/lib/io.ts'
-import { listRuns, openResume, readSpec } from '../src/lib/agent/sessions.ts'
+import { closeRun, listRuns, openResume, openRun, readSpec } from '../src/lib/agent/sessions.ts'
 import { logPathOf, readStore, withStore } from '../src/lib/agent/store.ts'
 import type { DeliveryRecord, RunRecord, RunView } from '../src/lib/agent/types.ts'
 import { setBoardRoot } from '../src/lib/paths.ts'
@@ -187,6 +188,52 @@ describe('command-line recovery checks', () => {
     assert.ok(!('error' in retried))
     assert.equal(retried.run.resumedFrom, undefined)
   })
+
+  it('preserves the discussion transcript when automatic reset_replay recovers a missing Codex fork source (#1288)', async () => {
+    fs.writeFileSync(uiConfigOf(root, 'docs', 'kanban'), JSON.stringify({
+      runtimes: [{ id: 'global', name: 'Global', harness: 'codex', settings: {} }],
+    }))
+    const transcript = path.join(root, 'discussion.md')
+    fs.writeFileSync(transcript, 'User: Context from discussion.\n')
+    const opened = openRun(
+      { action: 'clarify', id: 7, carry: { resumeId: 'dead-source', fork: true, transcript } },
+      'initial fork prompt',
+      [],
+      'fork-run',
+      {
+        fork: true,
+        continues: 'dead-source',
+        plan: (cwd) => ({ harness: 'codex', runtime: 'global', agent: 'codex', cwd, argv: ['codex', 'exec', 'fork', 'dead-source'], resumeId: null, install: '' }),
+      },
+      true,
+    )
+    assert.ok(!('error' in opened))
+    fs.mkdirSync(path.dirname(opened.run.logPath), { recursive: true })
+    fs.writeFileSync(opened.run.logPath, 'forking\n')
+    const failure = {
+      source: 'runtime' as const,
+      code: 'codex_fork_source_missing',
+      summary: 'invalid paginated history lineage for dead-source: missing source rollout',
+    }
+    const pending = { at: 0, of: 4, failure, sessionAction: 'reset_replay' as const }
+    withStore((store) => {
+      const held = store.runs.find(r => r.sessionId === 'fork-run')!
+      held.failure = failure
+      held.unspawned = true
+      held.retry = { attempt: 1, of: 4, reason: failure.summary, at: 0, since: 0, pending }
+    })
+    await closeRun('fork-run', { status: 'error', ok: false, code: 1, failure })
+    assert.ok(readSpec('fork-run')?.again)
+
+    const retried = await openResume('fork-run', { automatic: true })
+    assert.ok(!('error' in retried), 'error' in retried ? retried.error : '')
+    assert.equal(retried.run.resumedFrom, undefined)
+    assert.equal(retried.run.continues, undefined)
+    assert.equal(retried.spec.plan.argv.includes('fork'), false)
+    assert.match(retried.spec.prompt ?? '', /discussion\.md/)
+    assert.equal(readSpec(retried.run.sessionId)?.again?.carry?.transcript, transcript)
+    assert.equal(readSpec('fork-run'), null)
+  })
 })
 
 it('requires a native idle stop receipt and an exited managed connection before resuming', async () => {
@@ -362,8 +409,13 @@ describe('a run whose connector this build no longer ships', () => {
 
   it('carries a delivery on in its worktree, in a new session', async () => {
     const worktree = path.join(root, '.akb', 'worktrees', '7', 'wt111111')
-    fs.mkdirSync(worktree, { recursive: true })
-    delivery('wt111111', { sessions: ['lost'], worktree, branch: 'card/7/wt111111' })
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    const branch = 'card/7/wt111111'
+    git('init', '-qb', 'main')
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '--allow-empty', '-qm', 'Base')
+    const base = git('rev-parse', 'HEAD')
+    git('worktree', 'add', '-qb', branch, worktree)
+    delivery('wt111111', { sessions: ['lost'], worktree, branch, base })
     lost({ deliveryId: 'wt111111' })
     const res = await openResume('lost', { fresh: true })
     assert.ok(!('error' in res), 'error' in res ? res.error : '')

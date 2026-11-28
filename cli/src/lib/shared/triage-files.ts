@@ -5,6 +5,9 @@
 import { unquote, yamlScalar } from '../yaml.ts'
 
 export type TriageState = 'open' | 'dismissed' | 'carded'
+export type TriageDecision = 'plan' | 'review' | 'skip'
+export const triageDecisionOf = (value: unknown): TriageDecision | null =>
+  value === 'plan' || value === 'review' || value === 'skip' ? value : null
 
 const ITEM = /^triage\/(?:(dismissed|archived)\/)?([^/]+)\.md$/
 

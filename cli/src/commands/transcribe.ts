@@ -14,7 +14,6 @@ const exec = promisify(execFile)
 const pcmType = 'audio/wav'
 
 interface Options {
-  audioStream?: string
   language?: string
   out: string
   vtt: string
@@ -22,26 +21,17 @@ interface Options {
 
 const fail = (message: string, code?: string) => new BoardError(message, { code, kind: code })
 
-async function ffmpeg(tool: 'ffprobe' | 'ffmpeg', args: string[]): Promise<string> {
+async function extractAudio(input: string, wav: string): Promise<void> {
   try {
-    return (await exec(tool, args)).stdout
+    await exec('ffmpeg', ['-nostdin', '-v', 'error', '-i', input, '-map', '0:a:0', '-ac', '1', '-ar', '16000',
+      '-c:a', 'pcm_s16le', '-fs', String(MAX_TRANSCRIPTION_BYTES + 1), '-f', 'wav', wav])
   } catch (error) {
     const cause = error as { code?: string; stderr?: string }
-    if (cause.code === 'ENOENT') throw fail(`Install ${tool} and make it available on PATH.`)
-    throw fail(cause.stderr?.trim() || `${tool} could not read the media.`)
+    if (cause.code === 'ENOENT') throw fail('Install ffmpeg and make it available on PATH.')
+    const stderr = cause.stderr?.trim() ?? ''
+    if (/Stream map '(?:0:a:0)?' matches no streams\b/.test(stderr)) throw fail('The media contains no audio streams.')
+    throw fail(stderr || 'ffmpeg could not read the media.')
   }
-}
-
-async function audioStream(input: string, choice: string | undefined): Promise<number> {
-  const answer = await ffmpeg('ffprobe', ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'json', input])
-  const { streams = [] } = JSON.parse(answer) as { streams?: unknown[] }
-  if (!streams.length) throw fail('The media contains no audio streams.')
-  if (choice === undefined && streams.length > 1) throw fail('Choose an audio stream with --audio-stream.')
-  const index = choice === undefined ? 0 : Number(choice)
-  if (!Number.isSafeInteger(index) || index < 0 || index >= streams.length) {
-    throw fail(`--audio-stream must be an audio stream index from 0 to ${streams.length - 1}.`)
-  }
-  return index
 }
 
 async function cloud<T>(send: () => Promise<CloudCall<T>>, retries = 0): Promise<T> {
@@ -103,13 +93,10 @@ export async function cmdTranscribe(media: string, options: Options, cwd: string
   if (!task) throw fail('Run akb transcribe inside a WildCrane Runner task.')
   const language = options.language ?? 'auto'
   if (!transcriptionLanguage(language)) throw fail('Use auto or a supported language code.')
-  const choice = options.audioStream
-  if (choice !== undefined && !/^\d+$/.test(choice)) throw fail('--audio-stream must be a non-negative integer.')
 
   try {
     const input = await realpath(path.resolve(cwd, media))
     if (!(await stat(input)).isFile()) throw fail('Choose a local media file.')
-    const index = await audioStream(input, choice)
     const [out, vtt] = await Promise.all([outputPath(cwd, options.out), outputPath(cwd, options.vtt)])
     if (out === vtt || out === input || vtt === input) throw fail('Use distinct paths for the media, JSON and WebVTT files.')
     for (const target of [out, vtt]) {
@@ -124,8 +111,7 @@ export async function cmdTranscribe(media: string, options: Options, cwd: string
     const vttTemp = `${vtt}.${key}.tmp`
     try {
       const wav = path.join(scratch, 'audio.wav')
-      await ffmpeg('ffmpeg', ['-nostdin', '-v', 'error', '-i', input, '-map', `0:a:${index}`, '-ac', '1', '-ar', '16000',
-        '-c:a', 'pcm_s16le', '-fs', String(MAX_TRANSCRIPTION_BYTES + 1), '-f', 'wav', wav])
+      await extractAudio(input, wav)
       const { size } = await stat(wav)
       if (size > MAX_TRANSCRIPTION_BYTES) throw fail(`The extracted WAV exceeds ${MAX_TRANSCRIPTION_BYTES / 1048576} MiB.`)
 
@@ -134,7 +120,7 @@ export async function cmdTranscribe(media: string, options: Options, cwd: string
         { audio, language }, `transcribe-${key}`), 3),
       'a transcription job id', value => /^trn_[0-9a-z_]+$/.test(value.id))
       const transcript = await poll(id)
-      const file = { ...transcript, source: { media, audio_stream: index } }
+      const file = { language: transcript.language, segments: transcript.segments, source: { media } }
       await writeFile(outTemp, JSON.stringify(file, null, 2) + '\n')
       await writeFile(vttTemp, webvtt(transcript))
       await rename(outTemp, out)

@@ -1,4 +1,5 @@
-import type { TaskReview } from '../shared/review-plan'
+import type { AgentReview, TaskReview } from '../shared/review-plan'
+import { reviewFingerprint } from './runtime-context'
 
 // The one variable a run the board started puts on the agent it spawns.
 //
@@ -30,15 +31,23 @@ export function runEnv(env: NodeJS.ProcessEnv, value: string): NodeJS.ProcessEnv
 }
 
 export const DELIVERY_PHASE_ENV = 'AI4KANBAN_DELIVERY_PHASE'
+export const DELIVERY_ID_ENV = 'AI4KANBAN_DELIVERY_ID'
 export const deliveryPhase = () => process.env[DELIVERY_PHASE_ENV]
 
 export const TASK_REQUEST_ENV = 'AI4KANBAN_TASK_REQUEST'
 export const SAVED_PREVIEW_FILE_ENV = 'AI4KANBAN_SAVED_PREVIEW_FILE'
+export const LAND_IMPLEMENT_RUN_ENV = 'AI4KANBAN_LAND_IMPLEMENT_RUN'
+export const REVIEW_FINGERPRINT_ENV = 'AI4KANBAN_REVIEW_FINGERPRINT'
 
 export function taskReviewContext() {
   const { AI4KANBAN_TASK_REVIEW: review, AI4KANBAN_REVIEW_STAGES: assigned } = process.env
   if (!review) return undefined
-  return { review: JSON.parse(review) as TaskReview, assigned: assigned ? JSON.parse(assigned) as string[] : undefined }
+  const state: TaskReview | AgentReview = JSON.parse(review)
+  return {
+    review: state,
+    assigned: assigned ? JSON.parse(assigned) as string[] : undefined,
+    fingerprint: process.env[REVIEW_FINGERPRINT_ENV] ?? ('revision' in state ? reviewFingerprint(state) : undefined),
+  }
 }
 
 /** The variable a chat turn or an agent test puts on its agent, holding a one-off id: they

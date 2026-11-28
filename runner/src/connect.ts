@@ -13,10 +13,11 @@ import path from 'node:path'
 import { runnerHome } from './home'
 import { accountGeneration, executorRecord } from './settings-control'
 import { readSession } from '../../cli/src/lib/cloud/session'
-import { askDueAgents, nextHour } from './agents'
+import { askDueAgents, askTriage, nextHour } from './agents'
 import { followAkb, sweepAkb } from './akb-version'
 import * as api from './api'
 import { SWEEP_MS, removeLegacy, sweepCache, sweepStudios } from './cache'
+import { cleanDeliveryWorkspaces } from './delivery-cleanup'
 import { pruneChats, reviewChats } from './chats'
 import { watchBoards, type BoardWatch } from './board-watch'
 import { answerHint } from './diff'
@@ -81,6 +82,7 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
   const logFields = () => ({ version: registration?.version, source: process.env.WILDCRANE_RUNNER_KIND ?? options.kind })
   let connected = false
   let closed = false
+  let closing: Promise<void> | undefined
   let ownsExecution = false
   let codex: Awaited<ReturnType<typeof codexServer>> | undefined
   let redetect = false
@@ -173,6 +175,20 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
       looking = false
     }
   }
+  let triageChecked = 0
+  let checkingTriage = false
+  const triageDue = async () => {
+    if (checkingTriage || closed || !connected || !registration || Date.now() - triageChecked < POLL_MS) return
+    checkingTriage = true
+    triageChecked = Date.now()
+    try {
+      if (await askTriage(registration.machineId)) void readJobs()
+    } catch (error) {
+      console.error('runner: triage scheduling failed', error)
+    } finally {
+      checkingTriage = false
+    }
+  }
   let agentsTimer: ReturnType<typeof setTimeout> | null = null
   const lookNext = () => {
     if (closed) return
@@ -194,7 +210,7 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
     try {
       await reclaimFlowWorkers(registration.machineId, options.deps)
       sweepAkb()
-      await sweepCache(registration.machineId)
+      await sweepCache(registration.machineId, Date.now(), cleanDeliveryWorkspaces)
       await sweepStudios()
     } catch (e) {
       console.error(`runner: the cache was not cleaned: ${e instanceof Error ? e.message : String(e)}`)
@@ -244,6 +260,7 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
     attempts = 0
     if (!connected) {
       connected = true
+      triageChecked = 0
       logRunner('runner', 'connected', { ...logFields(), stage: 'registration' })
       status(idle())
       options.onConnected?.()
@@ -262,6 +279,7 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
       console.error('runner: conversation memory review could not be scheduled', error)
     }
     await readJobs()
+    void triageDue()
     if (!live?.joined()) boards?.pullAll()
 
     schedule(live?.joined() ? options.heartbeatMs ?? HEARTBEAT_MS : Math.min(options.pollMs ?? POLL_MS, options.heartbeatMs ?? HEARTBEAT_MS))
@@ -280,6 +298,7 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
         }
         if (typeof payload.board === 'string') {
           if (typeof payload.head_seq === 'number') boards?.hint(payload.board, payload.head_seq, payload.machine as string | undefined)
+          void triageDue()
           return
         }
         if (payload.reply === true && typeof payload.jobId === 'string' && /^[0-9a-f-]{36}$/i.test(payload.jobId)) {
@@ -336,7 +355,7 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
       for (const id of attempted) if (!listed.has(id) && !running.has(id)) attempted.delete(id)
       for (const job of list.value.jobs) {
         if (closed || preparing) break
-        const syncSource = job.flow?.sync_recovery_of ?? job.syncRecoveryOf
+        const syncSource = job.flow?.session_from ?? job.flow?.sync_recovery_of ?? job.syncRecoveryOf
         if (syncSource
             && (running.has(syncSource) || !retireSyncWorker(syncSource, registration.machineId))) continue
         if (workerEntry && canKeepFlow(job) && !running.has(job.id)
@@ -478,7 +497,7 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
   }
 
   const close = async (release = true, updating = false) => {
-    if (closed) return
+    if (closing) return closing
     if (updating) {
       preparing = true
       await readDone
@@ -493,47 +512,50 @@ export function startRunner(options: Options, lock?: MachineLock): Runner {
         }
       }
     }
+    if (closing) return closing
     closed = true
-    if (updating) {
-      for (const id of running.keys()) {
-        if (workers.has(id)) continue
-        const checkpoint = readCheckpoint(id) ?? { pending: [] }
-        saveCheckpoint(id, { ...checkpoint, updating: true })
+    return closing = (async () => {
+      if (updating) {
+        for (const id of running.keys()) {
+          if (workers.has(id)) continue
+          const checkpoint = readCheckpoint(id) ?? { pending: [] }
+          saveCheckpoint(id, { ...checkpoint, updating: true })
+        }
       }
-    }
-    if (timer) clearTimeout(timer)
-    clearTimeout(claimRetry)
-    clearTimeout(flowClaimRetry)
-    if (agentsTimer) clearTimeout(agentsTimer)
-    clearInterval(modelsTimer)
-    stopModels()
-    clearInterval(sweepTimer)
-    live?.close()
-    presence?.close()
-    boards?.close()
-    // A stalled protocol or upload must not block the update handoff forever.
-    const preserveWorkers = (release || updating) && validAccount()
-    const keptWorkers = preserveWorkers && workers.size > 0
-    const stops = Promise.all([readDone, ...jobs, ...[...running.entries()].map(([id, halt]) =>
-      preserveWorkers && workers.has(id) ? undefined : halt?.())])
-    let timeout: ReturnType<typeof setTimeout> | undefined
-    await Promise.race([stops, new Promise<void>((resolve) => {
-      timeout = setTimeout(() => {
-        if (updating) console.error(`runner: update cleanup timed out; checkpoints retained for jobs: ${[...running.keys()].join(', ')}`)
-        resolve()
-      }, (options.deps?.stopMs ?? STOP_MS) + 1_000)
-    })])
-    clearTimeout(timeout)
-    await startingCodex
-    await codex?.close()
-    for (const [key, value] of Object.entries(codex?.env ?? {})) if (process.env[key] === value) delete process.env[key]
-    try {
-      if (release && !keptWorkers && registration) await api.release(registration.machineId)
-    } finally {
-      clearInterval(accountWatch)
-      await releaseMachine?.()
-      releaseRecord?.()
-    }
+      if (timer) clearTimeout(timer)
+      clearTimeout(claimRetry)
+      clearTimeout(flowClaimRetry)
+      if (agentsTimer) clearTimeout(agentsTimer)
+      clearInterval(modelsTimer)
+      stopModels()
+      clearInterval(sweepTimer)
+      live?.close()
+      presence?.close()
+      boards?.close()
+      // A stalled protocol or upload must not block the update handoff forever.
+      const preserveWorkers = (release || updating) && validAccount()
+      const keptWorkers = preserveWorkers && workers.size > 0
+      const stops = Promise.all([readDone, ...jobs, ...[...running.entries()].map(([id, halt]) =>
+        preserveWorkers && workers.has(id) ? undefined : halt?.())])
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([stops, new Promise<void>((resolve) => {
+        timeout = setTimeout(() => {
+          if (updating) console.error(`runner: update cleanup timed out; checkpoints retained for jobs: ${[...running.keys()].join(', ')}`)
+          resolve()
+        }, (options.deps?.stopMs ?? STOP_MS) + 1_000)
+      })])
+      clearTimeout(timeout)
+      await startingCodex
+      await codex?.close()
+      for (const [key, value] of Object.entries(codex?.env ?? {})) if (process.env[key] === value) delete process.env[key]
+      try {
+        if (release && !keptWorkers && registration) await api.release(registration.machineId)
+      } finally {
+        clearInterval(accountWatch)
+        await releaseMachine?.()
+        releaseRecord?.()
+      }
+    })()
   }
 
   let refresh = ''

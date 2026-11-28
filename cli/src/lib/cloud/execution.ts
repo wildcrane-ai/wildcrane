@@ -1,7 +1,13 @@
 import { cloudEndpoints } from './config'
 import { accessToken } from './session'
 
-export interface CloudExecution { job: string; machine: string; card?: number }
+export type TaskSessionKind = 'refine' | 'implement' | 'land' | 'card_chat'
+export type FlowSessionKind = Exclude<TaskSessionKind, 'card_chat'>
+export interface CloudExecution { job: string; machine: string; card?: number; sessionKind?: FlowSessionKind }
+
+export function flowSessionKind(value: unknown): FlowSessionKind | undefined {
+  if (value === 'refine' || value === 'implement' || value === 'land') return value
+}
 export const WRONG_TASK = 'This execution belongs to a different task. Start the other task through Cloud.'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export function executionOf(value: unknown = process.env.AI4KANBAN_EXECUTION): CloudExecution | undefined {
@@ -9,7 +15,9 @@ export function executionOf(value: unknown = process.env.AI4KANBAN_EXECUTION): C
     const held = typeof value === 'string' ? JSON.parse(value) : value
     if (held && UUID.test(held.job) && UUID.test(held.machine)) {
       const card = Number.isSafeInteger(held.card) && held.card > 0 ? held.card as number : undefined
-      return { job: held.job, machine: held.machine, ...(card === undefined ? {} : { card }) }
+      const sessionKind = flowSessionKind(held.sessionKind)
+      return { job: held.job, machine: held.machine, ...(card === undefined ? {} : { card }),
+        ...(sessionKind ? { sessionKind } : {}) }
     }
   } catch {}
   return undefined

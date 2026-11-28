@@ -13,7 +13,7 @@ const refuses = (root: string, argv: string[], why: RegExp) => assert.rejects(()
 
 const API = 'https://api.example.test'
 const OWN = 'wf_01own'
-const STUDIO = '---\nname: Layout\ndescription: Learns a page layout.\n---\n\nThe card says which page.\n\n## Land\n\nCheck and save the page.\n'
+const STUDIO = '---\nname: Layout\ndescription: Learns a page layout.\n---\n\n## Work\n\nThe card says which page.\n\n## Land\n\nCheck and save the page.\n\n## Previews\n'
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 255])
 
 let root = ''
@@ -187,12 +187,14 @@ it('refuses incompatible sources and destinations before writing the clone', asy
   assert.equal(fs.existsSync(dir), false)
 })
 
-it('refuses to create or push files without a Land section before a publication request', async () => {
+it('refuses to create or push files missing a required section before a publication request', async () => {
   const dir = pulled(3)
-  fs.writeFileSync(path.join(dir, 'STUDIO.md'), STUDIO.split('## Land')[0]!)
-  const why = /STUDIO\.md:\d+:1: Missing ## Land section. Add ## Land/
-  await refuses(root, ['studio', 'create', dir, '--request-id', 'invalid'], why)
-  await refuses(root, ['studio', 'push', dir], why)
+  for (const section of ['Land', 'Work', 'Previews']) {
+    fs.writeFileSync(path.join(dir, 'STUDIO.md'), STUDIO.replace(`## ${section}\n`, ''))
+    const why = new RegExp(`STUDIO\\.md:\\d+:1: Missing ## ${section} section. Add ## ${section}`)
+    await refuses(root, ['studio', 'create', dir, '--request-id', 'invalid'], why)
+    await refuses(root, ['studio', 'push', dir], why)
+  }
   assert.deepEqual(note(dir), { id: OWN, version: 3 })
   assert.equal(patched.length, 0)
 })

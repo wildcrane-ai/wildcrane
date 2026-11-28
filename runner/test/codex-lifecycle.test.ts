@@ -4,25 +4,18 @@ import { once } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createRequire } from 'node:module'
-import { after, afterEach, before, beforeEach, it } from 'node:test'
+import { afterEach, beforeEach, it } from 'node:test'
 import { codexServer } from '../src/codex-server'
 import { codexRecordFile, nativeDirectory, readPrivate, type NativeBackend } from '../src/codex-native'
 import { connect } from '../../cli/src/lib/agent/wire/rpc'
 import { FakeCloud, until, writeFakeSession } from './fake-cloud'
 
-const fixture=fs.mkdtempSync(path.join(os.tmpdir(),'codex-native-life-'))
-const entry=path.join(fixture,'host.mjs')
+const entry=process.env.RUNNER_TEST_FLOW_HOST!
 const originalHome=process.env.WILDCRANE_HOME,originalAgentHome=process.env.AI4KANBAN_HOME
 let root:string,cloud:FakeCloud,host:ChildProcess|undefined
 const peers=new Set<ChildProcess>()
 const backend=()=>fs.readdirSync(nativeDirectory()).filter(name=>/^[a-f0-9]{64}\.json$/.test(name)).map(name=>readPrivate<NativeBackend>(path.join(nativeDirectory(),name))!)[0]!
 const calls=()=>fs.existsSync(path.join(root,'calls.jsonl'))?fs.readFileSync(path.join(root,'calls.jsonl'),'utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line)):[]
-before(async()=>{
- const esbuild=createRequire(import.meta.url)(path.join(process.env.RUNNER_DIST!,'../node_modules/esbuild'))
- await esbuild.build({entryPoints:[path.join(process.env.RUNNER_DIST!,'../test/fixtures/flow-host.ts')],outfile:entry,bundle:true,platform:'node',format:'esm',target:'node22',loader:{'.md':'text','.json':'text'},banner:{js:"import {createRequire} from 'node:module'; const require=createRequire(import.meta.url);"},define:{__RUNNER_VERSION__:'"test"',__AKB_VERSION__:'"test"',__AKB_CONTRACT__:'1'}})
-})
-after(()=>fs.rmSync(fixture,{recursive:true,force:true}))
 beforeEach(async()=>{
  root=fs.mkdtempSync(path.join(os.tmpdir(),'codex-native-home-'));process.env.WILDCRANE_HOME=root;process.env.AI4KANBAN_HOME=root
  writeFakeSession(root);process.env.FAKE_CODEX_CALLS=path.join(root,'calls.jsonl');process.env.FAKE_AKB_LOG=path.join(root,'akb.jsonl');process.env.FAKE_AKB_ENTRY=path.join(process.env.RUNNER_DIST!,'../test/fake-akb.mjs')

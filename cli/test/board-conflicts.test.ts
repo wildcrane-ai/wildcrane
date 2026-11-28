@@ -151,7 +151,7 @@ describe('explicit board conflict resolution (#806)', () => {
     id = captureConflict(board, project, facts).id
     remote[0] = { path: facts[0]!.remotePath, ...facts[0]!.remote }
     const value = (content: string) => ({ files: [{ path: name, content }] })
-    await assert.rejects(resolve(undefined, value(card('ready').replace('priority: med', 'priority: med\npriority: low'))), /Invalid card metadata/)
+    await assert.rejects(resolve(undefined, value(card('ready').replace('title: Pricing', 'title: Pricing\ntitle: Duplicate'))), /Invalid card metadata/)
     await assert.rejects(resolve(undefined, value(card('ready').replace('title: Pricing', 'title: [Pricing]'))), /Invalid card metadata/)
     await assert.rejects(resolve(undefined, value(card('ready').replace('questions: []', 'questions: [Unsettled]'))), /open questions/)
     await assert.rejects(resolve(undefined, value(card('ready').replace('questions:', 'preview_approved: true\nquestions:'))), /operation to change preview_approved/)

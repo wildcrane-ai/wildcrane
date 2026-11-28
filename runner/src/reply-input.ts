@@ -4,7 +4,7 @@ import path from 'node:path'
 import type { TaskReview } from '../../cli/src/lib/shared/review-plan'
 import type { Goal } from '../../cli/src/lib/shared/goal'
 import type { Job, ReplyContext, ReplyHistoryMessage } from './api'
-import { compactReview, contextFingerprint, contextUpdate, reviewBlock, taskCardBlock, taskChatGuide, type ContextBlock, type SentContext } from '../../cli/src/lib/agent/runtime-context'
+import { compactReview, contextFingerprint, contextUpdate, reviewBlock, reviewFingerprint, taskCardBlock, taskChatGuide, type ContextBlock, type SentContext } from '../../cli/src/lib/agent/runtime-context'
 
 const empty = contextFingerprint('')
 const chatGuide: ContextBlock = ['card-chat', taskChatGuide]
@@ -37,7 +37,7 @@ export function replyPrompt(input: NonNullable<Job['replyInput']>, turn: {
       chatGuide, taskCardBlock(task.card),
       ...task.blocks.filter(([key]) => key === 'studio' || key === 'studio-previews' || key === 'skills'),
       ['history', turn.historyFile ? 'Consult the chat history at `' + turn.historyFile + '` as needed.' : ''],
-      reviewBlock(review, task.review, previous),
+      reviewBlock(review, task.review && reviewFingerprint(task.review), previous),
       ...task.blocks.filter(([key]) => key === 'setup' || key === 'config'),
     ])
     parts.push(...update.parts)

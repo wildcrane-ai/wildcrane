@@ -21,7 +21,8 @@ const readVersion = (files: StudioFiles) => {
 }
 function readFolder(folder: string, baseline = false) {
   const root = fs.realpathSync(folder)
-  const files = readStudioFolder(root), checked = checkStudioFiles(files, readVersion(files)?.id.startsWith('wf_builtin_') === true, { allowLegacyLand: baseline })
+  const files = readStudioFolder(root)
+  const checked = checkStudioFiles(files, readVersion(files)?.id.startsWith('wf_builtin_') === true, { allowLegacySections: baseline, allowLegacyPreviewCopy: baseline })
   if (!checked.ok) die(`${folder}/${formatStudioProblem(checked)}`, 'studio-problems')
   const fingerprint = createHash('sha256').update(hashInput({ ...checked.files, ...(files[VERSION_FILE] ? { [VERSION_FILE]: files[VERSION_FILE]! } : {}) })).digest('hex')
   return { files, def: checked.def, fingerprint }

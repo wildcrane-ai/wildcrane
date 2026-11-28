@@ -72,7 +72,7 @@ describe('a topic card with channels and no ranking', () => {
   it('reads as an ordinary card, ranked empty rather than refused', () => {
     const card = allCards().find((c) => c.id === 7)!
     assert.equal(card.title, 'Why we stopped using a second board')
-    assert.equal(card.priority, '')
+    assert.ok(!('priority' in card))
     assert.equal(card.status, 'todo')
     assert.deepEqual(card.questions, [])
   })
