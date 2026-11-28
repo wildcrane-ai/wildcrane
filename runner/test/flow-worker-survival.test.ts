@@ -17,6 +17,7 @@ for (const verb of ['create', 'refine', 'implement']) for (const signal of ['SIG
     launch()
     await until(() => commands(action).length === 1, 15_000)
     const record = path.join(runnerHome(), 'flow-workers/job.json')
+    fs.writeFileSync(`${record}.log`, 'output from an earlier version')
     const pid = JSON.parse(fs.readFileSync(record, 'utf8')).pid
     await exit(signal)
     process.kill(pid, 0)
@@ -27,7 +28,9 @@ for (const verb of ['create', 'refine', 'implement']) for (const signal of ['SIG
     fs.writeFileSync(gate(2), '')
     await until(() => job.state === 'finished', 15_000)
     await reclaimed(record)
-    assert.ok(!fs.existsSync(`${record}.log`))
+    assert.equal(fs.readFileSync(`${record}.log`, 'utf8'), 'output from an earlier version')
+    const entries = fs.readFileSync(path.join(runnerHome(), 'logs', 'runner.log'), 'utf8').trimEnd().split('\n').map(line => JSON.parse(line))
+    assert.ok(entries.some(row => row.component === 'task' && row.job === job.id && row.stream === 'stdout' && row.text.includes('Original result')))
     assert.ok(!fs.existsSync(`${record}.stop`))
     assert.equal(job.outcome, 'done', `${log}\n${job.reason}`)
     assert.equal(job.claims, 1)

@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { bounded } from '../../cli/src/lib/shared/conversation'
-import { spawnable } from '../../cli/src/lib/agent/spawnable'
+import { pidAlive } from '../../cli/src/lib/lock'
 import { connectionIdentity as processIdentityFor } from '../../cli/src/lib/agent/connection-process'
 import { markEnv, stopMark } from '../../cli/src/lib/agent/stop'
 import { obj, type Json } from '../../cli/src/lib/agent/wire/json'
@@ -71,19 +71,24 @@ export async function codexServer() {
       const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: environment.CODEX_HOME ?? process.env.CODEX_HOME, OPENAI_API_KEY: undefined, WILDCRANE_JOB: '1' }
       for (const name of Object.keys(env)) if (/^(KANBAN_|AI4KANBAN_EXECUTION|WILDCRANE_FLOW_WORKER|WILDCRANE_CODEX_)/.test(name)) delete env[name]
       Object.assign(env, credentials)
-      const log = fs.openSync(path.join(nativeDirectory(), `${key}.log`), 'a', 0o600)
-      const start = spawnable(argv[0]!, ['app-server', '--listen', backend.endpoint, ...extra, '-c', 'thread_unload_delay_secs=0', ...Object.entries(provider).flatMap(([name, value]) => ['-c', `${name}=${tomlValue(value)}`])], { cwd: runnerCwd(), env: markEnv(env, stopMark()), detached: process.platform !== 'win32', stdio: ['ignore', log, log] })
-      const child = spawn(start.command, start.args, start.options)
-      fs.closeSync(log)
-      let failure: Error | undefined
-      child.on('error', error => { failure = error })
-      child.unref()
-      backend.pid = child.pid!
       const until = Date.now() + CODEX_TIMEOUT
+      const args = ['app-server', '--listen', backend.endpoint, ...extra, '-c', 'thread_unload_delay_secs=0',
+        ...Object.entries(provider).flatMap(([name, value]) => ['-c', `${name}=${tomlValue(value)}`])]
+      const relay = spawn(process.execPath, [entryOf('./codex-backend.mjs'), argv[0]!, ...args], {
+        cwd: runnerCwd(), env: markEnv(env, stopMark()), detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      })
+      const failed = 'Codex did not start its native listener. Update Codex to a version supporting persistent local App Server connections.'
       try {
+        backend.pid = await bounded(new Promise<number>((resolve, reject) => {
+          relay.on('error', reject)
+          relay.once('exit', () => reject(Error(failed)))
+          relay.once('message', (message: { pid?: number; error?: string }) => {
+            if (message.pid) resolve(message.pid)
+            else reject(Error(message.error || failed))
+          })
+        }), CODEX_TIMEOUT, failed)
         for (;;) {
-          if (failure) throw failure
-          if (child.exitCode !== null || child.signalCode !== null || Date.now() >= until) throw Error('Codex did not start its native listener. Update Codex to a version supporting persistent local App Server connections.')
+          if (!pidAlive(backend.pid) || Date.now() >= until) throw Error(failed)
           if (backend.endpoint.startsWith('unix://') && !fs.existsSync(backend.endpoint.slice(7))) { await delay(25); continue }
           try {
             const probe = await nativeConnection(backend, () => {})
@@ -91,12 +96,18 @@ export async function codexServer() {
             break
           } catch (error) { if (Date.now() >= until) throw error; await delay(50) }
         }
-        backend.identity = processIdentityFor(child.pid!)
+        backend.identity = processIdentityFor(backend.pid)
         if (!backend.identity) throw Error('Codex native process identity could not be confirmed.')
         writePrivate(backendFile(key), backend)
         idle.delete(backend.instance)
         return backend
-      } catch (error) { child.kill('SIGKILL'); throw error }
+      } catch (error) {
+        if (relay.connected) relay.send('stop', () => {})
+        throw error
+      } finally {
+        if (relay.connected) relay.disconnect()
+        relay.unref()
+      }
     })()
     pending.set(key, work)
     try { return await work } finally { pending.delete(key) }

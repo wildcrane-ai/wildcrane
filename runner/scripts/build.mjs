@@ -34,6 +34,7 @@ const entries = [
   ['plugin-main.ts', path.join(PKG_DIR, 'dist', 'plugin.mjs')],
   ['akb-proxy.ts', path.join(PKG_DIR, 'dist', 'akb-proxy.mjs')],
   ['codex-retained.ts', path.join(PKG_DIR, 'dist', 'codex-retained.mjs')],
+  ['codex-backend.ts', path.join(PKG_DIR, 'dist', 'codex-backend.mjs')],
   ['codex-proxy.ts', path.join(PKG_DIR, 'dist', 'codex-proxy.mjs')],
   ...PLUGIN_DISTS.map((dir) => ['plugin-start.ts', path.join(dir, 'start.mjs')]),
 ]

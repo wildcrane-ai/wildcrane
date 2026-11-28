@@ -48831,8 +48831,11 @@ var init_cache = __esm({
 // src/runner-log.ts
 var runner_log_exports = {};
 __export(runner_log_exports, {
+  captureRunnerOutput: () => captureRunnerOutput,
   errno: () => errno,
+  logChildOutput: () => logChildOutput,
   logRunner: () => logRunner,
+  logRunnerOutput: () => logRunnerOutput,
   startRunnerLogMaintenance: () => startRunnerLogMaintenance
 });
 import fs23 from "node:fs";
@@ -48862,27 +48865,27 @@ function maintain(dir, now, line) {
   const current2 = path26.join(dir, "runner.log");
   const today = utcDay(+now);
   const oldest = utcDay(+now - 6 * DAY_MS);
-  let stat = fs23.lstatSync(current2, { throwIfNoEntry: false });
+  const stat = fs23.lstatSync(current2, { throwIfNoEntry: false });
   if (stat && !stat.isFile()) throw new Error("Invalid Runner log file");
   const day = stat?.size ? logDay(current2, stat) : today;
-  if (stat && (day < oldest || stat.size > MAX_BYTES)) {
-    fs23.unlinkSync(current2);
-    stat = void 0;
-  }
   const size = stat?.size ?? 0;
   const rotate = size > 0 && (day !== today || size + (line?.length ?? 0) > MAX_BYTES);
   const archives = fs23.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const match = entry.isFile() && ARCHIVE_NAME.exec(entry.name);
     return match ? [{ file: path26.join(dir, entry.name), day: match[1], seq: Number(match[2]) }] : [];
-  }).sort((a, b) => b.day.localeCompare(a.day) || b.seq - a.seq);
+  });
+  if (rotate) {
+    const seq = archives.reduce((last2, archive) => archive.day === day ? Math.max(last2, archive.seq) : last2, 0) + 1;
+    const file2 = `${current2}.${day}.${seq}`;
+    fs23.renameSync(current2, file2);
+    archives.push({ file: file2, day, seq });
+  }
   let kept2 = 0;
-  const seq = (archives.find((archive) => archive.day === day)?.seq ?? 0) + 1;
-  for (const archive of archives) {
-    if (kept2 >= ARCHIVES - Number(rotate) || archive.day < oldest || fs23.statSync(archive.file).size > MAX_BYTES) {
+  for (const archive of archives.sort((a, b) => b.day.localeCompare(a.day) || b.seq - a.seq)) {
+    if (kept2 >= ARCHIVES || archive.day < oldest) {
       fs23.unlinkSync(archive.file);
     } else kept2++;
   }
-  if (rotate) fs23.renameSync(current2, `${current2}.${day}.${seq}`);
   if (line) append(current2, line, rotate ? 0 : size);
 }
 function withLogLock(write) {
@@ -48916,34 +48919,74 @@ function withLogLock(write) {
 function startRunnerLogMaintenance() {
   maintenance ??= setInterval(() => withLogLock((dir) => maintain(dir, /* @__PURE__ */ new Date())), MAINTENANCE_MS).unref();
 }
-function logRunner(component, event2, fields2 = {}) {
-  if (!Object.hasOwn(EVENTS, component) || !EVENTS[component].includes(event2)) return;
+function writeRecord(record) {
   withLogLock((dir) => {
     const now = /* @__PURE__ */ new Date();
-    const record = {
-      time: now.toISOString(),
-      component,
-      event: event2,
-      version: matches(VERSION2, fields2.version),
-      source: allowed(SOURCES2, fields2.source),
-      stage: allowed(STAGES, fields2.stage),
-      task: integer(fields2.task, 1, Number.MAX_SAFE_INTEGER),
-      job: matches(UUID, fields2.job),
-      code: fields2.code === void 0 ? void 0 : allowed(CODES, fields2.code) ?? "unknown_error",
-      status: integer(fields2.status, 100, 599),
-      exitCode: integer(fields2.exitCode, 0, 255),
-      signal: allowed(SIGNALS, fields2.signal)
-    };
-    maintain(dir, now, Buffer.from(JSON.stringify(record) + "\n"));
+    maintain(dir, now, Buffer.from(JSON.stringify({ time: now.toISOString(), ...record }) + "\n"));
   });
 }
-var MAX_BYTES, ARCHIVES, DAY_MS, MAINTENANCE_MS, ARCHIVE_NAME, NO_FOLLOW, waitWord, EVENTS, SOURCES2, STAGES, CODES, SIGNALS, VERSION2, UUID, allowed, matches, integer, errno, utcDay, lastWarning, maintenance;
+function logRunnerOutput(component, stream, text2, fields2 = {}) {
+  const source2 = allowed(SOURCES2, fields2.source);
+  const job = matches(JOB_ID, fields2.job);
+  for (let offset = 0; offset < text2.length; offset += OUTPUT_CHARS) {
+    writeRecord({
+      component,
+      event: "output",
+      stream,
+      pid: fields2.pid ?? process.pid,
+      source: source2,
+      job,
+      text: text2.slice(offset, offset + OUTPUT_CHARS)
+    });
+  }
+}
+function logChildOutput(child, component, fields2) {
+  const context = { ...fields2, pid: child.pid };
+  for (const stream of ["stdout", "stderr"]) {
+    child[stream]?.setEncoding("utf8").on("data", (text2) => logRunnerOutput(component, stream, text2, context));
+  }
+  child.on("error", (error) => logRunnerOutput(component, "stderr", `${error.stack ?? error.message}
+`, context));
+  if (component === "task") child.once("close", (exitCode, signal) => logRunner(component, "exited", { ...context, exitCode, signal }));
+}
+function captureRunnerOutput(component, fields2 = {}, stderrOnly = false) {
+  startRunnerLogMaintenance();
+  for (const stream of stderrOnly ? ["stderr"] : ["stdout", "stderr"]) {
+    const output = process[stream];
+    const write = output.write.bind(output);
+    output.write = ((chunk, encoding, callback) => {
+      logRunnerOutput(component, stream, typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"), fields2);
+      return typeof encoding === "function" ? write(chunk, encoding) : write(chunk, encoding, callback);
+    });
+  }
+  process.on("uncaughtExceptionMonitor", (error) => logRunnerOutput(component, "stderr", `${error.stack ?? error.message}
+`, fields2));
+}
+function logRunner(component, event2, fields2 = {}) {
+  if (!Object.hasOwn(EVENTS, component) || !EVENTS[component].includes(event2)) return;
+  writeRecord({
+    component,
+    event: event2,
+    version: matches(VERSION2, fields2.version),
+    source: allowed(SOURCES2, fields2.source),
+    stage: allowed(STAGES, fields2.stage),
+    task: integer(fields2.task, 1, Number.MAX_SAFE_INTEGER),
+    job: matches(component === "task" ? JOB_ID : UUID, fields2.job),
+    pid: integer(fields2.pid, 1, Number.MAX_SAFE_INTEGER),
+    code: fields2.code === void 0 ? void 0 : allowed(CODES, fields2.code) ?? "unknown_error",
+    status: integer(fields2.status, 100, 599),
+    exitCode: integer(fields2.exitCode, 0, 255),
+    signal: allowed(SIGNALS, fields2.signal)
+  });
+}
+var MAX_BYTES, OUTPUT_CHARS, ARCHIVES, DAY_MS, MAINTENANCE_MS, ARCHIVE_NAME, NO_FOLLOW, waitWord, EVENTS, SOURCES2, STAGES, CODES, SIGNALS, VERSION2, UUID, JOB_ID, allowed, matches, integer, errno, utcDay, lastWarning, maintenance;
 var init_runner_log = __esm({
   "src/runner-log.ts"() {
     "use strict";
     init_lock();
     init_home();
     MAX_BYTES = 5 * 1024 * 1024;
+    OUTPUT_CHARS = 32 * 1024;
     ARCHIVES = 3;
     DAY_MS = 864e5;
     MAINTENANCE_MS = 6e4;
@@ -48954,6 +48997,7 @@ var init_runner_log = __esm({
       launcher: ["starting", "startup_failed", "connected", "exited", "update_ready", "update_failed", "update_deferred", "rollback"],
       runner: ["starting", "startup_failed", "connected", "reconnecting", "connection_refused", "exited"],
       worker: ["starting", "exited"],
+      task: ["exited"],
       board: ["failed"],
       preview: ["failed"]
     };
@@ -49026,6 +49070,7 @@ var init_runner_log = __esm({
     SIGNALS = /* @__PURE__ */ new Set(["SIGINT", "SIGTERM", "SIGHUP", "SIGKILL", "SIGABRT", "SIGQUIT", "SIGSEGV"]);
     VERSION2 = /^\d{1,9}\.\d{1,9}\.\d{1,9}(?:-(?:alpha|beta|rc|test)(?:\.\d{1,9}){0,3})?$/;
     UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+    JOB_ID = /^[a-z0-9_-]{1,128}$/i;
     allowed = (values, value) => typeof value === "string" && values.has(value) ? value : void 0;
     matches = (pattern, value) => typeof value === "string" && pattern.test(value) ? value : void 0;
     integer = (value, min, max) => typeof value === "number" && Number.isSafeInteger(value) && value >= min && value <= max ? value : void 0;
@@ -49361,7 +49406,7 @@ if (Number(process.versions.node.split(".")[0]) < 22) {
 var { useRunnerHome: useRunnerHome2 } = await Promise.resolve().then(() => (init_home(), home_exports));
 var { pluginEntry: pluginEntry2 } = await Promise.resolve().then(() => (init_launcher(), launcher_exports));
 var { VERSION: VERSION3 } = await Promise.resolve().then(() => (init_protocol(), protocol_exports));
-var { errno: errno2, logRunner: logRunner2 } = await Promise.resolve().then(() => (init_runner_log(), runner_log_exports));
+var { errno: errno2, logRunner: logRunner2, logRunnerOutput: logRunnerOutput2 } = await Promise.resolve().then(() => (init_runner_log(), runner_log_exports));
 var FIRST = { kimi: "0.6.35", grok: "0.6.53", opencode: "0.6.55", antigravity: "0.6.107" };
 useRunnerHome2();
 var source = process.argv[2] ?? "claude-code";
@@ -49370,10 +49415,14 @@ try {
   if (entry) await import(pathToFileURL(entry).href);
   else {
     logRunner2("launcher", "startup_failed", { source, stage: "plugin_entry", code: "unavailable" });
-    process.stderr.write("WildCrane could not download its Runner. Check the network, then restart.\n");
+    const message = "WildCrane could not download its Runner. Check the network, then restart.\n";
+    logRunnerOutput2("launcher", "stderr", message, { source });
+    process.stderr.write(message);
     process.exit(1);
   }
 } catch (error) {
   logRunner2("launcher", "startup_failed", { source, stage: "plugin_entry", code: errno2(error) });
+  logRunnerOutput2("launcher", "stderr", `${error instanceof Error ? error.stack ?? error.message : String(error)}
+`, { source });
   throw error;
 }

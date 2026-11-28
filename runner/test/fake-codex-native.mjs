@@ -74,6 +74,7 @@ server.on('upgrade',(req,socket)=>{
    else result={data:[...loaded.keys()],nextCursor:null};
   }
   if(m.method==='thread/read'){
+   if(p.logOutput){ console.log('native stdout'); console.error('native stderr'); }
    if(readFailures.has(p.threadId)){send({id:m.id,error:{code:-32600,message:readFailures.get(p.threadId)}});return;}
    if(!loaded.has(p.threadId)&&!materialized.has(p.threadId)){send({id:m.id,error:{code:-32600,message:'thread not loaded: '+p.threadId}});return;}
    if(loaded.get(p.threadId)?.readDelay)await new Promise(r=>setTimeout(r,loaded.get(p.threadId).readDelay));

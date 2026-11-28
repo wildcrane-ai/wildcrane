@@ -176,6 +176,10 @@ it('persists terminal and both plugin Runner lifecycles in the same log across r
     for (const host of ['terminal', 'codex', 'claude-code']) {
       for (const event of ['starting', 'connected', 'exited']) assert.ok(seen(host, event), `${host} ${event}`)
     }
+    const rows = fs.readFileSync(file, 'utf8').trimEnd().split('\n').map(line => JSON.parse(line))
+    for (const host of ['terminal', 'codex', 'claude-code']) {
+      assert.ok(rows.some(row => row.component === 'runner' && row.source === host && row.stream === 'stdout'), host)
+    }
   } finally {
     await cloud.stop()
     fs.rmSync(home, { recursive: true, force: true })

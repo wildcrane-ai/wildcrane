@@ -1,10 +1,13 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import type { ChildProcess } from 'node:child_process'
+import type { Writable } from 'node:stream'
 
 import { tryLock } from '../../cli/src/lib/lock'
 import { runnerHome } from './home'
 
 const MAX_BYTES = 5 * 1024 * 1024
+const OUTPUT_CHARS = 32 * 1024
 const ARCHIVES = 3
 const DAY_MS = 86_400_000
 const MAINTENANCE_MS = 60_000
@@ -16,6 +19,7 @@ const EVENTS = {
   launcher: ['starting', 'startup_failed', 'connected', 'exited', 'update_ready', 'update_failed', 'update_deferred', 'rollback'],
   runner: ['starting', 'startup_failed', 'connected', 'reconnecting', 'connection_refused', 'exited'],
   worker: ['starting', 'exited'],
+  task: ['exited'],
   board: ['failed'],
   preview: ['failed'],
 } as const
@@ -35,14 +39,18 @@ const CODES = new Set([
 const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGKILL', 'SIGABRT', 'SIGQUIT', 'SIGSEGV'])
 const VERSION = /^\d{1,9}\.\d{1,9}\.\d{1,9}(?:-(?:alpha|beta|rc|test)(?:\.\d{1,9}){0,3})?$/
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
+const JOB_ID = /^[a-z0-9_-]{1,128}$/i
 
 type Component = keyof typeof EVENTS
+type Stream = 'stdout' | 'stderr'
+type OutputFields = { source?: string; job?: string; pid?: number }
 type Fields = {
   version?: unknown
   source?: unknown
   stage?: unknown
   task?: unknown
   job?: unknown
+  pid?: unknown
   code?: unknown
   status?: unknown
   exitCode?: unknown
@@ -79,27 +87,27 @@ function maintain(dir: string, now: Date, line?: Buffer): void {
   const current = path.join(dir, 'runner.log')
   const today = utcDay(+now)
   const oldest = utcDay(+now - 6 * DAY_MS)
-  let stat = fs.lstatSync(current, { throwIfNoEntry: false })
+  const stat = fs.lstatSync(current, { throwIfNoEntry: false })
   if (stat && !stat.isFile()) throw new Error('Invalid Runner log file')
   const day = stat?.size ? logDay(current, stat) : today
-  if (stat && (day < oldest || stat.size > MAX_BYTES)) {
-    fs.unlinkSync(current)
-    stat = undefined
-  }
   const size = stat?.size ?? 0
   const rotate = size > 0 && (day !== today || size + (line?.length ?? 0) > MAX_BYTES)
   const archives = fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     const match = entry.isFile() && ARCHIVE_NAME.exec(entry.name)
     return match ? [{ file: path.join(dir, entry.name), day: match[1]!, seq: Number(match[2]) }] : []
-  }).sort((a, b) => b.day.localeCompare(a.day) || b.seq - a.seq)
+  })
+  if (rotate) {
+    const seq = archives.reduce((last, archive) => archive.day === day ? Math.max(last, archive.seq) : last, 0) + 1
+    const file = `${current}.${day}.${seq}`
+    fs.renameSync(current, file)
+    archives.push({ file, day, seq })
+  }
   let kept = 0
-  const seq = (archives.find(archive => archive.day === day)?.seq ?? 0) + 1
-  for (const archive of archives) {
-    if (kept >= ARCHIVES - Number(rotate) || archive.day < oldest || fs.statSync(archive.file).size > MAX_BYTES) {
+  for (const archive of archives.sort((a, b) => b.day.localeCompare(a.day) || b.seq - a.seq)) {
+    if (kept >= ARCHIVES || archive.day < oldest) {
       fs.unlinkSync(archive.file)
     } else kept++
   }
-  if (rotate) fs.renameSync(current, `${current}.${day}.${seq}`)
   if (line) append(current, line, rotate ? 0 : size)
 }
 
@@ -130,22 +138,57 @@ export function startRunnerLogMaintenance(): void {
   maintenance ??= setInterval(() => withLogLock(dir => maintain(dir, new Date())), MAINTENANCE_MS).unref()
 }
 
-export function logRunner<C extends Component>(component: C, event: (typeof EVENTS)[C][number], fields: Fields = {}): void {
-  if (!Object.hasOwn(EVENTS, component) || !(EVENTS[component] as readonly string[]).includes(event)) return
+function writeRecord(record: object): void {
   withLogLock(dir => {
     const now = new Date()
-    const record = {
-      time: now.toISOString(), component, event,
-      version: matches(VERSION, fields.version),
-      source: allowed(SOURCES, fields.source),
-      stage: allowed(STAGES, fields.stage),
-      task: integer(fields.task, 1, Number.MAX_SAFE_INTEGER),
-      job: matches(UUID, fields.job),
-      code: fields.code === undefined ? undefined : allowed(CODES, fields.code) ?? 'unknown_error',
-      status: integer(fields.status, 100, 599),
-      exitCode: integer(fields.exitCode, 0, 255),
-      signal: allowed(SIGNALS, fields.signal),
-    }
-    maintain(dir, now, Buffer.from(JSON.stringify(record) + '\n'))
+    maintain(dir, now, Buffer.from(JSON.stringify({ time: now.toISOString(), ...record }) + '\n'))
+  })
+}
+
+export function logRunnerOutput(component: Component, stream: Stream, text: string, fields: OutputFields = {}): void {
+  const source = allowed(SOURCES, fields.source)
+  const job = matches(JOB_ID, fields.job)
+  for (let offset = 0; offset < text.length; offset += OUTPUT_CHARS) {
+    writeRecord({ component, event: 'output', stream, pid: fields.pid ?? process.pid, source, job,
+      text: text.slice(offset, offset + OUTPUT_CHARS) })
+  }
+}
+
+export function logChildOutput(child: ChildProcess, component: Component, fields: OutputFields): void {
+  const context = { ...fields, pid: child.pid }
+  for (const stream of ['stdout', 'stderr'] as const) {
+    child[stream]?.setEncoding('utf8').on('data', (text: string) => logRunnerOutput(component, stream, text, context))
+  }
+  child.on('error', error => logRunnerOutput(component, 'stderr', `${error.stack ?? error.message}\n`, context))
+  if (component === 'task') child.once('close', (exitCode, signal) => logRunner(component, 'exited', { ...context, exitCode, signal }))
+}
+
+export function captureRunnerOutput(component: Component, fields: OutputFields = {}, stderrOnly = false): void {
+  startRunnerLogMaintenance()
+  for (const stream of stderrOnly ? ['stderr'] as const : ['stdout', 'stderr'] as const) {
+    const output = process[stream]
+    const write = output.write.bind(output)
+    output.write = ((chunk: string | Uint8Array, encoding?: BufferEncoding | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+      logRunnerOutput(component, stream, typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'), fields)
+      return typeof encoding === 'function' ? write(chunk, encoding) : write(chunk, encoding, callback)
+    }) as Writable['write']
+  }
+  process.on('uncaughtExceptionMonitor', error => logRunnerOutput(component, 'stderr', `${error.stack ?? error.message}\n`, fields))
+}
+
+export function logRunner<C extends Component>(component: C, event: (typeof EVENTS)[C][number], fields: Fields = {}): void {
+  if (!Object.hasOwn(EVENTS, component) || !(EVENTS[component] as readonly string[]).includes(event)) return
+  writeRecord({
+    component, event,
+    version: matches(VERSION, fields.version),
+    source: allowed(SOURCES, fields.source),
+    stage: allowed(STAGES, fields.stage),
+    task: integer(fields.task, 1, Number.MAX_SAFE_INTEGER),
+    job: matches(component === 'task' ? JOB_ID : UUID, fields.job),
+    pid: integer(fields.pid, 1, Number.MAX_SAFE_INTEGER),
+    code: fields.code === undefined ? undefined : allowed(CODES, fields.code) ?? 'unknown_error',
+    status: integer(fields.status, 100, 599),
+    exitCode: integer(fields.exitCode, 0, 255),
+    signal: allowed(SIGNALS, fields.signal),
   })
 }

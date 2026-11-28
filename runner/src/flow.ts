@@ -46,6 +46,7 @@ import { layOut, type Laid } from './triage'
 import { removeLegacyKanbanSkill } from './kanban-skill'
 import { installCommitHook } from '../../cli/src/lib/skill/hook'
 import { syncRefusal, syncStopped, type Sync, type SyncStep } from './sync-retry'
+import { logChildOutput } from './runner-log'
 
 /** Why the runtime a job names cannot run here; null when it can. */
 export function unavailable(wanted: Job['runtime'], reports: RuntimeReport[]): string | null {
@@ -345,7 +346,10 @@ function boardAkb(job: Job, ws: TaskFolder, deps: FlowDeps, io: FlowIo, task?: s
     if (show) await io.starting?.()
     if (stopping(io)) return refused('Task preparation stopped.')
     const ran = await runAkb(deps.akb, full, {
-      cwd: ws.cwd, board: ws.board, task, language: cloudLanguage(job), show: log?.push, track: io.track,
+      cwd: ws.cwd, board: ws.board, task, language: cloudLanguage(job), show: log?.push, track: child => {
+        logChildOutput(child, 'task', { job: job.id, source: job.runtime })
+        io.track(child)
+      },
       env: {
         ...env,
         [DELIVERY_PHASE_ENV]: job.flow?.phase ?? (job.flow?.verb === 'resolve' && (job.sessionKind === 'implement' || job.flow.land_from) ? 'resolve' : undefined),

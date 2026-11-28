@@ -44,12 +44,14 @@ Codex 由 Runner 管理原生 App Server，任务直接连接；Runner 更新或
   once a day the Runner removes a project unused for 7 days or no longer in your account — its
   whole `cache/<project>/`, or only a linked folder's `.akb/` — unless a job runs there, a
   delivery is paused there, or its last sync failed.
-- **Diagnostics**: Terminal, Codex and Claude Code Runners write local JSON Lines to
+- **Diagnostics**: The Runner, launcher and task processes share a local JSON Lines log at
   `~/.wildcrane/logs/runner.log` (`$WILDCRANE_HOME/logs/runner.log` when overridden).
+  It records lifecycle events, stdout and stderr, including output from earlier task attempts.
+  Output may contain task content. The log files are private to the local user.
   Logs rotate on UTC date changes or at 5 MiB. The current file and up to three archives
   (`runner.log.YYYY-MM-DD.N`) cover at most seven UTC dates including today, and 20 MiB total.
-  They contain lifecycle and sync diagnostics with selected fields only. If the log cannot
-  be written, the Runner continues and warns on stderr at most once a minute per process.
+  Existing per-worker and Codex log files from earlier versions remain in place.
+  If the log cannot be written, the Runner continues and warns on stderr at most once a minute per process.
 - **Runner files**: `~/.wildcrane/bin/` holds the downloaded versions and the `akb` shims.
 - **Periodic agents**: in each project folder it also runs the board's own agents (reflect,
   describe-project, review-dismissals, prune-memory) and each studio's scheduled agents, when

@@ -1,5 +1,6 @@
 import { IDLE_TIMEOUT } from '../../cli/src/lib/agent/idle'
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, it } from 'node:test'
@@ -76,12 +77,15 @@ describe('the Runner', () => {
       let calls = 0
       start('', { plan: (...args) => {
         const failed = ++calls < 2
-        const p = fakeRuntime(failed ? 'process.exit(1)' : 'console.log("完成")')(...args)
+        const p = fakeRuntime(failed
+          ? 'console.log("first stdout"); console.error("first stderr"); process.exitCode = 1'
+          : 'console.log("完成"); console.error("retry stderr")')(...args)
         p.renderer!.events = () => []
         p.renderer!.executionFailure = () => failed ? overload : undefined
         p.renderer!.usage = () => ({ input: 10, cacheCreation: 1, cacheRead: 2, output: 3 })
         p.renderer!.costUsd = () => 0.25
-        if (converse) p.converse = async (_child, event) => {
+        if (converse) p.converse = async (child, event) => {
+          await once(child, 'close')
           event({ kind: 'message', data: { text: failed ? '' : '完成' } })
           const spent = { usage: p.renderer!.usage!(), costUsd: p.renderer!.costUsd!() }
           return failed ? { ok: false, error: overload.summary, failure: overload, ...spent } : { ok: true, result: '完成', ...spent }
@@ -98,6 +102,15 @@ describe('the Runner', () => {
       await until(() => readCheckpoint(job.id) === null)
       assert.equal(readCheckpoint(job.id), null)
       assert.deepEqual(planned.map(p => p.resume), [null, 'fresh-session'])
+      const entries = fs.readFileSync(path.join(runnerHome(), 'logs', 'runner.log'), 'utf8').trimEnd().split('\n')
+        .map(line => JSON.parse(line)).filter(row => row.component === 'task' && row.job === job.id)
+      const [first, retry] = entries.filter(row => row.event === 'exited')
+      assert.deepEqual([first.exitCode, retry.exitCode], [1, 0])
+      for (const [attempt, stdout, stderr] of [[first, 'first stdout\n', 'first stderr\n'], [retry, '完成\n', 'retry stderr\n']] as const) {
+        const output = (stream: string) => entries.filter(row => row.pid === attempt.pid && row.stream === stream).map(row => row.text).join('')
+        assert.equal(output('stdout'), stdout)
+        assert.equal(output('stderr'), stderr)
+      }
     })
   }
 

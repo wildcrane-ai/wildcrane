@@ -48,6 +48,7 @@ import { readGoals, writeGoals } from './goals'
 import { replySpent, checkpointEvent, checkpointRecovery, clearCheckpoint, readCheckpoint, recoveryBlocked, retryFileOf, saveCheckpoint, stopReply, isReply, replyRecovery, replayable, usesBoardRun, type Checkpoint } from './recovery'
 import { noteLandArchive, queueDeliveryCleanup } from './delivery-cleanup'
 import { runnerHome } from './home'
+import { logChildOutput } from './runner-log'
 import { landArchiveRefusal, landLeaseLost, resumeArchive, retryableSync, staleArchiveReceipt, syncBackoff, syncRefusal, syncStopped, writeBlock, type SyncStep, type Sync } from './sync-retry'
 import { logSync } from './sync-debug'
 import { trackSubagents } from './subagents'
@@ -1861,7 +1862,7 @@ async function runClaimedStep(job: Job, deps: StepDeps, track: (stop: () => Prom
     delete checkpoint.process
     delete checkpoint.cleanup
     starting()
-    const child = launch(plan.command, plan.args, { cwd, env: markEnv(plan.env, checkpoint.mark), detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = launch(job, plan.command, plan.args, { cwd, env: markEnv(plan.env, checkpoint.mark), detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
     if (child.pid) {
       checkpoint.process = { pid: child.pid, since: Date.now(), ...(plan.managedProcess ? { identity: connectionIdentity(child.pid) } : {}) }
     }
@@ -2170,9 +2171,11 @@ function replyReason(failure: ExecutionFailure | undefined, pause: RetryPause | 
 }
 
 /** A runtime's process, started the way Windows needs (agent/spawnable.ts). */
-function launch(command: string, args: string[], options: SpawnOptions): ChildProcessWithoutNullStreams {
+function launch(job: Job, command: string, args: string[], options: SpawnOptions): ChildProcessWithoutNullStreams {
   const start = spawnable(command, args, options)
-  return spawn(start.command, start.args, start.options) as ChildProcessWithoutNullStreams
+  const child = spawn(start.command, start.args, start.options) as ChildProcessWithoutNullStreams
+  logChildOutput(child, 'task', { job: job.id, source: job.runtime })
+  return child
 }
 
 function signalTree(child: ChildProcess, signal: NodeJS.Signals): void {
@@ -2305,7 +2308,7 @@ async function runTest(job: Job, deps: Shared, lease: Lease): Promise<void> {
   const run = deps.plan(job.runtime, job.prompt, cwd, null, job.model, settingsOf(job))
   const startedAt = Date.now()
   if (run.converse) {
-    const child = launch(run.command, run.args, { cwd, env: run.env, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'ignore'] })
+    const child = launch(job, run.command, run.args, { cwd, env: run.env, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
     child.stdin.on('error', () => {})
     let timer: NodeJS.Timeout | undefined
     const end = await Promise.race([
@@ -2323,7 +2326,7 @@ async function runTest(job: Job, deps: Shared, lease: Lease): Promise<void> {
   const renderer = run.renderer!
   const exited = await new Promise<{ code: number | null; error?: NodeJS.ErrnoException; timedOut?: boolean; said: string }>((resolve) => {
     let said = ''
-    const child = launch(run.command, run.args, { cwd, env: run.env, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = launch(job, run.command, run.args, { cwd, env: run.env, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
     const timer = setTimeout(() => {
       child.kill('SIGTERM')
       setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS).unref()

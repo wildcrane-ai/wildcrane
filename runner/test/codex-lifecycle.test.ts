@@ -42,6 +42,15 @@ for(const signal of ['SIGTERM','SIGKILL','update']as const){
   await launch();const a=await task();const original=backend();const old=JSON.parse(fs.readFileSync(codexRecordFile(),'utf8'));assert.equal(old.pid,host!.pid)
   const ended=once(host!,'close');if(signal==='update')host!.send('update');else host!.kill(signal);await ended;host=undefined
   process.kill(original.pid,0);assert.equal(a.notifications.some(n=>n.method==='turn/completed'),false)
+  await a.rpc.call('thread/read',{threadId:a.id,logOutput:true})
+  await until(() => {
+   const file = path.join(root, 'logs', 'runner.log')
+   if (!fs.existsSync(file)) return false
+   const output = fs.readFileSync(file, 'utf8').trimEnd().split('\n').map(line => JSON.parse(line))
+    .filter(row => row.pid === original.pid && row.component === 'task')
+   return output.some(row => row.stream === 'stdout' && row.text === 'native stdout\n')
+    && output.some(row => row.stream === 'stderr' && row.text === 'native stderr\n')
+  })
   await launch();const current=JSON.parse(fs.readFileSync(codexRecordFile(),'utf8'));assert.notEqual(current.pid,old.pid);assert.equal(current.pid,host!.pid)
   assert.equal(backend().instance,original.instance);assert.ok(await a.rpc.call('thread/read',{threadId:a.id}));assert.equal(calls().filter(c=>c.method==='spawn').length,1);assert.equal(calls().filter(c=>c.method==='turn/start').length,1);assert.equal(calls().filter(c=>c.method==='turn/interrupt').length,0)
   assert.equal(fs.existsSync(path.join(root,'codex-service-v2.json')),false)

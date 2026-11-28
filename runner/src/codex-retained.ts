@@ -2,6 +2,9 @@ import fs from 'node:fs'
 import { codexDiagnostic, initializeNative, leaseFile, nativeConnection, processIdentity, readPrivate, releaseNativeThread, writeLease, type NativeBackend, type ThreadLease } from './codex-native'
 import { accountGeneration, executorRecord } from './settings-control'
 import { obj, str } from '../../cli/src/lib/agent/wire/json'
+import { captureRunnerOutput } from './runner-log'
+
+captureRunnerOutput('worker', { source: 'codex' })
 
 /** One execution's retained services keep their subscription, not a second shared manager. */
 async function retain() {

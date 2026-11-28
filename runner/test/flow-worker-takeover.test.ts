@@ -94,7 +94,8 @@ for (const reason of ['stop', 'account', 'transfer', 'runner-transfer', 'crash']
     if (reason === 'crash') process.kill(worker.pid, 'SIGKILL')
     if (reason === 'stop' || reason === 'crash') {
       await until(() => job.state === 'finished', 15_000).catch(e => {
-        throw new Error(`${e}: ${log}\n${fs.existsSync(record + '.log') ? fs.readFileSync(record + '.log', 'utf8') : ''}\n${fs.existsSync(record) ? fs.readFileSync(record, 'utf8') : ''}`)
+        const diagnostics = path.join(runnerHome(), 'logs', 'runner.log')
+        throw new Error(`${e}: ${log}\n${fs.existsSync(diagnostics) ? fs.readFileSync(diagnostics, 'utf8') : ''}\n${fs.existsSync(record) ? fs.readFileSync(record, 'utf8') : ''}`)
       })
       await reclaimed(record)
       assert.equal(job.outcome, reason === 'stop' ? 'stopped' : 'failed', `${log}\n${job.reason}`)

@@ -66,7 +66,8 @@ it('backs off after claim failures and runs the same waiting job once (#1116)', 
   assert.ok(rows.some(row => row.component === 'runner' && row.event === 'connected'))
   assert.ok(rows.some(row => row.component === 'worker' && row.event === 'starting'))
   assert.ok(rows.some(row => row.component === 'worker' && row.event === 'exited'))
-  assert.ok(!diagnostics.includes('Claim temporarily unavailable'))
+  const errors = rows.filter(row => row.component === 'worker' && row.job === job.id && row.stream === 'stderr')
+  assert.equal(errors.filter(row => row.text.includes('Claim temporarily unavailable')).length, 2)
 })
 
 it('recovers an old waiting record only after its descendant exits (#1116)', async () => {
@@ -123,7 +124,7 @@ it('preserves an unknown claim and hands a granted lease to existing recovery (#
   assert.equal(commands('refine').length, 1)
 })
 
-it('reclaims legacy history at startup, including missing ended, and keeps orphan files (#696)', async () => {
+it('reclaims legacy worker records at startup and retains their logs (#696)', async () => {
   const ended = await history('ended')
   const crashed = await history('crashed', { ended: false })
   const orphan = path.join(runnerHome(), 'flow-workers/orphan.json.log')
@@ -131,7 +132,7 @@ it('reclaims legacy history at startup, including missing ended, and keeps orpha
   launch()
   await until(() => !fs.existsSync(ended) && !fs.existsSync(crashed), 10_000)
   for (const file of [ended, crashed]) {
-    assert.ok(!fs.existsSync(`${file}.log`))
+    assert.equal(fs.readFileSync(`${file}.log`, 'utf8'), 'diagnostics')
     assert.ok(!fs.existsSync(`${file}.stop`))
   }
   assert.ok(fs.existsSync(orphan))
@@ -170,7 +171,7 @@ it('retries offline queries and partial deletion without blocking another candid
   fs.mkdirSync(`${file}.stop`)
   await reclaimFlowWorkers(machine, sweepDeps())
   assert.ok(fs.existsSync(file))
-  assert.ok(!fs.existsSync(`${file}.log`))
+  assert.equal(fs.readFileSync(`${file}.log`, 'utf8'), 'diagnostics')
   assert.ok(!fs.existsSync(other))
   fs.rmdirSync(`${file}.stop`)
   await reclaimFlowWorkers(machine, sweepDeps())

@@ -13,7 +13,7 @@ import { settingsAction } from './settings'
 import { openSettings } from './settings-server'
 import { serveSettingsLink } from './settings-link'
 import { acquireMachine, RunnerAlreadyRunning } from './lock'
-import { errno, logRunner, startRunnerLogMaintenance } from './runner-log'
+import { captureRunnerOutput, errno, logRunner } from './runner-log'
 
 const tell = (message: unknown) => process.send?.(message)
 const rejectDuplicate = () => {
@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   useRunnerHome()
   const kind = (['claude-code', 'codex', 'cursor', 'dsh', 'zcode', 'kimi'] as const).find((k) => k === process.env.WILDCRANE_RUNNER_KIND) ?? 'terminal'
   const fields = { version: VERSION, source: process.env.WILDCRANE_RUNNER_KIND ?? kind }
-  startRunnerLogMaintenance()
+  captureRunnerOutput('runner', fields)
   logRunner('runner', 'starting', fields)
   process.once('exit', exitCode => logRunner('runner', 'exited', { ...fields, exitCode }))
   let lock: Awaited<ReturnType<typeof acquireMachine>>

@@ -17,7 +17,7 @@ import { openTaskFolder } from './task-folder'
 import { defaultDeps, folderFor, runJob, type Deps } from './jobs'
 import { accountGeneration, executorRecord } from './settings-control'
 import { VERSION } from './protocol'
-import { logRunner, startRunnerLogMaintenance } from './runner-log'
+import { captureRunnerOutput, logRunner, logRunnerOutput } from './runner-log'
 import { noteLandArchive, queueDeliveryCleanup } from './delivery-cleanup'
 
 interface Worker {
@@ -70,15 +70,12 @@ export function launchFlowWorker(id: string, machine: string, entry = flowWorker
   if (!account) throw new Error('账号已退出，请重新登录。')
   const worker: Worker = { id, token: crypto.randomUUID(), machine, account, generation: accountGeneration(), at: Date.now(), markedAt: Date.now(), claimAttempt }
   fs.writeFileSync(fileOf(id), JSON.stringify(worker), { flag: 'wx', mode: 0o600 })
-  const log = fs.openSync(`${fileOf(id)}.log`, 'a', 0o600)
-  try {
-    const child = spawn(process.execPath, [entry, id, worker.token], {
-      cwd: runnerCwd(), env: { ...process.env, [FLOW_MARK]: worker.token }, detached: true, windowsHide: true, stdio: ['ignore', log, log],
-    })
-    child.on('error', () => {})
-    child.once('exit', () => { void reclaimFlowWorkers(machine, undefined, id) })
-    child.unref()
-  } finally { fs.closeSync(log) }
+  const child = spawn(process.execPath, [entry, id, worker.token], {
+    cwd: runnerCwd(), env: { ...process.env, [FLOW_MARK]: worker.token }, detached: true, windowsHide: true, stdio: 'ignore',
+  })
+  child.on('error', error => logRunnerOutput('worker', 'stderr', `${error.stack ?? error.message}\n`, { job: id }))
+  child.once('exit', () => { void reclaimFlowWorkers(machine, undefined, id) })
+  child.unref()
 }
 
 export async function watchFlowWorker(id: string, machine: string, detached: () => boolean): Promise<void> {
@@ -165,7 +162,6 @@ export function retireSyncWorker(id: string, machine: string): boolean {
         || worker.generation !== accountGeneration() || !writerStopped(worker)) return false
     fs.rmSync(file, { force: true })
     fs.rmSync(stopFile(id), { force: true })
-    fs.rmSync(`${file}.log`, { force: true })
     return true
   } finally { release() }
 }
@@ -292,7 +288,6 @@ export async function reclaimFlowWorkers(machine: string, given?: Deps, only?: s
             if (retryWaiting) return retry
             continue
           }
-          fs.rmSync(`${file}.log`, { force: true })
           fs.rmSync(`${file}.stop`, { force: true })
           fs.unlinkSync(file)
           if (job.state === 'finished' && job.outcome === 'done') {
@@ -319,7 +314,7 @@ export async function runFlowWorker(id: string, token: string, given?: Deps, ent
   const worker = read(id)
   if (!worker || worker.token !== token || worker.pid || worker.ended) return
   const fields = { version: VERSION, source: process.env.WILDCRANE_RUNNER_KIND, job: id }
-  startRunnerLogMaintenance()
+  captureRunnerOutput('worker', fields)
   logRunner('worker', 'starting', fields)
   process.once('exit', exitCode => logRunner('worker', 'exited', { ...fields, exitCode }))
   const valid = () => readSession()?.subject === worker.account && accountGeneration() === worker.generation

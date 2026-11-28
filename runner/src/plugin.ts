@@ -27,6 +27,7 @@ import { LABELS } from './runtimes'
 import { versionDir } from './update'
 import * as settings from './settings'
 import { closeSettings, openSettings } from './settings-server'
+import { captureRunnerOutput } from './runner-log'
 
 export type Host = 'claude-code' | 'codex' | 'cursor' | 'dsh' | 'zcode' | 'kimi' | 'grok' | 'opencode' | 'antigravity'
 
@@ -540,6 +541,7 @@ export function server(): McpServer {
 export async function main(as: Host = 'claude-code'): Promise<void> {
   host = as
   useRunnerHome()
+  captureRunnerOutput('launcher', { source: host }, true)
   writeShim()
   // stdout carries the protocol: whatever else the Runner prints goes to stderr.
   const write = process.stdout.write.bind(process.stdout)

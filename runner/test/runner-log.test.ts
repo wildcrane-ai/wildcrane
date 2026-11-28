@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
 import { runnerHome } from '../src/home'
-import { logRunner, startRunnerLogMaintenance } from '../src/runner-log'
+import { captureRunnerOutput, logRunner, logRunnerOutput, startRunnerLogMaintenance } from '../src/runner-log'
 
 const limit = 5 * 1024 * 1024
 const logs = path.join(runnerHome(), 'logs')
@@ -31,6 +31,12 @@ if (process.argv[2] === '--write') {
   const start = Number(process.argv[3])
   for (let task = start; task < start + 24; task++) logRunner('board', 'failed', { stage: 'push', code: 'conflict', task })
   process.exit(0)
+}
+if (process.argv[2] === '--crash') {
+  captureRunnerOutput('launcher')
+  console.log('launcher stdout')
+  console.error('launcher stderr')
+  throw new Error('launcher crashed')
 }
 
 it('rotates at the byte and UTC day boundaries, and expires only Runner logs at startup and while idle', (t) => {
@@ -86,6 +92,28 @@ it('keeps complete records and only three archives when processes rotate the sam
     return records(file).flatMap(record => record.task ? [record.task] : [])
   }).sort((a, b) => a - b)
   assert.deepEqual(tasks, Array.from({ length: 96 }, (_, i) => i + 1))
+})
+
+it('keeps large output intact across rotation and captures a launcher exception without handling it', async () => {
+  clean()
+  append()
+  const now = new Date().toISOString()
+  const date = now.slice(0, 10)
+  seed(current, now, limit - 200_000)
+  const output = '测试 🐦\n'.repeat(25_000)
+  logRunnerOutput('task', 'stdout', output, { job: 'large-output' })
+  const archived = archive(date, 1)
+  assert.ok(fs.statSync(archived).size <= limit)
+  const lines = [...records(archived), ...records(current)]
+  assert.equal(lines.filter(row => row.job === 'large-output').map(row => row.text).join(''), output)
+
+  await assert.rejects(promisify(execFile)(process.execPath, [fileURLToPath(import.meta.url), '--crash']), {
+    code: 1, stdout: 'launcher stdout\n', stderr: /launcher crashed/,
+  })
+  const launcher = records(current).filter(row => row.component === 'launcher')
+  assert.deepEqual(launcher.map(row => row.stream), ['stdout', 'stderr', 'stderr'])
+  assert.deepEqual(launcher.slice(0, 2).map(row => row.text), ['launcher stdout\n', 'launcher stderr\n'])
+  assert.match(launcher[2].text, /launcher crashed/)
 })
 
 it('rate limits failures to write and resumes logging when the directory is usable', async () => {
