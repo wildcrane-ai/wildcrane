@@ -755,11 +755,12 @@ export const pullChanges = (ws: TaskFolder): Promise<api.Call<void>> => catchBoa
   if (cursor === null) return { ok: true, value: undefined }
   const read = await readSyncedBoard(ws, cursor)
   if (!read.ok) return read
+  const confirmations = await readArchiveConfirmations(ws, readBase(ws), read.value.files)
   return inFolder(ws.cwd, async () => {
     const base = readBase(ws)
     if (busy(preparationKey(ws)) || base.project && base.project !== ws.project || base.head_seq === null ||
         base.head_seq < cursor || base.head_seq > read.value.head_seq) return { ok: true, value: undefined }
-    const result = await reconcileBoard(ws, base, read.value, sharedMemory(ws.board))
+    const result = await reconcileBoard(ws, base, read.value, sharedMemory(ws.board), undefined, undefined, confirmations)
     return result.ok ? { ok: true, value: undefined } : result
   })
 })
@@ -800,8 +801,40 @@ function matchingArchives(ws: TaskFolder, base: Base, files: api.BoardFile[]) {
   })
 }
 
+type ArchiveVersion = Pick<ArchiveCompletion, 'path' | 'seq' | 'assets_seq'>
+
+function confirmedArchiveVersion(base: Base, task: string, version: ArchiveVersion): boolean {
+  const receipt = base.archiveReceipts?.[task]
+  return receipt?.status === 'confirmed' && receipt.path === version.path && receipt.seq === version.seq && receipt.assets_seq === version.assets_seq
+}
+
+async function readArchiveConfirmations(ws: TaskFolder, base: Base, files: api.BoardFile[]): Promise<Map<string, ArchiveVersion>> {
+  const root = rootOf(ws)
+  const remote = new Map(files.map(file => [file.path, file]))
+  const versionAt = (name: string) => {
+    const before = base.files[name]?.seq ?? base.deleted?.[name] ?? 0
+    const next = remote.get(name)
+    return next && next.seq >= before ? next : { seq: before, content: base.files[name]?.content ?? null }
+  }
+  const checks = matchingArchives(ws, base, files).flatMap(({ p, task }) => {
+    if (!task) return []
+    const card = versionAt(root + p)
+    if (card.content === null) return []
+    const version = { path: p, seq: card.seq, assets_seq: versionAt(root + assetsFile(task)).seq }
+    return confirmedArchiveVersion(base, task, version) ? [] : [{ task, version }]
+  })
+  const confirmed = new Map<string, ArchiveVersion>()
+  for (let i = 0; i < checks.length; i += 8) {
+    await Promise.all(checks.slice(i, i + 8).map(async ({ task, version }) => {
+      const current = await api.readTask(task)
+      if (current.ok && current.value.status === 'done') confirmed.set(task, version)
+    }))
+  }
+  return confirmed
+}
+
 /** Record the Cloud receipt after its files have reached the local board. */
-async function confirmPulledArchives(ws: TaskFolder, base: Base, archives: ReturnType<typeof matchingArchives>): Promise<void> {
+async function confirmPulledArchives(ws: TaskFolder, base: Base, archives: ReturnType<typeof matchingArchives>, confirmations?: ReadonlyMap<string, ArchiveVersion>): Promise<void> {
   const root = rootOf(ws)
   for (const { p, from, task, markers } of archives) {
     if (!task || from && readText(path.join(ws.board, from)) !== null) continue
@@ -811,10 +844,14 @@ async function confirmPulledArchives(ws: TaskFolder, base: Base, archives: Retur
     if (!card || card.content !== readText(path.join(ws.board, p))
       || (assets?.content ?? null) !== readText(path.join(ws.board, list))) continue
     const assetsSeq = assets?.seq ?? base.deleted?.[root + list] ?? 0
-    const receipt = base.archiveReceipts?.[task]
-    if (receipt?.status !== 'confirmed' || receipt.path !== p || receipt.seq !== card.seq || receipt.assets_seq !== assetsSeq) {
-      const current = await api.readTask(task)
-      if (!current.ok || current.value.status !== 'done') continue
+    const version = { path: p, seq: card.seq, assets_seq: assetsSeq }
+    if (!confirmedArchiveVersion(base, task, version)) {
+      if (confirmations) {
+        if (!isDeepStrictEqual(confirmations.get(task), version)) continue
+      } else {
+        const current = await api.readTask(task)
+        if (!current.ok || current.value.status !== 'done') continue
+      }
     }
     for (const marker of markers) fs.rmSync(marker.file, { force: true })
     if (base.pendingArchives) delete base.pendingArchives[task]
@@ -823,13 +860,14 @@ async function confirmPulledArchives(ws: TaskFolder, base: Base, archives: Retur
     base.deferred = base.deferred?.filter(file => file !== p && file !== from && file !== list)
     const receipts = base.archiveReceipts ??= {}
     receipts[task] = {
-      status: 'confirmed', task, path: p, seq: card.seq, assets_seq: assetsSeq, pulled: true,
+      status: 'confirmed', task, ...version, pulled: true,
     }
   }
 }
 
 /** Apply Cloud changes. A deferred change keeps its file base and holds the cursor for replay. */
-async function reconcileBoard(ws: TaskFolder, base: Base, board: { files: api.BoardFile[]; head_seq: number }, shared: Shared, taskChat?: string, landTask?: string): Promise<api.Call<Set<string>>> {
+async function reconcileBoard(ws: TaskFolder, base: Base, board: { files: api.BoardFile[]; head_seq: number }, shared: Shared, taskChat?: string, landTask?: string,
+  confirmations?: ReadonlyMap<string, ArchiveVersion>): Promise<api.Call<Set<string>>> {
   const root = rootOf(ws)
   const conflict = () => {
     const code = 'board_content_conflict'
@@ -900,7 +938,7 @@ async function reconcileBoard(ws: TaskFolder, base: Base, board: { files: api.Bo
     for (const p of Object.keys(snapshot)) if (!base.files[p]) removed.push(p)
     resetBoardSnapshot(ws, base, snapshot, shared, privateArchive)
   }
-  await confirmPulledArchives(ws, base, archives)
+  await confirmPulledArchives(ws, base, archives, confirmations)
   if (!skipped) base.head_seq = board.head_seq
   base.project = ws.project
   writeBase(ws, base)
@@ -938,6 +976,7 @@ async function prepareTask(ws: TaskFolder, preserveAssets: boolean, stopped?: ()
   }
   const read = await readSyncedBoard(ws, before.head_seq)
   if (!read.ok) return read
+  const confirmations = await readArchiveConfirmations(ws, before, read.value.files)
   return whenPrepared<api.Call<void>>(ws, preparationStopped, async () => {
     const base = readBase(ws)
     if (base.project && base.project !== ws.project ||
@@ -946,15 +985,15 @@ async function prepareTask(ws: TaskFolder, preserveAssets: boolean, stopped?: ()
     }
     if (base.workspace === undefined) base.workspace = workspace
     return prepareTaskFiles(ws, base, before.head_seq === null && base.head_seq !== null ||
-      base.head_seq !== null && base.head_seq > read.value.head_seq ? undefined : read.value, preserveAssets, taskChat, landTask)
+      base.head_seq !== null && base.head_seq > read.value.head_seq ? undefined : read.value, preserveAssets, taskChat, landTask, confirmations)
   }, stopped)
 }
 
 async function prepareTaskFiles(ws: TaskFolder, base: Base, board: { files: api.BoardFile[]; head_seq: number } | undefined, preserveAssets: boolean,
-  taskChat?: string, landTask?: string): Promise<api.Call<void>> {
+  taskChat: string | undefined, landTask: string | undefined, confirmations: ReadonlyMap<string, ArchiveVersion>): Promise<api.Call<void>> {
   const shared = sharedMemory(ws.board)
   if (board) {
-    const refreshed = await reconcileBoard(ws, base, board, shared, taskChat, landTask)
+    const refreshed = await reconcileBoard(ws, base, board, shared, taskChat, landTask, confirmations)
     if (!refreshed.ok) return refreshed
     if (refreshed.value.has(ws.task)) return { ok: true, value: undefined }
   } else if (pendingConflicts(ws.board).length) {
