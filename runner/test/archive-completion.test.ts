@@ -7,6 +7,7 @@ import path from 'node:path'
 import { test as it, type TestContext } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { tryLock } from '../../cli/src/lib/lock'
 import { projectStateDir } from '../../cli/src/lib/machine/project'
 import type { ArchiveCompletion, ArchiveCompletionReceipt } from '../../cli/src/lib/shared/delivery-evidence'
 import { readRemoval, writeRemoval } from '../../cli/src/lib/cloud/task-operation'
@@ -51,9 +52,11 @@ async function fixture(t: TestContext) {
   assert.ok((await pull(openTaskFolder({ task: 'task_1', project: 'prj_1', number: 1 }, dir), MACHINE)).ok)
   const ws = keptBoard(dir)!
   const base = () => JSON.parse(fs.readFileSync(path.join(dir, '.akb', 'base.json'), 'utf8')) as {
+    head_seq: number
     archiveReceipts?: Record<string, Omit<ArchiveCompletion, 'task'> & ArchiveCompletionReceipt>
     pendingArchives?: Record<string, string>
   }
+
   const assetPath = (number: number) => path.join(projectStateDir(ws.board), preview(number).slice(1))
   const seed = async (start: number, count: number) => {
     const files: Record<string, string> = {}
@@ -133,6 +136,49 @@ if (process.argv[2] === '--sync-archives') {
       assert.match(cloud.file(ACTIVE)!, /Active edit/)
     })
   }
+
+  it('advances past a replayed deletion while preserving the stale archive bytes', async (t) => {
+    const { dir, ws, cloud, seed, base } = await fixture(t)
+    await seed(10, 1)
+    const beforeDelete = base().head_seq
+    cloud.put({ [archive(10)]: null })
+    assert.ok((await pullChanges(ws)).ok)
+    const file = path.join(ws.board, archive(10))
+    const stale = body(10) + '\nLocal notes.\n'
+    fs.writeFileSync(file, stale)
+    fs.writeFileSync(path.join(dir, '.akb', 'base.json'), JSON.stringify({ ...base(), head_seq: beforeDelete }))
+    cloud.put({ [ACTIVE]: '---\ntitle: Updated\n---\n' })
+    assert.ok((await pullChanges(ws)).ok)
+    assert.equal(base().head_seq, cloud.head)
+    assert.equal(fs.existsSync(file), false)
+    const hash = crypto.createHash('sha256').update(stale).digest('hex')
+    assert.equal(fs.readFileSync(path.join(ws.board, '.sync', 'retired-archives', String(cloud.head - 1), hash, archive(10)), 'utf8'), stale)
+    assert.ok((await pushBoard(ws, MACHINE)).ok)
+    assert.equal(cloud.file(archive(10)), null)
+  })
+
+  it('lets another process take the board lock while the remote read is pending', async (t) => {
+    const { ws, cloud, base } = await fixture(t)
+    let requested!: () => void
+    let respond!: () => void
+    const requestedRead = new Promise<void>(resolve => { requested = resolve })
+    const response = new Promise<void>(resolve => { respond = resolve })
+    cloud.put({ [ACTIVE]: '---\ntitle: Updated\n---\n' })
+    cloud.service = async (method, url) => {
+      if (method !== 'GET' || !url.pathname.endsWith('/board')) return
+      requested()
+      await response
+    }
+    const pending = pullChanges(ws)
+    await requestedRead
+    try {
+      const unlock = tryLock(path.join(projectStateDir(ws.board), 'board-sync.lock'))
+      assert.ok(unlock)
+      unlock()
+    } finally { respond() }
+    assert.ok((await pending).ok)
+    assert.equal(base().head_seq, cloud.head)
+  })
 
   it('checks only synced new versions and removes records for restored, deleted and rejected archives (#974)', async (t) => {
     const { dir, ws, cloud, seed, base, acked, batches, assetPath } = await fixture(t)

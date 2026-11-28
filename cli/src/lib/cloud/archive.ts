@@ -27,7 +27,7 @@ function readOptional(file: string): string | null {
   }
 }
 
-export async function localArchiveInput(board: string, project: string, task: string, number: number, file: string): Promise<ArchiveInput> {
+export function prepareLocalArchiveInput(board: string, project: string, task: string, number: number, file: string): () => Promise<ArchiveInput> {
   const refuse = (code: string, message: string): never => { throw cloudError({ code, message, retryable: false }) }
   const base = JSON.parse(fs.readFileSync(path.join(board, '..', 'base.json'), 'utf8')) as {
     files?: Record<string, { seq: number; content: string }>
@@ -35,7 +35,8 @@ export async function localArchiveInput(board: string, project: string, task: st
   }
   const root = `projects/${project}/`
   const cardPath = path.relative(board, file).split(path.sep).join('/')
-  const content = normalizeCardFrontmatter(fs.readFileSync(file, 'utf8'))
+  const original = fs.readFileSync(file, 'utf8')
+  const content = normalizeCardFrontmatter(original)
   const meta = parseFrontmatter(content).meta
   if (!meta || meta.rejected || !!meta.archived !== cardPath.startsWith('.archive/')) {
     refuse('conflict', 'The local task card is ineligible. Repair its frontmatter or restore the removed task before archiving.')
@@ -49,20 +50,26 @@ export async function localArchiveInput(board: string, project: string, task: st
   const manifest = root + assetsFile(task)
   const saved = base.files?.[manifest]
   const previous = assetsOf(saved?.content)
-  const local = readOptional(path.join(board, assetsFile(task)))
+  const manifestFile = path.join(board, assetsFile(task))
+  const local = readOptional(manifestFile)
   const record: AssetRecord = JSON.parse(readOptional(path.join(board, '.sync', task + '.json')) ?? '{}')
   record.assets ??= {}
-  const uploaded = await uploadTaskAssets({ board, number, cloudTask: task }, file, content, record, { ...previous, ...assetsOf(local) }, assetApi)
-  if (!uploaded.ok) {
-    throw cloudError({
-      code: uploaded.code ?? 'unreachable', status: uploaded.status,
-      message: `${uploaded.error} Fix the attachment or reconnect to Cloud, then retry archiving.`,
-      retryable: temporaryCloudFailure(uploaded),
-    })
-  }
-  const assets = assetsText(uploaded.value.refs)
-  return {
-    card: { path: cardPath, content, base_seq: card[1].seq },
-    ...(assets !== assetsText(previous) ? { assets: { content: assets, base_seq: saved?.seq ?? base.deleted?.[manifest] ?? 0 } } : {}),
+  return async () => {
+    const uploaded = await uploadTaskAssets({ board, number, cloudTask: task }, file, content, record, { ...previous, ...assetsOf(local) }, assetApi)
+    if (!uploaded.ok) {
+      throw cloudError({
+        code: uploaded.code ?? 'unreachable', status: uploaded.status,
+        message: `${uploaded.error} Fix the attachment or reconnect to Cloud, then retry archiving.`,
+        retryable: temporaryCloudFailure(uploaded),
+      })
+    }
+    if (readOptional(file) !== original || readOptional(manifestFile) !== local) {
+      refuse('version_conflict', 'The local card or attachment list changed during archiving. Read the current files and try again.')
+    }
+    const assets = assetsText(uploaded.value.refs)
+    return {
+      card: { path: cardPath, content, base_seq: card[1].seq },
+      ...(assets !== assetsText(previous) ? { assets: { content: assets, base_seq: saved?.seq ?? base.deleted?.[manifest] ?? 0 } } : {}),
+    }
   }
 }

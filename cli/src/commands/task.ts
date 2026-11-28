@@ -21,7 +21,7 @@ import { accessToken, CLOUD_ACCESS_HINTS } from '../lib/cloud/session'
 import { confirmRunnerBinding } from '../lib/cloud/runner-binding'
 import { cloudStudio, linkedProject, numberOf, runnerProject, workspaceTask } from '../lib/cloud/tasks'
 import { executionOf } from '../lib/cloud/execution'
-import { localArchiveInput } from '../lib/cloud/archive'
+import { prepareLocalArchiveInput } from '../lib/cloud/archive'
 import { BOARD_LINK_HINT, resolveBoard, useBoard } from '../lib/board-cli'
 import { locate, locateArchived } from '../lib/cards'
 import { peekRun } from '../lib/agent/sessions'
@@ -657,7 +657,7 @@ export async function taskArchive(asked: string, location: TaskLocation = {}): P
   const number = numberOf(task.key)
   if (project !== task.project || !Number.isSafeInteger(number)) return archived(await archive(task.id))
 
-  return withSyncLock(board, async () => {
+  const { prepare, delivery, landing, file, land } = await withSyncLock(board, async () => {
     setBoardDir(board, path.resolve(board, '../..'))
     const own = task.id === workspaceTask()
     if (own && deliveryPhase() === 'implement') return refuse('Archive this task during Land.', 'conflict')
@@ -670,28 +670,30 @@ export async function taskArchive(asked: string, location: TaskLocation = {}): P
     const found = (fs.existsSync(path.join(board, 'todo')) && locate(number)) || locateArchived(number)
     if (!found && land && task.status !== 'done') return refuse('The task card is missing from the Land workspace. Refresh the board and retry.', 'not_found')
     const file = found && (found.kind === 'group' ? path.join(found.target, 'root.md') : found.target)
-    const input = file && task.status !== 'done' ? {
-      ...await localArchiveInput(board, project, task.id, number, file),
-      ...(delivery ? { delivery_id: delivery.deliveryId } : {}),
-      ...(landing ? { landing } : {}),
-    } : undefined
-    const result = await archive(task.id, input)
-    if (file || land) recordDeliveryArchive(number)
-    const execution = executionOf()
-    if (land && execution && result.last_job === execution.job && input?.card && input.delivery_id &&
-        delivery?.worktree === path.join('.akb', 'worktrees', input.delivery_id, 'work') &&
-        result.id === task.id && result.project === project && typeof result.card_version === 'number' &&
-        (!landing || result.landing?.commit === landing.commit && result.landing.branch === landing.branch)) {
-      try {
-        saveDeliveryCleanupReceipt(path.resolve(board, '../..'), {
-          project, task: task.id, card: number, deliveryId: input.delivery_id, seq: result.card_version,
-        })
-      } catch {
-        warn('Could not save the delivery cleanup receipt. The archive was confirmed.')
-      }
-    }
-    return archived(result)
+    const prepare = file && task.status !== 'done' ? prepareLocalArchiveInput(board, project, task.id, number, file) : undefined
+    return { prepare, delivery, landing, file, land }
   }, { migrateState: false })
+  const input = prepare ? {
+    ...await prepare(),
+    ...(delivery ? { delivery_id: delivery.deliveryId } : {}),
+    ...(landing ? { landing } : {}),
+  } : undefined
+  const result = await archive(task.id, input)
+  if ((file || land) && activeDelivery(number)?.deliveryId === delivery?.deliveryId) recordDeliveryArchive(number)
+  const execution = executionOf()
+  if (land && execution && result.last_job === execution.job && input?.card && input.delivery_id &&
+      delivery?.worktree === path.join('.akb', 'worktrees', input.delivery_id, 'work') &&
+      result.id === task.id && result.project === project && typeof result.card_version === 'number' &&
+      (!landing || result.landing?.commit === landing.commit && result.landing.branch === landing.branch)) {
+    try {
+      saveDeliveryCleanupReceipt(path.resolve(board, '../..'), {
+        project, task: task.id, card: number, deliveryId: input.delivery_id, seq: result.card_version,
+      })
+    } catch {
+      warn('Could not save the delivery cleanup receipt. The archive was confirmed.')
+    }
+  }
+  return archived(result)
 }
 
 export async function taskRemove(asked: string, reason: string, location: TaskLocation = {}, discard = false): Promise<MoveResult> {

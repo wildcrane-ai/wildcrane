@@ -546,6 +546,8 @@ export function cardAssetsDir(ws: TaskFolder, id: number): string {
 const isBoardBusy = (error: unknown): error is Error =>
   error instanceof Error && (error as { details?: { kind?: string } }).details?.kind === 'board-busy'
 
+const preparationStopped = { ok: false, code: 'stopped', error: 'Task preparation stopped.' } as const
+
 function catchBoardBusy<T>(work: () => Promise<api.Call<T>>): Promise<api.Call<T>> {
   return work().catch(error => {
     if (isBoardBusy(error)) return { ok: false, code: 'board-busy', error: error.message }
@@ -564,13 +566,14 @@ function catchBoardBusyPush(work: () => Promise<Pushed>): Promise<Pushed> {
 export function pull(ws: TaskFolder, machineId: string, stopped?: () => boolean, mode?: 'chat' | 'implement' | 'land'): Promise<api.Call<void>> {
   if (mode === 'implement') ws.materialIssues = {}
   const taskChat = mode === 'chat' ? ws.task : undefined
-  return catchBoardBusy(() => whenPrepared(ws, { ok: false, code: 'stopped', error: 'Task preparation stopped.' }, async () => {
-    if (mode === 'land') return prepareTask(ws, true, undefined, ws.task)
+  return catchBoardBusy(async () => {
+    if (mode === 'land') return prepareTask(ws, true, stopped, undefined, ws.task)
     const started = performance.now()
     const chatNumber = mode === 'chat' ? (ws.number ?? readRecord(ws).number ?? null) : undefined
-    const sent = await sendBoard(boardFolder(ws), machineId, {
+    const sent = await whenPrepared<Pushed>(ws, { ...preparationStopped, conflict: false }, () => sendBoard(boardFolder(ws), machineId, {
       taskChat, ...(mode === 'chat' ? { taskNumber: chatNumber } : {}),
-    })
+    }), stopped)
+    if (!sent.ok && sent.code === 'stopped') return preparationStopped
     logSync('board.push.done', { ms: Math.round(performance.now() - started), ok: sent.ok })
     let validation: ExecutionFailure | undefined
     if (!sent.ok) {
@@ -580,7 +583,7 @@ export function pull(ws: TaskFolder, machineId: string, stopped?: () => boolean,
       else if (refused?.failure?.source === 'validation') validation = refused.failure
       else if (refused && refused.blocking !== false) {
         if (sent.conflict) {
-          const prepared = await prepareConflictTask(ws)
+          const prepared = await whenPrepared(ws, preparationStopped as api.Call<void>, () => prepareConflictTask(ws), stopped)
           if (!prepared.ok) return prepared
         }
         return { ok: false, error: `This computer's board changes could not be sent: ${refused.error}`, ...(refused.offline ? {} : { code: sent.conflict ? 'board_content_conflict' : refused.code ?? 'version_conflict' }) }
@@ -588,14 +591,14 @@ export function pull(ws: TaskFolder, machineId: string, stopped?: () => boolean,
     }
     const readAt = performance.now()
     try {
-      const read = await prepareTask(ws, !!validation, taskChat)
+      const read = await prepareTask(ws, !!validation, stopped, taskChat)
       if (!read.ok && read.code === 'board_content_conflict') {
-        const prepared = await prepareConflictTask(ws)
+        const prepared = await whenPrepared(ws, preparationStopped as api.Call<void>, () => prepareConflictTask(ws), stopped)
         if (!prepared.ok) return prepared
       }
       return read.ok && validation ? { ok: false, code: 'bad_request', error: validation.summary, failure: validation } : read
     } finally { logSync('board.pull.done', { ms: Math.round(performance.now() - readAt) }) }
-  }, stopped))
+  })
 }
 
 async function prepareConflictTask(ws: TaskFolder): Promise<api.Call<void>> {
@@ -746,15 +749,20 @@ async function readSyncedBoard(ws: TaskFolder, head: number | null) {
 }
 
 /** Between jobs, refresh the board without preparing a task. */
-export const pullChanges = (ws: TaskFolder): Promise<api.Call<void>> => catchBoardBusy(() => inFolder(ws.cwd, async () => {
+export const pullChanges = (ws: TaskFolder): Promise<api.Call<void>> => catchBoardBusy(async () => {
   if (busy(preparationKey(ws))) return { ok: true, value: undefined }
-  const base = readBase(ws)
-  if (base.head_seq === null) return { ok: true, value: undefined }
-  const read = await readSyncedBoard(ws, base.head_seq)
+  const cursor = readBase(ws).head_seq
+  if (cursor === null) return { ok: true, value: undefined }
+  const read = await readSyncedBoard(ws, cursor)
   if (!read.ok) return read
-  const result = await reconcileBoard(ws, base, read.value, sharedMemory(ws.board))
-  return result.ok ? { ok: true, value: undefined } : result
-}))
+  return inFolder(ws.cwd, async () => {
+    const base = readBase(ws)
+    if (busy(preparationKey(ws)) || base.project && base.project !== ws.project || base.head_seq === null ||
+        base.head_seq < cursor || base.head_seq > read.value.head_seq) return { ok: true, value: undefined }
+    const result = await reconcileBoard(ws, base, read.value, sharedMemory(ws.board))
+    return result.ok ? { ok: true, value: undefined } : result
+  })
+})
 
 function matchingArchives(ws: TaskFolder, base: Base, files: api.BoardFile[]) {
   const root = rootOf(ws)
@@ -802,8 +810,12 @@ async function confirmPulledArchives(ws: TaskFolder, base: Base, archives: Retur
     const assets = base.files[root + list]
     if (!card || card.content !== readText(path.join(ws.board, p))
       || (assets?.content ?? null) !== readText(path.join(ws.board, list))) continue
-    const current = await api.readTask(task)
-    if (!current.ok || current.value.status !== 'done') continue
+    const assetsSeq = assets?.seq ?? base.deleted?.[root + list] ?? 0
+    const receipt = base.archiveReceipts?.[task]
+    if (receipt?.status !== 'confirmed' || receipt.path !== p || receipt.seq !== card.seq || receipt.assets_seq !== assetsSeq) {
+      const current = await api.readTask(task)
+      if (!current.ok || current.value.status !== 'done') continue
+    }
     for (const marker of markers) fs.rmSync(marker.file, { force: true })
     if (base.pendingArchives) delete base.pendingArchives[task]
     base.pendingAssets = base.pendingAssets?.filter(id => id !== task)
@@ -811,7 +823,7 @@ async function confirmPulledArchives(ws: TaskFolder, base: Base, archives: Retur
     base.deferred = base.deferred?.filter(file => file !== p && file !== from && file !== list)
     const receipts = base.archiveReceipts ??= {}
     receipts[task] = {
-      status: 'confirmed', task, path: p, seq: card.seq, assets_seq: assets?.seq ?? base.deleted?.[root + list] ?? 0, pulled: true,
+      status: 'confirmed', task, path: p, seq: card.seq, assets_seq: assetsSeq, pulled: true,
     }
   }
 }
@@ -825,12 +837,14 @@ async function reconcileBoard(ws: TaskFolder, base: Base, board: { files: api.Bo
     return { ok: false as const, code, error: 'Resolve the saved board content conflicts before refreshing.' }
   }
   if (pendingConflicts(ws.board).length) return conflict()
-  const restored = applyRestorations(ws, base, board.files)
-  const archives = matchingArchives(ws, base, board.files)
+  const files = base.head_seq === null ? board.files : board.files.filter(f => f.seq >= (base.files[f.path]?.seq ?? base.deleted?.[f.path] ?? 0))
+  const restored = applyRestorations(ws, base, files)
+  const archives = matchingArchives(ws, base, files)
   const moved = new Set(archives.flatMap(({ from, p }) => from ? [from, p] : [p]))
   const archiving = new Set(archives.map(({ number }) => number))
   const held = pendingLandArchives(ws, base).filter(({ task, number }) =>
     !archiving.has(number) && task !== landTask && !(landTask && number === ws.number))
+  const heldArchives = new Set(held.map(({ archived }) => archived))
   const numbers = new Set(held.map(({ number }) => number))
   const manifests = new Set(held.map(({ task }) => assetsFile(task)))
   if (taskChat) {
@@ -845,14 +859,14 @@ async function reconcileBoard(ws: TaskFolder, base: Base, board: { files: api.Bo
   }
   const privateArchive = (p: string) => numbers.has(numberOfCard(p) ?? 0) || numbers.has(groupOfCard(p) ?? 0) || manifests.has(p)
   const snapshot = base.head_seq === null ? base.files : undefined
-  if (!snapshot && observeConflicts(ws, base, board.files, shared, p => moved.has(p) || privateArchive(p))) return conflict()
+  if (!snapshot && observeConflicts(ws, base, files, shared, p => moved.has(p) || privateArchive(p))) return conflict()
   if (snapshot) base.files = {}
 
   const index = syncIndex(ws)
   const paths: string[] = []
   const removed: string[] = []
   let skipped = false
-  for (const f of board.files) {
+  for (const f of files) {
     const p = f.path.startsWith(root) ? f.path.slice(root.length) : f.path
     paths.push(p)
     if (index) rememberDirectories(index.directories, p)
@@ -860,7 +874,11 @@ async function reconcileBoard(ws: TaskFolder, base: Base, board: { files: api.Bo
       const file = path.join(ws.board, p)
       const here = readText(file)
       if (here !== f.content) {
-        if (!restored.has(p) && !moved.has(p) && here !== (base.files[f.path]?.content ?? null)) {
+        const retiredArchive = f.content === null && !base.files[f.path] && p.startsWith('.archive/') &&
+          numberOfCard(p) !== null && !heldArchives.has(p)
+        if (retiredArchive && here !== null) {
+          write(path.join(ws.board, '.sync', 'retired-archives', String(f.seq), hashOf(here), p), here)
+        } else if (!restored.has(p) && !moved.has(p) && here !== (base.files[f.path]?.content ?? null)) {
           skipped = true
           continue
         }
@@ -910,19 +928,38 @@ function resetBoardSnapshot(ws: TaskFolder, base: Base, before: Base['files'], s
   }
 }
 
-async function prepareTask(ws: TaskFolder, preserveAssets: boolean, taskChat?: string, landTask?: string): Promise<api.Call<void>> {
-  const base = readBase(ws)
-  if (base.workspace === undefined) {
+async function prepareTask(ws: TaskFolder, preserveAssets: boolean, stopped?: () => boolean, taskChat?: string, landTask?: string): Promise<api.Call<void>> {
+  const before = readBase(ws)
+  let workspace = before.workspace
+  if (workspace === undefined) {
     const project = await api.readProject(ws.project)
     if (!project.ok) return project
-    base.workspace = project.value.workspace ?? null
+    workspace = project.value.workspace ?? null
   }
-  const read = await readSyncedBoard(ws, base.head_seq)
+  const read = await readSyncedBoard(ws, before.head_seq)
   if (!read.ok) return read
+  return whenPrepared<api.Call<void>>(ws, preparationStopped, async () => {
+    const base = readBase(ws)
+    if (base.project && base.project !== ws.project ||
+        before.head_seq !== null && (base.head_seq === null || base.head_seq < before.head_seq)) {
+      return { ok: false, code: 'board-busy', error: 'The board changed while it was being read. Try again.' }
+    }
+    if (base.workspace === undefined) base.workspace = workspace
+    return prepareTaskFiles(ws, base, before.head_seq === null && base.head_seq !== null ||
+      base.head_seq !== null && base.head_seq > read.value.head_seq ? undefined : read.value, preserveAssets, taskChat, landTask)
+  }, stopped)
+}
+
+async function prepareTaskFiles(ws: TaskFolder, base: Base, board: { files: api.BoardFile[]; head_seq: number } | undefined, preserveAssets: boolean,
+  taskChat?: string, landTask?: string): Promise<api.Call<void>> {
   const shared = sharedMemory(ws.board)
-  const refreshed = await reconcileBoard(ws, base, read.value, shared, taskChat, landTask)
-  if (!refreshed.ok) return refreshed
-  if (refreshed.value.has(ws.task)) return { ok: true, value: undefined }
+  if (board) {
+    const refreshed = await reconcileBoard(ws, base, board, shared, taskChat, landTask)
+    if (!refreshed.ok) return refreshed
+    if (refreshed.value.has(ws.task)) return { ok: true, value: undefined }
+  } else if (pendingConflicts(ws.board).length) {
+    return { ok: false, code: 'board_content_conflict', error: 'Resolve the saved board content conflicts before refreshing.' }
+  }
   const record = readRecord(ws)
   const studio = await pullStudio(ws, record)
   if (!studio.ok) return studio
